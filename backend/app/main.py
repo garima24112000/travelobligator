@@ -1,6 +1,8 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.routes.trips import router as trips_router
+
 app = FastAPI(
     title="Travel Copilot API",
     description="Backend API for personalized AI travel itinerary planning.",
@@ -14,6 +16,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.include_router(trips_router, prefix="/api")
 
 
 @app.get("/")

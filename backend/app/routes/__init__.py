@@ -1,0 +1,1 @@
+"""Route package for the Travel Copilot backend."""

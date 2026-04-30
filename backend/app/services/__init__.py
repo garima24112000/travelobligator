@@ -1,0 +1,1 @@
+"""Service package for the Travel Copilot backend."""
