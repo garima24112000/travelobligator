@@ -4,7 +4,7 @@ import type {
   ItineraryDay,
   TripRequest,
 } from "../../shared/types";
-import { TravelCopilotShell } from "../components/travel-copilot-shell";
+import { TripDashboardClient } from "../components/trip-dashboard-client";
 
 const tripRequest: TripRequest = {
   id: "trip-request-demo-01",
@@ -289,24 +289,11 @@ const transportRecommendations = [
 
 export default function Home() {
   return (
-    <TravelCopilotShell
-      itinerary={itinerary}
-      preferences={{
-        destination: tripRequest.destination,
-        dates: `${tripRequest.startDate} to ${tripRequest.endDate}`,
-        travelers: `${tripRequest.travelersCount} travelers · ${tripRequest.travelGroupType}`,
-        groupType: tripRequest.travelGroupType,
-        pace: tripRequest.pace,
-        accommodationType: tripRequest.accommodationType,
-        transportPreference: tripRequest.transportPreference,
-        budget: `${tripRequest.budgetMin} - ${tripRequest.budgetMax} USD`,
-        interests: tripRequest.interests,
-        mustVisit: tripRequest.mustVisit,
-        mustAvoid: tripRequest.mustAvoid,
-        notes: tripRequest.freeTextPreferences ?? "",
-      }}
-      accommodationRecommendations={accommodationRecommendations}
-      transportRecommendations={transportRecommendations}
+    <TripDashboardClient
+      initialTripRequest={tripRequest}
+      initialItinerary={itinerary}
+      initialAccommodationRecommendations={accommodationRecommendations}
+      initialTransportRecommendations={transportRecommendations}
       quickActions={quickActions.map((action) => ({
         label: action.label,
         description: action.description,

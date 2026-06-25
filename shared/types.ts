@@ -32,6 +32,12 @@ export type TripRequest = {
   freeTextPreferences?: string;
 };
 
+export type TripGenerationMetadata = {
+  generatedAt: string;
+  source: string;
+  warning: string;
+};
+
 export type AccommodationRecommendation = {
   id: string;
   name: string;
@@ -128,4 +134,10 @@ export type TripFeedback = {
     | "reduce_walking"
     | "prioritize_food"
     | "prioritize_nature";
+};
+
+export type TripGenerationResponse = {
+  tripRequest: TripRequest;
+  itinerary: Itinerary;
+  metadata: TripGenerationMetadata;
 };
