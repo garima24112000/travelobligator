@@ -4,7 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.routes.trips import router as trips_router
 
 app = FastAPI(
-    title="Travel Copilot API",
+    title="TravelObligator API",
     description="Backend API for personalized AI travel itinerary planning.",
     version="0.1.0",
 )
@@ -23,7 +23,7 @@ app.include_router(trips_router, prefix="/api")
 @app.get("/")
 def root():
     return {
-        "message": "Travel Copilot API is running",
+        "message": "TravelObligator API is running",
         "status": "ok",
     }
 

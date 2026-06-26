@@ -1,1 +1,1 @@
-"""Schema package for the Travel Copilot backend."""
+"""Schema package for the TravelObligator backend."""

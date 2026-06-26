@@ -4,7 +4,9 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from uuid import uuid4
 
-from app.providers.mock_accommodation_provider import get_mock_accommodation_recommendations
+from app.providers.mock_accommodation_provider import (
+    get_mock_accommodation_recommendations,
+)
 from app.providers.mock_poi_provider import get_mock_poi_candidates
 from app.providers.mock_transport_provider import get_mock_transport_strategy
 from app.schemas.trips import (
@@ -38,46 +40,67 @@ def _calculate_duration_days(start_date: str, end_date: str) -> int:
 
 
 def _travel_style_for_request(trip_request: TripRequestSchema) -> str:
-    pieces = [trip_request.pace, trip_request.travelGroupType, trip_request.accommodationType]
+    pieces = [
+        trip_request.pace,
+        trip_request.travelGroupType,
+        trip_request.accommodationType,
+    ]
     return " / ".join(piece.replace("_", " ") for piece in pieces)
 
 
-def _build_day_templates(duration_days: int, trip_request: TripRequestSchema) -> list[_DayTemplate]:
+def _build_day_templates(
+    duration_days: int, trip_request: TripRequestSchema
+) -> list[_DayTemplate]:
     templates: list[_DayTemplate] = []
     for day_number in range(1, duration_days + 1):
         if day_number == 1:
             templates.append(
                 _DayTemplate(
                     theme="Arrival and orientation",
-                    notes=["Keep the first day light to respect arrival energy.", "Mock/demo day structure."],
+                    notes=[
+                        "Keep the first day light to respect arrival energy.",
+                        "Mock/demo day structure.",
+                    ],
                 )
             )
         elif day_number == duration_days:
             templates.append(
                 _DayTemplate(
                     theme="Wrap-up and flexible exploration",
-                    notes=["Leave room for last-minute adjustments.", "Mock/demo day structure."],
+                    notes=[
+                        "Leave room for last-minute adjustments.",
+                        "Mock/demo day structure.",
+                    ],
                 )
             )
         elif any(interest.lower() == "food" for interest in trip_request.interests):
             templates.append(
                 _DayTemplate(
                     theme="Food and neighborhood discovery",
-                    notes=["Prioritize local dining and walkable exploration.", "Mock/demo day structure."],
+                    notes=[
+                        "Prioritize local dining and walkable exploration.",
+                        "Mock/demo day structure.",
+                    ],
                 )
             )
         elif trip_request.pace == "packed":
             templates.append(
                 _DayTemplate(
                     theme="High-activity sightseeing",
-                    notes=["Use shorter transfers and tightly sequenced stops.", "Mock/demo day structure."],
+                    notes=[
+                        "Use shorter transfers and tightly sequenced stops.",
+                        "Mock/demo day structure.",
+                    ],
                 )
             )
         else:
             templates.append(
                 _DayTemplate(
                     theme="Balanced city exploration",
-                    notes=["Mix one anchor activity with open time.", "Mock/demo day structure."],
+                    notes=[
+                        "Mix one anchor activity with open time.",
+                        "Mock/demo day structure.",
+                    ],
                 )
             )
     return templates
@@ -133,8 +156,12 @@ def _build_activities_for_day(
     return activities, total_travel_minutes
 
 
-def build_mock_itinerary(trip_request: TripRequestSchema) -> TripGenerationResponseSchema:
-    duration_days = _calculate_duration_days(trip_request.startDate, trip_request.endDate)
+def build_mock_itinerary(
+    trip_request: TripRequestSchema,
+) -> TripGenerationResponseSchema:
+    duration_days = _calculate_duration_days(
+        trip_request.startDate, trip_request.endDate
+    )
     start_date = _parse_date(trip_request.startDate)
     accommodation_options = get_mock_accommodation_recommendations(
         trip_request.destination,
@@ -142,7 +169,9 @@ def build_mock_itinerary(trip_request: TripRequestSchema) -> TripGenerationRespo
         trip_request.travelersCount,
     )
     poi_candidates = get_mock_poi_candidates(trip_request.destination)
-    transport_strategy = get_mock_transport_strategy(trip_request.pace, trip_request.destination)
+    transport_strategy = get_mock_transport_strategy(
+        trip_request.pace, trip_request.destination
+    )
 
     day_templates = _build_day_templates(duration_days, trip_request)
     daily_plan: list[ItineraryDaySchema] = []
@@ -183,7 +212,10 @@ def build_mock_itinerary(trip_request: TripRequestSchema) -> TripGenerationRespo
                 ],
                 notes=template.notes,
                 totalTravelTimeMinutes=travel_minutes,
-                estimatedCost=day_activity_cost + day_food_cost + day_transport_cost + day_misc_cost,
+                estimatedCost=day_activity_cost
+                + day_food_cost
+                + day_transport_cost
+                + day_misc_cost,
             )
         )
 
@@ -196,8 +228,16 @@ def build_mock_itinerary(trip_request: TripRequestSchema) -> TripGenerationRespo
         topAccommodations=accommodation_options,
     )
 
-    estimated_stay = sum(option.nightlyPrice for option in accommodation_options[:1]) * duration_days
-    estimated_total = estimated_stay + estimated_food + estimated_transport + estimated_activities + estimated_misc
+    estimated_stay = (
+        sum(option.nightlyPrice for option in accommodation_options[:1]) * duration_days
+    )
+    estimated_total = (
+        estimated_stay
+        + estimated_food
+        + estimated_transport
+        + estimated_activities
+        + estimated_misc
+    )
 
     itinerary = ItinerarySchema(
         id=str(uuid4()),

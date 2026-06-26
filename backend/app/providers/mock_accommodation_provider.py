@@ -9,7 +9,9 @@ def get_mock_accommodation_recommendations(
     traveler_count: int,
 ) -> list[AccommodationRecommendationSchema]:
     normalized_destination = destination.title()
-    preferred_type = accommodation_type if accommodation_type != "no_preference" else "hotel"
+    preferred_type = (
+        accommodation_type if accommodation_type != "no_preference" else "hotel"
+    )
 
     return [
         AccommodationRecommendationSchema(

@@ -63,7 +63,11 @@ class TripRequestSchema(BaseModel):
         end = date.fromisoformat(self.endDate)
         if end < start:
             raise ValueError("endDate must be on or after startDate")
-        if self.budgetMin is not None and self.budgetMax is not None and self.budgetMin > self.budgetMax:
+        if (
+            self.budgetMin is not None
+            and self.budgetMax is not None
+            and self.budgetMin > self.budgetMax
+        ):
             raise ValueError("budgetMin must be less than or equal to budgetMax")
         return self
 
@@ -141,7 +145,9 @@ class TripSummarySchema(BaseModel):
 class StayRecommendationSchema(BaseModel):
     recommendedArea: str
     reasons: list[str] = Field(default_factory=list)
-    topAccommodations: list[AccommodationRecommendationSchema] = Field(default_factory=list)
+    topAccommodations: list[AccommodationRecommendationSchema] = Field(
+        default_factory=list
+    )
 
 
 class ItinerarySchema(BaseModel):

@@ -1,1 +1,1 @@
-"""Service package for the Travel Copilot backend."""
+"""Service package for the TravelObligator backend."""

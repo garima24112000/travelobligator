@@ -1,1 +1,1 @@
-"""Route package for the Travel Copilot backend."""
+"""Route package for the TravelObligator backend."""
