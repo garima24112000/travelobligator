@@ -10,10 +10,10 @@ The validator **does not modify the itinerary**.
 
 Its responsibilities are to:
 
-* detect issues
-* explain why they matter
-* suggest improvements
-* assign confidence and severity levels
+- detect issues
+- explain why they matter
+- suggest improvements
+- assign confidence and severity levels
 
 The Feedback Pipeline decides whether suggested improvements should be applied.
 
@@ -25,10 +25,10 @@ The Plan Validator receives:
 
 ## Internal Inputs
 
-* Traveler Profile
-* Trip Strategy
-* Stay & Transport Decisions
-* Experience Planner Output
+- Traveler Profile
+- Trip Strategy
+- Stay & Transport Decisions
+- Experience Planner Output
 
 ## External Production Inputs
 
@@ -36,26 +36,26 @@ The Plan Validator receives:
 
 Provides:
 
-* attraction metadata
-* opening hours
-* accessibility information
+- attraction metadata
+- opening hours
+- accessibility information
 
 ### Routes Provider
 
 Provides:
 
-* travel time
-* walking distance
-* transit duration
-* driving duration
+- travel time
+- walking distance
+- transit duration
+- driving duration
 
 ### Calendar Provider (Future)
 
 Provides:
 
-* holidays
-* attraction closures
-* special events
+- holidays
+- attraction closures
+- special events
 
 ---
 
@@ -71,10 +71,10 @@ Validation should focus on the **overall travel experience**, not just technical
 
 The validator should:
 
-* detect unrealistic plans
-* identify poor travel decisions
-* explain problems clearly
-* recommend improvements without automatically applying them
+- detect unrealistic plans
+- identify poor travel decisions
+- explain problems clearly
+- recommend improvements without automatically applying them
 
 ---
 
@@ -86,10 +86,10 @@ The itinerary should be reviewed across multiple categories.
 
 Checks:
 
-* unnecessary backtracking
-* inefficient attraction ordering
-* excessive travel time
-* poor geographical grouping
+- unnecessary backtracking
+- inefficient attraction ordering
+- excessive travel time
+- poor geographical grouping
 
 ---
 
@@ -97,10 +97,10 @@ Checks:
 
 Checks:
 
-* excessive walking
-* accessibility concerns
-* walking tolerance mismatch
-* long uphill routes (when available)
+- excessive walking
+- accessibility concerns
+- walking tolerance mismatch
+- long uphill routes (when available)
 
 ---
 
@@ -108,12 +108,12 @@ Checks:
 
 Checks:
 
-* attraction opening hours
-* realistic visit durations
-* meal timing
-* airport timing
-* arrival day feasibility
-* departure day feasibility
+- attraction opening hours
+- realistic visit durations
+- meal timing
+- airport timing
+- arrival day feasibility
+- departure day feasibility
 
 ---
 
@@ -121,11 +121,11 @@ Checks:
 
 Checks:
 
-* accommodation cost
-* transport cost
-* attraction cost
-* estimated daily spend
-* overall budget alignment
+- accommodation cost
+- transport cost
+- attraction cost
+- estimated daily spend
+- overall budget alignment
 
 ---
 
@@ -133,11 +133,11 @@ Checks:
 
 Checks:
 
-* too many activities
-* insufficient breaks
-* excessive transit
-* overloaded days
-* unrealistic schedules
+- too many activities
+- insufficient breaks
+- excessive transit
+- overloaded days
+- unrealistic schedules
 
 ---
 
@@ -145,10 +145,10 @@ Checks:
 
 Checks:
 
-* late-night travel
-* isolated walking
-* unsafe timing
-* destination-specific safety considerations (when available)
+- late-night travel
+- isolated walking
+- unsafe timing
+- destination-specific safety considerations (when available)
 
 ---
 
@@ -156,11 +156,11 @@ Checks:
 
 Checks:
 
-* repetitive activities
-* insufficient variety
-* lack of rest
-* imbalance between indoor and outdoor experiences
-* mismatch with traveler interests
+- repetitive activities
+- insufficient variety
+- lack of rest
+- imbalance between indoor and outdoor experiences
+- mismatch with traveler interests
 
 ---
 
@@ -170,13 +170,13 @@ Objective issues should be validated using deterministic rules.
 
 Examples:
 
-* attraction closed
-* budget exceeded
-* walking exceeds traveler tolerance
-* airport arrival impossible
-* hotel too far from first activity
-* transit unavailable
-* activity duration exceeds available time
+- attraction closed
+- budget exceeded
+- walking exceeds traveler tolerance
+- airport arrival impossible
+- hotel too far from first activity
+- transit unavailable
+- activity duration exceeds available time
 
 These checks should always produce the same result for the same input.
 
@@ -190,22 +190,22 @@ The AI Reasoning Validator evaluates subjective travel quality.
 
 Examples:
 
-* Does the day feel enjoyable?
-* Is the pacing balanced?
-* Are similar experiences repeated too often?
-* Will the traveler likely become fatigued?
-* Does the itinerary match the traveler's intent?
+- Does the day feel enjoyable?
+- Is the pacing balanced?
+- Are similar experiences repeated too often?
+- Will the traveler likely become fatigued?
+- Does the itinerary match the traveler's intent?
 
 The AI validator should never invent facts.
 
 It may reason only from:
 
-* Traveler Profile
-* Trip Strategy
-* Stay & Transport Decisions
-* Experience Planner Output
-* Production provider data
-* Rule-based validation results
+- Traveler Profile
+- Trip Strategy
+- Stay & Transport Decisions
+- Experience Planner Output
+- Production provider data
+- Rule-based validation results
 
 If confidence is low, it should explicitly state uncertainty instead of guessing.
 
@@ -217,10 +217,10 @@ The Validation Aggregator combines results from all validators into a single val
 
 It should:
 
-* merge duplicate issues
-* remove contradictory recommendations
-* calculate overall quality score
-* determine itinerary readiness
+- merge duplicate issues
+- remove contradictory recommendations
+- calculate overall quality score
+- determine itinerary readiness
 
 This stage should not introduce new reasoning.
 
@@ -238,10 +238,10 @@ The itinerary should not be accepted without changes.
 
 Examples:
 
-* impossible timing
-* attraction closed
-* airport cannot be reached
-* severe budget mismatch
+- impossible timing
+- attraction closed
+- airport cannot be reached
+- severe budget mismatch
 
 ---
 
@@ -251,10 +251,10 @@ The itinerary is usable but should be reviewed.
 
 Examples:
 
-* excessive walking
-* overloaded day
-* insufficient meal breaks
-* long transit segments
+- excessive walking
+- overloaded day
+- insufficient meal breaks
+- long transit segments
 
 ---
 
@@ -266,9 +266,9 @@ Only optimization is recommended.
 
 Examples:
 
-* improve attraction ordering
-* better distribution across days
-* add additional rest time
+- improve attraction ordering
+- better distribution across days
+- add additional rest time
 
 ---
 
@@ -278,13 +278,13 @@ Every issue should be presented as a reusable Validation Card.
 
 Fields:
 
-* title
-* category
-* severity
-* issue
-* why_it_matters
-* suggested_fix
-* confidence
+- title
+- category
+- severity
+- issue
+- why_it_matters
+- suggested_fix
+- confidence
 
 Example:
 
@@ -385,25 +385,25 @@ The validator should integrate with:
 
 Routing
 
-* Google Routes API
+- Google Routes API
 
 Places
 
-* Google Places API
+- Google Places API
 
 Calendar
 
-* Public holiday and attraction schedules (future)
+- Public holiday and attraction schedules (future)
 
 AI
 
-* OpenAI Structured Outputs
+- OpenAI Structured Outputs
 
 Future integrations:
 
-* weather
-* real-time disruptions
-* live crowd estimates
+- weather
+- real-time disruptions
+- live crowd estimates
 
 ---
 
@@ -411,12 +411,12 @@ Future integrations:
 
 The validator should gracefully handle:
 
-* missing provider data
-* incomplete attraction metadata
-* unavailable travel times
-* uncertain AI reasoning
-* conflicting recommendations
-* destination-specific limitations
+- missing provider data
+- incomplete attraction metadata
+- unavailable travel times
+- uncertain AI reasoning
+- conflicting recommendations
+- destination-specific limitations
 
 Validation should continue whenever possible rather than failing completely.
 
@@ -426,12 +426,12 @@ Validation should continue whenever possible rather than failing completely.
 
 The Plan Validator should follow these principles:
 
-* Validate before presenting.
-* Explain every issue.
-* Separate objective checks from subjective reasoning.
-* Never silently modify the itinerary.
-* Surface uncertainty instead of hallucinating.
-* Optimize for traveler satisfaction rather than itinerary density.
-* Be transparent about assumptions and confidence.
+- Validate before presenting.
+- Explain every issue.
+- Separate objective checks from subjective reasoning.
+- Never silently modify the itinerary.
+- Surface uncertainty instead of hallucinating.
+- Optimize for traveler satisfaction rather than itinerary density.
+- Be transparent about assumptions and confidence.
 
 The validator exists to increase trust in the itinerary by ensuring that every recommendation is realistic, explainable, and aligned with the traveler's needs.

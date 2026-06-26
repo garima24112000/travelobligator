@@ -56,7 +56,10 @@ const accommodationRecommendations: AccommodationRecommendation[] = [
     currency: "USD",
     rating: 4.7,
     bookingUrl: "https://example.com/demo-stay-2",
-    reasons: ["Good nightlife access without relying on taxis", "Easy public transport connections"],
+    reasons: [
+      "Good nightlife access without relying on taxis",
+      "Easy public transport connections",
+    ],
     amenities: ["river views", "metro nearby", "boutique"],
     latitude: 38.7062,
     longitude: -9.145,
@@ -71,7 +74,10 @@ const accommodationRecommendations: AccommodationRecommendation[] = [
     currency: "USD",
     rating: 4.6,
     bookingUrl: "https://example.com/demo-stay-3",
-    reasons: ["Great character and old-town feel", "Best for evening strolls and food stops"],
+    reasons: [
+      "Great character and old-town feel",
+      "Best for evening strolls and food stops",
+    ],
     amenities: ["historic", "quiet evenings", "local cafe"],
     latitude: 38.7141,
     longitude: -9.1303,
@@ -95,7 +101,8 @@ const dailyPlan: ItineraryDay[] = [
         durationMinutes: 120,
         latitude: 38.7139,
         longitude: -9.1397,
-        whyIncluded: "Keeps the first day light after arrival while establishing the trip base.",
+        whyIncluded:
+          "Keeps the first day light after arrival while establishing the trip base.",
       },
       {
         id: "day1-act2",
@@ -106,7 +113,8 @@ const dailyPlan: ItineraryDay[] = [
         durationMinutes: 90,
         latitude: 38.7159,
         longitude: -9.1292,
-        whyIncluded: "Gives the trip a strong first impression and an easy evening activity.",
+        whyIncluded:
+          "Gives the trip a strong first impression and an easy evening activity.",
         travelFromPrevious: {
           mode: "Walk",
           timeMinutes: 15,
@@ -114,8 +122,14 @@ const dailyPlan: ItineraryDay[] = [
         },
       },
     ],
-    foodSuggestions: ["Neighborhood seafood bistro", "Quick pastel de nata stop"],
-    notes: ["Keep pace relaxed after the flight.", "Use this day to adjust to the city rhythm."],
+    foodSuggestions: [
+      "Neighborhood seafood bistro",
+      "Quick pastel de nata stop",
+    ],
+    notes: [
+      "Keep pace relaxed after the flight.",
+      "Use this day to adjust to the city rhythm.",
+    ],
     totalTravelTimeMinutes: 15,
     estimatedCost: 118,
   },
@@ -145,7 +159,8 @@ const dailyPlan: ItineraryDay[] = [
         durationMinutes: 90,
         latitude: 38.7079,
         longitude: -9.1456,
-        whyIncluded: "Concentrates food discovery without adding routing complexity.",
+        whyIncluded:
+          "Concentrates food discovery without adding routing complexity.",
         travelFromPrevious: {
           mode: "Tram",
           timeMinutes: 18,
@@ -170,7 +185,10 @@ const dailyPlan: ItineraryDay[] = [
       },
     ],
     foodSuggestions: ["Seafood tascas", "Local wine bar"],
-    notes: ["Keep one activity flexible for a hidden gem.", "Walk between compact points when possible."],
+    notes: [
+      "Keep one activity flexible for a hidden gem.",
+      "Walk between compact points when possible.",
+    ],
     totalTravelTimeMinutes: 30,
     estimatedCost: 146,
   },
@@ -189,7 +207,8 @@ const dailyPlan: ItineraryDay[] = [
         durationMinutes: 120,
         latitude: 38.6916,
         longitude: -9.2159,
-        whyIncluded: "Provides a classic landmark day without overloading the itinerary.",
+        whyIncluded:
+          "Provides a classic landmark day without overloading the itinerary.",
       },
       {
         id: "day3-act2",
@@ -200,7 +219,8 @@ const dailyPlan: ItineraryDay[] = [
         durationMinutes: 60,
         latitude: 38.6979,
         longitude: -9.2063,
-        whyIncluded: "Adds variety while remaining close to the main landmark cluster.",
+        whyIncluded:
+          "Adds variety while remaining close to the main landmark cluster.",
         travelFromPrevious: {
           mode: "Bus",
           timeMinutes: 11,
@@ -209,7 +229,10 @@ const dailyPlan: ItineraryDay[] = [
       },
     ],
     foodSuggestions: ["Custard tart cafe", "Light seafood lunch"],
-    notes: ["This day is intentionally route-efficient.", "Leave room for a slow coffee break."],
+    notes: [
+      "This day is intentionally route-efficient.",
+      "Leave room for a slow coffee break.",
+    ],
     totalTravelTimeMinutes: 11,
     estimatedCost: 132,
   },
@@ -249,7 +272,10 @@ const itinerary: Itinerary = {
     "Keep one evening unstructured for feedback-based changes later.",
     "Use the transit plan to preserve the walkable feel of the trip.",
   ],
-  alternatives: ["Swap Belém for a beach day", "Replace one museum stop with a local market"],
+  alternatives: [
+    "Swap Belém for a beach day",
+    "Replace one museum stop with a local market",
+  ],
   estimatedBudgetBreakdown: {
     stay: 620,
     food: 260,
@@ -265,7 +291,8 @@ const itinerary: Itinerary = {
 const quickActions = [
   {
     label: "Make it cheaper",
-    description: "Nudge stay, food, and activity picks toward a lower total spend.",
+    description:
+      "Nudge stay, food, and activity picks toward a lower total spend.",
   },
   {
     label: "Make it more relaxed",

@@ -14,7 +14,8 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: "TravelObligator",
-  description: "A polished MVP dashboard shell for route-aware travel planning.",
+  description:
+    "A polished MVP dashboard shell for route-aware travel planning.",
 };
 
 export default function RootLayout({
@@ -23,7 +24,10 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}>
+    <html
+      lang="en"
+      className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
+    >
       <body className="min-h-full flex flex-col bg-[#07111f]">{children}</body>
     </html>
   );

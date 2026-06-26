@@ -5,6 +5,7 @@
 Travel planning is not just about generating a list of attractions.
 
 Users usually need to answer practical decisions such as:
+
 - Is this destination suitable for my trip?
 - Where should I stay?
 - How should I move around?
@@ -18,9 +19,10 @@ Most existing travel content is generic, fragmented, and difficult to adapt.
 
 The MVP should prove one core idea:
 
-Travel Copilot does not just generate an itinerary. It explains the decisions behind the itinerary.
+TravelObligator does not just generate an itinerary. It explains the decisions behind the itinerary.
 
 The MVP will support:
+
 - traveler profile creation
 - destination suitability reasoning
 - stay area recommendation
@@ -42,6 +44,7 @@ The MVP will support:
 ## 4. Out of Scope for MVP
 
 The MVP will not fully support:
+
 - live road closures
 - real-time crowd levels
 - visa logic

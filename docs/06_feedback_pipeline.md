@@ -4,11 +4,12 @@
 
 The Feedback Pipeline is responsible for updating a travel plan when the user dislikes, changes, or refines part of the itinerary.
 
-This stage is one of the main differentiators of Travel Copilot.
+This stage is one of the main differentiators of TravelObligator.
 
 Most itinerary generators regenerate the entire plan when feedback is given.
 
-Travel Copilot should instead:
+TravelObligator should instead:
+
 - understand what the feedback means
 - identify which stages are affected
 - preserve the parts that still work
@@ -26,6 +27,7 @@ The Feedback Pipeline receives:
 ### User Feedback
 
 Examples:
+
 - make it less hectic
 - remove museums
 - reduce walking
@@ -39,6 +41,7 @@ Examples:
 ### Existing Planning State
 
 The pipeline should have access to:
+
 - Traveler Profile
 - Trip Strategy
 - Stay & Transport Decisions
@@ -76,81 +79,186 @@ Structured interpretation:
 }
 ```
 
-## # Feedback Pipeline
+## 4. Feedback Categories
 
-## 1. Purpose
+Feedback should be classified into categories.
 
-The Feedback Pipeline is responsible for updating a travel plan when the user dislikes, changes, or refines part of the itinerary.
+Profile Feedback
 
-This stage is one of the main differentiators of Travel Copilot.
-
-Most itinerary generators regenerate the entire plan when feedback is given.
-
-Travel Copilot should instead:
-- understand what the feedback means
-- identify which stages are affected
-- preserve the parts that still work
-- regenerate only the necessary sections
-- explain what changed and why
-
-The goal is controlled adaptation, not blind regeneration.
-
----
-
-## 2. Inputs
-
-The Feedback Pipeline receives:
-
-### User Feedback
+Changes the Traveler Profile.
 
 Examples:
-- make it less hectic
-- remove museums
-- reduce walking
-- make it cheaper
-- add more food places
-- avoid late nights
-- change hotel area
-- use public transport instead of taxis
-- add more hidden gems
 
-### Existing Planning State
+actually we want a relaxed trip
+my parents cannot walk much
+we prefer vegetarian food
+we do not want nightlife
+Stay Feedback
 
-The pipeline should have access to:
-- Traveler Profile
-- Trip Strategy
-- Stay & Transport Decisions
-- Experience Planner Output
-- Plan Validator Report
-- Current Itinerary Version
+Changes stay area or accommodation logic.
 
----
+Examples:
 
-## 3. Feedback Interpretation
+cheaper hotel
+safer area
+closer to metro
+avoid downtown
+need parking
+Transport Feedback
 
-The system should convert raw feedback into structured feedback intent.
+Changes transport strategy.
+
+Examples:
+
+avoid driving
+use trains
+reduce Uber
+prefer walking
+do not use public transport at night
+Experience Feedback
+
+Changes selected activities.
+
+Examples:
+
+remove museums
+add hidden gems
+more food spots
+more nature
+less shopping
+Schedule Feedback
+
+Changes timing and density.
+
+Examples:
+
+make days lighter
+start later
+keep evenings free
+add rest breaks
+Budget Feedback
+
+Changes cost decisions.
+
+Examples:
+
+make it cheaper
+allow luxury options
+avoid paid attractions
+
+## 5. Affected Stage Detection
+
+The pipeline should determine which parts of the planning state need to be updated.
 
 Example:
 
-User says:
+Feedback:
 
-“Make this less tiring for my parents.”
+“Remove museums.”
 
-Structured interpretation:
+Affected:
+
+Experience Planner
+Plan Validator
+
+Not affected:
+
+Stay Area
+Transport Strategy
+Budget Profile unless museum tickets were a major cost
+
+Example:
+
+Feedback:
+
+“Stay somewhere cheaper.”
+
+Affected:
+
+Stay & Transport Decisions
+Budget Assessment
+Plan Validator
+
+Not affected:
+
+Most experience selections unless travel time changes significantly
+
+## 6. Regeneration Strategy
+
+The system should support partial regeneration.
+
+Possible strategies:
+
+No Regeneration Needed
+
+Used when feedback can be handled with explanation only.
+
+Example:
+“Why did you choose this area?”
+
+Section-Level Regeneration
+
+Used when one part changes.
+
+Example:
+“Replace this hotel.”
+
+Day-Level Regeneration
+
+Used when one day is problematic.
+
+Example:
+“Day 2 is too packed.”
+
+Pipeline-Level Regeneration
+
+Used when core traveler profile changes.
+
+Example:
+“Actually this is a luxury trip, not budget.”
+
+Full regeneration should be the last resort.
+
+## 7. Change Preservation
+
+The system should preserve valid parts of the itinerary.
+
+It should not discard:
+
+accepted days
+selected stay area
+transport strategy
+must-visit activities
+user-approved recommendations
+
+Unless the feedback directly conflicts with them.
+
+## 8. Change Explanation
+
+Every feedback response should explain:
+
+what changed
+why it changed
+what stayed the same
+which stages were affected
+whether the validation score improved or declined
+
+Example:
 
 ```json
 {
-  "feedback_type": "pace_adjustment",
-  "affected_preferences": {
-    "intensity_scale": 2,
-    "walking_tolerance": "lower",
-    "comfort_weight": "increase"
-  },
-  "affected_stages": [
-    "traveler_profile",
-    "experience_planner",
-    "plan_validator"
-  ]
+  "change_summary": {
+    "changed": [
+      "Removed two museum activities.",
+      "Added a food market and scenic viewpoint.",
+      "Reduced Day 2 walking distance."
+    ],
+    "unchanged": [
+      "Stay area remained Dupont Circle.",
+      "Transport strategy remained Metro + rideshare."
+    ],
+    "reason": "The user asked for fewer museums and a less tiring plan."
+  }
 }
 ```
 
@@ -182,7 +290,7 @@ Confidence
 
 0.89
 
-10. Versioning
+## 10. Versioning
 
 Every regenerated plan should create a new itinerary version.
 
@@ -198,7 +306,7 @@ validation report
 
 This allows users to compare versions later.
 
-11. Output Contract
+## 11. Output Contract
 
 The Feedback Pipeline should return:
 
@@ -219,7 +327,7 @@ The Feedback Pipeline should return:
 }
 ```
 
-12. Production Considerations
+## 12. Production Considerations
 
 The Feedback Pipeline should use:
 
@@ -246,7 +354,8 @@ routes
 hotels
 attractions
 transport strategy
-13. Edge Cases
+
+## 13. Edge Cases
 
 The pipeline should handle:
 
@@ -267,7 +376,7 @@ Response:
 
 “What would you like improved: pace, cost, hotels, transport, food, or activities?”
 
-14. Design Principles
+## 14. Design Principles
 
 The Feedback Pipeline should follow these principles:
 
@@ -279,4 +388,3 @@ Treat feedback as a structured planning update.
 Maintain version history.
 Validate the updated plan before presenting it.
 Never silently remove must-visit items.
-

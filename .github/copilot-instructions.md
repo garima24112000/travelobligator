@@ -7,6 +7,7 @@ You are helping build Travelobligator, a full-stack AI-powered travel itinerary 
 TravelObligator creates personalized, realistic, route-aware travel itineraries based on user preferences, budget, trip style, accommodation needs, transport preferences, and feedback.
 
 This is not a generic itinerary chatbot. It should behave like a travel planning copilot that helps users decide:
+
 - where to stay
 - what to do each day
 - how to move around
@@ -26,6 +27,7 @@ This is not a generic itinerary chatbot. It should behave like a travel planning
 ## Tech Stack
 
 Frontend:
+
 - Next.js
 - React
 - TypeScript
@@ -34,12 +36,14 @@ Frontend:
 - Mapbox or Google Maps integration later
 
 Backend:
+
 - FastAPI or Node/Express depending on project setup
 - PostgreSQL for persistence
 - Redis optional for caching
 - Provider adapter pattern for travel data
 
 AI:
+
 - Structured JSON itinerary generation
 - Preference interpretation
 - Feedback interpretation
@@ -87,6 +91,7 @@ The system should be organized around these layers:
 ## Important
 
 When implementing features:
+
 - First inspect existing files.
 - Create a short implementation plan.
 - Then make changes.

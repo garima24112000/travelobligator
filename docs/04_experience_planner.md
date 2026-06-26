@@ -22,9 +22,9 @@ The Experience Planner receives:
 
 ## Internal Inputs
 
-* Traveler Profile
-* Trip Strategy
-* Stay & Transport Decisions
+- Traveler Profile
+- Trip Strategy
+- Stay & Transport Decisions
 
 ## External Production Inputs
 
@@ -32,41 +32,41 @@ The Experience Planner receives:
 
 Provides:
 
-* attractions
-* landmarks
-* museums
-* restaurants
-* parks
-* viewpoints
-* shopping areas
-* beaches
-* hiking trails
-* entertainment venues
+- attractions
+- landmarks
+- museums
+- restaurants
+- parks
+- viewpoints
+- shopping areas
+- beaches
+- hiking trails
+- entertainment venues
 
 ### Routes Provider
 
 Provides:
 
-* travel times
-* distances
-* walking routes
-* driving routes
-* public transport routes
+- travel times
+- distances
+- walking routes
+- driving routes
+- public transport routes
 
 ### Attraction Metadata
 
 For every attraction:
 
-* opening hours
-* closing hours
-* estimated visit duration
-* average ratings
-* popularity
-* entrance fees
-* accessibility
-* family suitability
-* indoor/outdoor classification
-* coordinates
+- opening hours
+- closing hours
+- estimated visit duration
+- average ratings
+- popularity
+- entrance fees
+- accessibility
+- family suitability
+- indoor/outdoor classification
+- coordinates
 
 ---
 
@@ -82,18 +82,18 @@ Each attraction should receive a score.
 
 Example scoring factors:
 
-* traveler interests
-* iconic importance
-* uniqueness
-* distance from stay area
-* accessibility
-* budget compatibility
-* estimated crowd levels
-* weather suitability
-* family suitability
-* walking requirements
-* opening hours
-* review quality
+- traveler interests
+- iconic importance
+- uniqueness
+- distance from stay area
+- accessibility
+- budget compatibility
+- estimated crowd levels
+- weather suitability
+- family suitability
+- walking requirements
+- opening hours
+- review quality
 
 Example:
 
@@ -101,21 +101,21 @@ A traveler interested in food and culture may receive:
 
 High Priority
 
-* Local food market
-* Historic district
-* National museum
+- Local food market
+- Historic district
+- National museum
 
 Medium Priority
 
-* Observation deck
+- Observation deck
 
 Low Priority
 
-* Nightclub district
+- Nightclub district
 
 Excluded
 
-* Amusement park
+- Amusement park
 
 ---
 
@@ -125,18 +125,18 @@ Experiences should be grouped into categories.
 
 Examples:
 
-* Cultural
-* Historical
-* Food
-* Nature
-* Adventure
-* Shopping
-* Scenic
-* Religious
-* Entertainment
-* Family
-* Relaxation
-* Nightlife
+- Cultural
+- Historical
+- Food
+- Nature
+- Adventure
+- Shopping
+- Scenic
+- Religious
+- Entertainment
+- Family
+- Relaxation
+- Nightlife
 
 Categorization helps balance each day.
 
@@ -148,36 +148,36 @@ After selecting experiences, assign them to days.
 
 The planner should consider:
 
-* arrival day
-* departure day
-* opening hours
-* travel time
-* attraction proximity
-* sunset time
-* meal timing
-* user energy level
-* itinerary intensity
-* weather (when available)
+- arrival day
+- departure day
+- opening hours
+- travel time
+- attraction proximity
+- sunset time
+- meal timing
+- user energy level
+- itinerary intensity
+- weather (when available)
 
 Example strategy:
 
 Morning
 
-* outdoor landmarks
+- outdoor landmarks
 
 Lunch
 
 Afternoon
 
-* museums
+- museums
 
 Evening
 
-* local food area
+- local food area
 
 Night
 
-* optional activities
+- optional activities
 
 ---
 
@@ -187,15 +187,15 @@ Each day should feel intentional.
 
 Guidelines:
 
-* group nearby attractions
-* avoid unnecessary backtracking
-* alternate indoor and outdoor experiences
-* naturally include meal breaks
-* include rest periods
-* avoid excessive walking
-* avoid excessive transit
-* keep evenings flexible for relaxed travelers
-* keep arrival and departure days lighter
+- group nearby attractions
+- avoid unnecessary backtracking
+- alternate indoor and outdoor experiences
+- naturally include meal breaks
+- include rest periods
+- avoid excessive walking
+- avoid excessive transit
+- keep evenings flexible for relaxed travelers
+- keep arrival and departure days lighter
 
 Every day should have a clear theme.
 
@@ -223,16 +223,16 @@ Each card explains why it exists.
 
 Fields:
 
-* title
-* category
-* priority
-* estimated duration
-* best visiting time
-* estimated walking
-* estimated travel time
-* included because
-* possible tradeoffs
-* nearby alternatives
+- title
+- category
+- priority
+- estimated duration
+- best visiting time
+- estimated walking
+- estimated travel time
+- included because
+- possible tradeoffs
+- nearby alternatives
 
 Example:
 
@@ -242,10 +242,10 @@ Lincoln Memorial
 
 Included Because
 
-* Matches cultural interests
-* Iconic attraction
-* Best visited during morning
-* Close to nearby monuments
+- Matches cultural interests
+- Iconic attraction
+- Best visited during morning
+- Close to nearby monuments
 
 Priority
 
@@ -281,10 +281,10 @@ Cover the major monuments with minimal walking and transit.
 
 Why This Order?
 
-* attractions are geographically clustered
-* museums open later
-* monument lighting is better in the morning
-* lunch naturally fits between sightseeing blocks
+- attractions are geographically clustered
+- museums open later
+- monument lighting is better in the morning
+- lunch naturally fits between sightseeing blocks
 
 Expected Walking
 
@@ -306,15 +306,15 @@ The itinerary should be created by combining ordered Experience Cards.
 
 Each day should contain:
 
-* theme
-* objectives
-* activities
-* meal suggestions
-* transport recommendations
-* estimated walking
-* estimated travel time
-* estimated expenses
-* flexibility buffer
+- theme
+- objectives
+- activities
+- meal suggestions
+- transport recommendations
+- estimated walking
+- estimated travel time
+- estimated expenses
+- flexibility buffer
 
 ---
 
@@ -330,10 +330,10 @@ Visit Georgetown on Day 3
 
 Why
 
-* close to sunset
-* scenic
-* restaurants nearby
-* avoids backtracking
+- close to sunset
+- scenic
+- restaurants nearby
+- avoids backtracking
 
 Tradeoff
 
@@ -371,24 +371,24 @@ The Experience Planner should use production providers.
 
 Places
 
-* Google Places API
-* OpenStreetMap fallback
+- Google Places API
+- OpenStreetMap fallback
 
 Routing
 
-* Google Routes API
-* Mapbox Directions fallback
+- Google Routes API
+- Mapbox Directions fallback
 
 AI
 
-* OpenAI Structured Outputs
+- OpenAI Structured Outputs
 
 Future integrations
 
-* weather provider
-* crowd prediction
-* event calendars
-* restaurant reservations
+- weather provider
+- crowd prediction
+- event calendars
+- restaurant reservations
 
 ---
 
@@ -396,16 +396,16 @@ Future integrations
 
 The planner should handle:
 
-* rainy weather
-* attraction closures
-* public holidays
-* sold-out attractions
-* delayed flights
-* late hotel check-in
-* early departure flights
-* traveler fatigue
-* accessibility limitations
-* budget reductions
+- rainy weather
+- attraction closures
+- public holidays
+- sold-out attractions
+- delayed flights
+- late hotel check-in
+- early departure flights
+- traveler fatigue
+- accessibility limitations
+- budget reductions
 
 The planner should always produce the best feasible itinerary rather than failing completely.
 
@@ -415,13 +415,13 @@ The planner should always produce the best feasible itinerary rather than failin
 
 The Experience Planner should follow these principles:
 
-* Optimize for traveler satisfaction, not attraction count.
-* Never overload a day just because free time exists.
-* Every experience should have a clear reason for inclusion.
-* Minimize unnecessary travel.
-* Respect traveler energy levels.
-* Prioritize realism over density.
-* Generate explainable decisions rather than opaque recommendations.
-* The itinerary is the result of intelligent planning, not the primary objective.
+- Optimize for traveler satisfaction, not attraction count.
+- Never overload a day just because free time exists.
+- Every experience should have a clear reason for inclusion.
+- Minimize unnecessary travel.
+- Respect traveler energy levels.
+- Prioritize realism over density.
+- Generate explainable decisions rather than opaque recommendations.
+- The itinerary is the result of intelligent planning, not the primary objective.
 
 The Experience Planner is responsible for creating experiences that feel intentional, balanced, and personalized. The itinerary is simply the final representation of those decisions.

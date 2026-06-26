@@ -7,6 +7,7 @@ This stage decides where the traveler should stay and how they should move aroun
 It should not start by recommending hotels.
 
 It should first answer:
+
 - Which neighborhood or area best fits this traveler?
 - What transport strategy makes sense for this destination?
 - Only after that, which accommodations fit the selected area and budget?
@@ -16,10 +17,12 @@ The goal is to make stay and transport decisions explainable, not just searchabl
 ## 2. Inputs
 
 Primary inputs:
+
 - Traveler Profile
 - Trip Strategy
 
 Production data inputs:
+
 - neighborhood data
 - safety context
 - public transport access
@@ -34,6 +37,7 @@ Production data inputs:
 The system should recommend stay areas before recommending individual properties.
 
 Neighborhoods should be scored using:
+
 - safety
 - proximity to planned attraction clusters
 - public transport access
@@ -132,6 +136,7 @@ The output should not simply list hotels.
 Each accommodation should explain why it fits.
 
 Example:
+
 ```json
 {
   "name": "Example Central Hotel",
@@ -143,9 +148,7 @@ Example:
     "Fits the selected hotel preference.",
     "Good for travelers prioritizing comfort and safety."
   ],
-  "tradeoffs": [
-    "Not the cheapest available option."
-  ],
+  "tradeoffs": ["Not the cheapest available option."],
   "booking_url": "...",
   "confidence": 0.81
 }
@@ -190,13 +193,9 @@ Example:
     "The area fits the comfort and safety priorities.",
     "Restaurants and transit are nearby."
   ],
-  "tradeoffs": [
-    "Central hotels may be more expensive."
-  ],
+  "tradeoffs": ["Central hotels may be more expensive."],
   "confidence": 0.87,
-  "alternatives": [
-    "Stay farther out to reduce hotel cost."
-  ],
+  "alternatives": ["Stay farther out to reduce hotel cost."],
   "data_sources_used": [
     "places_provider",
     "routes_provider",
@@ -249,4 +248,3 @@ The Stay + Transport stage should return:
 Stay and transport decisions should be made before the day-wise itinerary.
 
 The itinerary should adapt to the recommended stay area and transport strategy, not the other way around.
-

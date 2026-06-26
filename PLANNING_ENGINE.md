@@ -1,9 +1,11 @@
-# Travel Copilot Planning Engine
+# TravelObligator Planning Engine
 
 ## 1. User Problem
+
 Travel planning is difficult because users do not just need a list of places. They need a plan that fits their personal constraints.
 
 Most existing itineraries are:
+
 - generic
 - static
 - not route-aware
@@ -11,11 +13,12 @@ Most existing itineraries are:
 - not easy to modify
 - scattered across blogs, maps, hotel sites, and transport apps
 
-Travel Copilot should solve this by turning a user's preferences, constraints, budget, and travel style into a realistic, editable, map-aware trip plan.
+TravelObligator should solve this by turning a user's preferences, constraints, budget, and travel style into a realistic, editable, map-aware trip plan.
 
 The goal is not to tell users every possible thing they can do. The goal is to help them make better travel decisions faster.
 
 The planning engine should answer:
+
 - What should this traveler do each day?
 - Where should they stay?
 - How should they move around?
@@ -24,15 +27,18 @@ The planning engine should answer:
 - How should the plan change if the user dislikes part of it?
 
 ## 2. Traveler Profile
+
 The traveler profile is the structured representation of what the user wants from the trip.
 
 It should be created from both:
+
 - form inputs
 - free-text preferences
 
 The traveler profile should include:
 
 ### Basic Trip Context
+
 - destination
 - origin city
 - start date
@@ -42,6 +48,7 @@ The traveler profile should include:
 - travel group type: solo, couple, family, friends, group
 
 ### Budget Context
+
 - minimum budget
 - maximum budget
 - budget tier: budget, mid-range, premium, luxury
@@ -50,6 +57,7 @@ The traveler profile should include:
 - food/activity flexibility
 
 ### Travel Style
+
 - pace: relaxed, balanced, packed
 - preference for iconic attractions vs hidden gems
 - preference for structured plans vs flexible exploration
@@ -57,7 +65,9 @@ The traveler profile should include:
 - comfort vs cost sensitivity
 
 ### Interests
+
 Examples:
+
 - food
 - culture
 - history
@@ -71,6 +81,7 @@ Examples:
 - family-friendly activities
 
 ### Stay Preferences
+
 - hotel
 - Airbnb
 - hostel
@@ -83,6 +94,7 @@ Examples:
 - luxury-oriented
 
 ### Transport Preferences
+
 - public transport
 - taxi
 - self-drive
@@ -92,6 +104,7 @@ Examples:
 - no preference
 
 ### Special Needs or Constraints
+
 - limited walking
 - elderly travelers
 - children
@@ -102,6 +115,7 @@ Examples:
 - avoid crowded places
 
 ### Non-Negotiables
+
 - must-visit places
 - must-avoid places or experiences
 - fixed events or reservations

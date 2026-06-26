@@ -5,6 +5,7 @@
 The Trip Strategy stage decides the overall direction of the trip before building the itinerary.
 
 It answers:
+
 - Is this destination suitable for the traveler?
 - Is the trip duration realistic?
 - Is the budget realistic?
@@ -16,9 +17,11 @@ This stage should not create the day-wise itinerary yet.
 ## 2. Input
 
 Primary input:
+
 - Traveler Profile
 
 Optional production data:
+
 - destination overview
 - average hotel cost
 - average food cost
@@ -47,6 +50,7 @@ The system should evaluate whether the destination matches the traveler profile.
 Example:
 
 A destination is highly suitable if:
+
 - it has activities matching user interests
 - it fits the travel group type
 - it supports the preferred pace
@@ -131,13 +135,14 @@ Example:
   "recommended_trip_style": "parent-friendly scenic cultural trip"
 }
 ```
+
 ## 8. Planning Strategy
 
 The system should define broad planning rules.
 
 Example:
 
-```json 
+```json
 {
   "planning_strategy": [
     "Keep mornings for major attractions.",

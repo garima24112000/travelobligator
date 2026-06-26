@@ -16,12 +16,18 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
-function isTripGenerationResponse(value: unknown): value is TripGenerationResponse {
+function isTripGenerationResponse(
+  value: unknown,
+): value is TripGenerationResponse {
   if (!isRecord(value)) {
     return false;
   }
 
-  return isRecord(value.tripRequest) && isRecord(value.itinerary) && isRecord(value.metadata);
+  return (
+    isRecord(value.tripRequest) &&
+    isRecord(value.itinerary) &&
+    isRecord(value.metadata)
+  );
 }
 
 function formatValidationDetail(detail: unknown): string | null {
@@ -62,7 +68,9 @@ function getErrorMessage(payload: unknown, status: number): string {
   return `Trip generation failed with status ${status}.`;
 }
 
-export async function generateTrip(tripRequest: TripRequest): Promise<TripGenerationResponse> {
+export async function generateTrip(
+  tripRequest: TripRequest,
+): Promise<TripGenerationResponse> {
   let response: Response;
 
   try {
@@ -82,11 +90,17 @@ export async function generateTrip(tripRequest: TripRequest): Promise<TripGenera
   const payload: unknown = await response.json().catch(() => null);
 
   if (!response.ok) {
-    throw new TripGenerationError(getErrorMessage(payload, response.status), response.status);
+    throw new TripGenerationError(
+      getErrorMessage(payload, response.status),
+      response.status,
+    );
   }
 
   if (!isTripGenerationResponse(payload)) {
-    throw new TripGenerationError("The backend returned an unexpected trip response shape.", response.status);
+    throw new TripGenerationError(
+      "The backend returned an unexpected trip response shape.",
+      response.status,
+    );
   }
 
   return payload;

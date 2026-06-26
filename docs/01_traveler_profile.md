@@ -10,6 +10,7 @@ Raw input tells the system what the user typed or selected.
 The Traveler Profile tells the system how to make travel decisions for that user.
 
 Every later stage should use this profile as its main input:
+
 - Trip Strategy
 - Stay + Transport
 - Itinerary Composer
@@ -21,6 +22,7 @@ Every later stage should use this profile as its main input:
 The profile should be created from:
 
 ### Explicit Form Inputs
+
 - destination
 - origin city
 - trip dates
@@ -36,6 +38,7 @@ The profile should be created from:
 - free-text preferences
 
 ### Intent Inputs
+
 The form should include an itinerary intensity scale:
 
 1 = very relaxed  
@@ -47,6 +50,7 @@ The form should include an itinerary intensity scale:
 This controls how dense the itinerary should be.
 
 ### Free Text Interpretation
+
 Free text should be interpreted into structured signals.
 
 Example:
@@ -55,6 +59,7 @@ User says:
 “I’m traveling with my parents. We want scenic places, good food, not too much walking, and no nightlife.”
 
 Derived signals:
+
 - family/parents-friendly trip
 - high comfort priority
 - moderate or low walking tolerance
@@ -66,6 +71,7 @@ Derived signals:
 The Traveler Profile should include:
 
 ### Basic Context
+
 - destination
 - origin city
 - start date
@@ -75,6 +81,7 @@ The Traveler Profile should include:
 - travel group type
 
 ### Travel Intent
+
 - itinerary intensity scale
 - trip goal
 - desired pace
@@ -83,6 +90,7 @@ The Traveler Profile should include:
 - structured plan vs flexible plan preference
 
 ### Budget Profile
+
 - minimum budget
 - maximum budget
 - budget tier
@@ -90,6 +98,7 @@ The Traveler Profile should include:
 - flexibility for splurge experiences
 
 ### Mobility Profile
+
 - walking tolerance
 - stairs tolerance
 - uphill tolerance
@@ -98,6 +107,7 @@ The Traveler Profile should include:
 - elderly/children considerations
 
 ### Interest Profile
+
 - food
 - culture
 - history
@@ -112,6 +122,7 @@ The Traveler Profile should include:
 - family-friendly activities
 
 ### Stay Profile
+
 - preferred accommodation type
 - preferred neighborhood style
 - safety priority
@@ -121,6 +132,7 @@ The Traveler Profile should include:
 - work-friendly need
 
 ### Transport Profile
+
 - preferred transport mode
 - public transport comfort
 - self-drive comfort
@@ -130,6 +142,7 @@ The Traveler Profile should include:
 - luggage constraints
 
 ### Avoidance Profile
+
 - places to avoid
 - experiences to avoid
 - unsafe timing
@@ -146,6 +159,7 @@ The system should infer useful planning traits from raw input.
 Examples:
 
 If user is traveling with parents:
+
 - increase comfort priority
 - increase safety priority
 - reduce nightlife weight
@@ -153,24 +167,28 @@ If user is traveling with parents:
 - prefer easy transport
 
 If user selects maxed-out itinerary:
+
 - allow more activities per day
 - reduce buffer time
 - allow longer sightseeing windows
 - still validate feasibility
 
 If user selects relaxed itinerary:
+
 - fewer activities per day
 - more rest time
 - shorter walking routes
 - more flexible evenings
 
 If user has a low budget:
+
 - prioritize free attractions
 - prefer public transport
 - recommend budget stays
 - flag expensive experiences
 
 If user mentions food:
+
 - increase food experience weight
 - include local food areas
 - include meal planning context
@@ -182,6 +200,7 @@ The profile should convert preferences into numeric weights.
 Weights should range from 0.0 to 1.0.
 
 Example weights:
+
 - safety_weight
 - budget_weight
 - comfort_weight
@@ -232,6 +251,7 @@ If confidence is low, the system can:
 - ask a follow-up question later
 
 Example:
+
 ```json
 {
   "food_preference": "unknown",
@@ -321,4 +341,3 @@ Example:
 No later stage should rely directly on raw form input if the same information exists in the Traveler Profile.
 
 The Traveler Profile is the source of truth for planning decisions.
-

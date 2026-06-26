@@ -1,8 +1,18 @@
-export type TravelGroupType = "solo" | "couple" | "family" | "friends" | "group";
+export type TravelGroupType =
+  | "solo"
+  | "couple"
+  | "family"
+  | "friends"
+  | "group";
 
 export type TripPace = "relaxed" | "balanced" | "packed";
 
-export type AccommodationType = "hotel" | "airbnb" | "hostel" | "resort" | "no_preference";
+export type AccommodationType =
+  | "hotel"
+  | "airbnb"
+  | "hostel"
+  | "resort"
+  | "no_preference";
 
 export type TransportPreference =
   | "public_transport"

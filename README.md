@@ -5,6 +5,7 @@ TravelObligator is an AI-powered travel planning platform that generates persona
 ## Problem
 
 Travel planning today is:
+
 - fragmented across multiple websites
 - generic and not personalized
 - often unrealistic in terms of route and time
@@ -13,6 +14,7 @@ Travel planning today is:
 ## Solution
 
 TravelObligator:
+
 - collects detailed user preferences
 - generates a structured itinerary using AI + travel data
 - shows an interactive dashboard + map
@@ -35,7 +37,7 @@ Frontend: Next.js, React, TypeScript, Tailwind
 Backend: FastAPI or Node  
 Database: PostgreSQL  
 AI: Structured LLM outputs  
-Maps: Mapbox / Google Maps  
+Maps: Mapbox / Google Maps
 
 ## Status
 

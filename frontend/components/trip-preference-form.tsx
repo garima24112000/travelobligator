@@ -125,7 +125,11 @@ function SelectInput<T extends string>({
       className="w-full rounded-2xl border border-white/10 bg-slate-950/55 px-4 py-3 text-sm text-slate-100 outline-none transition focus:border-amber-300/60 focus:ring-2 focus:ring-amber-300/20"
     >
       {options.map((option) => (
-        <option key={option.value} value={option.value} className="bg-slate-950">
+        <option
+          key={option.value}
+          value={option.value}
+          className="bg-slate-950"
+        >
           {option.label}
         </option>
       ))}
@@ -153,7 +157,9 @@ function TextAreaInput({
   );
 }
 
-export function createTripRequestFormState(tripRequest: TripRequest): TripRequestFormState {
+export function createTripRequestFormState(
+  tripRequest: TripRequest,
+): TripRequestFormState {
   return {
     destination: tripRequest.destination,
     originCity: tripRequest.originCity ?? "",
@@ -161,8 +167,10 @@ export function createTripRequestFormState(tripRequest: TripRequest): TripReques
     endDate: tripRequest.endDate,
     travelersCount: String(tripRequest.travelersCount),
     travelGroupType: tripRequest.travelGroupType,
-    budgetMin: tripRequest.budgetMin != null ? String(tripRequest.budgetMin) : "",
-    budgetMax: tripRequest.budgetMax != null ? String(tripRequest.budgetMax) : "",
+    budgetMin:
+      tripRequest.budgetMin != null ? String(tripRequest.budgetMin) : "",
+    budgetMax:
+      tripRequest.budgetMax != null ? String(tripRequest.budgetMax) : "",
     pace: tripRequest.pace,
     accommodationType: tripRequest.accommodationType,
     transportPreference: tripRequest.transportPreference,
@@ -219,7 +227,10 @@ export function TripPreferenceForm({
   onSubmit,
 }: TripPreferenceFormProps) {
   return (
-    <form onSubmit={onSubmit} className="rounded-[2rem] border border-white/10 bg-slate-950/55 p-6 shadow-[0_30px_80px_rgba(2,6,23,0.25)] backdrop-blur">
+    <form
+      onSubmit={onSubmit}
+      className="rounded-[2rem] border border-white/10 bg-slate-950/55 p-6 shadow-[0_30px_80px_rgba(2,6,23,0.25)] backdrop-blur"
+    >
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <p className="text-xs font-semibold uppercase tracking-[0.3em] text-amber-200/80">
@@ -229,7 +240,9 @@ export function TripPreferenceForm({
             Generate a new itinerary
           </h2>
           <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-300">
-            Edit the traveler profile below and submit it to the FastAPI generator. The dashboard will stay on the demo shell until a successful itinerary comes back.
+            Edit the traveler profile below and submit it to the FastAPI
+            generator. The dashboard will stay on the demo shell until a
+            successful itinerary comes back.
           </p>
         </div>
         <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-xs text-slate-300">
@@ -243,7 +256,9 @@ export function TripPreferenceForm({
           <FieldLabel>Destination</FieldLabel>
           <TextInput
             value={value.destination}
-            onChange={(nextValue) => updateField(value, onChange, "destination", nextValue)}
+            onChange={(nextValue) =>
+              updateField(value, onChange, "destination", nextValue)
+            }
             placeholder="Lisbon, Portugal"
           />
         </FieldPanel>
@@ -252,7 +267,9 @@ export function TripPreferenceForm({
           <FieldLabel>Origin city</FieldLabel>
           <TextInput
             value={value.originCity}
-            onChange={(nextValue) => updateField(value, onChange, "originCity", nextValue)}
+            onChange={(nextValue) =>
+              updateField(value, onChange, "originCity", nextValue)
+            }
             placeholder="New York"
           />
         </FieldPanel>
@@ -262,7 +279,9 @@ export function TripPreferenceForm({
           <TextInput
             type="date"
             value={value.startDate}
-            onChange={(nextValue) => updateField(value, onChange, "startDate", nextValue)}
+            onChange={(nextValue) =>
+              updateField(value, onChange, "startDate", nextValue)
+            }
           />
         </FieldPanel>
 
@@ -271,7 +290,9 @@ export function TripPreferenceForm({
           <TextInput
             type="date"
             value={value.endDate}
-            onChange={(nextValue) => updateField(value, onChange, "endDate", nextValue)}
+            onChange={(nextValue) =>
+              updateField(value, onChange, "endDate", nextValue)
+            }
           />
         </FieldPanel>
 
@@ -280,7 +301,9 @@ export function TripPreferenceForm({
           <TextInput
             type="number"
             value={value.travelersCount}
-            onChange={(nextValue) => updateField(value, onChange, "travelersCount", nextValue)}
+            onChange={(nextValue) =>
+              updateField(value, onChange, "travelersCount", nextValue)
+            }
             placeholder="2"
           />
         </FieldPanel>
@@ -289,7 +312,9 @@ export function TripPreferenceForm({
           <FieldLabel>Travel group</FieldLabel>
           <SelectInput
             value={value.travelGroupType}
-            onChange={(nextValue) => updateField(value, onChange, "travelGroupType", nextValue)}
+            onChange={(nextValue) =>
+              updateField(value, onChange, "travelGroupType", nextValue)
+            }
             options={travelGroupOptions}
           />
         </FieldPanel>
@@ -299,7 +324,9 @@ export function TripPreferenceForm({
           <TextInput
             type="number"
             value={value.budgetMin}
-            onChange={(nextValue) => updateField(value, onChange, "budgetMin", nextValue)}
+            onChange={(nextValue) =>
+              updateField(value, onChange, "budgetMin", nextValue)
+            }
             placeholder="1800"
           />
         </FieldPanel>
@@ -309,7 +336,9 @@ export function TripPreferenceForm({
           <TextInput
             type="number"
             value={value.budgetMax}
-            onChange={(nextValue) => updateField(value, onChange, "budgetMax", nextValue)}
+            onChange={(nextValue) =>
+              updateField(value, onChange, "budgetMax", nextValue)
+            }
             placeholder="3200"
           />
         </FieldPanel>
@@ -318,7 +347,9 @@ export function TripPreferenceForm({
           <FieldLabel>Pace</FieldLabel>
           <SelectInput
             value={value.pace}
-            onChange={(nextValue) => updateField(value, onChange, "pace", nextValue)}
+            onChange={(nextValue) =>
+              updateField(value, onChange, "pace", nextValue)
+            }
             options={paceOptions}
           />
         </FieldPanel>
@@ -327,7 +358,9 @@ export function TripPreferenceForm({
           <FieldLabel>Accommodation type</FieldLabel>
           <SelectInput
             value={value.accommodationType}
-            onChange={(nextValue) => updateField(value, onChange, "accommodationType", nextValue)}
+            onChange={(nextValue) =>
+              updateField(value, onChange, "accommodationType", nextValue)
+            }
             options={accommodationOptions}
           />
         </FieldPanel>
@@ -336,7 +369,9 @@ export function TripPreferenceForm({
           <FieldLabel>Transport preference</FieldLabel>
           <SelectInput
             value={value.transportPreference}
-            onChange={(nextValue) => updateField(value, onChange, "transportPreference", nextValue)}
+            onChange={(nextValue) =>
+              updateField(value, onChange, "transportPreference", nextValue)
+            }
             options={transportOptions}
           />
         </FieldPanel>
@@ -345,7 +380,9 @@ export function TripPreferenceForm({
           <FieldLabel>Free text preferences</FieldLabel>
           <TextInput
             value={value.freeTextPreferences}
-            onChange={(nextValue) => updateField(value, onChange, "freeTextPreferences", nextValue)}
+            onChange={(nextValue) =>
+              updateField(value, onChange, "freeTextPreferences", nextValue)
+            }
             placeholder="Romantic, walkable, easy transit"
           />
         </FieldPanel>
@@ -356,7 +393,9 @@ export function TripPreferenceForm({
           <FieldLabel>Interests</FieldLabel>
           <TextAreaInput
             value={value.interestsText}
-            onChange={(nextValue) => updateField(value, onChange, "interestsText", nextValue)}
+            onChange={(nextValue) =>
+              updateField(value, onChange, "interestsText", nextValue)
+            }
             placeholder="Food\nHistory\nSunset views"
           />
         </FieldPanel>
@@ -365,7 +404,9 @@ export function TripPreferenceForm({
           <FieldLabel>Must visit</FieldLabel>
           <TextAreaInput
             value={value.mustVisitText}
-            onChange={(nextValue) => updateField(value, onChange, "mustVisitText", nextValue)}
+            onChange={(nextValue) =>
+              updateField(value, onChange, "mustVisitText", nextValue)
+            }
             placeholder="Alfama\nBelém Tower"
           />
         </FieldPanel>
@@ -374,7 +415,9 @@ export function TripPreferenceForm({
           <FieldLabel>Must avoid</FieldLabel>
           <TextAreaInput
             value={value.mustAvoidText}
-            onChange={(nextValue) => updateField(value, onChange, "mustAvoidText", nextValue)}
+            onChange={(nextValue) =>
+              updateField(value, onChange, "mustAvoidText", nextValue)
+            }
             placeholder="Late-night clubbing\nOverpacked museum days"
           />
         </FieldPanel>
@@ -383,7 +426,9 @@ export function TripPreferenceForm({
           <FieldLabel>Constraints</FieldLabel>
           <TextAreaInput
             value={value.constraintsText}
-            onChange={(nextValue) => updateField(value, onChange, "constraintsText", nextValue)}
+            onChange={(nextValue) =>
+              updateField(value, onChange, "constraintsText", nextValue)
+            }
             placeholder="Limit transit to under 35 minutes between key stops"
           />
         </FieldPanel>
@@ -391,7 +436,8 @@ export function TripPreferenceForm({
 
       <div className="mt-6 flex flex-wrap items-center justify-between gap-4 border-t border-white/10 pt-5">
         <p className="text-sm text-slate-400">
-          The request is sent directly to the backend mock generation endpoint. No auth or database is involved yet.
+          The request is sent directly to the backend mock generation endpoint.
+          No auth or database is involved yet.
         </p>
         <button
           type="submit"

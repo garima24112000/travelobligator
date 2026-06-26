@@ -47,7 +47,10 @@ function formatBudgetRange(min?: number, max?: number) {
 }
 
 function buildTransportRecommendations(itinerary: Itinerary): string[] {
-  return [itinerary.transportStrategy.localTransport, ...itinerary.transportStrategy.rationale];
+  return [
+    itinerary.transportStrategy.localTransport,
+    ...itinerary.transportStrategy.rationale,
+  ];
 }
 
 export function TripDashboardClient({
@@ -60,17 +63,23 @@ export function TripDashboardClient({
   const [formState, setFormState] = useState<TripRequestFormState>(() =>
     createTripRequestFormState(initialTripRequest),
   );
-  const [generatedResponse, setGeneratedResponse] = useState<TripGenerationResponse | null>(null);
+  const [generatedResponse, setGeneratedResponse] =
+    useState<TripGenerationResponse | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   const displayItinerary = generatedResponse?.itinerary ?? initialItinerary;
-  const displayTripRequest = generatedResponse?.tripRequest ?? initialTripRequest;
+  const displayTripRequest =
+    generatedResponse?.tripRequest ?? initialTripRequest;
   const displayAccommodationRecommendations =
-    generatedResponse?.itinerary.stayRecommendation.topAccommodations ?? initialAccommodationRecommendations;
-  const displayTransportRecommendations =
-    generatedResponse ? buildTransportRecommendations(generatedResponse.itinerary) : initialTransportRecommendations;
-  const statusLabel = generatedResponse ? "Generated itinerary loaded" : "Demo fallback preview";
+    generatedResponse?.itinerary.stayRecommendation.topAccommodations ??
+    initialAccommodationRecommendations;
+  const displayTransportRecommendations = generatedResponse
+    ? buildTransportRecommendations(generatedResponse.itinerary)
+    : initialTransportRecommendations;
+  const statusLabel = generatedResponse
+    ? "Generated itinerary loaded"
+    : "Demo fallback preview";
   const statusTone = generatedResponse
     ? "text-emerald-100 border-emerald-300/20 bg-emerald-300/10"
     : "text-amber-100 border-amber-300/20 bg-amber-300/10";
@@ -106,8 +115,12 @@ export function TripDashboardClient({
   return (
     <>
       <div className="mx-auto mt-6 max-w-7xl px-4 sm:px-6 lg:px-8">
-        <div className={`rounded-[1.75rem] border px-5 py-4 text-sm ${statusTone}`}>
-          <p className="font-semibold uppercase tracking-[0.22em]">{statusLabel}</p>
+        <div
+          className={`rounded-[1.75rem] border px-5 py-4 text-sm ${statusTone}`}
+        >
+          <p className="font-semibold uppercase tracking-[0.22em]">
+            {statusLabel}
+          </p>
           <p className="mt-1 leading-6">{statusDescription}</p>
         </div>
       </div>
@@ -136,7 +149,8 @@ export function TripDashboardClient({
       {isGenerating ? (
         <div className="mx-auto mt-6 max-w-7xl px-4 sm:px-6 lg:px-8">
           <div className="rounded-[1.75rem] border border-amber-300/20 bg-amber-300/10 px-5 py-4 text-sm text-amber-50">
-            Generating itinerary from the backend now. The dashboard below stays on the current fallback until the response arrives.
+            Generating itinerary from the backend now. The dashboard below stays
+            on the current fallback until the response arrives.
           </div>
         </div>
       ) : null}
@@ -151,7 +165,10 @@ export function TripDashboardClient({
           pace: displayTripRequest.pace,
           accommodationType: displayTripRequest.accommodationType,
           transportPreference: displayTripRequest.transportPreference,
-          budget: formatBudgetRange(displayTripRequest.budgetMin, displayTripRequest.budgetMax),
+          budget: formatBudgetRange(
+            displayTripRequest.budgetMin,
+            displayTripRequest.budgetMax,
+          ),
           interests: displayTripRequest.interests,
           mustVisit: displayTripRequest.mustVisit,
           mustAvoid: displayTripRequest.mustAvoid,

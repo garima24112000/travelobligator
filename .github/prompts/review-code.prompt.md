@@ -1,6 +1,7 @@
 Review the current changes.
 
 Check for:
+
 - bugs
 - type errors
 - weak architecture
@@ -11,6 +12,7 @@ Check for:
 - unnecessary complexity
 
 Return:
+
 1. issues found
 2. recommended fixes
 3. files affected

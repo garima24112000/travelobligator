@@ -148,7 +148,9 @@ function DayCard({ day }: { day: ItineraryDay }) {
           <h3 className="mt-1 text-lg font-semibold text-slate-50">
             {day.theme}
           </h3>
-          <p className="mt-1 text-sm text-slate-400">Base city: {day.baseCity}</p>
+          <p className="mt-1 text-sm text-slate-400">
+            Base city: {day.baseCity}
+          </p>
         </div>
         <div className="rounded-2xl border border-emerald-400/20 bg-emerald-400/10 px-3 py-2 text-right">
           <p className="text-[11px] uppercase tracking-[0.22em] text-emerald-200">
@@ -182,8 +184,11 @@ function DayCard({ day }: { day: ItineraryDay }) {
             </p>
             {activity.travelFromPrevious ? (
               <p className="mt-3 text-xs text-slate-500">
-                Travel: {activity.travelFromPrevious.mode} · {activity.travelFromPrevious.timeMinutes} min
-                {activity.travelFromPrevious.distanceKm ? ` · ${activity.travelFromPrevious.distanceKm} km` : ""}
+                Travel: {activity.travelFromPrevious.mode} ·{" "}
+                {activity.travelFromPrevious.timeMinutes} min
+                {activity.travelFromPrevious.distanceKm
+                  ? ` · ${activity.travelFromPrevious.distanceKm} km`
+                  : ""}
               </p>
             ) : null}
             {index === 0 ? (
@@ -254,7 +259,9 @@ function RecommendationPanel({
           >
             <div className="flex items-start justify-between gap-4">
               <div>
-                <h4 className="text-sm font-semibold text-slate-50">{item.name}</h4>
+                <h4 className="text-sm font-semibold text-slate-50">
+                  {item.name}
+                </h4>
                 <p className="mt-1 text-sm text-slate-400">
                   {item.neighborhood} · {item.rating.toFixed(1)} / 5
                 </p>
@@ -296,7 +303,9 @@ function TransportPanel({ items }: { items: string[] }) {
     <section className="rounded-[2rem] border border-white/10 bg-slate-950/55 p-6 shadow-[0_30px_80px_rgba(2,6,23,0.25)] backdrop-blur">
       <div className="flex items-start justify-between gap-4">
         <div>
-          <h3 className="text-lg font-semibold text-slate-50">Transport plan</h3>
+          <h3 className="text-lg font-semibold text-slate-50">
+            Transport plan
+          </h3>
           <p className="mt-1 text-sm text-slate-400">
             Placeholder transport guidance for the selected destination.
           </p>
@@ -397,17 +406,32 @@ export function TravelCopilotShell({
               </div>
               <div className="space-y-4">
                 <h1 className="max-w-4xl text-4xl font-semibold tracking-tight text-slate-50 sm:text-5xl lg:text-6xl">
-                  Plan smarter trips with route-aware itinerary guidance, mock recommendations, and quick refinement controls.
+                  Plan smarter trips with route-aware itinerary guidance, mock
+                  recommendations, and quick refinement controls.
                 </h1>
                 <p className="max-w-3xl text-sm leading-7 text-slate-300 sm:text-base">
-                  This dashboard is intentionally demo-only. It shows the shape of the TravelObligator experience while the real providers and itinerary engine are still being built.
+                  This dashboard is intentionally demo-only. It shows the shape
+                  of the TravelObligator experience while the real providers and
+                  itinerary engine are still being built.
                 </p>
               </div>
 
               <div className="grid gap-4 md:grid-cols-3">
-                <LabelValueCard label="Destination" value={itinerary.tripSummary.destination} helper={itinerary.tripSummary.summaryText} />
-                <LabelValueCard label="Duration" value={`${itinerary.tripSummary.durationDays} days`} helper={`Version ${itinerary.versionNumber} itinerary`} />
-                <LabelValueCard label="Budget" value={`${itinerary.estimatedBudgetBreakdown.currency} ${itinerary.estimatedBudgetBreakdown.total.toLocaleString()}`} helper="Mock budget breakdown" />
+                <LabelValueCard
+                  label="Destination"
+                  value={itinerary.tripSummary.destination}
+                  helper={itinerary.tripSummary.summaryText}
+                />
+                <LabelValueCard
+                  label="Duration"
+                  value={`${itinerary.tripSummary.durationDays} days`}
+                  helper={`Version ${itinerary.versionNumber} itinerary`}
+                />
+                <LabelValueCard
+                  label="Budget"
+                  value={`${itinerary.estimatedBudgetBreakdown.currency} ${itinerary.estimatedBudgetBreakdown.total.toLocaleString()}`}
+                  helper="Mock budget breakdown"
+                />
               </div>
             </div>
 
@@ -417,16 +441,28 @@ export function TravelCopilotShell({
               </p>
               <dl className="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-1">
                 <div>
-                  <dt className="text-xs uppercase tracking-[0.24em] text-slate-500">Travel style</dt>
-                  <dd className="mt-1 text-sm font-medium text-slate-100">{itinerary.tripSummary.travelStyle}</dd>
+                  <dt className="text-xs uppercase tracking-[0.24em] text-slate-500">
+                    Travel style
+                  </dt>
+                  <dd className="mt-1 text-sm font-medium text-slate-100">
+                    {itinerary.tripSummary.travelStyle}
+                  </dd>
                 </div>
                 <div>
-                  <dt className="text-xs uppercase tracking-[0.24em] text-slate-500">Stay area</dt>
-                  <dd className="mt-1 text-sm font-medium text-slate-100">{itinerary.stayRecommendation.recommendedArea}</dd>
+                  <dt className="text-xs uppercase tracking-[0.24em] text-slate-500">
+                    Stay area
+                  </dt>
+                  <dd className="mt-1 text-sm font-medium text-slate-100">
+                    {itinerary.stayRecommendation.recommendedArea}
+                  </dd>
                 </div>
                 <div>
-                  <dt className="text-xs uppercase tracking-[0.24em] text-slate-500">Mock status</dt>
-                  <dd className="mt-1 text-sm font-medium text-emerald-200">{itinerary.isMockData ? "Demo itinerary data" : "Live data"}</dd>
+                  <dt className="text-xs uppercase tracking-[0.24em] text-slate-500">
+                    Mock status
+                  </dt>
+                  <dd className="mt-1 text-sm font-medium text-emerald-200">
+                    {itinerary.isMockData ? "Demo itinerary data" : "Live data"}
+                  </dd>
                 </div>
               </dl>
             </aside>
@@ -441,31 +477,54 @@ export function TravelCopilotShell({
                   description="A polished MVP shell for capturing trip intent. The controls below are read-only placeholders for now, but they match the structured traveler profile the backend will eventually use."
                 />
                 <div className="mt-6 grid gap-4 md:grid-cols-2">
-                  <PreferenceRow label="Destination" value={preferences.destination} />
+                  <PreferenceRow
+                    label="Destination"
+                    value={preferences.destination}
+                  />
                   <PreferenceRow label="Dates" value={preferences.dates} />
-                  <PreferenceRow label="Travelers" value={preferences.travelers} helper={travelGroupLabels[preferences.groupType]} />
-                  <PreferenceRow label="Pace" value={paceLabels[preferences.pace]} helper="Balanced between sightseeing and downtime" />
-                  <PreferenceRow label="Accommodation" value={preferences.accommodationType} />
-                  <PreferenceRow label="Transport preference" value={transportLabels[preferences.transportPreference]} />
+                  <PreferenceRow
+                    label="Travelers"
+                    value={preferences.travelers}
+                    helper={travelGroupLabels[preferences.groupType]}
+                  />
+                  <PreferenceRow
+                    label="Pace"
+                    value={paceLabels[preferences.pace]}
+                    helper="Balanced between sightseeing and downtime"
+                  />
+                  <PreferenceRow
+                    label="Accommodation"
+                    value={preferences.accommodationType}
+                  />
+                  <PreferenceRow
+                    label="Transport preference"
+                    value={transportLabels[preferences.transportPreference]}
+                  />
                   <PreferenceRow label="Budget" value={preferences.budget} />
                   <PreferenceRow label="Notes" value={preferences.notes} />
                 </div>
 
                 <div className="mt-6 grid gap-6 lg:grid-cols-3">
                   <div>
-                    <p className="text-xs uppercase tracking-[0.26em] text-slate-500">Interests</p>
+                    <p className="text-xs uppercase tracking-[0.26em] text-slate-500">
+                      Interests
+                    </p>
                     <div className="mt-3">
                       <TagList items={preferences.interests} />
                     </div>
                   </div>
                   <div>
-                    <p className="text-xs uppercase tracking-[0.26em] text-slate-500">Must visit</p>
+                    <p className="text-xs uppercase tracking-[0.26em] text-slate-500">
+                      Must visit
+                    </p>
                     <div className="mt-3">
                       <TagList items={preferences.mustVisit} />
                     </div>
                   </div>
                   <div>
-                    <p className="text-xs uppercase tracking-[0.26em] text-slate-500">Must avoid</p>
+                    <p className="text-xs uppercase tracking-[0.26em] text-slate-500">
+                      Must avoid
+                    </p>
                     <div className="mt-3">
                       <TagList items={preferences.mustAvoid} />
                     </div>
@@ -499,9 +558,12 @@ export function TravelCopilotShell({
               <section className="rounded-[2rem] border border-white/10 bg-slate-950/55 p-6 shadow-[0_30px_80px_rgba(2,6,23,0.25)] backdrop-blur">
                 <div className="flex items-start justify-between gap-4">
                   <div>
-                    <h3 className="text-lg font-semibold text-slate-50">Feedback and refinement</h3>
+                    <h3 className="text-lg font-semibold text-slate-50">
+                      Feedback and refinement
+                    </h3>
                     <p className="mt-1 text-sm text-slate-400">
-                      Quick actions are wired as static controls for the MVP shell.
+                      Quick actions are wired as static controls for the MVP
+                      shell.
                     </p>
                   </div>
                   <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs font-medium text-slate-300">
@@ -516,14 +578,20 @@ export function TravelCopilotShell({
                       type="button"
                       className="rounded-2xl border border-white/10 bg-white/5 px-4 py-4 text-left transition hover:-translate-y-0.5 hover:border-amber-300/40 hover:bg-amber-300/10"
                     >
-                      <p className="text-sm font-semibold text-slate-50">{action.label}</p>
-                      <p className="mt-1 text-xs leading-5 text-slate-400">{action.description}</p>
+                      <p className="text-sm font-semibold text-slate-50">
+                        {action.label}
+                      </p>
+                      <p className="mt-1 text-xs leading-5 text-slate-400">
+                        {action.description}
+                      </p>
                     </button>
                   ))}
                 </div>
 
                 <div className="mt-5 rounded-2xl border border-white/10 bg-slate-950/60 p-4">
-                  <p className="text-xs uppercase tracking-[0.26em] text-slate-500">Important tips</p>
+                  <p className="text-xs uppercase tracking-[0.26em] text-slate-500">
+                    Important tips
+                  </p>
                   <ul className="mt-3 space-y-2 text-sm text-slate-300">
                     {itinerary.importantTips.map((tip) => (
                       <li key={tip}>• {tip}</li>
