@@ -34,7 +34,7 @@ Examples:
 - make it cheaper
 - add more food places
 - avoid late nights
-- change hotel area
+- change accommodation area
 - use public transport instead of taxis
 - add more hidden gems
 
@@ -93,18 +93,20 @@ Examples:
 - my parents cannot walk much
 - we prefer vegetarian food
 - we do not want nightlife
-- Stay Feedback
+
+### Stay Feedback
 
 Changes stay area or accommodation logic.
 
 Examples:
 
-- cheaper hotel
+- cheaper accommodation
 - safer area
 - closer to metro
 - avoid downtown
 - need parking
-- Transport Feedback
+
+### Transport Feedback
 
 Changes transport strategy.
 
@@ -115,7 +117,8 @@ Examples:
 - reduce Uber
 - prefer walking
 - do not use public transport at night
-- Experience Feedback
+
+### Experience Feedback
 
 Changes selected activities.
 
@@ -126,7 +129,8 @@ Examples:
 - more food spots
 - more nature
 - less shopping
-- Schedule Feedback
+
+### Schedule Feedback
 
 Changes timing and density.
 
@@ -136,7 +140,8 @@ Examples:
 - start later
 - keep evenings free
 - add rest breaks
-- Budget Feedback
+
+### Budget Feedback
 
 Changes cost decisions.
 
@@ -183,6 +188,18 @@ Not affected:
 
 Most experience selections unless travel time changes significantly
 
+## User Locks
+
+User-approved sections should be stored as locks.
+
+Locked items should not be changed unless the user directly asks for it or the lock conflicts with a higher-priority constraint.
+
+Examples:
+- locked stay area
+- locked acccommodation
+- locked experience
+- locked day plan
+
 ## 6. Regeneration Strategy
 
 The system should support partial regeneration.
@@ -201,7 +218,7 @@ Section-Level Regeneration
 Used when one part changes.
 
 Example:
-“Replace this hotel.”
+“Replace this accommodation.”
 
 Day-Level Regeneration
 
@@ -331,14 +348,15 @@ The Feedback Pipeline should return:
 
 The Feedback Pipeline should use:
 
-AI
+### AI
 
 Used for:
 
 - interpreting natural language feedback
 - identifying affected stages
 - explaining changes
-- Deterministic Logic
+
+### Deterministic Logic
 
 Used for:
 
@@ -346,12 +364,13 @@ Used for:
 - preserving unchanged sections
 - comparing old and new plans
 - versioning
-- Provider Data
+
+### Provider Data
 
 May be needed when feedback affects:
 
 - routes
-- hotels
+- accommodation
 - attractions
 - transport strategy
 
@@ -374,7 +393,7 @@ Example:
 
 Response:
 
-“What would you like improved: pace, cost, hotels, transport, food, or activities?”
+“What would you like improved: pace, cost, accommodations, transport, food, or activities?”
 
 ## 14. Design Principles
 

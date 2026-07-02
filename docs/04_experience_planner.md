@@ -16,7 +16,7 @@ The output of this stage should be a complete itinerary proposal that is realist
 
 ---
 
-# 2. Inputs
+## 2. Inputs
 
 The Experience Planner receives:
 
@@ -35,7 +35,7 @@ Provides:
 - attractions
 - landmarks
 - museums
-- restaurants
+- restaurants and meal-area options
 - parks
 - viewpoints
 - shopping areas
@@ -70,7 +70,7 @@ For every attraction:
 
 ---
 
-# 3. Experience Selection
+## 3. Experience Selection
 
 The planner should first determine **what deserves to be included**.
 
@@ -119,7 +119,7 @@ Excluded
 
 ---
 
-# 4. Experience Categorization
+## 4. Experience Categorization
 
 Experiences should be grouped into categories.
 
@@ -142,7 +142,7 @@ Categorization helps balance each day.
 
 ---
 
-# 5. Experience Scheduling
+## 5. Experience Scheduling
 
 After selecting experiences, assign them to days.
 
@@ -181,7 +181,59 @@ Night
 
 ---
 
-# 6. Daily Planning Philosophy
+## 6. Meal Planning and Restaurant Recommendations
+
+The Experience Planner should naturally include meal breaks as part of the daily itinerary.
+
+Meal planning should consider:
+
+* traveler food preferences
+* cuisine interests
+* dietary restrictions
+* budget
+* location of nearby activities
+* walking distance
+* travel time
+* meal timing
+* family/couple/solo suitability
+* reservation needs when available
+* opening hours when available
+
+For MVP, meal planning may include actual restaurant recommendations when provider/resource data is available.
+
+Restaurant recommendations should include:
+
+* name
+* rating
+* review count when available
+* cuisine/category
+* price level when available
+* distance or travel time
+* why it fits the traveler
+* data source
+* confidence
+
+The system should not invent restaurants, ratings, opening hours, or availability.
+
+If reliable restaurant data is not available, the planner should provide meal-area suggestions instead of fake restaurant names.
+
+Example:
+
+Lunch
+
+Recommended area: Georgetown Waterfront
+
+Why it fits:
+
+* close to the previous attraction
+* good variety of restaurants
+* suitable for a relaxed lunch break
+* avoids unnecessary backtracking
+
+Restaurant recommendations should only be shown when supported by provider data.
+
+
+## 7. Daily Planning Philosophy
 
 Each day should feel intentional.
 
@@ -215,7 +267,7 @@ Food and Shopping
 
 ---
 
-# 7. Experience Cards
+## 8. Experience Cards
 
 Every selected experience should generate an Experience Card.
 
@@ -265,7 +317,7 @@ Can become crowded after noon.
 
 ---
 
-# 8. Day Summary
+## 9. Day Summary
 
 Before showing activities, every day should begin with a summary.
 
@@ -300,7 +352,7 @@ Moderate
 
 ---
 
-# 9. Itinerary Assembly
+## 10. Itinerary Assembly
 
 The itinerary should be created by combining ordered Experience Cards.
 
@@ -309,7 +361,7 @@ Each day should contain:
 - theme
 - objectives
 - activities
-- meal suggestions
+- meal suggestions or provider-backed restaurant recommendations
 - transport recommendations
 - estimated walking
 - estimated travel time
@@ -318,7 +370,7 @@ Each day should contain:
 
 ---
 
-# 10. Decision Cards
+## 11. Decision Cards
 
 The Experience Planner should also generate Decision Cards.
 
@@ -349,7 +401,7 @@ Move Georgetown to Day 2.
 
 ---
 
-# 11. Output Contract
+## 12. Output Contract
 
 The Experience Planner should return:
 
@@ -365,7 +417,7 @@ The Experience Planner should return:
 
 ---
 
-# 12. Production Considerations
+## 13. Production Considerations
 
 The Experience Planner should use production providers.
 
@@ -392,7 +444,7 @@ Future integrations
 
 ---
 
-# 13. Edge Cases
+## 14. Edge Cases
 
 The planner should handle:
 
@@ -401,7 +453,7 @@ The planner should handle:
 - public holidays
 - sold-out attractions
 - delayed flights
-- late hotel check-in
+- late accommodation check-in
 - early departure flights
 - traveler fatigue
 - accessibility limitations
@@ -411,7 +463,7 @@ The planner should always produce the best feasible itinerary rather than failin
 
 ---
 
-# 14. Design Rules
+## 15. Design Rules
 
 The Experience Planner should follow these principles:
 
@@ -421,6 +473,7 @@ The Experience Planner should follow these principles:
 - Minimize unnecessary travel.
 - Respect traveler energy levels.
 - Prioritize realism over density.
+- Do not invent restaurants, ratings, opening hours, or availability.
 - Generate explainable decisions rather than opaque recommendations.
 - The itinerary is the result of intelligent planning, not the primary objective.
 

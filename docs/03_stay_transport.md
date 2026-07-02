@@ -4,7 +4,7 @@
 
 This stage decides where the traveler should stay and how they should move around.
 
-It should not start by recommending hotels.
+It should not start by recommending accommodation.
 
 It should first answer:
 
@@ -38,7 +38,7 @@ The system should recommend stay areas before recommending individual properties
 
 Neighborhoods should be scored using:
 
-- safety
+- safety-related planning considerations when reliable data is available
 - proximity to planned attraction clusters
 - public transport access
 - restaurant access
@@ -55,13 +55,13 @@ Example decision:
   "title": "Stay near Dupont Circle",
   "recommendation": "Dupont Circle is the best stay area for this trip.",
   "why": [
-    "It is safer and more comfortable for a parent-friendly trip.",
+    "It better supports comfort-focused and lower-friction planning for a parent-friendly trip.",
     "It has strong Metro connectivity.",
     "It offers good restaurant access.",
     "It keeps major sightseeing areas within reasonable travel time."
   ],
   "tradeoffs": [
-    "Hotels may cost slightly more than areas farther from the center."
+    "Accommodation may cost slightly more than areas farther from the center."
   ],
   "confidence": 0.88,
   "alternatives": ["Capitol Hill", "Foggy Bottom"]
@@ -115,41 +115,102 @@ Example:
 
 ## 5. Accommodation Ranking
 
-Only after the stay area is selected should the system rank accommodations.
+Only after the stay area is selected should the system rank accommodation options.
+
+Accommodation options may include:
+
+* hotels
+* motels
+* hostels
+* resorts
+* serviced apartments
+* vacation rentals or Airbnb-style stays
+* guesthouses or boutique stays
+
+The system should not assume that a hotel is always the best option.
+
+The best accommodation type depends on:
+
+* destination
+* traveler budget
+* travel group type
+* comfort requirements
+* length of stay
+* preferred accommodation type
+* safety-related planning considerations
+* distance to planned attraction clusters
+* transport access
+* parking needs
+* family/solo/couple suitability
+* work-friendly needs
+* amenities
+* review/rating data when available
+* availability and price data when available
+
+For MVP, the system should recommend the best 5 accommodation options, not one final booking decision.
+
+These recommendations should be ranked based on overall fit, not only price or rating.
 
 Accommodation ranking should consider:
 
-- selected neighborhood
-- nightly price
-- total budget
-- review score
-- accommodation type preference
-- amenities
-- safety
-- distance to public transport
-- distance to planned attractions
-- parking availability if needed
-- family/couple/solo suitability
+* selected neighborhood
+* accommodation type suitability
+* nightly price
+* total estimated stay cost
+* budget fit
+* review score
+* review count when available
+* amenities
+* distance to public transport
+* distance to planned attraction clusters
+* parking availability if needed
+* family/couple/solo suitability
+* quiet vs lively preference
+* cancellation flexibility when available
+* data freshness
+* provider confidence
 
-The output should not simply list hotels.
+The output should not simply list properties.
 
-Each accommodation should explain why it fits.
+Each accommodation option should explain:
+
+* why it fits the traveler
+* what tradeoffs it has
+* what type of traveler it is best for
+* which data sources were used
+* how confident the system is
+
+The system should not guarantee final price, availability, or booking completion unless confirmed by a production provider.
 
 Example:
 
 ```json
 {
-  "name": "Example Central Hotel",
+  "name": "Example Central Stay",
+  "accommodation_type": "hotel",
   "area": "Dupont Circle",
   "price_level": "mid_range",
+  "estimated_price_per_night": 220,
   "why_it_fits": [
     "Within the recommended stay area.",
-    "Close to Metro access.",
-    "Fits the selected hotel preference.",
-    "Good for travelers prioritizing comfort and safety."
+    "Close to public transport.",
+    "Fits the traveler’s comfort and safety-related planning preferences.",
+    "Good for travelers prioritizing convenience and lower daily travel time."
   ],
-  "tradeoffs": ["Not the cheapest available option."],
+  "tradeoffs": [
+    "Not the cheapest available option."
+  ],
+  "best_for": [
+    "family travelers",
+    "comfort-focused travelers",
+    "first-time visitors"
+  ],
   "booking_url": "...",
+  "data_sources_used": [
+    "accommodation_provider",
+    "places_provider",
+    "routes_provider"
+  ],
   "confidence": 0.81
 }
 ```
@@ -187,15 +248,15 @@ Example:
 ```json
 {
   "title": "Stay in a central, transit-connected area",
-  "recommendation": "Choose a hotel near Dupont Circle or Foggy Bottom.",
+  "recommendation": "Choose an accommodation near Dupont Circle or Foggy Bottom.",
   "why": [
     "This reduces daily travel time.",
     "The area fits the comfort and safety priorities.",
     "Restaurants and transit are nearby."
   ],
-  "tradeoffs": ["Central hotels may be more expensive."],
+  "tradeoffs": ["Central accommodation may be more expensive."],
   "confidence": 0.87,
-  "alternatives": ["Stay farther out to reduce hotel cost."],
+  "alternatives": ["Stay farther out to reduce hoteaccommodation cost."],
   "data_sources_used": [
     "places_provider",
     "routes_provider",
@@ -230,7 +291,8 @@ The Stay + Transport stage should return:
   },
   "accommodation_recommendations": [
     {
-      "name": "Example Central Hotel",
+      "name": "Example Central Stay",
+      "accommodation_type": "hotel",
       "area": "Dupont Circle",
       "estimated_price_per_night": 220,
       "booking_url": "...",

@@ -30,6 +30,10 @@ The MVP will support:
 - day-wise itinerary generation
 - constraint validation
 - feedback-based adjustment
+- single-city trip planning with architecture designed for future multi-city expansion
+- restaurant recommendations using available provider/resource ratings
+- top 5 accommodation options instead of final accommodation booking decisions
+- safety-related planning considerations without direct safety scoring
 
 ## 3. Core Product Principles
 
@@ -54,5 +58,7 @@ The MVP will not fully support:
 - live restaurant reservations
 - full multi-city optimization
 - advanced weather-aware rerouting
+- direct safety scoring for places, neighborhoods, accommodations, routes, or attractions
+- guaranteed accommadation availability or booking completion
 
 These can be documented as future engines.

@@ -23,7 +23,7 @@ Primary input:
 Optional production data:
 
 - destination overview
-- average hotel cost
+- average accommodation cost
 - average food cost
 - seasonal/weather context
 - local transport quality
@@ -111,7 +111,7 @@ Example:
   "budget_assessment": {
     "label": "realistic",
     "risk_level": "low",
-    "reason": "The budget supports mid-range hotels, public transport, and a few paid attractions."
+    "reason": "The budget supports mid-range accommodation, public transport, and a few paid attractions."
   }
 }
 ```
@@ -154,7 +154,25 @@ Example:
 }
 ```
 
-## 9. Tradeoffs
+## 9. Planning Targets
+
+Trip Strategy should translate the Traveler Profile into concrete planning targets that later stages can use.
+
+Examples:
+- preferred activities per day
+- maximum activities per day
+- max walking per day
+- preferred sightseeing start time
+- preferred sightseeing end time
+- meal break expectations
+- buffer level
+- experience mix targets
+
+Trip Strategy should not select final attractions.
+
+It should define the planning rules that the Experience Planner uses.
+
+## 10. Tradeoffs
 
 The system should explain tradeoffs clearly.
 
@@ -175,7 +193,7 @@ Example:
 }
 ```
 
-## 10. Assumptions
+## 11. Assumptions
 
 If information is missing, assumptions must be explicit.
 
@@ -185,13 +203,13 @@ Example:
 {
   "assumptions": [
     "Assuming the travelers are comfortable with moderate walking.",
-    "Assuming hotel budget is part of the total trip budget.",
+    "Assuming accommodation budget is part of the total trip budget.",
     "Assuming no accessibility restrictions beyond the provided constraints."
   ]
 }
 ```
 
-## 11. Output Contract
+## 12. Output Contract
 
 Example Trip Strategy object:
 
@@ -221,6 +239,21 @@ Example Trip Strategy object:
     "Avoid overloading each day.",
     "Use public transport where convenient and rideshare for comfort."
   ],
+  "planning_targets": [
+  "preferred_activities_per_day": 3,
+  "max_activities_per_day": 4,
+  "max_walking_km_per_day": 8,
+  "preferred_sightseeing_start_time": "09:30",
+  "preferred_sightseeing_end_time": "20:00",
+  "meal_break_expectations": "reserve lunch and dinner windows",
+  "buffer_level": "medium",
+  "experience_mix_targets": {
+      "culture": 0.35,
+      "food": 0.25,
+      "scenic": 0.25,
+      "shopping": 0.15
+    }
+  ],
   "tradeoffs": [
     {
       "decision": "Skip nightlife-heavy areas.",
@@ -233,8 +266,17 @@ Example Trip Strategy object:
   "confidence": 0.82
 }
 ```
+## 13. Planning Scope:
 
-## 12. Design Rule
+The MVP supports single-city trips.
+
+The architecture should still avoid hardcoding assumptions that would make future multi-city support difficult.
+
+For MVP, Trip Strategy should reason about one primary destination city.
+
+Future versions may support destination segments for multi-city planning.
+
+## 14. Design Rule
 
 Trip Strategy should guide the itinerary, not replace it.
 

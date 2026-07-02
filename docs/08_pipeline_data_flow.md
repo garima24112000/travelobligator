@@ -6,6 +6,29 @@ This document defines how data moves through the TravelObligator planning pipeli
 
 The goal is to make every planning stage clear, connected, and implementation-ready.
 
+## MVP Scope
+
+The MVP planning pipeline is designed for **single-city trips**.
+
+For MVP, each itinerary should assume one primary destination city and generate a plan around that destination, its nearby neighborhoods, attractions, restaurants, stay areas, and local transport options.
+
+However, the Planning State should use flexible destination fields so future multi-city itinerary support does not require a full redesign.
+
+This means the MVP can operate on one active destination, while the data model can still support future fields such as:
+
+* primary destination
+* destination scope
+* destination list
+* arrival city
+* departure city
+* city-level date ranges
+* intercity transport decisions
+
+For MVP, `destination_list` should usually contain one city.
+
+Future versions may expand this into multi-city planning, where each city has its own destination context, stay decision, experience plan, validation report, and intercity movement logic.
+
+
 This document answers:
 
 * What does each stage consume?
@@ -29,6 +52,7 @@ The MVP planning flow is:
 ```text
 User Input
 → Traveler Profile
+→ Destination Context
 → Planning State
 → Trip Strategy
 → Stay + Transport
@@ -62,8 +86,13 @@ Example structure:
 
 ```json
 {
-  "trip_request": {},
+  "trip_request": {
+    "destination_scope": "single_city",
+    "primary_destination": {},
+    "destination_list": []
+  },
   "traveler_profile": {},
+  "destination_context": {},
   "trip_strategy": {},
   "stay_transport": {},
   "experience_plan": {},
@@ -74,7 +103,7 @@ Example structure:
   "validation_cards": [],
   "metadata": {},
   "version_history": []
-}
+} 
 ```
 
 The Planning State should prevent scattered data ownership.
@@ -164,6 +193,22 @@ The full `traveler_profile` is passed to all later stages.
 
 ---
 
+## Destination Context
+
+Destination Context is a provider-backed snapshot used by early planning stages.
+
+It includes:
+- destination overview
+- candidate POIs
+- major attraction clusters
+- neighborhood candidates
+- rough transport feasibility
+- average cost hints
+
+It is not the final itinerary.
+
+It exists to prevent Stay + Transport from depending on final Experience Planner output.
+
 ## 5. Stage 2: Traveler Profile → Trip Strategy
 
 ### Consumes
@@ -180,14 +225,14 @@ From `traveler_profile`:
 * decision weights
 * confidence levels
 
-Optional provider data:
+From `destination_context`:
 
-* destination overview
-* average cost estimates
-* attraction density
-* transport quality
-* seasonal context
-* safety/neighborhood context
+- destination overview
+- candidate POI clusters
+- neighborhood candidates
+- rough transport feasibility
+- average cost hints
+- seasonal context when available
 
 ### Produces
 
@@ -232,7 +277,7 @@ Optional.
 Possible providers:
 
 * Places provider for attraction density
-* Accommodation provider for average hotel cost
+* Accommodation provider for average cost
 * Routes provider for local transport feasibility
 * Weather provider in future versions
 
@@ -325,8 +370,8 @@ Possible providers:
 
 * Google Places API
 * Google Routes API
-* Amadeus Hotels API
-* Booking or Expedia provider later
+* accommodation provider for hotels, hostels, resorts, serviced apartments, and vacation rentals where supported
+* Booking, Expedia, Amadeus, or other approved accommodation providers later
 * OpenStreetMap fallback
 
 ### Passed Forward
@@ -630,7 +675,7 @@ Only when feedback requires updated data.
 
 Examples:
 
-* “Find cheaper hotels” needs accommodation provider.
+* “Find cheaper accommodation” needs accommodation provider.
 * “Reduce walking” needs routes provider.
 * “Remove museums” may need places provider for alternatives.
 * “Change transport to train” may need route/transit provider.
@@ -665,7 +710,7 @@ Used when one section changes.
 
 Example:
 
-> “Show cheaper hotels.”
+> “Show cheaper accommodation.”
 
 Affected stage:
 
@@ -732,6 +777,23 @@ Selected and scheduled experiences.
 
 Review of itinerary quality and feasibility.
 
+### BaseExplanationCard
+
+Common fields:
+- id
+- card_type
+- title
+- summary
+- reasons
+- tradeoffs
+- alternatives
+- confidence
+- data_sources
+- assumptions
+- stage
+
+DecisionCard, ExperienceCard, and ValidationCard should extend this base structure.
+
 ### DecisionCard
 
 Explains major recommendations.
@@ -768,6 +830,9 @@ Tracks:
 * assumptions
 * generated timestamp
 * provider status
+* provider failures
+* fallback data used
+* unavailable fields
 * version number
 
 ---
@@ -854,18 +919,19 @@ No stage should overwrite another stage’s output unless it is explicitly part 
 * routes
 * opening hours
 * accommodation availability
-* hotel prices
+* accommodation prices
 * transit feasibility where available
 
 ### The System Should Never Use AI To Invent
 
 * opening hours
 * ticket prices
-* hotel availability
+* accommodation availability
 * live transport schedules
 * exact walking distances
 * real-time fare estimates
 * safety claims without source data
+* missing provider data after provider failure
 
 ---
 
@@ -887,7 +953,58 @@ If confidence is low, the system should:
 
 ---
 
-## 15. Design Principles
+## 15. Provider Failure Policy
+
+When a production provider fails, the system should not continue as if reliable data was available.
+
+The system should:
+
+1. Retry the provider call.
+2. If retry fails, use a fallback provider when available.
+3. If fallback data is used, label it clearly.
+4. If no reliable data is available, mark the field as unavailable or low confidence.
+5. Never silently replace failed provider data with fake data.
+
+Provider failure should reduce confidence, not create hallucinated certainty.
+
+This policy applies to all provider-backed data, including:
+
+* places
+* routes
+* opening hours
+* restaurant details
+* accommodation availability
+* accommodation prices
+* transport feasibility
+* weather data
+* event or holiday data
+
+Example:
+
+If the Routes Provider fails while estimating travel time between two attractions, the system should not invent a 15-minute route.
+
+Instead, it should return:
+
+* travel_time: unavailable
+* data_source: unavailable
+* provider_status: failed
+* confidence: low
+* user_message: "Travel time could not be verified from the routing provider."
+
+If fallback data is used, the system should clearly show that the result is based on fallback data.
+
+Example:
+
+* travel_time: 25 minutes
+* data_source: OpenStreetMap fallback
+* provider_status: fallback_used
+* confidence: medium
+
+The planner may continue only when the missing data does not make the itinerary misleading or infeasible. If the missing provider data affects feasibility, the Plan Validator should flag it before the final itinerary is shown.
+
+---
+
+## 16. Design Principles
 
 The pipeline should follow these principles:
 

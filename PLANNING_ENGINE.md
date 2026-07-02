@@ -11,7 +11,7 @@ Most existing itineraries are:
 - not route-aware
 - not budget-aware
 - not easy to modify
-- scattered across blogs, maps, hotel sites, and transport apps
+- scattered across blogs, maps, accommodation sites, and transport apps
 
 TravelObligator should solve this by turning a user's preferences, constraints, budget, and travel style into a realistic, editable, map-aware trip plan.
 

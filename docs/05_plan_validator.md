@@ -143,12 +143,18 @@ Checks:
 
 ## Safety Validation
 
-Checks:
+The MVP does not generate direct safety scores.
 
+Safety validation should focus on planning considerations such as:
 - late-night travel
-- isolated walking
-- unsafe timing
+- isolated or remote movement
+- long walking segments
+- poor transit alignment
+- weather exposure
+- traveler-specific comfort constraints
 - destination-specific safety considerations (when available)
+
+The validator may suggest lower-friction alternatives, but it should not label a place, accommodation, route, or attraction as safe or unsafe without authoritative data.
 
 ---
 
@@ -164,6 +170,18 @@ Checks:
 
 ---
 
+## Readiness Status
+
+The validator should classify the final plan as:
+
+- ready
+- needs_review
+- blocked
+
+This helps the frontend decide whether the itinerary can be presented confidently or needs user attention.
+
+---
+
 # 5. Rule-Based Validators
 
 Objective issues should be validated using deterministic rules.
@@ -174,7 +192,7 @@ Examples:
 - budget exceeded
 - walking exceeds traveler tolerance
 - airport arrival impossible
-- hotel too far from first activity
+- accommodation too far from first activity
 - transit unavailable
 - activity duration exceeds available time
 
@@ -364,7 +382,8 @@ The validator should return:
 "warnings": [],
 "suggestions": [],
 "validation_summary": {},
-"planning_metadata": {}
+"planning_metadata": {},
+"readiness_status": "ready | needs_review | blocked" 
 }
 ```
 
