@@ -13,7 +13,7 @@ Every later stage should use this profile as its main input:
 
 - Trip Strategy
 - Stay + Transport
-- Itinerary Composer
+- Experience Planner
 - Plan Validator
 - Feedback Pipeline
 

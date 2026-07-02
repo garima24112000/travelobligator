@@ -6,22 +6,25 @@ This document defines how data moves through the TravelObligator planning pipeli
 
 It answers:
 
-- What does each stage consume?
-- What does each stage produce?
-- Which outputs are passed forward?
+- Which stage owns which data?
+- Which stage consumes which fields?
+- Which stage produces which object?
 - Which stages use AI?
-- Which stages use deterministic rules?
-- Which stages depend on external providers?
+- Which stages use deterministic logic?
+- Which stages use provider data?
+- What gets passed forward?
 
 ## 2. End-to-End Pipeline
 
 User Input
 → Traveler Profile
+→ Planning State
 → Trip Strategy
 → Stay + Transport
 → Experience Planner
 → Plan Validator
 → Feedback Pipeline
+→ Updated Planning State
 → Final Itinerary
 
 ## 3. Stage 1: User Input → Traveler Profile

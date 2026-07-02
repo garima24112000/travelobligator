@@ -289,19 +289,15 @@ Fields:
 Example:
 
 Title
-
 Walking Distance
 
 Category
-
 Walking Validation
 
 Severity
-
 Warning
 
 Issue
-
 Estimated walking distance is 13 km.
 
 Why It Matters
@@ -325,33 +321,26 @@ The validator should produce an overall assessment.
 Example:
 
 Overall Quality
-
 91 / 100
 
 Category Scores
 
 Feasibility
-
 95
 
 Comfort
-
 88
 
 Efficiency
-
 90
 
 Budget
-
 92
 
 Safety
-
 94
 
 Experience Variety
-
 87
 
 Summary
@@ -366,6 +355,7 @@ Minor improvements are recommended to reduce walking on Day 2.
 
 The validator should return:
 
+```json
 {
 "overall_score": {},
 "category_scores": {},
@@ -376,6 +366,7 @@ The validator should return:
 "validation_summary": {},
 "planning_metadata": {}
 }
+```
 
 ---
 

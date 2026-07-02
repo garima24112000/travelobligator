@@ -74,12 +74,12 @@ The system should decide the transport approach before planning daily movement.
 
 It should answer:
 
-Should the traveler rely on public transport?
-Should they use rideshare/taxis?
-Should they rent a car?
-Should car rental be used only for day trips?
-Is walking realistic?
-Are late-night return options safe and practical?
+- Should the traveler rely on public transport?
+- Should they use rideshare/taxis?
+- Should they rent a car?
+- Should car rental be used only for day trips?
+- Is walking realistic?
+- Are late-night return options safe and practical?
 
 Transport should be evaluated using:
 
@@ -119,17 +119,17 @@ Only after the stay area is selected should the system rank accommodations.
 
 Accommodation ranking should consider:
 
-selected neighborhood
-nightly price
-total budget
-review score
-accommodation type preference
-amenities
-safety
-distance to public transport
-distance to planned attractions
-parking availability if needed
-family/couple/solo suitability
+- selected neighborhood
+- nightly price
+- total budget
+- review score
+- accommodation type preference
+- amenities
+- safety
+- distance to public transport
+- distance to planned attractions
+- parking availability if needed
+- family/couple/solo suitability
 
 The output should not simply list hotels.
 
@@ -160,11 +160,11 @@ This stage should clearly explain tradeoffs.
 
 Examples:
 
-Staying central costs more but reduces transit time.
-Staying farther away is cheaper but increases daily travel.
-Renting a car gives flexibility but creates parking stress.
-Public transport is cheaper but may require more walking.
-Rideshare is convenient but may exceed budget if used heavily.
+- Staying central costs more but reduces transit time.
+- Staying farther away is cheaper but increases daily travel.
+- Renting a car gives flexibility but creates parking stress.
+- Public transport is cheaper but may require more walking.
+- Rideshare is convenient but may exceed budget if used heavily.
 
 Tradeoffs are important because users often need help choosing between convenience, cost, and comfort.
 
@@ -174,13 +174,13 @@ Every major recommendation should be returned as a Decision Card.
 
 Decision Card fields:
 
-title
-recommendation
-why
-tradeoffs
-confidence
-alternatives
-data_sources_used
+- title
+- recommendation
+- why
+- tradeoffs
+- confidence
+- alternatives
+- data_sources_used
 
 Example:
 

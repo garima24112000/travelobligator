@@ -83,68 +83,68 @@ Structured interpretation:
 
 Feedback should be classified into categories.
 
-Profile Feedback
+### Profile Feedback
 
 Changes the Traveler Profile.
 
 Examples:
 
-actually we want a relaxed trip
-my parents cannot walk much
-we prefer vegetarian food
-we do not want nightlife
-Stay Feedback
+- actually we want a relaxed trip
+- my parents cannot walk much
+- we prefer vegetarian food
+- we do not want nightlife
+- Stay Feedback
 
 Changes stay area or accommodation logic.
 
 Examples:
 
-cheaper hotel
-safer area
-closer to metro
-avoid downtown
-need parking
-Transport Feedback
+- cheaper hotel
+- safer area
+- closer to metro
+- avoid downtown
+- need parking
+- Transport Feedback
 
 Changes transport strategy.
 
 Examples:
 
-avoid driving
-use trains
-reduce Uber
-prefer walking
-do not use public transport at night
-Experience Feedback
+- avoid driving
+- use trains
+- reduce Uber
+- prefer walking
+- do not use public transport at night
+- Experience Feedback
 
 Changes selected activities.
 
 Examples:
 
-remove museums
-add hidden gems
-more food spots
-more nature
-less shopping
-Schedule Feedback
+- remove museums
+- add hidden gems
+- more food spots
+- more nature
+- less shopping
+- Schedule Feedback
 
 Changes timing and density.
 
 Examples:
 
-make days lighter
-start later
-keep evenings free
-add rest breaks
-Budget Feedback
+- make days lighter
+- start later
+- keep evenings free
+- add rest breaks
+- Budget Feedback
 
 Changes cost decisions.
 
 Examples:
 
-make it cheaper
-allow luxury options
-avoid paid attractions
+- make it cheaper
+- allow luxury options
+- avoid paid attractions
 
 ## 5. Affected Stage Detection
 
@@ -225,11 +225,11 @@ The system should preserve valid parts of the itinerary.
 
 It should not discard:
 
-accepted days
-selected stay area
-transport strategy
-must-visit activities
-user-approved recommendations
+- accepted days
+- selected stay area
+- transport strategy
+- must-visit activities
+- user-approved recommendations
 
 Unless the feedback directly conflicts with them.
 
@@ -237,11 +237,11 @@ Unless the feedback directly conflicts with them.
 
 Every feedback response should explain:
 
-what changed
-why it changed
-what stayed the same
-which stages were affected
-whether the validation score improved or declined
+- what changed
+- why it changed
+- what stayed the same
+- which stages were affected
+- whether the validation score improved or declined
 
 Example:
 
@@ -296,13 +296,13 @@ Every regenerated plan should create a new itinerary version.
 
 The system should store:
 
-original itinerary
-feedback text
-structured feedback intent
-affected stages
-new itinerary version
-change summary
-validation report
+- original itinerary
+- feedback text
+- structured feedback intent
+- affected stages
+- new itinerary version
+- change summary
+- validation report
 
 This allows users to compare versions later.
 
@@ -335,36 +335,36 @@ AI
 
 Used for:
 
-interpreting natural language feedback
-identifying affected stages
-explaining changes
-Deterministic Logic
+- interpreting natural language feedback
+- identifying affected stages
+- explaining changes
+- Deterministic Logic
 
 Used for:
 
-deciding when full regeneration is required
-preserving unchanged sections
-comparing old and new plans
-versioning
-Provider Data
+- deciding when full regeneration is required
+- preserving unchanged sections
+- comparing old and new plans
+- versioning
+- Provider Data
 
 May be needed when feedback affects:
 
-routes
-hotels
-attractions
-transport strategy
+- routes
+- hotels
+- attractions
+- transport strategy
 
 ## 13. Edge Cases
 
 The pipeline should handle:
 
-vague feedback
-contradictory feedback
-feedback that violates constraints
-feedback that conflicts with must-visit items
-feedback that requires unavailable provider data
-feedback that makes the trip impossible within budget/time
+- vague feedback
+- contradictory feedback
+- feedback that violates constraints
+- feedback that conflicts with must-visit items
+- feedback that requires unavailable provider data
+- feedback that makes the trip impossible within budget/time
 
 If feedback is unclear, the system should ask a follow-up question instead of guessing.
 
@@ -380,11 +380,11 @@ Response:
 
 The Feedback Pipeline should follow these principles:
 
-Do not regenerate everything by default.
-Preserve what the user already likes.
-Explain every change.
-Ask follow-up questions when feedback is ambiguous.
-Treat feedback as a structured planning update.
-Maintain version history.
-Validate the updated plan before presenting it.
-Never silently remove must-visit items.
+- Do not regenerate everything by default.
+- Preserve what the user already likes.
+- Explain every change.
+- Ask follow-up questions when feedback is ambiguous.
+- Treat feedback as a structured planning update.
+- Maintain version history.
+- Validate the updated plan before presenting it.
+- Never silently remove must-visit items.
