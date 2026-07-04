@@ -29,7 +29,7 @@ Traveler Profile is what the system understands.
 
 For accommodation, the system should recommend the best area or neighborhood first.
 
-Hotels, hostels, Airbnbs, or resorts should be ranked only after the stay area decision is made.
+Hotels, motels, hostels, resorts, serviced apartments, guesthouses, boutique stays, vacation rentals, or Airbnb-style stays should be ranked only after the stay area decision is made and only when supported by a legitimate connected source.
 
 ## 5. Route Realism Matters
 
@@ -63,7 +63,7 @@ If a user approves part of the trip, the system should preserve it unless later 
 
 TravelObligator should use production data providers for places, routes, accommodations, and AI reasoning.
 
-Mock data should not be treated as production behavior.
+Mock, scraped, or AI-invented factual travel data should not be used in MVP or production outputs.
 
 ## 11. Separate Facts From Reasoning
 
@@ -92,3 +92,7 @@ Every recommendation, warning, card, and explanation should help the traveler ma
 ## 15. The Itinerary Is the Final Artifact, Not the Product
 
 The real product is the decision pipeline that creates and explains the itinerary.
+
+## 16. Show Provider Coverage
+
+Every major output should make clear which sources were searched, which sources were unavailable, and which fields are provider-confirmed, open-data-backed, user-provided, estimated, or unavailable.

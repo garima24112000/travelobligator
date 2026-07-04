@@ -24,11 +24,13 @@ Primary inputs:
 Production data inputs:
 
 - neighborhood data
-- safety context
 - public transport access
 - attraction clusters
-- accommodation availability
-- accommodation prices
+- safety-related planning considerations when supported by reliable data
+- accommodation POIs from open data
+- accommodation availability when returned by an approved provider
+- accommodation prices when returned by an approved provider
+- provider coverage and unavailable fields
 - route/travel time data
 - parking and driving feasibility where available
 
@@ -124,7 +126,7 @@ Accommodation options may include:
 * hostels
 * resorts
 * serviced apartments
-* vacation rentals or Airbnb-style stays
+* vacation rentals or Airbnb-style stays only when available through an approved provider or official integration
 * guesthouses or boutique stays
 
 The system should not assume that a hotel is always the best option.
@@ -169,6 +171,12 @@ Accommodation ranking should consider:
 * cancellation flexibility when available
 * data freshness
 * provider confidence
+
+If only OpenStreetMap accommodation POIs are available, the system may recommend real accommodation locations but must mark price, availability, rating, and review count as unavailable unless those fields are returned by a legitimate connected provider.
+
+If only hotel inventory is available, the system must clearly say that accommodation coverage is limited to hotel-like inventory.
+
+If Airbnb, Booking.com, Expedia, Vrbo, or similar providers are not officially connected, the system must not imply that their inventory was searched.
 
 The output should not simply list properties.
 

@@ -317,8 +317,11 @@ From `trip_strategy`:
 Provider data:
 
 * neighborhood data
-* accommodation availability
-* accommodation prices
+* accommodation POIs from open data
+* accommodation prices when returned by an approved provider
+* accommodation availability when returned by an approved provider
+* provider coverage
+* unavailable accommodation fields
 * public transport access
 * airport/train station access
 * attraction clusters
@@ -368,11 +371,13 @@ Yes.
 
 Possible providers:
 
-* Google Places API
-* Google Routes API
-* accommodation provider for hotels, hostels, resorts, serviced apartments, and vacation rentals where supported
-* Booking, Expedia, Amadeus, or other approved accommodation providers later
-* OpenStreetMap fallback
+* OpenStreetMap / Overpass for places, restaurants, and accommodation POIs
+* OpenTripPlanner + GTFS + OpenStreetMap for routing and transit feasibility
+* Google Places API as optional richer place metadata
+* Google Routes API or Mapbox Directions as optional routing providers
+* Amadeus Hotel APIs where production access is available
+* approved accommodation, affiliate, or metasearch providers where available
+* Booking.com, Expedia, Vrbo, Airbnb, Tripadvisor, and Google Flights only when approved provider access exists
 
 ### Passed Forward
 
@@ -834,6 +839,7 @@ Tracks:
 * fallback data used
 * unavailable fields
 * version number
+* provider_coverage
 
 ---
 

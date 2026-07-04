@@ -389,33 +389,36 @@ The validator should return:
 
 ---
 
-# 12. Production Considerations
+## 12. Production Considerations
 
-The validator should integrate with:
+The validator should integrate with legitimate provider-backed or open-data-backed sources.
 
-Routing
+Routing:
 
-- Google Routes API
+- OpenTripPlanner + GTFS + OpenStreetMap
+- Google Routes API where available
+- Mapbox Directions where available
 
-Places
+Places:
 
-- Google Places API
+- OpenStreetMap / Overpass
+- Google Places API where available
+- approved places provider where available
 
-Calendar
+Calendar / holidays:
 
-- Public holiday and attraction schedules (future)
+- Nager.Date
+- official public holiday or attraction schedule sources where available
 
-AI
+Weather:
 
-- OpenAI Structured Outputs
+- Open-Meteo where enabled
 
-Future integrations:
+AI:
 
-- weather
-- real-time disruptions
-- live crowd estimates
+- OpenAI Structured Outputs for subjective validation reasoning only
 
----
+If provider data is missing, failed, or not connected, validation should continue where possible and mark affected checks as unavailable, low-confidence, or blocked.
 
 # 13. Edge Cases
 

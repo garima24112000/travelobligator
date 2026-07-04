@@ -60,6 +60,9 @@ The MVP Planning State should follow this structure:
   "experience_cards": [],
   "validation_cards": [],
   "provider_status": {},
+  "provider_coverage": {},
+  "unavailable_data": [],
+  "data_sources_used": [],
   "metadata": {},
   "version_history": []
 }
@@ -739,6 +742,8 @@ user_input
 system_rule
 ai_inference
 assumption
+open_data_fact
+unavailable_data
 ```
 
 Example:
@@ -812,6 +817,7 @@ fallback_used
 partial
 failed
 unavailable
+not_connected
 ```
 
 Provider failures should reduce confidence.

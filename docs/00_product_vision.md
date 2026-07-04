@@ -31,9 +31,12 @@ The MVP will support:
 - constraint validation
 - feedback-based adjustment
 - single-city trip planning with architecture designed for future multi-city expansion
-- restaurant recommendations using available provider/resource ratings
+- - restaurant recommendations using provider-backed or open-data-backed information, with ratings/reviews shown only when returned by a legitimate connected provider
 - top 5 accommodation options instead of final accommodation booking decisions
 - safety-related planning considerations without direct safety scoring
+- legit-only data usage with no mock, scraped, or AI-invented factual travel data
+- provider coverage labeling for unavailable sources such as Airbnb, Booking.com, Expedia/Vrbo, Google Flights, and Tripadvisor
+- metasearch/referral-style recommendations where provider-backed options can be shown and final booking happens on the original provider site
 
 ## 3. Core Product Principles
 
@@ -59,6 +62,6 @@ The MVP will not fully support:
 - full multi-city optimization
 - advanced weather-aware rerouting
 - direct safety scoring for places, neighborhoods, accommodations, routes, or attractions
-- guaranteed accommadation availability or booking completion
+- guaranteed accommodation availability, final price, cancellation terms, or booking completion
 
 These can be documented as future engines.

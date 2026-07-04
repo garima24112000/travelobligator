@@ -199,7 +199,7 @@ Meal planning should consider:
 * reservation needs when available
 * opening hours when available
 
-For MVP, meal planning may include actual restaurant recommendations when provider/resource data is available.
+For MVP, meal planning may include actual restaurant recommendations when provider-backed or open-data-backed data is available.
 
 Restaurant recommendations should include:
 
@@ -419,28 +419,28 @@ The Experience Planner should return:
 
 ## 13. Production Considerations
 
-The Experience Planner should use production providers.
+The Experience Planner should use legitimate provider-backed or open-data-backed sources.
 
-Places
+Places:
 
-- Google Places API
-- OpenStreetMap fallback
+- OpenStreetMap / Overpass for open-data attractions, restaurants, cafes, parks, and landmarks
+- Google Places API as an optional richer metadata provider
+- approved places provider where available
 
-Routing
+Routing:
 
-- Google Routes API
-- Mapbox Directions fallback
+- OpenTripPlanner + GTFS + OpenStreetMap for open-source routing and transit feasibility
+- Google Routes API or Mapbox Directions as optional routing providers
 
-AI
+Weather:
 
-- OpenAI Structured Outputs
+- Open-Meteo when weather-aware planning is enabled
 
-Future integrations
+AI:
 
-- weather provider
-- crowd prediction
-- event calendars
-- restaurant reservations
+- OpenAI Structured Outputs for reasoning and explanation only
+
+The planner must not invent attraction details, restaurant names, ratings, opening hours, prices, availability, route times, or coordinates.
 
 ---
 

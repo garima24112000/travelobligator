@@ -196,7 +196,7 @@ Locked items should not be changed unless the user directly asks for it or the l
 
 Examples:
 - locked stay area
-- locked acccommodation
+- locked accommodation
 - locked experience
 - locked day plan
 
@@ -373,6 +373,8 @@ May be needed when feedback affects:
 - accommodation
 - attractions
 - transport strategy
+
+If feedback requires a provider that is not connected, the pipeline should mark the requested update as unavailable or low-confidence instead of inventing replacement options.
 
 ## 13. Edge Cases
 
