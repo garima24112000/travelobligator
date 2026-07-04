@@ -259,12 +259,12 @@ Example:
   "recommendation": "Choose an accommodation near Dupont Circle or Foggy Bottom.",
   "why": [
     "This reduces daily travel time.",
-    "The area fits the comfort and safety priorities.",
+    "The area fits the comfort preferences and safety-related planning considerations.",
     "Restaurants and transit are nearby."
   ],
   "tradeoffs": ["Central accommodation may be more expensive."],
   "confidence": 0.87,
-  "alternatives": ["Stay farther out to reduce hoteaccommodation cost."],
+  "alternatives": ["Stay farther out to reduce accommodation cost."],
   "data_sources_used": [
     "places_provider",
     "routes_provider",

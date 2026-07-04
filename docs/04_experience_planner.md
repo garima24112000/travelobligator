@@ -55,7 +55,7 @@ Provides:
 
 ### Attraction Metadata
 
-For every attraction:
+For every attraction, when returned by a legitimate provider or open-data source:
 
 - opening hours
 - closing hours
@@ -93,7 +93,7 @@ Example scoring factors:
 - family suitability
 - walking requirements
 - opening hours
-- review quality
+- review/rating quality when available
 
 Example:
 

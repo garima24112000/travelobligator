@@ -41,7 +41,7 @@ TravelObligator should consider distance, travel time, walking burden, transport
 
 The plan should pass through validation before being shown as final.
 
-Validation should check feasibility, comfort, safety, budget, pace, route quality, and alignment with traveler intent.
+Validation should check feasibility, comfort, safety-related planning considerations, budget, pace, route quality, and alignment with traveler intent.
 
 ## 7. Do Not Silently Fix Problems
 

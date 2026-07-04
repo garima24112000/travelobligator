@@ -31,7 +31,7 @@ The MVP will support:
 - constraint validation
 - feedback-based adjustment
 - single-city trip planning with architecture designed for future multi-city expansion
-- - restaurant recommendations using provider-backed or open-data-backed information, with ratings/reviews shown only when returned by a legitimate connected provider
+- restaurant recommendations using provider-backed or open-data-backed information, with ratings/reviews shown only when returned by a legitimate connected provider
 - top 5 accommodation options instead of final accommodation booking decisions
 - safety-related planning considerations without direct safety scoring
 - legit-only data usage with no mock, scraped, or AI-invented factual travel data

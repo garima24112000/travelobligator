@@ -42,6 +42,7 @@ The Trip Strategy should produce:
 - key tradeoffs
 - assumptions
 - confidence score
+- planning targets
 
 ## 4. Destination Suitability
 
@@ -239,7 +240,7 @@ Example Trip Strategy object:
     "Avoid overloading each day.",
     "Use public transport where convenient and rideshare for comfort."
   ],
-  "planning_targets": [
+  "planning_targets": {
   "preferred_activities_per_day": 3,
   "max_activities_per_day": 4,
   "max_walking_km_per_day": 8,
@@ -253,7 +254,7 @@ Example Trip Strategy object:
       "scenic": 0.25,
       "shopping": 0.15
     }
-  ],
+  }
   "tradeoffs": [
     {
       "decision": "Skip nightlife-heavy areas.",

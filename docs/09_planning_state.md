@@ -826,7 +826,27 @@ They should not be replaced with fake data.
 
 ---
 
-## 16. Metadata
+## 16. Provider Coverage
+
+`provider_coverage` stores what data categories were actually available, unavailable, partial, or not connected during the planning run.
+
+Example:
+
+```json
+{
+  "places": "available",
+  "routes": "available",
+  "restaurants": "open_data_available",
+  "accommodations": "open_poi_available",
+  "hotel_prices": "provider_available",
+  "vacation_rentals": "not_connected",
+  "airbnb": "not_connected",
+  "flights": "not_enabled",
+  "weather": "available"
+}
+```
+
+## 17. Metadata
 
 `metadata` stores system-level information about the planning run.
 
@@ -862,7 +882,7 @@ updated_after_feedback
 
 ---
 
-## 17. Version History
+## 18. Version History
 
 `version_history` stores every major version of the plan.
 
@@ -906,7 +926,7 @@ Version history is required for:
 
 ---
 
-## 18. Stage Update Rules
+## 19. Stage Update Rules
 
 Each stage should update only the section it owns.
 
@@ -962,7 +982,7 @@ No stage should modify unrelated sections without an explicit regeneration path.
 
 ---
 
-## 19. Regeneration Rules
+## 20. Regeneration Rules
 
 When feedback is received, the system should choose the smallest valid update path.
 
@@ -1017,7 +1037,7 @@ Used when:
 
 ---
 
-## 20. Design Principles
+## 21. Design Principles
 
 The Planning State should follow these principles:
 

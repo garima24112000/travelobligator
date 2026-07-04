@@ -98,12 +98,17 @@ Example structure:
   "experience_plan": {},
   "validation_report": {},
   "feedback_history": [],
+  "user_locks": [],
   "decision_cards": [],
   "experience_cards": [],
   "validation_cards": [],
+  "provider_status": {},
+  "provider_coverage": {},
+  "unavailable_data": [],
+  "data_sources_used": [],
   "metadata": {},
   "version_history": []
-} 
+}
 ```
 
 The Planning State should prevent scattered data ownership.
@@ -480,11 +485,11 @@ Yes.
 
 Possible providers:
 
-* Google Places API
-* Google Routes API
-* Mapbox Directions fallback
-* OpenStreetMap fallback
-* Weather provider in future versions
+* OpenStreetMap / Overpass for attractions, restaurants, cafes, parks, landmarks, and open POI data
+* OpenTripPlanner + GTFS + OpenStreetMap for routing and transit feasibility
+* Google Places API as an optional richer metadata provider
+* Google Routes API or Mapbox Directions as optional routing providers
+* Open-Meteo when weather-aware planning is enabled
 
 ### Passed Forward
 
@@ -594,10 +599,13 @@ Yes.
 
 Possible providers:
 
-* Google Routes API
-* Google Places API
-* Calendar/holiday provider later
-* Weather provider later
+* OpenTripPlanner + GTFS + OpenStreetMap
+* Google Routes API where available
+* Mapbox Directions where available
+* OpenStreetMap / Overpass
+* Google Places API where available
+* Nager.Date or official holiday/calendar sources where available
+* Open-Meteo where enabled
 
 ### Passed Forward
 
