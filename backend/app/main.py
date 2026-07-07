@@ -1,35 +1,42 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.routes.trips import router as trips_router
+from app.core.config import get_settings
+
+settings = get_settings()
 
 app = FastAPI(
-    title="TravelObligator API",
-    description="Backend API for personalized AI travel itinerary planning.",
+    title=settings.app_name,
     version="0.1.0",
+    debug=settings.app_debug,
 )
+
+cors_origins = [
+    origin.strip()
+    for origin in settings.backend_cors_origins.split(",")
+    if origin.strip()
+]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-app.include_router(trips_router, prefix="/api")
-
-
-@app.get("/")
-def root():
-    return {
-        "message": "TravelObligator API is running",
-        "status": "ok",
-    }
-
 
 @app.get("/health")
 def health_check():
     return {
-        "status": "healthy",
+        "success": True,
+        "data": {
+            "status": "ok",
+            "app_name": settings.app_name,
+            "environment": settings.app_env,
+            "use_real_providers": settings.use_real_providers,
+            "allow_mock_travel_facts": settings.allow_mock_travel_facts,
+        },
+        "message": "TravelObligator backend is running.",
+        "errors": [],
     }
