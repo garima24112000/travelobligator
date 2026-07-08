@@ -65,6 +65,7 @@ class BaseProvider:
 
 
 class PlacesProvider(BaseProvider):
+    provider_name = "places_provider"
     provider_type = ProviderType.PLACES
 
     def search_places(
@@ -95,6 +96,7 @@ class PlacesProvider(BaseProvider):
 
 
 class RoutesProvider(BaseProvider):
+    provider_name = "routes_provider"
     provider_type = ProviderType.ROUTES
 
     def get_route(
@@ -119,6 +121,7 @@ class RoutesProvider(BaseProvider):
 
 
 class TransitProvider(BaseProvider):
+    provider_name = "transit_provider"
     provider_type = ProviderType.TRANSIT
 
     def get_transit_options(
@@ -136,6 +139,7 @@ class TransitProvider(BaseProvider):
 
 
 class AccommodationProvider(BaseProvider):
+    provider_name = "accommodation_provider"
     provider_type = ProviderType.ACCOMMODATION
 
     def search_accommodation_options(
@@ -158,6 +162,7 @@ class AccommodationProvider(BaseProvider):
 
 
 class FlightProvider(BaseProvider):
+    provider_name = "flight_provider"
     provider_type = ProviderType.FLIGHT
 
     def search_flights(
@@ -174,6 +179,7 @@ class FlightProvider(BaseProvider):
 
 
 class WeatherProvider(BaseProvider):
+    provider_name = "weather_provider"
     provider_type = ProviderType.WEATHER
 
     def get_weather_forecast(
@@ -186,6 +192,7 @@ class WeatherProvider(BaseProvider):
 
 
 class HolidayProvider(BaseProvider):
+    provider_name = "holiday_provider"
     provider_type = ProviderType.HOLIDAY
 
     def get_public_holidays(self, country: str, dates: dict[str, Any]) -> ProviderResponse[Any]:
@@ -196,6 +203,7 @@ class HolidayProvider(BaseProvider):
 
 
 class CurrencyProvider(BaseProvider):
+    provider_name = "currency_provider"
     provider_type = ProviderType.CURRENCY
 
     def convert_currency(
@@ -208,6 +216,7 @@ class CurrencyProvider(BaseProvider):
 
 
 class AIReasoningProvider(BaseProvider):
+    provider_name = "ai_reasoning_provider"
     provider_type = ProviderType.AI_REASONING
 
     def generate_traveler_profile(self, input: dict[str, Any]) -> ProviderResponse[Any]:

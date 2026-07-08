@@ -4,19 +4,13 @@ from fastapi import APIRouter, status
 
 from app.core.errors import AppError
 from app.core.response import success_response
-from app.models.planning_state import (
-    PipelineStatus,
-    PlanningStage,
-    PlanningState,
-    TripRequest,
-)
-from app.providers.gateway import provider_gateway
+from app.models.planning_state import TripRequest
 from app.repositories.planning_state_repository import planning_state_repository
-from app.repositories.trip_repository import trip_repository
 from app.schemas.api_responses import ApiResponse
 from app.schemas.errors import ErrorCode
 from app.schemas.provider_coverage import ProviderCoverageResponseData
 from app.schemas.trips import TripResponseData
+from app.services.planning_orchestrator import planning_orchestrator
 
 router = APIRouter(prefix="/trips", tags=["trips"])
 
@@ -27,14 +21,7 @@ router = APIRouter(prefix="/trips", tags=["trips"])
     status_code=status.HTTP_201_CREATED,
 )
 def create_trip(trip_request: TripRequest) -> ApiResponse[TripResponseData]:
-    planning_state = PlanningState(trip_request=trip_request)
-    planning_state.set_active_stage(PlanningStage.CREATE_TRIP)
-    planning_state.set_pipeline_status(PipelineStatus.DRAFT)
-    planning_state.provider_coverage = provider_gateway.default_provider_coverage()
-
-    trip_repository.create(planning_state.trip_id)
-    planning_state_repository.save(planning_state)
-
+    planning_state = planning_orchestrator.create_trip(trip_request)
     data = TripResponseData(trip_id=planning_state.trip_id, planning_state=planning_state)
     return success_response(data)
 
@@ -53,6 +40,16 @@ def get_trip(trip_id: str) -> ApiResponse[TripResponseData]:
             field="trip_id",
         )
 
+    data = TripResponseData(trip_id=trip_id, planning_state=planning_state)
+    return success_response(data)
+
+
+@router.post(
+    "/{trip_id}/generate",
+    response_model=ApiResponse[TripResponseData],
+)
+def generate_trip_plan(trip_id: str) -> ApiResponse[TripResponseData]:
+    planning_state = planning_orchestrator.generate_full_plan(trip_id)
     data = TripResponseData(trip_id=trip_id, planning_state=planning_state)
     return success_response(data)
 
