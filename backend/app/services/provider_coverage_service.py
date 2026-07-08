@@ -25,12 +25,25 @@ class ProviderCoverageService:
         coverage_field: str | None = None,
     ) -> PlanningState:
         entry = provider_gateway.to_status_entry(response)
+
+        existing_entry = planning_state.provider_status.get(response.provider_name)
+        if existing_entry is not None:
+            merged_fields = list(existing_entry.unavailable_fields)
+            for field in entry.unavailable_fields:
+                if field not in merged_fields:
+                    merged_fields.append(field)
+            entry.unavailable_fields = merged_fields
+
         planning_state.provider_status[response.provider_name] = entry
 
         if coverage_field is not None and hasattr(planning_state.provider_coverage, coverage_field):
             setattr(planning_state.provider_coverage, coverage_field, response.status.value)
 
+        existing_keys = {(item.source, item.field) for item in planning_state.unavailable_data}
         for field in response.unavailable_fields:
+            key = (response.provider_name, field)
+            if key in existing_keys:
+                continue
             planning_state.unavailable_data.append(
                 UnavailableDataItem(
                     field=field,
@@ -39,6 +52,7 @@ class ProviderCoverageService:
                     source=response.provider_name,
                 )
             )
+            existing_keys.add(key)
 
         planning_state.touch()
         return planning_state
