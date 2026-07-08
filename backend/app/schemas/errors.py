@@ -1,0 +1,25 @@
+from __future__ import annotations
+
+from enum import Enum
+
+from pydantic import BaseModel
+
+
+class ErrorCode(str, Enum):
+    VALIDATION_ERROR = "VALIDATION_ERROR"
+    TRIP_NOT_FOUND = "TRIP_NOT_FOUND"
+    PLANNING_STATE_NOT_FOUND = "PLANNING_STATE_NOT_FOUND"
+    PROVIDER_FAILED = "PROVIDER_FAILED"
+    PROVIDER_NOT_CONNECTED = "PROVIDER_NOT_CONNECTED"
+    DATA_UNAVAILABLE = "DATA_UNAVAILABLE"
+    AI_OUTPUT_INVALID = "AI_OUTPUT_INVALID"
+    STAGE_ALREADY_RUNNING = "STAGE_ALREADY_RUNNING"
+    STAGE_FAILED = "STAGE_FAILED"
+    UNSUPPORTED_OPERATION = "UNSUPPORTED_OPERATION"
+    INTERNAL_ERROR = "INTERNAL_ERROR"
+
+
+class ApiError(BaseModel):
+    code: ErrorCode
+    field: str | None = None
+    message: str
