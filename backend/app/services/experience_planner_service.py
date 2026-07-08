@@ -3,9 +3,7 @@ from __future__ import annotations
 from datetime import timedelta
 
 from app.models.planning_state import DailyPlan, ExperiencePlan, PlanningStage, PlanningState
-from app.providers.gateway import ProviderGateway, provider_gateway
 from app.services.base import PlanningStageService
-from app.services.provider_coverage_service import ProviderCoverageService, provider_coverage_service
 
 
 class ExperiencePlannerService(PlanningStageService):
@@ -14,34 +12,33 @@ class ExperiencePlannerService(PlanningStageService):
 
     Consumes `traveler_profile`, `destination_context`, `trip_strategy`, and
     `stay_transport`. Day structure (day number/date) can be derived safely
-    from the user's own dates. Attraction/restaurant selection, geographic
-    grouping, and day-level scheduling are not implemented yet, so each day
-    is created empty with an explicit warning instead of invented activities,
-    even when provider-backed candidate data exists.
+    from the user's own dates. This stage makes no provider calls of its
+    own: attraction/restaurant selection, geographic grouping, and
+    day-level scheduling are not implemented yet, so it only reads the
+    candidate count already fetched by DestinationContextService
+    (`destination_context.candidate_pois`) to describe what is available,
+    and leaves every day empty with an explicit warning. Calling OSM again
+    here would be redundant and could overwrite the honest
+    `provider_coverage` that DestinationContextService already recorded.
     """
-
-    def __init__(
-        self,
-        gateway: ProviderGateway | None = None,
-        coverage_service: ProviderCoverageService | None = None,
-    ) -> None:
-        self.gateway = gateway or provider_gateway
-        self.coverage_service = coverage_service or provider_coverage_service
 
     def run(self, planning_state: PlanningState) -> PlanningState:
         planning_state.set_active_stage(PlanningStage.EXPERIENCE_PLAN)
 
-        destination_name = planning_state.trip_request.primary_destination
+        destination_context = planning_state.destination_context
+        candidate_poi_count = len(destination_context.candidate_pois) if destination_context else 0
 
-        attractions_response = self.gateway.places.search_attractions(destination_name)
-        self.coverage_service.record_provider_result(
-            planning_state, attractions_response, "places"
-        )
-
-        restaurants_response = self.gateway.places.search_restaurants(destination_name)
-        self.coverage_service.record_provider_result(
-            planning_state, restaurants_response, "restaurants"
-        )
+        if candidate_poi_count:
+            day_warning = (
+                f"{candidate_poi_count} candidate attraction(s) are available from "
+                "destination context, but day-level scheduling is not implemented yet, "
+                "so this day is empty."
+            )
+        else:
+            day_warning = (
+                "No attraction candidates are available yet, and day-level scheduling "
+                "is not implemented, so this day is empty."
+            )
 
         trip_request = planning_state.trip_request
         num_days = (trip_request.end_date - trip_request.start_date).days + 1
@@ -53,10 +50,7 @@ class ExperiencePlannerService(PlanningStageService):
                 DailyPlan(
                     day_number=day_number,
                     date=day_date,
-                    warnings=[
-                        "Attractions and restaurants have not been scheduled into this "
-                        "day yet; day-level itinerary scheduling is not implemented."
-                    ],
+                    warnings=[day_warning],
                 )
             )
 

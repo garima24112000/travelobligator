@@ -12,11 +12,17 @@ class DestinationContextService(PlanningStageService):
     section 10).
 
     Consumes `trip_request` and `traveler_profile`. Reaches provider-backed
-    data only through ProviderGateway. `candidate_pois` is filled with real
-    attraction POIs when PlacesProvider returns usable data; neighborhood
-    candidates, attraction clusters, and transport feasibility stay empty
-    and marked `not_connected` rather than filled with invented data since
-    no adapter implements those yet.
+    data only through ProviderGateway, calling only the OSM PlacesProvider
+    methods it actually implements: `search_attractions`,
+    `search_restaurants`, and `search_accommodation_pois`.
+
+    `candidate_pois` is filled with real attraction POIs when the places
+    provider returns usable data. Restaurant and accommodation POI results
+    are only used for honest `provider_status`/`provider_coverage`
+    bookkeeping right now — see the TODO in `run()` below for why they are
+    not stored as candidates yet. Accommodation POIs are open-data location
+    candidates only, never bookable inventory. Neighborhood candidates and
+    attraction clusters stay empty since no adapter implements those yet.
     """
 
     def __init__(
@@ -35,6 +41,23 @@ class DestinationContextService(PlanningStageService):
         attractions_response = self.gateway.places.search_attractions(destination_name)
         self.coverage_service.record_provider_result(planning_state, attractions_response, "places")
 
+        restaurants_response = self.gateway.places.search_restaurants(destination_name)
+        self.coverage_service.record_provider_result(
+            planning_state, restaurants_response, "restaurants"
+        )
+
+        # TODO: DestinationContext has no candidate-list field for restaurants or
+        # accommodation POIs yet (docs/10_data_model.md section 7 only defines
+        # `candidate_pois`, `neighborhood_candidates`, `attraction_clusters`). Once a
+        # suitable field is added, store restaurants_response.data /
+        # accommodation_response.data there instead of only recording provider
+        # bookkeeping. Accommodation POIs from OSM must stay labeled as open-data
+        # location candidates only, not bookable inventory, when that happens.
+        accommodation_response = self.gateway.places.search_accommodation_pois(destination_name)
+        self.coverage_service.record_provider_result(
+            planning_state, accommodation_response, "accommodations"
+        )
+
         transit_response = self.gateway.routes.estimate_transit_feasibility(
             origin={"name": destination_name}, destination={"name": destination_name}
         )
@@ -48,7 +71,11 @@ class DestinationContextService(PlanningStageService):
 
         assumptions = [
             "Neighborhood candidates and attraction clusters could not be generated "
-            "because no provider for that data is connected yet."
+            "because no provider for that data is connected yet.",
+            "Restaurant and accommodation POI candidates from OpenStreetMap were "
+            "checked for provider coverage only; they are not yet stored as candidates "
+            "because no PlanningState field exists for them. Accommodation POIs are "
+            "open-data location candidates only, not bookable inventory.",
         ]
         if not candidate_pois:
             assumptions.insert(
