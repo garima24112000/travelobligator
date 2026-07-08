@@ -53,6 +53,7 @@ from app.models.planning_state import (
     ValidationReport,
     VersionHistoryItem,
 )
+from app.models.providers import ProviderResponse, ProviderType
 
 __all__ = [
     "AccommodationOption",
@@ -80,8 +81,10 @@ __all__ = [
     "PlanningStage",
     "PlanningState",
     "ProviderCoverage",
+    "ProviderResponse",
     "ProviderStatus",
     "ProviderStatusEntry",
+    "ProviderType",
     "RatingValue",
     "ReadinessStatus",
     "RecommendationType",
