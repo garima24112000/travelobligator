@@ -54,3 +54,4 @@ docker-data/
 # OS / misc
 .DS_Store
 *.pem.claude/
+.claude/
