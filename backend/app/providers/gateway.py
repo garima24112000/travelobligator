@@ -15,6 +15,7 @@ from app.providers.base import (
     TransitProvider,
     WeatherProvider,
 )
+from app.providers.places.openstreetmap_adapter import OpenStreetMapPlacesAdapter
 
 
 class ProviderGateway:
@@ -42,7 +43,7 @@ class ProviderGateway:
         currency: CurrencyProvider | None = None,
         ai_reasoning: AIReasoningProvider | None = None,
     ) -> None:
-        self.places = places or PlacesProvider()
+        self.places = places or OpenStreetMapPlacesAdapter()
         self.routes = routes or RoutesProvider()
         self.transit = transit or TransitProvider()
         self.accommodation = accommodation or AccommodationProvider()

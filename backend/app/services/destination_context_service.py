@@ -12,9 +12,11 @@ class DestinationContextService(PlanningStageService):
     section 10).
 
     Consumes `trip_request` and `traveler_profile`. Reaches provider-backed
-    data only through ProviderGateway. Until a real PlacesProvider/
-    RoutesProvider adapter is connected, every candidate list stays empty and
-    is marked `not_connected` rather than filled with invented POIs.
+    data only through ProviderGateway. `candidate_pois` is filled with real
+    attraction POIs when PlacesProvider returns usable data; neighborhood
+    candidates, attraction clusters, and transport feasibility stay empty
+    and marked `not_connected` rather than filled with invented data since
+    no adapter implements those yet.
     """
 
     def __init__(
@@ -30,9 +32,6 @@ class DestinationContextService(PlanningStageService):
 
         destination_name = planning_state.trip_request.primary_destination
 
-        places_response = self.gateway.places.search_places(destination_name)
-        self.coverage_service.record_provider_result(planning_state, places_response, "places")
-
         attractions_response = self.gateway.places.search_attractions(destination_name)
         self.coverage_service.record_provider_result(planning_state, attractions_response, "places")
 
@@ -41,16 +40,29 @@ class DestinationContextService(PlanningStageService):
         )
         self.coverage_service.record_provider_result(planning_state, transit_response, "routes")
 
+        candidate_pois = (
+            [poi.model_dump(mode="json") for poi in attractions_response.data]
+            if attractions_response.data
+            else []
+        )
+
         assumptions = [
-            "Candidate points of interest, neighborhoods, and transport feasibility "
-            "could not be generated because the places and routes providers are not connected."
+            "Neighborhood candidates and attraction clusters could not be generated "
+            "because no provider for that data is connected yet."
         ]
+        if not candidate_pois:
+            assumptions.insert(
+                0,
+                "Candidate points of interest could not be generated because the places "
+                "provider returned no usable attraction data for this destination.",
+            )
 
         context = DestinationContext(
             destination_name=destination_name,
+            candidate_pois=candidate_pois,
             provider_coverage=planning_state.provider_coverage.model_copy(),
             assumptions=assumptions,
-            confidence=0.0,
+            confidence=attractions_response.confidence if candidate_pois else 0.0,
         )
 
         planning_state.destination_context = context

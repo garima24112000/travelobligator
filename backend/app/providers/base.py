@@ -42,6 +42,24 @@ def unavailable_response(
     )
 
 
+def failed_response(
+    provider_name: str,
+    provider_type: ProviderType,
+    unavailable_fields: list[str] | None = None,
+    message: str | None = None,
+) -> ProviderResponse[Any]:
+    return ProviderResponse[Any](
+        provider_name=provider_name,
+        provider_type=provider_type,
+        status=ProviderStatus.FAILED,
+        data_status=DataStatus.FAILED,
+        data=None,
+        unavailable_fields=unavailable_fields or [],
+        confidence=0.0,
+        message=message or f"{provider_type.value} provider request failed.",
+    )
+
+
 class BaseProvider:
     """Shared behavior for provider interfaces.
 

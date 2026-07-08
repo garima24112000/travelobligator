@@ -14,9 +14,10 @@ class ExperiencePlannerService(PlanningStageService):
 
     Consumes `traveler_profile`, `destination_context`, `trip_strategy`, and
     `stay_transport`. Day structure (day number/date) can be derived safely
-    from the user's own dates, but no attractions, restaurants, or timing can
-    be selected without a connected PlacesProvider, so each day is created
-    empty with an explicit warning instead of invented activities.
+    from the user's own dates. Attraction/restaurant selection, geographic
+    grouping, and day-level scheduling are not implemented yet, so each day
+    is created empty with an explicit warning instead of invented activities,
+    even when provider-backed candidate data exists.
     """
 
     def __init__(
@@ -53,8 +54,8 @@ class ExperiencePlannerService(PlanningStageService):
                     day_number=day_number,
                     date=day_date,
                     warnings=[
-                        "No attractions or restaurants could be scheduled because "
-                        "the places provider is not connected."
+                        "Attractions and restaurants have not been scheduled into this "
+                        "day yet; day-level itinerary scheduling is not implemented."
                     ],
                 )
             )
@@ -64,7 +65,7 @@ class ExperiencePlannerService(PlanningStageService):
             provider_coverage=planning_state.provider_coverage.model_copy(),
             assumptions=[
                 "The daily plan is a date skeleton only; no experiences have "
-                "been selected because provider data is unavailable."
+                "been selected because day-level scheduling is not implemented yet."
             ],
             confidence=0.0,
         )
