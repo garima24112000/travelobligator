@@ -12,6 +12,7 @@ from app.schemas.errors import ErrorCode
 from app.schemas.experience_plan import ExperiencePlanResponseData
 from app.schemas.provider_coverage import ProviderCoverageResponseData
 from app.schemas.trips import TripResponseData
+from app.schemas.validation_report import ValidationReportResponseData
 from app.services.planning_orchestrator import planning_orchestrator
 
 router = APIRouter(prefix="/trips", tags=["trips"])
@@ -119,6 +120,41 @@ def get_experience_plan(trip_id: str) -> ApiResponse[ExperiencePlanResponseData]
     data = ExperiencePlanResponseData(
         trip_id=trip_id,
         experience_plan=planning_state.experience_plan,
+        validation_report=planning_state.validation_report,
+        provider_coverage=planning_state.provider_coverage,
+        unavailable_data=planning_state.unavailable_data,
+        data_sources_used=planning_state.data_sources_used,
+    )
+    return success_response(data)
+
+
+@router.get(
+    "/{trip_id}/validation-report",
+    response_model=ApiResponse[ValidationReportResponseData],
+)
+def get_validation_report(trip_id: str) -> ApiResponse[ValidationReportResponseData]:
+    planning_state = planning_state_repository.get_by_trip_id(trip_id)
+    if planning_state is None:
+        raise AppError(
+            code=ErrorCode.TRIP_NOT_FOUND,
+            message=f"Trip '{trip_id}' was not found.",
+            status_code=status.HTTP_404_NOT_FOUND,
+            field="trip_id",
+        )
+
+    if planning_state.validation_report is None:
+        raise AppError(
+            code=ErrorCode.DATA_UNAVAILABLE,
+            message=(
+                f"Validation report for trip '{trip_id}' has not been generated yet. "
+                "Call POST /trips/{trip_id}/generate first."
+            ),
+            status_code=status.HTTP_409_CONFLICT,
+            field="validation_report",
+        )
+
+    data = ValidationReportResponseData(
+        trip_id=trip_id,
         validation_report=planning_state.validation_report,
         provider_coverage=planning_state.provider_coverage,
         unavailable_data=planning_state.unavailable_data,
