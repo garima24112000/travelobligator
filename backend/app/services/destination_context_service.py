@@ -16,13 +16,13 @@ class DestinationContextService(PlanningStageService):
     methods it actually implements: `search_attractions`,
     `search_restaurants`, and `search_accommodation_pois`.
 
-    `candidate_pois` is filled with real attraction POIs when the places
-    provider returns usable data. Restaurant and accommodation POI results
-    are only used for honest `provider_status`/`provider_coverage`
-    bookkeeping right now — see the TODO in `run()` below for why they are
-    not stored as candidates yet. Accommodation POIs are open-data location
-    candidates only, never bookable inventory. Neighborhood candidates and
-    attraction clusters stay empty since no adapter implements those yet.
+    `candidate_pois`, `candidate_restaurants`, and
+    `candidate_accommodation_pois` are filled with real OSM POIs when the
+    places provider returns usable data. `candidate_accommodation_pois` are
+    open-data location candidates only — never bookable inventory, and never
+    given a price, availability, rating, or booking link. Neighborhood
+    candidates and attraction clusters stay empty since no adapter implements
+    those yet.
     """
 
     def __init__(
@@ -46,13 +46,6 @@ class DestinationContextService(PlanningStageService):
             planning_state, restaurants_response, "restaurants"
         )
 
-        # TODO: DestinationContext has no candidate-list field for restaurants or
-        # accommodation POIs yet (docs/10_data_model.md section 7 only defines
-        # `candidate_pois`, `neighborhood_candidates`, `attraction_clusters`). Once a
-        # suitable field is added, store restaurants_response.data /
-        # accommodation_response.data there instead of only recording provider
-        # bookkeeping. Accommodation POIs from OSM must stay labeled as open-data
-        # location candidates only, not bookable inventory, when that happens.
         accommodation_response = self.gateway.places.search_accommodation_pois(destination_name)
         self.coverage_service.record_provider_result(
             planning_state, accommodation_response, "accommodations"
@@ -68,14 +61,25 @@ class DestinationContextService(PlanningStageService):
             if attractions_response.data
             else []
         )
+        candidate_restaurants = (
+            [poi.model_dump(mode="json") for poi in restaurants_response.data]
+            if restaurants_response.data
+            else []
+        )
+        # Open-data location candidates only. Do not attach price, availability,
+        # rating, or booking link fields to these — OSM does not supply them.
+        candidate_accommodation_pois = (
+            [poi.model_dump(mode="json") for poi in accommodation_response.data]
+            if accommodation_response.data
+            else []
+        )
 
         assumptions = [
             "Neighborhood candidates and attraction clusters could not be generated "
             "because no provider for that data is connected yet.",
-            "Restaurant and accommodation POI candidates from OpenStreetMap were "
-            "checked for provider coverage only; they are not yet stored as candidates "
-            "because no PlanningState field exists for them. Accommodation POIs are "
-            "open-data location candidates only, not bookable inventory.",
+            "Accommodation POI candidates are open-data location candidates from "
+            "OpenStreetMap only, not bookable inventory. They have no price, "
+            "availability, rating, or booking link.",
         ]
         if not candidate_pois:
             assumptions.insert(
@@ -83,10 +87,23 @@ class DestinationContextService(PlanningStageService):
                 "Candidate points of interest could not be generated because the places "
                 "provider returned no usable attraction data for this destination.",
             )
+        if not candidate_restaurants:
+            assumptions.append(
+                "Candidate restaurants could not be generated because the places "
+                "provider returned no usable restaurant data for this destination."
+            )
+        if not candidate_accommodation_pois:
+            assumptions.append(
+                "Candidate accommodation location POIs could not be generated because "
+                "the places provider returned no usable accommodation data for this "
+                "destination."
+            )
 
         context = DestinationContext(
             destination_name=destination_name,
             candidate_pois=candidate_pois,
+            candidate_restaurants=candidate_restaurants,
+            candidate_accommodation_pois=candidate_accommodation_pois,
             provider_coverage=planning_state.provider_coverage.model_copy(),
             assumptions=assumptions,
             confidence=attractions_response.confidence if candidate_pois else 0.0,

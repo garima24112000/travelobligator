@@ -185,6 +185,10 @@ class DestinationContext(BaseModel):
 
     destination_overview: str | None = None
     candidate_pois: list[dict[str, Any]] = Field(default_factory=list)
+    candidate_restaurants: list[dict[str, Any]] = Field(default_factory=list)
+    # Open-data location candidates only (e.g. OSM), never bookable inventory.
+    # No price, availability, rating, or booking link should be attached here.
+    candidate_accommodation_pois: list[dict[str, Any]] = Field(default_factory=list)
     neighborhood_candidates: list[dict[str, Any]] = Field(default_factory=list)
     attraction_clusters: list[dict[str, Any]] = Field(default_factory=list)
     rough_transport_feasibility: dict[str, Any] = Field(default_factory=dict)
