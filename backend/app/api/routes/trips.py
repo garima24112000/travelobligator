@@ -9,6 +9,7 @@ from app.repositories.planning_state_repository import planning_state_repository
 from app.schemas.api_responses import ApiResponse
 from app.schemas.destination_context import DestinationContextResponseData
 from app.schemas.errors import ErrorCode
+from app.schemas.experience_plan import ExperiencePlanResponseData
 from app.schemas.provider_coverage import ProviderCoverageResponseData
 from app.schemas.trips import TripResponseData
 from app.services.planning_orchestrator import planning_orchestrator
@@ -83,6 +84,42 @@ def get_destination_context(trip_id: str) -> ApiResponse[DestinationContextRespo
     data = DestinationContextResponseData(
         trip_id=trip_id,
         destination_context=planning_state.destination_context,
+        provider_coverage=planning_state.provider_coverage,
+        unavailable_data=planning_state.unavailable_data,
+        data_sources_used=planning_state.data_sources_used,
+    )
+    return success_response(data)
+
+
+@router.get(
+    "/{trip_id}/experience-plan",
+    response_model=ApiResponse[ExperiencePlanResponseData],
+)
+def get_experience_plan(trip_id: str) -> ApiResponse[ExperiencePlanResponseData]:
+    planning_state = planning_state_repository.get_by_trip_id(trip_id)
+    if planning_state is None:
+        raise AppError(
+            code=ErrorCode.TRIP_NOT_FOUND,
+            message=f"Trip '{trip_id}' was not found.",
+            status_code=status.HTTP_404_NOT_FOUND,
+            field="trip_id",
+        )
+
+    if planning_state.experience_plan is None:
+        raise AppError(
+            code=ErrorCode.DATA_UNAVAILABLE,
+            message=(
+                f"Experience plan for trip '{trip_id}' has not been generated yet. "
+                "Call POST /trips/{trip_id}/generate first."
+            ),
+            status_code=status.HTTP_409_CONFLICT,
+            field="experience_plan",
+        )
+
+    data = ExperiencePlanResponseData(
+        trip_id=trip_id,
+        experience_plan=planning_state.experience_plan,
+        validation_report=planning_state.validation_report,
         provider_coverage=planning_state.provider_coverage,
         unavailable_data=planning_state.unavailable_data,
         data_sources_used=planning_state.data_sources_used,
