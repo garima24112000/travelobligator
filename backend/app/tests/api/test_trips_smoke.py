@@ -177,6 +177,52 @@ def test_validation_report_after_generate(client: TestClient, generated_trip_id:
     )
 
 
+def test_trip_summary_before_generate(client: TestClient, created_trip_id: str) -> None:
+    response = client.get(f"/trips/{created_trip_id}/summary")
+    assert response.status_code == 200
+    body = response.json()
+    assert_api_response_shape(body)
+    summary = body["data"]
+
+    assert summary["trip_id"] == created_trip_id
+    assert summary["primary_destination"] == "Testville, Testland"
+    assert summary["destination_context_generated"] is False
+    assert summary["experience_plan_generated"] is False
+    assert summary["validation_report_generated"] is False
+    assert summary["candidate_pois_count"] == 0
+    assert summary["candidate_restaurants_count"] == 0
+    assert summary["candidate_accommodation_pois_count"] == 0
+    assert summary["scheduled_experiences_count"] == 0
+    assert summary["validation_status"] is None
+    assert summary["main_blocking_reason"] is None
+    assert summary["main_review_reason"] is None
+
+
+def test_trip_summary_after_generate(client: TestClient, generated_trip_id: str) -> None:
+    response = client.get(f"/trips/{generated_trip_id}/summary")
+    assert response.status_code == 200
+    body = response.json()
+    assert_api_response_shape(body)
+    summary = body["data"]
+
+    assert summary["trip_id"] == generated_trip_id
+    assert summary["destination_context_generated"] is True
+    assert summary["experience_plan_generated"] is True
+    assert summary["validation_report_generated"] is True
+
+    # The deterministic test places provider returns 2 attractions, 1 restaurant,
+    # and 1 accommodation POI, all of which should be reflected honestly.
+    assert summary["candidate_pois_count"] == 2
+    assert summary["candidate_restaurants_count"] == 1
+    assert summary["candidate_accommodation_pois_count"] == 1
+    assert summary["scheduled_experiences_count"] > 0
+
+    assert summary["validation_status"] == "needs_review"
+    assert summary["main_blocking_reason"] is None
+    assert summary["main_review_reason"] is not None
+    assert "feasibility" in summary["main_review_reason"].lower()
+
+
 def test_provider_coverage_after_generate(client: TestClient, generated_trip_id: str) -> None:
     response = client.get(f"/trips/{generated_trip_id}/provider-coverage")
     assert response.status_code == 200
@@ -229,3 +275,12 @@ def test_validation_report_blocked_when_no_candidate_pois(
 
     validation_report = body["data"]["validation_report"]
     assert validation_report["readiness_status"] == "blocked"
+
+    summary_response = client.get(f"/trips/{created_trip_id}/summary")
+    assert summary_response.status_code == 200
+    summary = summary_response.json()["data"]
+    assert summary["candidate_pois_count"] == 0
+    assert summary["scheduled_experiences_count"] == 0
+    assert summary["validation_status"] == "blocked"
+    assert summary["main_blocking_reason"] is not None
+    assert summary["main_review_reason"] is None
