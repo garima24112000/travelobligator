@@ -42,6 +42,46 @@ function readinessLabel(status: string | null): string {
   return "Unknown";
 }
 
+function CandidatePoiSection({
+  title,
+  note,
+  pois,
+  emptyMessage,
+}: {
+  title: string;
+  note?: string;
+  pois: CandidatePoi[];
+  emptyMessage: string;
+}) {
+  return (
+    <div className="rounded-2xl border border-white/10 bg-white/5 p-5">
+      <h2 className="text-lg font-semibold">{title}</h2>
+      {note && <p className="mt-1 text-xs text-amber-300/90">{note}</p>}
+      {pois.length === 0 ? (
+        <p className="mt-2 text-sm text-slate-400">{emptyMessage}</p>
+      ) : (
+        <ul className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
+          {pois.map((poi) => (
+            <li
+              key={poi.place_id}
+              className="rounded-lg border border-white/10 bg-slate-900/60 p-3 text-sm"
+            >
+              <p className="font-medium">{poi.name}</p>
+              <p className="text-xs text-slate-400">
+                {poi.category ?? "Uncategorized"}
+                {poi.address ? ` · ${poi.address}` : ""}
+              </p>
+              <p className="mt-1 text-[11px] uppercase tracking-wide text-slate-500">
+                {poi.source} · {poi.data_status}
+              </p>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 export default function Home() {
   const [form, setForm] = useState<TripRequestInput>(DEFAULT_TRIP_REQUEST);
   const [isLoading, setIsLoading] = useState(false);
@@ -311,31 +351,24 @@ export default function Home() {
               </div>
             </div>
 
-            <div className="rounded-2xl border border-white/10 bg-white/5 p-5">
-              <h2 className="text-lg font-semibold">
-                Destination candidate attractions
-              </h2>
-              {result.candidatePois.length === 0 ? (
-                <p className="mt-2 text-sm text-slate-400">
-                  No attraction candidates returned.
-                </p>
-              ) : (
-                <ul className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
-                  {result.candidatePois.map((poi) => (
-                    <li
-                      key={poi.place_id}
-                      className="rounded-lg border border-white/10 bg-slate-900/60 p-3 text-sm"
-                    >
-                      <p className="font-medium">{poi.name}</p>
-                      <p className="text-xs text-slate-400">
-                        {poi.category ?? "Uncategorized"}
-                        {poi.address ? ` · ${poi.address}` : ""}
-                      </p>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </div>
+            <CandidatePoiSection
+              title="Destination candidate attractions"
+              pois={result.candidatePois}
+              emptyMessage="No attraction candidates returned."
+            />
+
+            <CandidatePoiSection
+              title="Destination candidate restaurants"
+              pois={result.candidateRestaurants}
+              emptyMessage="No restaurant candidates returned."
+            />
+
+            <CandidatePoiSection
+              title="Destination candidate accommodation POIs"
+              note="Open-data location candidates only, not bookable inventory."
+              pois={result.candidateAccommodationPois}
+              emptyMessage="No accommodation POI candidates returned."
+            />
           </div>
         )}
       </section>
