@@ -9,24 +9,24 @@ class PlanValidatorService(PlanningStageService):
     """Owns `validation_report` and `validation_cards`
     (docs/14_backend_architecture.md section 14).
 
-    Runs deterministic checks first and does not modify the itinerary. For
-    now the only deterministic fact available is whether the experience plan
-    actually contains scheduled experiences. If it does not, the reason is
-    distinguished honestly:
+    Runs deterministic checks first and does not modify the itinerary.
 
-    * no provider-backed attraction candidates were available at all, or
-    * candidates exist (`destination_context.candidate_pois`), but
-      ExperiencePlannerService does not implement day-level scheduling yet.
-
-    Either way the report is marked `blocked` rather than `ready`, since no
-    itinerary can be presented, but the message should not blame provider
-    coverage when the real gap is unimplemented scheduling.
+    * If the experience plan has no scheduled experiences at all, the report
+      is `blocked`. The message is distinguished honestly: either no
+      provider-backed attraction candidates were available, or candidates
+      exist but this plan has not scheduled them into days yet.
+    * If experiences have been scheduled (ExperiencePlannerService's
+      conservative day-level scheduling step), the plan is not blocked
+      anymore. However, route ordering, timing, opening-hours, and
+      feasibility checks are not implemented yet, so the report is
+      `needs_review`, never `ready`.
     """
 
     def run(self, planning_state: PlanningState) -> PlanningState:
         planning_state.set_active_stage(PlanningStage.VALIDATION)
 
         critical_issues: list[ValidationIssue] = []
+        warnings: list[ValidationIssue] = []
         provider_coverage_notes: list[str] = []
         unavailable_data_notes = [item.field for item in planning_state.unavailable_data]
 
@@ -40,42 +40,58 @@ class PlanValidatorService(PlanningStageService):
             else 0
         )
 
-        if not has_scheduled_experiences:
-            if candidate_pois_count > 0:
-                critical_issues.append(
-                    ValidationIssue(
-                        severity=ValidationSeverity.CRITICAL,
-                        category="scheduling",
-                        message=(
-                            f"{candidate_pois_count} provider-backed attraction candidate(s) "
-                            "are available, but day-level scheduling is not implemented yet, "
-                            "so no experiences have been scheduled."
-                        ),
-                        affected_section="experience_plan",
-                        suggested_fix="Implement day-level scheduling in ExperiencePlannerService.",
-                    )
+        if has_scheduled_experiences:
+            warnings.append(
+                ValidationIssue(
+                    severity=ValidationSeverity.WARNING,
+                    category="feasibility",
+                    message=(
+                        "Attractions have been scheduled into days, but route ordering, "
+                        "timing, opening-hours, and feasibility checks are not implemented "
+                        "yet, so this plan needs review before it can be considered ready."
+                    ),
+                    affected_section="experience_plan",
+                    suggested_fix=(
+                        "Implement route/timing feasibility validation before marking "
+                        "plans ready."
+                    ),
                 )
-                provider_coverage_notes.append(
-                    "Places are available via OpenStreetMap; day-level scheduling of "
-                    "those candidates is not implemented yet."
+            )
+        elif candidate_pois_count > 0:
+            critical_issues.append(
+                ValidationIssue(
+                    severity=ValidationSeverity.CRITICAL,
+                    category="scheduling",
+                    message=(
+                        f"{candidate_pois_count} provider-backed attraction candidate(s) "
+                        "are available, but no experiences have been scheduled for this "
+                        "plan yet."
+                    ),
+                    affected_section="experience_plan",
+                    suggested_fix="Run the experience planner stage to schedule candidate attractions.",
                 )
-            else:
-                critical_issues.append(
-                    ValidationIssue(
-                        severity=ValidationSeverity.CRITICAL,
-                        category="provider_coverage",
-                        message=(
-                            "No experiences have been scheduled because no provider-backed "
-                            "attraction candidates are available."
-                        ),
-                        affected_section="experience_plan",
-                        suggested_fix="Connect a places provider and regenerate the plan.",
-                    )
+            )
+            provider_coverage_notes.append(
+                "Places are available via OpenStreetMap; this plan has not scheduled "
+                "them into days yet."
+            )
+        else:
+            critical_issues.append(
+                ValidationIssue(
+                    severity=ValidationSeverity.CRITICAL,
+                    category="provider_coverage",
+                    message=(
+                        "No experiences have been scheduled because no provider-backed "
+                        "attraction candidates are available."
+                    ),
+                    affected_section="experience_plan",
+                    suggested_fix="Connect a places provider and regenerate the plan.",
                 )
-                provider_coverage_notes.append(
-                    "No provider-backed attraction candidates are available for this "
-                    "destination."
-                )
+            )
+            provider_coverage_notes.append(
+                "No provider-backed attraction candidates are available for this "
+                "destination."
+            )
 
         readiness_status = (
             ReadinessStatus.BLOCKED if critical_issues else ReadinessStatus.NEEDS_REVIEW
@@ -84,6 +100,7 @@ class PlanValidatorService(PlanningStageService):
         validation_report = ValidationReport(
             readiness_status=readiness_status,
             critical_issues=critical_issues,
+            warnings=warnings,
             provider_coverage_notes=provider_coverage_notes,
             unavailable_data_notes=unavailable_data_notes,
         )

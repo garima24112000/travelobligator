@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
 from fastapi.testclient import TestClient
+
+from app.providers.base import PlacesProvider, unavailable_response
+from app.providers.gateway import provider_gateway
 
 
 def assert_api_response_shape(body: dict[str, Any]) -> None:
@@ -99,7 +103,10 @@ def test_generate_trip_plan(client: TestClient, created_trip_id: str) -> None:
     assert planning_state["destination_context"] is not None
     assert planning_state["experience_plan"] is not None
     assert planning_state["validation_report"] is not None
-    assert planning_state["validation_report"]["readiness_status"] == "blocked"
+    # The deterministic test places provider returns real candidate_pois, so the
+    # conservative scheduling step schedules them and the plan is no longer blocked;
+    # it is still not "ready" because route/timing feasibility is not implemented.
+    assert planning_state["validation_report"]["readiness_status"] == "needs_review"
 
 
 def test_destination_context_after_generate(
@@ -123,10 +130,34 @@ def test_experience_plan_after_generate(client: TestClient, generated_trip_id: s
     experience_plan = body["data"]["experience_plan"]
 
     assert len(experience_plan["daily_plans"]) > 0
-    for day_plan in experience_plan["daily_plans"]:
-        assert day_plan["experiences"] == []
 
-    assert body["data"]["validation_report"]["readiness_status"] == "blocked"
+    # The deterministic test provider returns real candidate_pois, so at least
+    # one day should have scheduled experiences drawn from those candidates.
+    all_experiences = [
+        experience
+        for day_plan in experience_plan["daily_plans"]
+        for experience in day_plan["experiences"]
+    ]
+    assert len(all_experiences) > 0
+
+    for day_plan in experience_plan["daily_plans"]:
+        # No route/timing/cost estimation is implemented yet at the day level.
+        assert day_plan["estimated_walking_km"] is None
+        assert day_plan["estimated_travel_time_minutes"] is None
+        assert day_plan["estimated_cost"] is None
+
+    for experience in all_experiences:
+        # Scheduled experiences must come from real candidates with no invented
+        # times, durations, or cost/route facts.
+        assert experience["name"] in {
+            "Test Fixture Attraction One",
+            "Test Fixture Attraction Two",
+        }
+        assert experience["start_time"] is None
+        assert experience["end_time"] is None
+        assert experience["estimated_duration_minutes"] is None
+
+    assert body["data"]["validation_report"]["readiness_status"] == "needs_review"
 
 
 def test_validation_report_after_generate(client: TestClient, generated_trip_id: str) -> None:
@@ -135,8 +166,15 @@ def test_validation_report_after_generate(client: TestClient, generated_trip_id:
     body = response.json()
     assert_api_response_shape(body)
     validation_report = body["data"]["validation_report"]
-    assert validation_report["readiness_status"] == "blocked"
-    assert len(validation_report["critical_issues"]) > 0
+    # Experiences were scheduled from real candidates, so the plan is no longer
+    # blocked, but route/timing feasibility is not implemented yet, so it is
+    # needs_review rather than ready.
+    assert validation_report["readiness_status"] == "needs_review"
+    assert validation_report["critical_issues"] == []
+    assert len(validation_report["warnings"]) > 0
+    assert any(
+        "feasibility" in warning["category"] for warning in validation_report["warnings"]
+    )
 
 
 def test_provider_coverage_after_generate(client: TestClient, generated_trip_id: str) -> None:
@@ -145,3 +183,49 @@ def test_provider_coverage_after_generate(client: TestClient, generated_trip_id:
     body = response.json()
     assert_api_response_shape(body)
     assert body["data"]["provider_coverage"]["places"] == "success"
+
+
+class _NoCandidatesTestPlacesProvider(PlacesProvider):
+    """Test-only double that reports no usable places, for the still-blocked case."""
+
+    provider_name = "openstreetmap_places"
+
+    def search_attractions(
+        self, destination: str, filters: dict[str, Any] | None = None
+    ) -> Any:
+        return unavailable_response(
+            self.provider_name, self.provider_type, unavailable_fields=["attractions"]
+        )
+
+    def search_restaurants(
+        self, area: str, filters: dict[str, Any] | None = None
+    ) -> Any:
+        return unavailable_response(
+            self.provider_name, self.provider_type, unavailable_fields=["restaurants"]
+        )
+
+    def search_accommodation_pois(
+        self, destination: str, filters: dict[str, Any] | None = None
+    ) -> Any:
+        return unavailable_response(
+            self.provider_name, self.provider_type, unavailable_fields=["accommodation_pois"]
+        )
+
+
+def test_validation_report_blocked_when_no_candidate_pois(
+    client: TestClient, created_trip_id: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(provider_gateway, "places", _NoCandidatesTestPlacesProvider())
+
+    generate_response = client.post(f"/trips/{created_trip_id}/generate")
+    assert generate_response.status_code == 200
+
+    response = client.get(f"/trips/{created_trip_id}/experience-plan")
+    assert response.status_code == 200
+    body = response.json()
+    experience_plan = body["data"]["experience_plan"]
+    for day_plan in experience_plan["daily_plans"]:
+        assert day_plan["experiences"] == []
+
+    validation_report = body["data"]["validation_report"]
+    assert validation_report["readiness_status"] == "blocked"
