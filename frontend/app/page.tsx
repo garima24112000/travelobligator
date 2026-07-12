@@ -35,6 +35,13 @@ type PlanResult = {
   dailyPlans: DailyPlan[];
 };
 
+function parseCommaList(value: string): string[] {
+  return value
+    .split(",")
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0);
+}
+
 function readinessLabel(status: string | null): string {
   if (status === "ready") return "Ready";
   if (status === "needs_review") return "Needs Review";
@@ -84,6 +91,9 @@ function CandidatePoiSection({
 
 export default function Home() {
   const [form, setForm] = useState<TripRequestInput>(DEFAULT_TRIP_REQUEST);
+  const [interestsText, setInterestsText] = useState("");
+  const [mustVisitText, setMustVisitText] = useState("");
+  const [constraintsText, setConstraintsText] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<PlanResult | null>(null);
@@ -94,7 +104,13 @@ export default function Home() {
     setResult(null);
 
     try {
-      const { trip_id: tripId } = await createTrip(form);
+      const requestBody: TripRequestInput = {
+        ...form,
+        interests: parseCommaList(interestsText),
+        must_visit: parseCommaList(mustVisitText),
+        constraints: parseCommaList(constraintsText),
+      };
+      const { trip_id: tripId } = await createTrip(requestBody);
       await generatePlan(tripId);
 
       const [summary, destinationContext, experiencePlan] = await Promise.all(
@@ -225,6 +241,111 @@ export default function Home() {
               <option value="balanced">Balanced</option>
               <option value="packed">Packed</option>
             </select>
+          </label>
+
+          <label className="flex flex-col gap-1 text-sm text-slate-300">
+            Travel group
+            <select
+              className="rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-slate-100"
+              value={form.travel_group_type}
+              onChange={(event) =>
+                setForm({
+                  ...form,
+                  travel_group_type: event.target
+                    .value as TripRequestInput["travel_group_type"],
+                })
+              }
+            >
+              <option value="solo">Solo</option>
+              <option value="couple">Couple</option>
+              <option value="family">Family</option>
+              <option value="friends">Friends</option>
+              <option value="group">Group</option>
+            </select>
+          </label>
+
+          <label className="flex flex-col gap-1 text-sm text-slate-300">
+            Budget min (USD)
+            <input
+              type="number"
+              min={0}
+              className="rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-slate-100"
+              value={form.budget_min ?? ""}
+              onChange={(event) =>
+                setForm({
+                  ...form,
+                  budget_min:
+                    event.target.value === ""
+                      ? undefined
+                      : Number(event.target.value),
+                })
+              }
+            />
+          </label>
+
+          <label className="flex flex-col gap-1 text-sm text-slate-300">
+            Budget max (USD)
+            <input
+              type="number"
+              min={0}
+              className="rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-slate-100"
+              value={form.budget_max ?? ""}
+              onChange={(event) =>
+                setForm({
+                  ...form,
+                  budget_max:
+                    event.target.value === ""
+                      ? undefined
+                      : Number(event.target.value),
+                })
+              }
+            />
+          </label>
+
+          <label className="flex flex-col gap-1 text-sm text-slate-300 sm:col-span-2">
+            Interests (comma-separated)
+            <input
+              className="rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-slate-100"
+              placeholder="museums, hiking, local food"
+              value={interestsText}
+              onChange={(event) => setInterestsText(event.target.value)}
+            />
+          </label>
+
+          <label className="flex flex-col gap-1 text-sm text-slate-300 sm:col-span-2">
+            Must-visit places (comma-separated)
+            <input
+              className="rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-slate-100"
+              placeholder="Eiffel Tower, Louvre Museum"
+              value={mustVisitText}
+              onChange={(event) => setMustVisitText(event.target.value)}
+            />
+          </label>
+
+          <label className="flex flex-col gap-1 text-sm text-slate-300 sm:col-span-2">
+            Constraints (comma-separated)
+            <input
+              className="rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-slate-100"
+              placeholder="no early mornings, wheelchair accessible"
+              value={constraintsText}
+              onChange={(event) => setConstraintsText(event.target.value)}
+            />
+          </label>
+
+          <label className="flex flex-col gap-1 text-sm text-slate-300 sm:col-span-2">
+            Anything else we should know?
+            <textarea
+              className="rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-slate-100"
+              rows={3}
+              value={form.free_text_preferences ?? ""}
+              onChange={(event) =>
+                setForm({
+                  ...form,
+                  free_text_preferences:
+                    event.target.value === "" ? undefined : event.target.value,
+                })
+              }
+            />
           </label>
 
           <button

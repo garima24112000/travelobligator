@@ -25,6 +25,12 @@ export type TripRequestInput = {
   travelers_count: number;
   travel_group_type: "solo" | "couple" | "family" | "friends" | "group";
   pace: "relaxed" | "balanced" | "packed";
+  budget_min?: number;
+  budget_max?: number;
+  interests?: string[];
+  must_visit?: string[];
+  constraints?: string[];
+  free_text_preferences?: string;
 };
 
 export type TripCreateData = {
