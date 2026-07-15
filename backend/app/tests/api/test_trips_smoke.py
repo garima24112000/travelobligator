@@ -937,3 +937,266 @@ def test_experience_plan_geo_ordering_keeps_must_visit_before_interest_and_unmat
     by_name = {experience["name"]: experience for experience in experiences}
     assert by_name["Old Fort"]["why_included"] == "Matches your must-visit request."
     assert "interests" in by_name["City Museum"]["why_included"]
+
+
+class _GeographicSpreadTestPlacesProvider(PlacesProvider):
+    """Test-only double with two attractions ~11km apart (straight-line),
+    used to prove the validator's geographic-spread warning fires once
+    consecutive coordinate-backed experiences exceed the conservative 8km
+    threshold.
+    """
+
+    provider_name = "openstreetmap_places"
+
+    def search_attractions(
+        self, destination: str, filters: dict[str, Any] | None = None
+    ) -> ProviderResponse[Any]:
+        places = [
+            _geo_place("test/geo/spread/a", "Spread Point A", "landmark", 0.0),
+            _geo_place("test/geo/spread/b", "Spread Point B", "landmark", 0.1),
+        ]
+        return ProviderResponse[list[NormalizedPlace]](
+            provider_name=self.provider_name,
+            provider_type=self.provider_type,
+            status=ProviderStatus.SUCCESS,
+            data_status=DataStatus.LIVE,
+            data=places,
+            confidence=0.65,
+            message="Test fixture data; not a real provider call.",
+        )
+
+    def search_restaurants(
+        self, area: str, filters: dict[str, Any] | None = None
+    ) -> ProviderResponse[Any]:
+        return unavailable_response(
+            self.provider_name, self.provider_type, unavailable_fields=["restaurants"]
+        )
+
+    def search_accommodation_pois(
+        self, destination: str, filters: dict[str, Any] | None = None
+    ) -> ProviderResponse[Any]:
+        return unavailable_response(
+            self.provider_name, self.provider_type, unavailable_fields=["accommodation_pois"]
+        )
+
+
+def test_validation_report_warns_about_geographic_spread(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(provider_gateway, "places", _GeographicSpreadTestPlacesProvider())
+
+    create_response = client.post(
+        "/trips",
+        json={
+            "destination_scope": "single_city",
+            "primary_destination": "Testville, Testland",
+            "origin_city": "Home City",
+            "start_date": "2026-08-10",
+            "end_date": "2026-08-10",
+            "travelers_count": 2,
+            "travel_group_type": "couple",
+            "pace": "relaxed",
+        },
+    )
+    assert create_response.status_code == 201
+    trip_id = create_response.json()["data"]["trip_id"]
+
+    generate_response = client.post(f"/trips/{trip_id}/generate")
+    assert generate_response.status_code == 200
+
+    response = client.get(f"/trips/{trip_id}/validation-report")
+    assert response.status_code == 200
+    validation_report = response.json()["data"]["validation_report"]
+
+    spread_warnings = [
+        warning
+        for warning in validation_report["warnings"]
+        if warning["category"] == "geographic_spread"
+    ]
+    assert len(spread_warnings) == 1
+    spread_warning = spread_warnings[0]
+
+    # The warning must be explicit that this is straight-line-only, not a
+    # walking/route feasibility claim, and that the day needs review.
+    assert "straight-line" in spread_warning["message"]
+    assert "not walking or route distance" in spread_warning["message"]
+    assert "not implemented yet" in spread_warning["message"]
+    assert "needs review" in spread_warning["message"]
+    assert "walking" not in spread_warning["category"]
+    assert "route" not in spread_warning["category"]
+
+    # This plan is otherwise unremarkable, so the plan must stay
+    # needs_review, not blocked, and no critical issue is raised.
+    assert validation_report["readiness_status"] == "needs_review"
+    assert not any(
+        issue["category"] == "geographic_spread"
+        for issue in validation_report["critical_issues"]
+    )
+
+    # The warning must not fabricate any walking distance, route time,
+    # duration, or cost data.
+    experience_response = client.get(f"/trips/{trip_id}/experience-plan")
+    assert experience_response.status_code == 200
+    day_plan = experience_response.json()["data"]["experience_plan"]["daily_plans"][0]
+    assert day_plan["estimated_walking_km"] is None
+    assert day_plan["estimated_travel_time_minutes"] is None
+    assert day_plan["estimated_cost"] is None
+    for experience in day_plan["experiences"]:
+        assert experience["start_time"] is None
+        assert experience["end_time"] is None
+        assert experience["estimated_duration_minutes"] is None
+
+
+class _GeographicCloseTestPlacesProvider(PlacesProvider):
+    """Test-only double with two attractions ~1.1km apart (straight-line),
+    used to prove the geographic-spread warning does not fire below the
+    conservative 8km threshold.
+    """
+
+    provider_name = "openstreetmap_places"
+
+    def search_attractions(
+        self, destination: str, filters: dict[str, Any] | None = None
+    ) -> ProviderResponse[Any]:
+        places = [
+            _geo_place("test/geo/close/a", "Close Point A", "landmark", 0.0),
+            _geo_place("test/geo/close/b", "Close Point B", "landmark", 0.01),
+        ]
+        return ProviderResponse[list[NormalizedPlace]](
+            provider_name=self.provider_name,
+            provider_type=self.provider_type,
+            status=ProviderStatus.SUCCESS,
+            data_status=DataStatus.LIVE,
+            data=places,
+            confidence=0.65,
+            message="Test fixture data; not a real provider call.",
+        )
+
+    def search_restaurants(
+        self, area: str, filters: dict[str, Any] | None = None
+    ) -> ProviderResponse[Any]:
+        return unavailable_response(
+            self.provider_name, self.provider_type, unavailable_fields=["restaurants"]
+        )
+
+    def search_accommodation_pois(
+        self, destination: str, filters: dict[str, Any] | None = None
+    ) -> ProviderResponse[Any]:
+        return unavailable_response(
+            self.provider_name, self.provider_type, unavailable_fields=["accommodation_pois"]
+        )
+
+
+def test_validation_report_no_geographic_spread_warning_when_close_together(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(provider_gateway, "places", _GeographicCloseTestPlacesProvider())
+
+    create_response = client.post(
+        "/trips",
+        json={
+            "destination_scope": "single_city",
+            "primary_destination": "Testville, Testland",
+            "origin_city": "Home City",
+            "start_date": "2026-08-10",
+            "end_date": "2026-08-10",
+            "travelers_count": 2,
+            "travel_group_type": "couple",
+            "pace": "relaxed",
+        },
+    )
+    assert create_response.status_code == 201
+    trip_id = create_response.json()["data"]["trip_id"]
+
+    generate_response = client.post(f"/trips/{trip_id}/generate")
+    assert generate_response.status_code == 200
+
+    response = client.get(f"/trips/{trip_id}/validation-report")
+    assert response.status_code == 200
+    validation_report = response.json()["data"]["validation_report"]
+
+    assert not any(
+        warning["category"] == "geographic_spread"
+        for warning in validation_report["warnings"]
+    )
+
+
+class _GeographicSparseCoordinatesTestPlacesProvider(PlacesProvider):
+    """Test-only double where only one of three scheduled attractions has
+    coordinates, used to prove missing coordinates never crash validation
+    and never get an invented distance -- spread can't be measured from a
+    single coordinate-backed point, so the check is safely skipped.
+    """
+
+    provider_name = "openstreetmap_places"
+
+    def search_attractions(
+        self, destination: str, filters: dict[str, Any] | None = None
+    ) -> ProviderResponse[Any]:
+        places = [
+            _geo_place("test/geo/sparse/a", "Sparse Point A", "landmark", 0.0),
+            _geo_place("test/geo/sparse/b", "Sparse Point B (no coords)", "landmark", None),
+            _geo_place("test/geo/sparse/c", "Sparse Point C (no coords)", "landmark", None),
+        ]
+        return ProviderResponse[list[NormalizedPlace]](
+            provider_name=self.provider_name,
+            provider_type=self.provider_type,
+            status=ProviderStatus.SUCCESS,
+            data_status=DataStatus.LIVE,
+            data=places,
+            confidence=0.65,
+            message="Test fixture data; not a real provider call.",
+        )
+
+    def search_restaurants(
+        self, area: str, filters: dict[str, Any] | None = None
+    ) -> ProviderResponse[Any]:
+        return unavailable_response(
+            self.provider_name, self.provider_type, unavailable_fields=["restaurants"]
+        )
+
+    def search_accommodation_pois(
+        self, destination: str, filters: dict[str, Any] | None = None
+    ) -> ProviderResponse[Any]:
+        return unavailable_response(
+            self.provider_name, self.provider_type, unavailable_fields=["accommodation_pois"]
+        )
+
+
+def test_validation_report_missing_coordinates_do_not_crash(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        provider_gateway, "places", _GeographicSparseCoordinatesTestPlacesProvider()
+    )
+
+    create_response = client.post(
+        "/trips",
+        json={
+            "destination_scope": "single_city",
+            "primary_destination": "Testville, Testland",
+            "origin_city": "Home City",
+            "start_date": "2026-08-10",
+            "end_date": "2026-08-10",
+            "travelers_count": 2,
+            "travel_group_type": "couple",
+            "pace": "balanced",
+        },
+    )
+    assert create_response.status_code == 201
+    trip_id = create_response.json()["data"]["trip_id"]
+
+    generate_response = client.post(f"/trips/{trip_id}/generate")
+    assert generate_response.status_code == 200
+
+    response = client.get(f"/trips/{trip_id}/validation-report")
+    assert response.status_code == 200
+    validation_report = response.json()["data"]["validation_report"]
+
+    # With fewer than two coordinate-backed experiences in the day, spread
+    # can't be measured, so no geographic_spread warning is invented.
+    assert not any(
+        warning["category"] == "geographic_spread"
+        for warning in validation_report["warnings"]
+    )
+    assert validation_report["readiness_status"] == "needs_review"

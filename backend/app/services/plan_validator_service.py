@@ -1,9 +1,18 @@
 from __future__ import annotations
 
 from app.models.common import ReadinessStatus, ValidationSeverity
-from app.models.planning_state import PlanningStage, PlanningState, ValidationIssue, ValidationReport
+from app.models.planning_state import (
+    DailyPlan,
+    PlanningStage,
+    PlanningState,
+    ValidationIssue,
+    ValidationReport,
+)
 from app.services.base import PlanningStageService
 from app.services.experience_planner_service import _matches_must_visit
+from app.utils.geo import haversine_distance_km
+
+_GEOGRAPHIC_SPREAD_WARNING_THRESHOLD_KM = 8.0
 
 
 class PlanValidatorService(PlanningStageService):
@@ -34,6 +43,12 @@ class PlanValidatorService(PlanningStageService):
       budget/cost validation is not implemented yet, so the plan never
       claims to fit the budget. This never blocks the plan by itself; it
       only adds a warning.
+    * If a day's coordinate-backed scheduled experiences sum to more than
+      `_GEOGRAPHIC_SPREAD_WARNING_THRESHOLD_KM` of straight-line
+      (haversine) distance between consecutive experiences, a warning flags
+      that day. This is a straight-line-only signal -- never called walking
+      or route distance -- and does not change scheduling/order or block
+      the plan; it only adds a warning.
     """
 
     def run(self, planning_state: PlanningState) -> PlanningState:
@@ -106,6 +121,34 @@ class PlanValidatorService(PlanningStageService):
                 "No provider-backed attraction candidates are available for this "
                 "destination."
             )
+
+        if planning_state.experience_plan:
+            for day in planning_state.experience_plan.daily_plans:
+                spread_km = _day_geographic_spread_km(day)
+                if (
+                    spread_km is not None
+                    and spread_km > _GEOGRAPHIC_SPREAD_WARNING_THRESHOLD_KM
+                ):
+                    warnings.append(
+                        ValidationIssue(
+                            severity=ValidationSeverity.WARNING,
+                            category="geographic_spread",
+                            message=(
+                                f"Day {day.day_number}'s scheduled experiences are "
+                                f"geographically spread out: consecutive coordinate-backed "
+                                f"experiences sum to about {spread_km:.1f} km of "
+                                "straight-line distance. This is straight-line distance "
+                                "only, not walking or route distance, and actual "
+                                "walking/transit/route feasibility is not implemented yet, "
+                                "so this day needs review."
+                            ),
+                            affected_section=f"experience_plan.daily_plans[{day.day_number}]",
+                            suggested_fix=(
+                                "Implement walking/transit route feasibility validation, "
+                                "or reconsider which attractions are grouped into this day."
+                            ),
+                        )
+                    )
 
         captured_constraints: list[str] = []
         for constraint in planning_state.trip_request.constraints:
@@ -225,3 +268,28 @@ class PlanValidatorService(PlanningStageService):
         planning_state.validation_report = validation_report
         planning_state.touch()
         return planning_state
+
+
+def _day_geographic_spread_km(day: DailyPlan) -> float | None:
+    """Sum of straight-line (haversine) distances between consecutive
+    coordinate-backed experiences in a day, in the day's current scheduled
+    order.
+
+    Experiences with missing coordinates are skipped entirely rather than
+    invented or estimated. Returns None if the day has fewer than two
+    coordinate-backed experiences, since spread can't be measured.
+    """
+    points = [
+        experience.coordinates
+        for experience in day.experiences
+        if experience.coordinates is not None
+    ]
+    if len(points) < 2:
+        return None
+
+    total_km = 0.0
+    for previous_point, next_point in zip(points, points[1:]):
+        distance_km = haversine_distance_km(previous_point, next_point)
+        if distance_km is not None:
+            total_km += distance_km
+    return total_km
