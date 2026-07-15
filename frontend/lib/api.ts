@@ -2,6 +2,7 @@ import type {
   ApiResponse,
   DestinationContextData,
   ExperiencePlanData,
+  ProviderCoverageData,
   TripCreateData,
   TripRequestInput,
   TripSummary,
@@ -71,4 +72,10 @@ export function getValidationReport(
   tripId: string,
 ): Promise<ValidationReportData> {
   return request<ValidationReportData>(`/trips/${tripId}/validation-report`);
+}
+
+export function getProviderCoverage(
+  tripId: string,
+): Promise<ProviderCoverageData> {
+  return request<ProviderCoverageData>(`/trips/${tripId}/provider-coverage`);
 }

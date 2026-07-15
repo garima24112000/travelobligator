@@ -7,12 +7,14 @@ import {
   generatePlan,
   getDestinationContext,
   getExperiencePlan,
+  getProviderCoverage,
   getTripSummary,
   getValidationReport,
 } from "@/lib/api";
 import type {
   CandidatePoi,
   DailyPlan,
+  ProviderCoverageData,
   TripRequestInput,
   TripSummary,
   ValidationReport,
@@ -36,6 +38,7 @@ type PlanResult = {
   candidateAccommodationPois: CandidatePoi[];
   dailyPlans: DailyPlan[];
   validationReport: ValidationReport;
+  providerCoverage: ProviderCoverageData;
 };
 
 function parseCommaList(value: string): string[] {
@@ -184,6 +187,102 @@ function CandidatePoiSection({
   );
 }
 
+function ProviderCoverageSection({ coverage }: { coverage: ProviderCoverageData }) {
+  const coverageEntries = Object.entries(coverage.provider_coverage).filter(
+    ([, value]) => value !== null,
+  );
+  const statusEntries = Object.entries(coverage.provider_status);
+
+  return (
+    <div className="rounded-2xl border border-white/10 bg-white/5 p-5">
+      <h2 className="text-lg font-semibold">Provider coverage</h2>
+
+      {coverageEntries.length === 0 ? (
+        <p className="mt-2 text-sm text-slate-400">
+          No provider coverage information returned.
+        </p>
+      ) : (
+        <dl className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
+          {coverageEntries.map(([key, value]) => (
+            <div
+              key={key}
+              className="rounded-lg border border-white/10 bg-slate-900/60 p-3 text-sm"
+            >
+              <dt className="text-[11px] uppercase tracking-wide text-slate-500">
+                {key}
+              </dt>
+              <dd className="mt-1 text-slate-200">{value}</dd>
+            </div>
+          ))}
+        </dl>
+      )}
+
+      {statusEntries.length > 0 && (
+        <div className="mt-4">
+          <p className="text-sm font-semibold text-slate-200">
+            Provider status
+          </p>
+          <ul className="mt-2 flex flex-col gap-2">
+            {statusEntries.map(([key, entry]) => (
+              <li
+                key={key}
+                className="rounded-lg border border-white/10 bg-slate-900/60 p-3 text-sm"
+              >
+                <p className="text-[11px] uppercase tracking-wide text-slate-500">
+                  {entry.provider_name} · {entry.provider_type}
+                </p>
+                <p className="mt-1 text-slate-200">
+                  {entry.status} · {entry.data_status}
+                </p>
+                {entry.unavailable_fields.length > 0 && (
+                  <p className="mt-1 text-xs text-slate-400">
+                    Unavailable: {entry.unavailable_fields.join(", ")}
+                  </p>
+                )}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {coverage.unavailable_data.length > 0 && (
+        <div className="mt-4">
+          <p className="text-sm font-semibold text-slate-200">
+            Unavailable data
+          </p>
+          <ul className="mt-2 flex flex-col gap-2">
+            {coverage.unavailable_data.map((item, index) => (
+              <li
+                key={`${item.field}-${index}`}
+                className="rounded-lg border border-white/10 bg-slate-900/60 p-3 text-sm"
+              >
+                <p className="text-slate-200">{item.field}</p>
+                <p className="mt-1 text-xs text-slate-400">{item.reason}</p>
+                <p className="mt-1 text-[11px] uppercase tracking-wide text-slate-500">
+                  {item.data_status}
+                </p>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {coverage.data_sources_used.length > 0 && (
+        <div className="mt-4">
+          <p className="text-sm font-semibold text-slate-200">
+            Data sources used
+          </p>
+          <ul className="mt-2 list-disc pl-5 text-sm text-slate-300">
+            {coverage.data_sources_used.map((source) => (
+              <li key={source}>{source}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function Home() {
   const [form, setForm] = useState<TripRequestInput>(DEFAULT_TRIP_REQUEST);
   const [interestsText, setInterestsText] = useState("");
@@ -208,13 +307,19 @@ export default function Home() {
       const { trip_id: tripId } = await createTrip(requestBody);
       await generatePlan(tripId);
 
-      const [summary, destinationContext, experiencePlan, validationReport] =
-        await Promise.all([
-          getTripSummary(tripId),
-          getDestinationContext(tripId),
-          getExperiencePlan(tripId),
-          getValidationReport(tripId),
-        ]);
+      const [
+        summary,
+        destinationContext,
+        experiencePlan,
+        validationReport,
+        providerCoverage,
+      ] = await Promise.all([
+        getTripSummary(tripId),
+        getDestinationContext(tripId),
+        getExperiencePlan(tripId),
+        getValidationReport(tripId),
+        getProviderCoverage(tripId),
+      ]);
 
       setResult({
         summary,
@@ -225,6 +330,7 @@ export default function Home() {
           destinationContext.destination_context.candidate_accommodation_pois,
         dailyPlans: experiencePlan.experience_plan.daily_plans,
         validationReport: validationReport.validation_report,
+        providerCoverage,
       });
     } catch (err) {
       setError(
@@ -569,6 +675,8 @@ export default function Home() {
             </div>
 
             <ValidationSection report={result.validationReport} />
+
+            <ProviderCoverageSection coverage={result.providerCoverage} />
 
             <CandidatePoiSection
               title="Destination candidate attractions"

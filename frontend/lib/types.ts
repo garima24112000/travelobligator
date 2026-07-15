@@ -135,3 +135,25 @@ export type ValidationReportData = {
   trip_id: string;
   validation_report: ValidationReport;
 };
+
+export type ProviderStatusEntry = {
+  provider_name: string;
+  provider_type: string;
+  status: string;
+  data_status: string;
+  unavailable_fields: string[];
+};
+
+export type UnavailableDataItem = {
+  field: string;
+  reason: string;
+  data_status: string;
+};
+
+export type ProviderCoverageData = {
+  trip_id: string;
+  provider_coverage: ProviderCoverage;
+  provider_status: Record<string, ProviderStatusEntry>;
+  unavailable_data: UnavailableDataItem[];
+  data_sources_used: string[];
+};
