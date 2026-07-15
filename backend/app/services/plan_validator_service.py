@@ -20,6 +20,10 @@ class PlanValidatorService(PlanningStageService):
       anymore. However, route ordering, timing, opening-hours, and
       feasibility checks are not implemented yet, so the report is
       `needs_review`, never `ready`.
+    * If the trip request or traveler profile captured any constraints, a
+      warning names them explicitly so the report never implies they were
+      checked. This never blocks the plan by itself; constraints only add a
+      warning, not a critical issue.
     """
 
     def run(self, planning_state: PlanningState) -> PlanningState:
@@ -91,6 +95,34 @@ class PlanValidatorService(PlanningStageService):
             provider_coverage_notes.append(
                 "No provider-backed attraction candidates are available for this "
                 "destination."
+            )
+
+        captured_constraints: list[str] = []
+        for constraint in planning_state.trip_request.constraints:
+            if constraint not in captured_constraints:
+                captured_constraints.append(constraint)
+        if planning_state.traveler_profile:
+            for constraint in planning_state.traveler_profile.constraints:
+                if constraint not in captured_constraints:
+                    captured_constraints.append(constraint)
+
+        if captured_constraints:
+            constraint_list = ", ".join(captured_constraints)
+            warnings.append(
+                ValidationIssue(
+                    severity=ValidationSeverity.WARNING,
+                    category="constraints",
+                    message=(
+                        f"The following constraint(s) were captured but are not fully "
+                        f"validated yet: {constraint_list}. This plan does not confirm "
+                        "that they are satisfied."
+                    ),
+                    affected_section="traveler_profile",
+                    suggested_fix=(
+                        "Implement constraint/feasibility validation against these "
+                        "constraints before claiming they are satisfied."
+                    ),
+                )
             )
 
         readiness_status = (

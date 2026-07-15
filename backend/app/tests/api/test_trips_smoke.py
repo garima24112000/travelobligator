@@ -431,3 +431,59 @@ def test_experience_plan_orders_must_visit_then_interest_then_provider_order(
             by_name[name]["why_included"]
             == "Selected from provider-backed attraction candidates."
         )
+
+
+def test_validation_report_warns_about_unvalidated_constraints(client: TestClient) -> None:
+    create_response = client.post(
+        "/trips",
+        json={
+            "destination_scope": "single_city",
+            "primary_destination": "Testville, Testland",
+            "origin_city": "Home City",
+            "start_date": "2026-08-10",
+            "end_date": "2026-08-12",
+            "travelers_count": 2,
+            "travel_group_type": "couple",
+            "constraints": ["wheelchair accessible", "no more than 2km of walking per day"],
+        },
+    )
+    assert create_response.status_code == 201
+    trip_id = create_response.json()["data"]["trip_id"]
+
+    generate_response = client.post(f"/trips/{trip_id}/generate")
+    assert generate_response.status_code == 200
+
+    response = client.get(f"/trips/{trip_id}/validation-report")
+    assert response.status_code == 200
+    validation_report = response.json()["data"]["validation_report"]
+
+    # Experiences were scheduled (deterministic test provider), so constraints
+    # alone must not block the plan or flip it to "ready".
+    assert validation_report["readiness_status"] == "needs_review"
+
+    constraint_warnings = [
+        warning
+        for warning in validation_report["warnings"]
+        if warning["category"] == "constraints"
+    ]
+    assert len(constraint_warnings) == 1
+    constraint_warning = constraint_warnings[0]
+
+    # The captured constraint strings must be named, not paraphrased away...
+    assert "wheelchair accessible" in constraint_warning["message"]
+    assert "no more than 2km of walking per day" in constraint_warning["message"]
+    # ...and the report must not claim the constraints are satisfied.
+    assert "not fully validated" in constraint_warning["message"]
+    assert "does not confirm" in constraint_warning["message"]
+
+
+def test_validation_report_no_constraint_warning_when_none_captured(
+    client: TestClient, generated_trip_id: str
+) -> None:
+    response = client.get(f"/trips/{generated_trip_id}/validation-report")
+    assert response.status_code == 200
+    validation_report = response.json()["data"]["validation_report"]
+
+    assert not any(
+        warning["category"] == "constraints" for warning in validation_report["warnings"]
+    )
