@@ -40,14 +40,21 @@ class ExperiencePlannerService(PlanningStageService):
     days directly from `destination_context.candidate_pois` (real
     provider-backed places only, never invented), using a simple
     deterministic per-day cap based on trip pace (relaxed=2, balanced=3,
-    packed=4). Candidates whose name matches a `must_visit` term are
-    scheduled first, but only among names that already exist in
-    `candidate_pois` — no new place is invented to satisfy a must-visit
-    request. Restaurants and accommodation POIs are intentionally not used
-    yet. No route ordering, timing, opening-hours, walking, or cost
-    estimation is implemented yet, so every scheduled item keeps
-    `start_time`/`end_time`/`estimated_duration_minutes` unset and every day
-    carries an explicit feasibility warning.
+    packed=4). Candidates are ordered into three tiers before scheduling,
+    with the relative provider order preserved within each tier:
+
+    1. must-visit matches (candidate `name` contains a `must_visit` term)
+    2. interest matches (candidate `name`, `category`, or `address` contains
+       an `interests` term)
+    3. everything else, in existing provider order
+
+    No new place is invented to satisfy a must-visit or interest match —
+    only existing `candidate_pois` are reordered. Restaurants and
+    accommodation POIs are intentionally not used yet. No route ordering,
+    timing, opening-hours, walking, or cost estimation is implemented yet,
+    so every scheduled item keeps `start_time`/`end_time`/
+    `estimated_duration_minutes` unset and every day carries an explicit
+    feasibility warning.
     """
 
     def run(self, planning_state: PlanningState) -> PlanningState:
@@ -62,12 +69,16 @@ class ExperiencePlannerService(PlanningStageService):
         must_visit_terms = (
             traveler_profile.must_visit if traveler_profile else trip_request.must_visit
         )
+        interest_terms = (
+            traveler_profile.interests if traveler_profile else trip_request.interests
+        )
         max_per_day = _MAX_ATTRACTIONS_PER_DAY[pace]
 
         num_days = (trip_request.end_date - trip_request.start_date).days + 1
 
-        ordered_pois = _order_by_must_visit(candidate_pois, must_visit_terms)
-        matched_names = _matched_names(candidate_pois, must_visit_terms)
+        ordered_pois, must_visit_ids, interest_ids = _order_candidates(
+            candidate_pois, must_visit_terms, interest_terms
+        )
 
         daily_plans: list[DailyPlan] = []
         cursor = 0
@@ -88,7 +99,9 @@ class ExperiencePlannerService(PlanningStageService):
                         "No remaining candidate attractions were available for this day."
                     )
 
-            experiences = [_build_experience_item(poi, matched_names) for poi in day_pois]
+            experiences = [
+                _build_experience_item(poi, must_visit_ids, interest_ids) for poi in day_pois
+            ]
 
             daily_plans.append(
                 DailyPlan(
@@ -123,37 +136,60 @@ class ExperiencePlannerService(PlanningStageService):
         return planning_state
 
 
-def _order_by_must_visit(
-    candidate_pois: list[dict[str, Any]], must_visit_terms: list[str]
-) -> list[dict[str, Any]]:
-    """Put candidates matching a must-visit term first, without inventing new places."""
-    if not must_visit_terms:
-        return list(candidate_pois)
+def _matches_must_visit(poi: dict[str, Any], terms_lower: list[str]) -> bool:
+    name = str(poi.get("name") or "").lower()
+    return any(term in name for term in terms_lower)
 
-    terms_lower = [term.lower() for term in must_visit_terms if term]
-    matched: list[dict[str, Any]] = []
+
+def _matches_interests(poi: dict[str, Any], terms_lower: list[str]) -> bool:
+    """Match interest terms against existing provider-backed candidate fields only."""
+    haystack = " ".join(
+        [
+            str(poi.get("name") or ""),
+            str(poi.get("category") or ""),
+            str(poi.get("address") or ""),
+        ]
+    ).lower()
+    return any(term in haystack for term in terms_lower)
+
+
+def _order_candidates(
+    candidate_pois: list[dict[str, Any]],
+    must_visit_terms: list[str],
+    interest_terms: list[str],
+) -> tuple[list[dict[str, Any]], set[int], set[int]]:
+    """Order candidates into must-visit / interest / remaining tiers.
+
+    Only reorders `candidate_pois` as returned by the places provider; never
+    invents new candidates. Relative provider order is preserved within each
+    tier. Returns the reordered list plus the `id()` of every poi placed in
+    the must-visit and interest tiers, so callers can attribute the right
+    `why_included` reason without relying on possibly-non-unique names.
+    """
+    must_visit_terms_lower = [term.lower() for term in must_visit_terms if term]
+    interest_terms_lower = [term.lower() for term in interest_terms if term]
+
+    must_visit_matched: list[dict[str, Any]] = []
+    interest_matched: list[dict[str, Any]] = []
     unmatched: list[dict[str, Any]] = []
+
     for poi in candidate_pois:
-        name = str(poi.get("name") or "").lower()
-        if any(term in name for term in terms_lower):
-            matched.append(poi)
+        if must_visit_terms_lower and _matches_must_visit(poi, must_visit_terms_lower):
+            must_visit_matched.append(poi)
+        elif interest_terms_lower and _matches_interests(poi, interest_terms_lower):
+            interest_matched.append(poi)
         else:
             unmatched.append(poi)
-    return matched + unmatched
+
+    must_visit_ids = {id(poi) for poi in must_visit_matched}
+    interest_ids = {id(poi) for poi in interest_matched}
+    ordered = must_visit_matched + interest_matched + unmatched
+    return ordered, must_visit_ids, interest_ids
 
 
-def _matched_names(candidate_pois: list[dict[str, Any]], must_visit_terms: list[str]) -> set[str]:
-    if not must_visit_terms:
-        return set()
-    terms_lower = [term.lower() for term in must_visit_terms if term]
-    return {
-        poi.get("name", "")
-        for poi in candidate_pois
-        if any(term in str(poi.get("name") or "").lower() for term in terms_lower)
-    }
-
-
-def _build_experience_item(poi: dict[str, Any], matched_names: set[str]) -> ExperienceItem:
+def _build_experience_item(
+    poi: dict[str, Any], must_visit_ids: set[int], interest_ids: set[int]
+) -> ExperienceItem:
     name = poi.get("name") or ""
 
     coordinates: GeoPoint | None = None
@@ -164,12 +200,15 @@ def _build_experience_item(poi: dict[str, Any], matched_names: set[str]) -> Expe
     confidence = float(poi.get("confidence") or 0.0)
     data_status_value = poi.get("data_status") or DataStatus.LIVE.value
 
-    why_included = (
-        "Matches your must-visit request and is a real candidate from the "
-        "destination context's attraction list."
-        if name in matched_names
-        else "Selected from the destination context's provider-backed attraction candidates."
-    )
+    if id(poi) in must_visit_ids:
+        why_included = "Matches your must-visit request."
+    elif id(poi) in interest_ids:
+        why_included = (
+            "Matches your interests based on this candidate's provider-backed "
+            "name, category, and address."
+        )
+    else:
+        why_included = "Selected from provider-backed attraction candidates."
 
     source = poi.get("source")
     source_type = (

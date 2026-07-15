@@ -5,6 +5,8 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
+from app.models.common import DataStatus, GeoPoint, ProviderStatus
+from app.models.providers import NormalizedPlace, ProviderResponse
 from app.providers.base import PlacesProvider, unavailable_response
 from app.providers.gateway import provider_gateway
 
@@ -284,3 +286,148 @@ def test_validation_report_blocked_when_no_candidate_pois(
     assert summary["validation_status"] == "blocked"
     assert summary["main_blocking_reason"] is not None
     assert summary["main_review_reason"] is None
+
+
+class _RankingTestPlacesProvider(PlacesProvider):
+    """Test-only double with attractions crafted to exercise experience
+    ranking: one must-visit match, two interest matches (one matched via
+    `category`, one matched only via `address`), and two unmatched
+    candidates, all returned in a fixed provider order.
+    """
+
+    provider_name = "openstreetmap_places"
+
+    _ATTRACTIONS: list[tuple[str, str, str, str]] = [
+        ("test/poi/1", "Riverside Park", "park", "1 River Rd"),
+        ("test/poi/2", "Central Plaza", "plaza", "5 Museum Lane"),
+        ("test/poi/3", "Old Town Hall", "landmark", "3 Old Town Hall Square"),
+        ("test/poi/4", "Sunset Beach", "beach", "4 Coast Ave"),
+        ("test/poi/5", "City History Museum", "museum", "2 Main St"),
+    ]
+
+    def search_attractions(
+        self, destination: str, filters: dict[str, Any] | None = None
+    ) -> ProviderResponse[Any]:
+        places = [
+            NormalizedPlace(
+                place_id=place_id,
+                name=name,
+                category=category,
+                address=address,
+                coordinates=GeoPoint(lat=0.0, lng=0.0),
+                source=self.provider_name,
+                data_status=DataStatus.LIVE,
+                confidence=0.6,
+            )
+            for place_id, name, category, address in self._ATTRACTIONS
+        ]
+        return ProviderResponse[list[NormalizedPlace]](
+            provider_name=self.provider_name,
+            provider_type=self.provider_type,
+            status=ProviderStatus.SUCCESS,
+            data_status=DataStatus.LIVE,
+            data=places,
+            confidence=0.65,
+            message="Test fixture data; not a real provider call.",
+        )
+
+    def search_restaurants(
+        self, area: str, filters: dict[str, Any] | None = None
+    ) -> ProviderResponse[Any]:
+        return unavailable_response(self.provider_name, self.provider_type, unavailable_fields=["restaurants"])
+
+    def search_accommodation_pois(
+        self, destination: str, filters: dict[str, Any] | None = None
+    ) -> ProviderResponse[Any]:
+        return unavailable_response(
+            self.provider_name, self.provider_type, unavailable_fields=["accommodation_pois"]
+        )
+
+
+def test_experience_plan_orders_must_visit_then_interest_then_provider_order(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(provider_gateway, "places", _RankingTestPlacesProvider())
+
+    create_response = client.post(
+        "/trips",
+        json={
+            "destination_scope": "single_city",
+            "primary_destination": "Testville, Testland",
+            "origin_city": "Home City",
+            "start_date": "2026-08-10",
+            "end_date": "2026-08-12",
+            "travelers_count": 2,
+            "travel_group_type": "couple",
+            "pace": "balanced",
+            "interests": ["museum"],
+            "must_visit": ["Old Town Hall"],
+        },
+    )
+    assert create_response.status_code == 201
+    trip_id = create_response.json()["data"]["trip_id"]
+
+    generate_response = client.post(f"/trips/{trip_id}/generate")
+    assert generate_response.status_code == 200
+
+    response = client.get(f"/trips/{trip_id}/experience-plan")
+    assert response.status_code == 200
+    body = response.json()
+    daily_plans = body["data"]["experience_plan"]["daily_plans"]
+
+    all_experiences = [
+        experience for day_plan in daily_plans for experience in day_plan["experiences"]
+    ]
+
+    known_fixture_names = {
+        "Riverside Park",
+        "Central Plaza",
+        "Old Town Hall",
+        "Sunset Beach",
+        "City History Museum",
+    }
+    # No unmatched/invented candidate is created: every scheduled experience
+    # is one of the real fixture candidates returned by the provider.
+    for experience in all_experiences:
+        assert experience["name"] in known_fixture_names
+
+    scheduled_names = [experience["name"] for experience in all_experiences]
+
+    # balanced pace caps 3 attractions/day; must-visit first, then interest
+    # matches (category match, then address-only match, in provider order),
+    # then unmatched candidates in provider order.
+    assert scheduled_names == [
+        "Old Town Hall",
+        "Central Plaza",
+        "City History Museum",
+        "Riverside Park",
+        "Sunset Beach",
+    ]
+
+    by_name = {experience["name"]: experience for experience in all_experiences}
+
+    must_visit_index = scheduled_names.index("Old Town Hall")
+    interest_indexes = [
+        scheduled_names.index("City History Museum"),
+        scheduled_names.index("Central Plaza"),
+    ]
+    unmatched_indexes = [
+        scheduled_names.index("Riverside Park"),
+        scheduled_names.index("Sunset Beach"),
+    ]
+
+    # must_visit matches are prioritized above interest matches.
+    assert must_visit_index < min(interest_indexes)
+    # interest matches are prioritized above unmatched candidates.
+    assert max(interest_indexes) < min(unmatched_indexes)
+
+    assert by_name["Old Town Hall"]["why_included"] == "Matches your must-visit request."
+    for name in ("City History Museum", "Central Plaza"):
+        why_included = by_name[name]["why_included"]
+        assert "interests" in why_included
+        assert "provider-backed" in why_included
+    for name in ("Riverside Park", "Sunset Beach"):
+        assert (
+            by_name[name]["why_included"]
+            == "Selected from provider-backed attraction candidates."
+        )
