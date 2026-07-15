@@ -39,6 +39,10 @@ type PlanResult = {
   dailyPlans: DailyPlan[];
   validationReport: ValidationReport;
   providerCoverage: ProviderCoverageData;
+  destinationAssumptions: string[];
+  destinationConfidence: number;
+  experienceAssumptions: string[];
+  experienceConfidence: number;
 };
 
 function parseCommaList(value: string): string[] {
@@ -187,6 +191,66 @@ function CandidatePoiSection({
   );
 }
 
+function AssumptionsList({
+  title,
+  assumptions,
+  confidence,
+}: {
+  title: string;
+  assumptions: string[];
+  confidence: number;
+}) {
+  return (
+    <div>
+      <p className="text-sm font-semibold text-slate-200">
+        {title}{" "}
+        <span className="text-xs font-normal text-slate-400">
+          · Confidence: {confidence}
+        </span>
+      </p>
+      {assumptions.length === 0 ? (
+        <p className="mt-2 text-sm text-slate-400">No assumptions returned.</p>
+      ) : (
+        <ul className="mt-2 list-disc pl-5 text-sm text-slate-300">
+          {assumptions.map((assumption, index) => (
+            <li key={`${title}-${index}`}>{assumption}</li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+function PlanningAssumptionsSection({
+  destinationAssumptions,
+  destinationConfidence,
+  experienceAssumptions,
+  experienceConfidence,
+}: {
+  destinationAssumptions: string[];
+  destinationConfidence: number;
+  experienceAssumptions: string[];
+  experienceConfidence: number;
+}) {
+  return (
+    <div className="rounded-2xl border border-white/10 bg-white/5 p-5">
+      <h2 className="text-lg font-semibold">Planning assumptions</h2>
+      <div className="mt-3 flex flex-col gap-4">
+        <AssumptionsList
+          title="Destination context"
+          assumptions={destinationAssumptions}
+          confidence={destinationConfidence}
+        />
+        <AssumptionsList
+          title="Experience plan"
+          assumptions={experienceAssumptions}
+          confidence={experienceConfidence}
+        />
+      </div>
+    </div>
+  );
+}
+
 function ProviderCoverageSection({ coverage }: { coverage: ProviderCoverageData }) {
   const coverageEntries = Object.entries(coverage.provider_coverage).filter(
     ([, value]) => value !== null,
@@ -331,6 +395,12 @@ export default function Home() {
         dailyPlans: experiencePlan.experience_plan.daily_plans,
         validationReport: validationReport.validation_report,
         providerCoverage,
+        destinationAssumptions:
+          destinationContext.destination_context.assumptions,
+        destinationConfidence:
+          destinationContext.destination_context.confidence,
+        experienceAssumptions: experiencePlan.experience_plan.assumptions,
+        experienceConfidence: experiencePlan.experience_plan.confidence,
       });
     } catch (err) {
       setError(
@@ -675,6 +745,13 @@ export default function Home() {
             </div>
 
             <ValidationSection report={result.validationReport} />
+
+            <PlanningAssumptionsSection
+              destinationAssumptions={result.destinationAssumptions}
+              destinationConfidence={result.destinationConfidence}
+              experienceAssumptions={result.experienceAssumptions}
+              experienceConfidence={result.experienceConfidence}
+            />
 
             <ProviderCoverageSection coverage={result.providerCoverage} />
 
