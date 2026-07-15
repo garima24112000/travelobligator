@@ -114,3 +114,24 @@ export type ExperiencePlanData = {
     confidence: number;
   };
 };
+
+export type ValidationIssue = {
+  category: string;
+  severity: "critical" | "warning" | "suggestion";
+  message: string;
+  affected_section: string | null;
+  suggested_fix: string | null;
+};
+
+export type ValidationReport = {
+  readiness_status: "ready" | "needs_review" | "blocked";
+  critical_issues: ValidationIssue[];
+  warnings: ValidationIssue[];
+  provider_coverage_notes: string[];
+  unavailable_data_notes: string[];
+};
+
+export type ValidationReportData = {
+  trip_id: string;
+  validation_report: ValidationReport;
+};

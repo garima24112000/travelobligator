@@ -8,12 +8,14 @@ import {
   getDestinationContext,
   getExperiencePlan,
   getTripSummary,
+  getValidationReport,
 } from "@/lib/api";
 import type {
   CandidatePoi,
   DailyPlan,
   TripRequestInput,
   TripSummary,
+  ValidationReport,
 } from "@/lib/types";
 
 const DEFAULT_TRIP_REQUEST: TripRequestInput = {
@@ -33,6 +35,7 @@ type PlanResult = {
   candidateRestaurants: CandidatePoi[];
   candidateAccommodationPois: CandidatePoi[];
   dailyPlans: DailyPlan[];
+  validationReport: ValidationReport;
 };
 
 function parseCommaList(value: string): string[] {
@@ -47,6 +50,98 @@ function readinessLabel(status: string | null): string {
   if (status === "needs_review") return "Needs Review";
   if (status === "blocked") return "Blocked";
   return "Unknown";
+}
+
+function ValidationIssueList({
+  title,
+  issues,
+}: {
+  title: string;
+  issues: ValidationReport["critical_issues"];
+}) {
+  if (issues.length === 0) return null;
+
+  return (
+    <div className="mt-3">
+      <p className="text-sm font-semibold text-slate-200">{title}</p>
+      <ul className="mt-2 flex flex-col gap-2">
+        {issues.map((issue, index) => (
+          <li
+            key={`${issue.category}-${index}`}
+            className="rounded-lg border border-white/10 bg-slate-900/60 p-3 text-sm"
+          >
+            <p className="text-[11px] uppercase tracking-wide text-slate-500">
+              {issue.category} · {issue.severity}
+            </p>
+            <p className="mt-1 text-slate-200">{issue.message}</p>
+            {issue.affected_section && (
+              <p className="mt-1 text-xs text-slate-400">
+                Affects: {issue.affected_section}
+              </p>
+            )}
+            {issue.suggested_fix && (
+              <p className="mt-1 text-xs text-slate-400">
+                Suggested fix: {issue.suggested_fix}
+              </p>
+            )}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function ValidationSection({ report }: { report: ValidationReport }) {
+  const hasNothingToShow =
+    report.critical_issues.length === 0 &&
+    report.warnings.length === 0 &&
+    report.provider_coverage_notes.length === 0 &&
+    report.unavailable_data_notes.length === 0;
+
+  return (
+    <div className="rounded-2xl border border-white/10 bg-white/5 p-5">
+      <h2 className="text-lg font-semibold">Validation report</h2>
+      <p className="mt-1 text-sm text-slate-300">
+        Readiness:{" "}
+        <span className="font-semibold">
+          {readinessLabel(report.readiness_status)}
+        </span>
+      </p>
+
+      {hasNothingToShow && (
+        <p className="mt-2 text-sm text-slate-400">No major issues found.</p>
+      )}
+
+      <ValidationIssueList title="Critical issues" issues={report.critical_issues} />
+      <ValidationIssueList title="Warnings" issues={report.warnings} />
+
+      {report.provider_coverage_notes.length > 0 && (
+        <div className="mt-3">
+          <p className="text-sm font-semibold text-slate-200">
+            Provider coverage notes
+          </p>
+          <ul className="mt-2 list-disc pl-5 text-sm text-slate-300">
+            {report.provider_coverage_notes.map((note) => (
+              <li key={note}>{note}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {report.unavailable_data_notes.length > 0 && (
+        <div className="mt-3">
+          <p className="text-sm font-semibold text-slate-200">
+            Unavailable data
+          </p>
+          <ul className="mt-2 list-disc pl-5 text-sm text-slate-300">
+            {report.unavailable_data_notes.map((note) => (
+              <li key={note}>{note}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
+  );
 }
 
 function CandidatePoiSection({
@@ -113,13 +208,13 @@ export default function Home() {
       const { trip_id: tripId } = await createTrip(requestBody);
       await generatePlan(tripId);
 
-      const [summary, destinationContext, experiencePlan] = await Promise.all(
-        [
+      const [summary, destinationContext, experiencePlan, validationReport] =
+        await Promise.all([
           getTripSummary(tripId),
           getDestinationContext(tripId),
           getExperiencePlan(tripId),
-        ],
-      );
+          getValidationReport(tripId),
+        ]);
 
       setResult({
         summary,
@@ -129,6 +224,7 @@ export default function Home() {
         candidateAccommodationPois:
           destinationContext.destination_context.candidate_accommodation_pois,
         dailyPlans: experiencePlan.experience_plan.daily_plans,
+        validationReport: validationReport.validation_report,
       });
     } catch (err) {
       setError(
@@ -471,6 +567,8 @@ export default function Home() {
                 ))}
               </div>
             </div>
+
+            <ValidationSection report={result.validationReport} />
 
             <CandidatePoiSection
               title="Destination candidate attractions"

@@ -5,6 +5,7 @@ import type {
   TripCreateData,
   TripRequestInput,
   TripSummary,
+  ValidationReportData,
 } from "./types";
 
 const API_BASE_URL =
@@ -64,4 +65,10 @@ export function getExperiencePlan(
   tripId: string,
 ): Promise<ExperiencePlanData> {
   return request<ExperiencePlanData>(`/trips/${tripId}/experience-plan`);
+}
+
+export function getValidationReport(
+  tripId: string,
+): Promise<ValidationReportData> {
+  return request<ValidationReportData>(`/trips/${tripId}/validation-report`);
 }
