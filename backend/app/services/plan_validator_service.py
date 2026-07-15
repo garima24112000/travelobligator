@@ -29,6 +29,11 @@ class PlanValidatorService(PlanningStageService):
       `candidate_pois` by name, a warning names it explicitly instead of
       silently dropping it or inventing a place to satisfy it. This never
       blocks the plan by itself; it only adds a warning.
+    * If the trip request or traveler profile captured a budget (`budget_min`
+      and/or `budget_max`), a warning names the captured range and says
+      budget/cost validation is not implemented yet, so the plan never
+      claims to fit the budget. This never blocks the plan by itself; it
+      only adds a warning.
     """
 
     def run(self, planning_state: PlanningState) -> PlanningState:
@@ -161,6 +166,46 @@ class PlanValidatorService(PlanningStageService):
                     suggested_fix=(
                         "Search for these must-visit places directly, or connect a places "
                         "provider with broader coverage."
+                    ),
+                )
+            )
+
+        trip_request = planning_state.trip_request
+        budget_min = trip_request.budget_min
+        budget_max = trip_request.budget_max
+        budget_currency = trip_request.budget_currency
+
+        if (
+            budget_min is None
+            and budget_max is None
+            and planning_state.traveler_profile
+        ):
+            profile_budget = planning_state.traveler_profile.budget_profile
+            budget_min = profile_budget.get("budget_min")
+            budget_max = profile_budget.get("budget_max")
+            budget_currency = profile_budget.get("currency", budget_currency)
+
+        if budget_min is not None or budget_max is not None:
+            if budget_min is not None and budget_max is not None:
+                budget_range = f"{budget_min}-{budget_max} {budget_currency}"
+            elif budget_min is not None:
+                budget_range = f"{budget_min}+ {budget_currency}"
+            else:
+                budget_range = f"up to {budget_max} {budget_currency}"
+
+            warnings.append(
+                ValidationIssue(
+                    severity=ValidationSeverity.WARNING,
+                    category="budget",
+                    message=(
+                        f"A budget of {budget_range} was captured, but budget/cost "
+                        "validation is not implemented yet, so this plan does not "
+                        "confirm it fits within that budget."
+                    ),
+                    affected_section="experience_plan",
+                    suggested_fix=(
+                        "Implement cost estimation and budget validation before "
+                        "claiming the plan fits the traveler's budget."
                     ),
                 )
             )

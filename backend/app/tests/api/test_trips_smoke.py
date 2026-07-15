@@ -595,3 +595,63 @@ def test_validation_report_no_must_visit_warning_when_all_matched(
     assert not any(
         warning["category"] == "must_visit" for warning in validation_report["warnings"]
     )
+
+
+def test_validation_report_warns_about_unvalidated_budget(client: TestClient) -> None:
+    create_response = client.post(
+        "/trips",
+        json={
+            "destination_scope": "single_city",
+            "primary_destination": "Testville, Testland",
+            "origin_city": "Home City",
+            "start_date": "2026-08-10",
+            "end_date": "2026-08-12",
+            "travelers_count": 2,
+            "travel_group_type": "couple",
+            "budget_min": 1500,
+            "budget_max": 2500,
+        },
+    )
+    assert create_response.status_code == 201
+    trip_id = create_response.json()["data"]["trip_id"]
+
+    generate_response = client.post(f"/trips/{trip_id}/generate")
+    assert generate_response.status_code == 200
+
+    response = client.get(f"/trips/{trip_id}/validation-report")
+    assert response.status_code == 200
+    validation_report = response.json()["data"]["validation_report"]
+
+    # Experiences were scheduled (deterministic test provider), so a captured
+    # budget alone must not block the plan or flip it to "ready".
+    assert validation_report["readiness_status"] == "needs_review"
+    assert validation_report["critical_issues"] == []
+
+    budget_warnings = [
+        warning
+        for warning in validation_report["warnings"]
+        if warning["category"] == "budget"
+    ]
+    assert len(budget_warnings) == 1
+    budget_warning = budget_warnings[0]
+
+    # The captured budget range must be named exactly as provided, with no
+    # invented/estimated cost figures layered on top of it.
+    assert "1500" in budget_warning["message"]
+    assert "2500" in budget_warning["message"]
+    # The report must clearly say cost validation isn't implemented and the
+    # budget fit is unconfirmed, rather than claiming the plan fits.
+    assert "not implemented yet" in budget_warning["message"]
+    assert "does not confirm" in budget_warning["message"]
+
+
+def test_validation_report_no_budget_warning_when_none_captured(
+    client: TestClient, generated_trip_id: str
+) -> None:
+    response = client.get(f"/trips/{generated_trip_id}/validation-report")
+    assert response.status_code == 200
+    validation_report = response.json()["data"]["validation_report"]
+
+    assert not any(
+        warning["category"] == "budget" for warning in validation_report["warnings"]
+    )
