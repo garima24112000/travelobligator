@@ -1464,3 +1464,230 @@ def test_experience_plan_day_grouping_handles_missing_coordinates_without_crashi
 
     by_name = {experience["name"]: experience for experience in experiences}
     assert by_name["Point B (no coords)"]["coordinates"] is None
+
+
+class _MustVisitLookupTestPlacesProvider(PlacesProvider):
+    """Test-only double proving the targeted must-visit lookup fallback:
+    general attraction search returns one candidate ("City Museum"); a
+    must-visit term matching it should never trigger a targeted lookup, a
+    missing must-visit term should be resolved via `search_must_visit_place`
+    and appended, and a term the lookup can't resolve should leave the
+    existing unmatched-must-visit warning untouched. `search_must_visit_place`
+    is only implemented here -- every other test double in this file inherits
+    `PlacesProvider`'s honest `not_connected` default for it.
+    """
+
+    provider_name = "openstreetmap_places"
+
+    def __init__(self) -> None:
+        self.must_visit_lookup_calls: list[str] = []
+
+    def search_attractions(
+        self, destination: str, filters: dict[str, Any] | None = None
+    ) -> ProviderResponse[Any]:
+        places = [_geo_place("test/mv/general", "City Museum", "museum", 0.0)]
+        return ProviderResponse[list[NormalizedPlace]](
+            provider_name=self.provider_name,
+            provider_type=self.provider_type,
+            status=ProviderStatus.SUCCESS,
+            data_status=DataStatus.LIVE,
+            data=places,
+            confidence=0.65,
+            message="Test fixture data; not a real provider call.",
+        )
+
+    def search_restaurants(
+        self, area: str, filters: dict[str, Any] | None = None
+    ) -> ProviderResponse[Any]:
+        return unavailable_response(
+            self.provider_name, self.provider_type, unavailable_fields=["restaurants"]
+        )
+
+    def search_accommodation_pois(
+        self, destination: str, filters: dict[str, Any] | None = None
+    ) -> ProviderResponse[Any]:
+        return unavailable_response(
+            self.provider_name, self.provider_type, unavailable_fields=["accommodation_pois"]
+        )
+
+    def search_must_visit_place(
+        self,
+        must_visit_term: str,
+        primary_destination: str,
+        filters: dict[str, Any] | None = None,
+    ) -> ProviderResponse[Any]:
+        self.must_visit_lookup_calls.append(must_visit_term)
+        if must_visit_term == "Old Fort Tower":
+            place = _geo_place("test/mv/lookup/oldfort", "Old Fort Tower", "landmark", 1.0)
+            return ProviderResponse[list[NormalizedPlace]](
+                provider_name=self.provider_name,
+                provider_type=self.provider_type,
+                status=ProviderStatus.SUCCESS,
+                data_status=DataStatus.LIVE,
+                data=[place],
+                confidence=0.5,
+                message="Found via targeted must-visit lookup test fixture.",
+            )
+        return unavailable_response(
+            self.provider_name, self.provider_type, unavailable_fields=["must_visit_place"]
+        )
+
+
+def test_must_visit_already_matched_does_not_trigger_targeted_lookup(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    provider = _MustVisitLookupTestPlacesProvider()
+    monkeypatch.setattr(provider_gateway, "places", provider)
+
+    create_response = client.post(
+        "/trips",
+        json={
+            "destination_scope": "single_city",
+            "primary_destination": "Testville, Testland",
+            "origin_city": "Home City",
+            "start_date": "2026-08-10",
+            "end_date": "2026-08-10",
+            "travelers_count": 2,
+            "travel_group_type": "couple",
+            "must_visit": ["City Museum"],
+        },
+    )
+    assert create_response.status_code == 201
+    trip_id = create_response.json()["data"]["trip_id"]
+
+    generate_response = client.post(f"/trips/{trip_id}/generate")
+    assert generate_response.status_code == 200
+
+    # Already matched by the general search result, so no targeted lookup
+    # should have been attempted at all.
+    assert provider.must_visit_lookup_calls == []
+
+    response = client.get(f"/trips/{trip_id}/destination-context")
+    assert response.status_code == 200
+    candidate_pois = response.json()["data"]["destination_context"]["candidate_pois"]
+
+    # No duplicate was appended: still exactly the one general-search candidate.
+    assert len(candidate_pois) == 1
+    assert candidate_pois[0]["name"] == "City Museum"
+
+
+def test_missing_must_visit_is_added_through_targeted_lookup(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    provider = _MustVisitLookupTestPlacesProvider()
+    monkeypatch.setattr(provider_gateway, "places", provider)
+
+    create_response = client.post(
+        "/trips",
+        json={
+            "destination_scope": "single_city",
+            "primary_destination": "Testville, Testland",
+            "origin_city": "Home City",
+            "start_date": "2026-08-10",
+            "end_date": "2026-08-10",
+            "travelers_count": 2,
+            "travel_group_type": "couple",
+            "must_visit": ["Old Fort Tower"],
+        },
+    )
+    assert create_response.status_code == 201
+    trip_id = create_response.json()["data"]["trip_id"]
+
+    generate_response = client.post(f"/trips/{trip_id}/generate")
+    assert generate_response.status_code == 200
+
+    assert provider.must_visit_lookup_calls == ["Old Fort Tower"]
+
+    destination_context_response = client.get(f"/trips/{trip_id}/destination-context")
+    assert destination_context_response.status_code == 200
+    candidate_pois = destination_context_response.json()["data"]["destination_context"][
+        "candidate_pois"
+    ]
+    names = {poi["name"] for poi in candidate_pois}
+    assert "City Museum" in names
+    assert "Old Fort Tower" in names
+
+    # No fake rating/price/review/opening-hour/route/availability/booking
+    # fields were created for the appended candidate.
+    added = next(poi for poi in candidate_pois if poi["name"] == "Old Fort Tower")
+    assert set(added.keys()) == {
+        "place_id",
+        "name",
+        "category",
+        "coordinates",
+        "address",
+        "source",
+        "data_status",
+        "confidence",
+    }
+
+    # The scheduler naturally picks up the newly added candidate.
+    experience_response = client.get(f"/trips/{trip_id}/experience-plan")
+    assert experience_response.status_code == 200
+    daily_plans = experience_response.json()["data"]["experience_plan"]["daily_plans"]
+    scheduled_names = {
+        experience["name"]
+        for day_plan in daily_plans
+        for experience in day_plan["experiences"]
+    }
+    assert "Old Fort Tower" in scheduled_names
+
+    # The must-visit request is now matched, so no unmatched-must-visit
+    # warning should remain.
+    validation_response = client.get(f"/trips/{trip_id}/validation-report")
+    assert validation_response.status_code == 200
+    validation_report = validation_response.json()["data"]["validation_report"]
+    assert not any(
+        warning["category"] == "must_visit" for warning in validation_report["warnings"]
+    )
+
+
+def test_failed_targeted_lookup_keeps_unmatched_must_visit_warning(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    provider = _MustVisitLookupTestPlacesProvider()
+    monkeypatch.setattr(provider_gateway, "places", provider)
+
+    create_response = client.post(
+        "/trips",
+        json={
+            "destination_scope": "single_city",
+            "primary_destination": "Testville, Testland",
+            "origin_city": "Home City",
+            "start_date": "2026-08-10",
+            "end_date": "2026-08-10",
+            "travelers_count": 2,
+            "travel_group_type": "couple",
+            # The test provider's targeted lookup can't resolve this one.
+            "must_visit": ["Hidden Cave"],
+        },
+    )
+    assert create_response.status_code == 201
+    trip_id = create_response.json()["data"]["trip_id"]
+
+    generate_response = client.post(f"/trips/{trip_id}/generate")
+    assert generate_response.status_code == 200
+
+    assert provider.must_visit_lookup_calls == ["Hidden Cave"]
+
+    destination_context_response = client.get(f"/trips/{trip_id}/destination-context")
+    assert destination_context_response.status_code == 200
+    candidate_pois = destination_context_response.json()["data"]["destination_context"][
+        "candidate_pois"
+    ]
+    # No place was invented to satisfy the failed lookup.
+    assert len(candidate_pois) == 1
+    assert candidate_pois[0]["name"] == "City Museum"
+
+    validation_response = client.get(f"/trips/{trip_id}/validation-report")
+    assert validation_response.status_code == 200
+    validation_report = validation_response.json()["data"]["validation_report"]
+
+    must_visit_warnings = [
+        warning
+        for warning in validation_report["warnings"]
+        if warning["category"] == "must_visit"
+    ]
+    assert len(must_visit_warnings) == 1
+    assert "Hidden Cave" in must_visit_warnings[0]["message"]
+    assert "not found in provider-backed attraction candidates" in must_visit_warnings[0]["message"]

@@ -30,10 +30,17 @@ class _FakeClient:
     """Stands in for `httpx.Client`. `post_responses` is consumed in order,
     one per Overpass `.post()` call (primary, then fallback if attempted)."""
 
-    def __init__(self, geocode_response: _FakeResponse, post_responses: list[_FakeResponse]) -> None:
+    def __init__(
+        self,
+        geocode_response: _FakeResponse | None = None,
+        post_responses: list[_FakeResponse] | None = None,
+        get_responses: list[_FakeResponse] | None = None,
+    ) -> None:
         self._geocode_response = geocode_response
-        self._post_responses = list(post_responses)
+        self._post_responses = list(post_responses or [])
+        self._get_responses = list(get_responses) if get_responses is not None else None
         self.post_call_count = 0
+        self.get_call_count = 0
 
     def __enter__(self) -> "_FakeClient":
         return self
@@ -42,6 +49,11 @@ class _FakeClient:
         return False
 
     def get(self, url: str, params: dict[str, Any] | None = None) -> _FakeResponse:
+        if self._get_responses is not None:
+            response = self._get_responses[self.get_call_count]
+            self.get_call_count += 1
+            return response
+        assert self._geocode_response is not None
         return self._geocode_response
 
     def post(self, url: str, data: dict[str, Any] | None = None) -> _FakeResponse:
@@ -70,11 +82,45 @@ def _element(
 def _install_fake_client(
     monkeypatch: pytest.MonkeyPatch, geocode_response: _FakeResponse, post_responses: list[_FakeResponse]
 ) -> _FakeClient:
-    fake_client = _FakeClient(geocode_response, post_responses)
+    fake_client = _FakeClient(geocode_response=geocode_response, post_responses=post_responses)
     monkeypatch.setattr(
         openstreetmap_adapter.httpx, "Client", lambda **kwargs: fake_client
     )
     return fake_client
+
+
+def _install_fake_client_for_get(
+    monkeypatch: pytest.MonkeyPatch, get_responses: list[_FakeResponse]
+) -> _FakeClient:
+    """Install a fake client for adapter methods that only ever call `.get()`
+    (e.g. `search_must_visit_place`, which uses Nominatim search directly and
+    never touches Overpass `.post()`)."""
+    fake_client = _FakeClient(get_responses=get_responses)
+    monkeypatch.setattr(
+        openstreetmap_adapter.httpx, "Client", lambda **kwargs: fake_client
+    )
+    return fake_client
+
+
+def _nominatim_result(
+    name: str,
+    lat: str = "34.0522",
+    lon: str = "-118.2437",
+    osm_type: str = "way",
+    osm_id: int = 123,
+    place_type: str = "attraction",
+) -> dict[str, Any]:
+    return {
+        "place_id": 999,
+        "osm_type": osm_type,
+        "osm_id": osm_id,
+        "lat": lat,
+        "lon": lon,
+        "display_name": f"{name}, Some Street, Some City",
+        "namedetails": {"name": name},
+        "type": place_type,
+        "class": "tourism",
+    }
 
 
 def test_primary_attraction_query_success_uses_primary_result(
@@ -249,3 +295,104 @@ def test_fallback_result_creates_no_fake_rating_price_review_or_hours(
         }
         for forbidden_field in ("rating", "price", "review", "opening_hours", "booking_url", "availability"):
             assert forbidden_field not in dumped
+
+
+def test_search_must_visit_place_returns_named_result_with_coordinates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_client = _install_fake_client_for_get(
+        monkeypatch,
+        get_responses=[_FakeResponse(json_data=[_nominatim_result("Griffith Observatory")])],
+    )
+
+    adapter = OpenStreetMapPlacesAdapter()
+    response = adapter.search_must_visit_place("Griffith Observatory", "Los Angeles")
+
+    assert response.status == ProviderStatus.SUCCESS
+    assert response.data_status == DataStatus.LIVE
+    assert response.data is not None
+    assert len(response.data) == 1
+
+    place = response.data[0]
+    assert place.name == "Griffith Observatory"
+    assert place.place_id == "way/123"
+    assert place.coordinates is not None
+    assert place.coordinates.lat == pytest.approx(34.0522)
+    assert place.coordinates.lng == pytest.approx(-118.2437)
+    assert place.source == "openstreetmap_places"
+
+    # The query combines the must-visit term with the destination, never an
+    # unconstrained global search.
+    assert fake_client.get_call_count == 1
+
+
+def test_search_must_visit_place_no_results_does_not_invent_a_place(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_fake_client_for_get(monkeypatch, get_responses=[_FakeResponse(json_data=[])])
+
+    adapter = OpenStreetMapPlacesAdapter()
+    response = adapter.search_must_visit_place("Nonexistent Landmark", "Los Angeles")
+
+    assert response.status == ProviderStatus.UNAVAILABLE
+    assert response.data_status == DataStatus.UNAVAILABLE
+    assert response.data is None
+    assert "must_visit_place" in response.unavailable_fields
+
+
+def test_search_must_visit_place_missing_coordinates_does_not_invent_a_place(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    result = _nominatim_result("Some Place")
+    result["lat"] = None
+    result["lon"] = None
+    _install_fake_client_for_get(monkeypatch, get_responses=[_FakeResponse(json_data=[result])])
+
+    adapter = OpenStreetMapPlacesAdapter()
+    response = adapter.search_must_visit_place("Some Place", "Los Angeles")
+
+    assert response.data is None
+    assert response.status == ProviderStatus.UNAVAILABLE
+
+
+def test_search_must_visit_place_request_failure_stays_honest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_fake_client_for_get(
+        monkeypatch, get_responses=[_FakeResponse(should_fail=True)]
+    )
+
+    adapter = OpenStreetMapPlacesAdapter()
+    response = adapter.search_must_visit_place("Griffith Observatory", "Los Angeles")
+
+    assert response.status == ProviderStatus.FAILED
+    assert response.data_status == DataStatus.FAILED
+    assert response.data is None
+    assert "must_visit_place" in response.unavailable_fields
+
+
+def test_search_must_visit_place_result_has_no_fake_rating_price_review_or_hours(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_fake_client_for_get(
+        monkeypatch,
+        get_responses=[_FakeResponse(json_data=[_nominatim_result("Griffith Observatory")])],
+    )
+
+    adapter = OpenStreetMapPlacesAdapter()
+    response = adapter.search_must_visit_place("Griffith Observatory", "Los Angeles")
+
+    assert response.data is not None
+    dumped = response.data[0].model_dump()
+    assert set(dumped.keys()) == {
+        "place_id",
+        "name",
+        "category",
+        "coordinates",
+        "address",
+        "source",
+        "data_status",
+        "confidence",
+    }
+    for forbidden_field in ("rating", "price", "review", "opening_hours", "booking_url", "availability"):
+        assert forbidden_field not in dumped

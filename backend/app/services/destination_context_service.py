@@ -1,9 +1,16 @@
 from __future__ import annotations
 
+from typing import Any
+
 from app.models.planning_state import DestinationContext, PlanningStage, PlanningState
 from app.providers.gateway import ProviderGateway, provider_gateway
 from app.services.base import PlanningStageService
+from app.services.experience_planner_service import _matches_must_visit
 from app.services.provider_coverage_service import ProviderCoverageService, provider_coverage_service
+
+
+def _normalize_name(name: Any) -> str:
+    return str(name or "").strip().lower()
 
 
 class DestinationContextService(PlanningStageService):
@@ -14,7 +21,8 @@ class DestinationContextService(PlanningStageService):
     Consumes `trip_request` and `traveler_profile`. Reaches provider-backed
     data only through ProviderGateway, calling only the OSM PlacesProvider
     methods it actually implements: `search_attractions`,
-    `search_restaurants`, and `search_accommodation_pois`.
+    `search_restaurants`, `search_accommodation_pois`, and (as a targeted
+    fallback, see below) `search_must_visit_place`.
 
     `candidate_pois`, `candidate_restaurants`, and
     `candidate_accommodation_pois` are filled with real OSM POIs when the
@@ -23,6 +31,16 @@ class DestinationContextService(PlanningStageService):
     given a price, availability, rating, or booking link. Neighborhood
     candidates and attraction clusters stay empty since no adapter implements
     those yet.
+
+    After general attraction search, any must_visit term (from
+    `traveler_profile` if present, else `trip_request`) not already matched
+    by name in `candidate_pois` gets one targeted provider lookup via
+    `_append_must_visit_candidates` before scheduling ever runs, so a
+    user's explicit must-visit place isn't missed just because it fell
+    outside the general search. Only a real, named, coordinate-backed place
+    the provider actually returns is appended -- never an invented one -- and
+    if the lookup fails or finds nothing, PlanValidatorService's existing
+    unmatched-must-visit warning still applies unchanged.
     """
 
     def __init__(
@@ -60,6 +78,9 @@ class DestinationContextService(PlanningStageService):
             [poi.model_dump(mode="json") for poi in attractions_response.data]
             if attractions_response.data
             else []
+        )
+        candidate_pois = self._append_must_visit_candidates(
+            planning_state, destination_name, candidate_pois
         )
         candidate_restaurants = (
             [poi.model_dump(mode="json") for poi in restaurants_response.data]
@@ -112,3 +133,66 @@ class DestinationContextService(PlanningStageService):
         planning_state.destination_context = context
         planning_state.touch()
         return planning_state
+
+    def _append_must_visit_candidates(
+        self,
+        planning_state: PlanningState,
+        destination_name: str,
+        candidate_pois: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Targeted provider lookup fallback for must-visit places the
+        general attraction search missed.
+
+        For each must_visit term not already matched by name in
+        `candidate_pois`, ask the places provider for that specific place
+        (`"{must_visit_term}, {primary_destination}"`) instead of leaving it
+        to PlanValidatorService's unmatched-must-visit warning. Only a real,
+        named, coordinate-backed place returned by the provider is ever
+        appended -- if the targeted lookup fails or finds nothing, no place
+        is invented and the existing unmatched-must-visit warning behavior
+        is unchanged. Duplicates are avoided both by `place_id` and by
+        normalized name against every candidate already present, including
+        ones appended earlier in this same loop.
+        """
+        traveler_profile = planning_state.traveler_profile
+        must_visit_terms = (
+            traveler_profile.must_visit
+            if traveler_profile
+            else planning_state.trip_request.must_visit
+        )
+        if not must_visit_terms:
+            return candidate_pois
+
+        seen_place_ids = {poi.get("place_id") for poi in candidate_pois if poi.get("place_id")}
+        seen_names = {
+            _normalize_name(poi.get("name")) for poi in candidate_pois if poi.get("name")
+        }
+
+        for term in must_visit_terms:
+            if not term:
+                continue
+
+            already_matched = any(
+                _matches_must_visit(poi, [term.lower()]) for poi in candidate_pois
+            )
+            if already_matched:
+                continue
+
+            response = self.gateway.places.search_must_visit_place(term, destination_name)
+            if not response.data:
+                continue
+
+            for place in response.data:
+                place_dict = place.model_dump(mode="json")
+                place_id = place_dict.get("place_id")
+                normalized_name = _normalize_name(place_dict.get("name"))
+                if place_id in seen_place_ids or normalized_name in seen_names:
+                    continue
+
+                candidate_pois.append(place_dict)
+                if place_id:
+                    seen_place_ids.add(place_id)
+                if normalized_name:
+                    seen_names.add(normalized_name)
+
+        return candidate_pois

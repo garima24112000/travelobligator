@@ -112,6 +112,18 @@ class PlacesProvider(BaseProvider):
     ) -> ProviderResponse[Any]:
         return self.not_connected(unavailable_fields=["accommodation_pois"])
 
+    def search_must_visit_place(
+        self,
+        must_visit_term: str,
+        primary_destination: str,
+        filters: dict[str, Any] | None = None,
+    ) -> ProviderResponse[Any]:
+        """Targeted lookup for one explicit must-visit place, used as a
+        fallback when general attraction search misses it. Must never
+        return an invented place; only a real, named, coordinate-backed
+        provider result."""
+        return self.not_connected(unavailable_fields=["must_visit_place"])
+
 
 class RoutesProvider(BaseProvider):
     provider_name = "routes_provider"

@@ -53,10 +53,19 @@ class OpenStreetMapPlacesAdapter(PlacesProvider):
     (docs/07_production_data_sources.md section 5/7, docs/12_provider_architecture.md
     section 10).
 
-    Only `search_attractions`, `search_restaurants`, and
-    `search_accommodation_pois` are implemented. `search_places` and
-    `get_place_details` fall back to the base class's honest
-    `not_connected` response.
+    Only `search_attractions`, `search_restaurants`,
+    `search_accommodation_pois`, and `search_must_visit_place` are
+    implemented. `search_places` and `get_place_details` fall back to the
+    base class's honest `not_connected` response.
+
+    `search_must_visit_place` is a targeted lookup for one explicit
+    must-visit place, used only as a fallback when general attraction
+    search misses it. It geocodes `"{must_visit_term}, {primary_destination}"`
+    directly via Nominatim -- never a global, destination-unconstrained
+    search -- so it can't resolve to a same-named place in the wrong city.
+    It returns at most one real, named, coordinate-backed place; if
+    Nominatim finds nothing (or the request fails), it honestly reports
+    that instead of inventing a place.
 
     Only real Overpass elements that have a `name` tag are returned. No
     rating, opening hours, price level, or review data is fabricated;
@@ -108,6 +117,106 @@ class OpenStreetMapPlacesAdapter(PlacesProvider):
         self, destination: str, filters: dict[str, Any] | None = None
     ) -> ProviderResponse[Any]:
         return self._search(destination, _ACCOMMODATION_TAG_FILTERS, "accommodation_pois")
+
+    def search_must_visit_place(
+        self,
+        must_visit_term: str,
+        primary_destination: str,
+        filters: dict[str, Any] | None = None,
+    ) -> ProviderResponse[Any]:
+        field_name = "must_visit_place"
+        query = f"{must_visit_term}, {primary_destination}"
+
+        try:
+            with httpx.Client(
+                timeout=_REQUEST_TIMEOUT_SECONDS, headers={"User-Agent": _USER_AGENT}
+            ) as client:
+                place = self._lookup_named_place(client, query)
+        except (httpx.HTTPError, ValueError) as exc:
+            logger.warning("OpenStreetMap must-visit lookup failed for %s: %s", query, exc)
+            return failed_response(
+                self.provider_name,
+                self.provider_type,
+                unavailable_fields=[field_name],
+                message=f"OpenStreetMap/Nominatim request failed for '{query}'.",
+            )
+
+        if place is None:
+            return unavailable_response(
+                self.provider_name,
+                self.provider_type,
+                unavailable_fields=[field_name],
+                message=(
+                    f"OpenStreetMap found no named place with coordinates for '{query}'."
+                ),
+            )
+
+        return ProviderResponse[list[NormalizedPlace]](
+            provider_name=self.provider_name,
+            provider_type=self.provider_type,
+            status=ProviderStatus.SUCCESS,
+            data_status=DataStatus.LIVE,
+            data=[place],
+            unavailable_fields=[],
+            confidence=0.5,
+            message=(
+                f"Found a named OpenStreetMap place for must-visit term "
+                f"'{must_visit_term}' via a targeted Nominatim lookup."
+            ),
+        )
+
+    def _lookup_named_place(self, client: httpx.Client, query: str) -> NormalizedPlace | None:
+        """Look up exactly one named, coordinate-backed place for `query` via
+        Nominatim's search endpoint. Returns None (never a guessed place) if
+        Nominatim has no usable result. `query` is always the must-visit term
+        combined with the trip's primary destination, so this never falls
+        back to an unconstrained global search that could resolve to the
+        wrong city.
+        """
+        response = client.get(
+            f"{self._nominatim_url}/search",
+            params={
+                "q": query,
+                "format": "jsonv2",
+                "limit": 1,
+                "namedetails": 1,
+            },
+        )
+        response.raise_for_status()
+        results = response.json()
+        if not results:
+            return None
+
+        result = results[0]
+        lat = result.get("lat")
+        lon = result.get("lon")
+        if lat is None or lon is None:
+            return None
+
+        namedetails = result.get("namedetails") or {}
+        display_name = result.get("display_name") or ""
+        name = namedetails.get("name") or display_name.split(",")[0].strip()
+        if not name:
+            return None
+
+        osm_type = result.get("osm_type")
+        osm_id = result.get("osm_id")
+        place_id = (
+            f"{osm_type}/{osm_id}"
+            if osm_type and osm_id is not None
+            else f"nominatim/{result.get('place_id')}"
+        )
+
+        return NormalizedPlace(
+            place_id=place_id,
+            name=name,
+            category=result.get("type") or result.get("class"),
+            coordinates=GeoPoint(lat=float(lat), lng=float(lon)),
+            address=display_name or None,
+            source=self.provider_name,
+            data_status=DataStatus.LIVE,
+            confidence=0.5,
+        )
 
     def _search(
         self,
