@@ -3,6 +3,7 @@ from __future__ import annotations
 from app.models.common import ReadinessStatus, ValidationSeverity
 from app.models.planning_state import PlanningStage, PlanningState, ValidationIssue, ValidationReport
 from app.services.base import PlanningStageService
+from app.services.experience_planner_service import _matches_must_visit
 
 
 class PlanValidatorService(PlanningStageService):
@@ -24,6 +25,10 @@ class PlanValidatorService(PlanningStageService):
       warning names them explicitly so the report never implies they were
       checked. This never blocks the plan by itself; constraints only add a
       warning, not a critical issue.
+    * If a must-visit request does not match any provider-backed
+      `candidate_pois` by name, a warning names it explicitly instead of
+      silently dropping it or inventing a place to satisfy it. This never
+      blocks the plan by itself; it only adds a warning.
     """
 
     def run(self, planning_state: PlanningState) -> PlanningState:
@@ -121,6 +126,41 @@ class PlanValidatorService(PlanningStageService):
                     suggested_fix=(
                         "Implement constraint/feasibility validation against these "
                         "constraints before claiming they are satisfied."
+                    ),
+                )
+            )
+
+        must_visit_terms = (
+            planning_state.traveler_profile.must_visit
+            if planning_state.traveler_profile
+            else planning_state.trip_request.must_visit
+        )
+        candidate_pois = (
+            planning_state.destination_context.candidate_pois
+            if planning_state.destination_context
+            else []
+        )
+        unmatched_must_visit = [
+            term
+            for term in must_visit_terms
+            if not any(_matches_must_visit(poi, [term.lower()]) for poi in candidate_pois)
+        ]
+
+        if unmatched_must_visit:
+            unmatched_list = ", ".join(unmatched_must_visit)
+            warnings.append(
+                ValidationIssue(
+                    severity=ValidationSeverity.WARNING,
+                    category="must_visit",
+                    message=(
+                        f"The following must-visit request(s) were not scheduled because "
+                        f"they were not found in provider-backed attraction candidates: "
+                        f"{unmatched_list}."
+                    ),
+                    affected_section="experience_plan",
+                    suggested_fix=(
+                        "Search for these must-visit places directly, or connect a places "
+                        "provider with broader coverage."
                     ),
                 )
             )

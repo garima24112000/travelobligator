@@ -487,3 +487,111 @@ def test_validation_report_no_constraint_warning_when_none_captured(
     assert not any(
         warning["category"] == "constraints" for warning in validation_report["warnings"]
     )
+
+
+def test_validation_report_warns_about_unmatched_must_visit(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(provider_gateway, "places", _RankingTestPlacesProvider())
+
+    create_response = client.post(
+        "/trips",
+        json={
+            "destination_scope": "single_city",
+            "primary_destination": "Testville, Testland",
+            "origin_city": "Home City",
+            "start_date": "2026-08-10",
+            "end_date": "2026-08-12",
+            "travelers_count": 2,
+            "travel_group_type": "couple",
+            "pace": "balanced",
+            # "Old Town Hall" is a real fixture candidate; "Space Needle" is not.
+            "must_visit": ["Old Town Hall", "Space Needle"],
+        },
+    )
+    assert create_response.status_code == 201
+    trip_id = create_response.json()["data"]["trip_id"]
+
+    generate_response = client.post(f"/trips/{trip_id}/generate")
+    assert generate_response.status_code == 200
+
+    experience_response = client.get(f"/trips/{trip_id}/experience-plan")
+    assert experience_response.status_code == 200
+    daily_plans = experience_response.json()["data"]["experience_plan"]["daily_plans"]
+    all_experiences = [
+        experience for day_plan in daily_plans for experience in day_plan["experiences"]
+    ]
+    scheduled_names = {experience["name"] for experience in all_experiences}
+
+    # The matched must-visit request is scheduled exactly like before...
+    assert "Old Town Hall" in scheduled_names
+    by_name = {experience["name"]: experience for experience in all_experiences}
+    assert by_name["Old Town Hall"]["why_included"] == "Matches your must-visit request."
+    # ...but the unmatched one is never invented as a fake attraction.
+    assert "Space Needle" not in scheduled_names
+    known_fixture_names = {
+        "Riverside Park",
+        "Central Plaza",
+        "Old Town Hall",
+        "Sunset Beach",
+        "City History Museum",
+    }
+    for experience in all_experiences:
+        assert experience["name"] in known_fixture_names
+
+    validation_response = client.get(f"/trips/{trip_id}/validation-report")
+    assert validation_response.status_code == 200
+    validation_report = validation_response.json()["data"]["validation_report"]
+
+    # A single unmatched must-visit does not block the plan by itself.
+    assert validation_report["readiness_status"] == "needs_review"
+    assert validation_report["critical_issues"] == []
+
+    must_visit_warnings = [
+        warning
+        for warning in validation_report["warnings"]
+        if warning["category"] == "must_visit"
+    ]
+    assert len(must_visit_warnings) == 1
+    must_visit_warning = must_visit_warnings[0]
+
+    # The unmatched must-visit string is named exactly, and the matched one
+    # is not mentioned since it was found.
+    assert "Space Needle" in must_visit_warning["message"]
+    assert "Old Town Hall" not in must_visit_warning["message"]
+    assert "not scheduled" in must_visit_warning["message"]
+    assert "not found in provider-backed attraction candidates" in must_visit_warning["message"]
+
+
+def test_validation_report_no_must_visit_warning_when_all_matched(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(provider_gateway, "places", _RankingTestPlacesProvider())
+
+    create_response = client.post(
+        "/trips",
+        json={
+            "destination_scope": "single_city",
+            "primary_destination": "Testville, Testland",
+            "origin_city": "Home City",
+            "start_date": "2026-08-10",
+            "end_date": "2026-08-12",
+            "travelers_count": 2,
+            "travel_group_type": "couple",
+            "pace": "balanced",
+            "must_visit": ["Old Town Hall"],
+        },
+    )
+    assert create_response.status_code == 201
+    trip_id = create_response.json()["data"]["trip_id"]
+
+    generate_response = client.post(f"/trips/{trip_id}/generate")
+    assert generate_response.status_code == 200
+
+    response = client.get(f"/trips/{trip_id}/validation-report")
+    assert response.status_code == 200
+    validation_report = response.json()["data"]["validation_report"]
+
+    assert not any(
+        warning["category"] == "must_visit" for warning in validation_report["warnings"]
+    )
