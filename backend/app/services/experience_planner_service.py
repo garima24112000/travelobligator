@@ -13,6 +13,7 @@ from app.models.planning_state import (
     TripPace,
 )
 from app.services.base import PlanningStageService
+from app.utils.geo import haversine_distance_km
 
 _MAX_ATTRACTIONS_PER_DAY: dict[TripPace, int] = {
     TripPace.RELAXED: 2,
@@ -21,9 +22,11 @@ _MAX_ATTRACTIONS_PER_DAY: dict[TripPace, int] = {
 }
 _DEFAULT_CATEGORY = "attraction"
 _FEASIBILITY_WARNING = (
-    "Route ordering, timing, opening hours, and feasibility checks are not "
-    "implemented yet, so scheduled attractions have no start/end time, "
-    "duration, walking distance, or cost estimate."
+    "Within each day, attractions are ordered using straight-line (haversine) "
+    "distance only when coordinates are available; this is geographic ordering, "
+    "not route optimization. Route ordering, timing, opening hours, and "
+    "feasibility checks are not implemented yet, so scheduled attractions have "
+    "no start/end time, duration, walking distance, or cost estimate."
 )
 
 
@@ -50,11 +53,19 @@ class ExperiencePlannerService(PlanningStageService):
 
     No new place is invented to satisfy a must-visit or interest match —
     only existing `candidate_pois` are reordered. Restaurants and
-    accommodation POIs are intentionally not used yet. No route ordering,
-    timing, opening-hours, walking, or cost estimation is implemented yet,
-    so every scheduled item keeps `start_time`/`end_time`/
-    `estimated_duration_minutes` unset and every day carries an explicit
-    feasibility warning.
+    accommodation POIs are intentionally not used yet.
+
+    Within each day, the tiered candidates assigned to that day are further
+    reordered using a simple nearest-neighbor walk over straight-line
+    (haversine) distance: the day's highest-tier candidate stays first, and
+    each following slot is filled by the closest remaining coordinate-backed
+    candidate. This is geographic ordering only, not route optimization —
+    candidates are never moved across days, and candidates with missing or
+    invalid coordinates are left in their existing stable/provider order at
+    the end of the day rather than guessed at. No route ordering, timing,
+    opening-hours, walking, or cost estimation is implemented yet, so every
+    scheduled item keeps `start_time`/`end_time`/`estimated_duration_minutes`
+    unset and every day carries an explicit feasibility warning.
     """
 
     def run(self, planning_state: PlanningState) -> PlanningState:
@@ -86,6 +97,7 @@ class ExperiencePlannerService(PlanningStageService):
             day_date = trip_request.start_date + timedelta(days=day_number - 1)
             day_pois = ordered_pois[cursor : cursor + max_per_day]
             cursor += max_per_day
+            day_pois = _order_day_by_distance(day_pois)
 
             warnings: list[str] = []
             if not candidate_pois:
@@ -114,8 +126,10 @@ class ExperiencePlannerService(PlanningStageService):
 
         assumptions = [
             "Attractions are scheduled directly from provider-backed candidates using a "
-            "simple per-day cap based on pace; geographic grouping, route ordering, "
-            "timing, and opening-hours feasibility are not implemented yet."
+            "simple per-day cap based on pace, then ordered within each day using "
+            "straight-line (haversine) distance only where coordinates are available. "
+            "This is geographic ordering only, not route optimization, and route "
+            "ordering, timing, and opening-hours feasibility are not implemented yet."
         ]
         if not candidate_pois:
             assumptions.insert(
@@ -187,16 +201,77 @@ def _order_candidates(
     return ordered, must_visit_ids, interest_ids
 
 
+def _poi_coordinates(poi: dict[str, Any]) -> GeoPoint | None:
+    """Extract a candidate's coordinates, if present and well-formed.
+
+    Never invents coordinates; missing or malformed values are treated as
+    unavailable rather than raising, so a bad provider record can't crash
+    planning.
+    """
+    coordinates = poi.get("coordinates")
+    if not coordinates:
+        return None
+    try:
+        return GeoPoint(lat=coordinates["lat"], lng=coordinates["lng"])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _order_day_by_distance(day_pois: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Reorder one day's already-tiered candidates by straight-line distance.
+
+    This only reorders candidates within the day already assigned to it by
+    `_order_candidates` and the per-day cap — it never moves a candidate to a
+    different day. The day's first (highest-tier) candidate stays first;
+    remaining candidates are visited nearest-first using
+    `haversine_distance_km`. Candidates with missing or invalid coordinates
+    cannot be geographically placed, so they are kept in their existing
+    stable/provider order and appended at the end rather than guessed at.
+    """
+    if len(day_pois) <= 1:
+        return list(day_pois)
+
+    anchor = day_pois[0]
+    anchor_point = _poi_coordinates(anchor)
+
+    remaining_with_coords: list[tuple[dict[str, Any], GeoPoint]] = []
+    remaining_without_coords: list[dict[str, Any]] = []
+    for poi in day_pois[1:]:
+        point = _poi_coordinates(poi)
+        if point is not None:
+            remaining_with_coords.append((poi, point))
+        else:
+            remaining_without_coords.append(poi)
+
+    if anchor_point is not None:
+        geo_chain: list[dict[str, Any]] = []
+        current_point = anchor_point
+    elif remaining_with_coords:
+        # No coordinates to measure from the anchor; start the geographic
+        # chain from the first coordinate-backed candidate instead.
+        start_poi, current_point = remaining_with_coords.pop(0)
+        geo_chain = [start_poi]
+    else:
+        return [anchor, *remaining_without_coords]
+
+    while remaining_with_coords:
+        nearest_index = min(
+            range(len(remaining_with_coords)),
+            key=lambda index: haversine_distance_km(
+                current_point, remaining_with_coords[index][1]
+            ),
+        )
+        next_poi, current_point = remaining_with_coords.pop(nearest_index)
+        geo_chain.append(next_poi)
+
+    return [anchor, *geo_chain, *remaining_without_coords]
+
+
 def _build_experience_item(
     poi: dict[str, Any], must_visit_ids: set[int], interest_ids: set[int]
 ) -> ExperienceItem:
     name = poi.get("name") or ""
-
-    coordinates: GeoPoint | None = None
-    poi_coordinates = poi.get("coordinates")
-    if poi_coordinates:
-        coordinates = GeoPoint(lat=poi_coordinates["lat"], lng=poi_coordinates["lng"])
-
+    coordinates = _poi_coordinates(poi)
     confidence = float(poi.get("confidence") or 0.0)
     data_status_value = poi.get("data_status") or DataStatus.LIVE.value
 

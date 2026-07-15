@@ -655,3 +655,285 @@ def test_validation_report_no_budget_warning_when_none_captured(
     assert not any(
         warning["category"] == "budget" for warning in validation_report["warnings"]
     )
+
+
+def _geo_place(place_id: str, name: str, category: str, lng: float | None) -> NormalizedPlace:
+    coordinates = GeoPoint(lat=0.0, lng=lng) if lng is not None else None
+    return NormalizedPlace(
+        place_id=place_id,
+        name=name,
+        category=category,
+        coordinates=coordinates,
+        source="openstreetmap_places",
+        data_status=DataStatus.LIVE,
+        confidence=0.6,
+    )
+
+
+class _GeoOrderingTestPlacesProvider(PlacesProvider):
+    """Test-only double with attractions at known coordinates, used to prove
+    within-day nearest-neighbor ordering by straight-line distance actually
+    changes scheduling order rather than passing provider order through.
+
+    All points sit on the equator so straight-line distance is monotonic in
+    longitude: Anchor(lng=0) is ~111km from Near(lng=1) and ~555km from
+    Far(lng=5). Provider order is deliberately [Anchor, Far, Near] so a
+    correct nearest-neighbor result ([Anchor, Near, Far]) can only come from
+    actual distance calculation, not pass-through.
+    """
+
+    provider_name = "openstreetmap_places"
+
+    def search_attractions(
+        self, destination: str, filters: dict[str, Any] | None = None
+    ) -> ProviderResponse[Any]:
+        places = [
+            _geo_place("test/geo/anchor", "Anchor Point", "landmark", 0.0),
+            _geo_place("test/geo/far", "Far Point", "landmark", 5.0),
+            _geo_place("test/geo/near", "Near Point", "landmark", 1.0),
+        ]
+        return ProviderResponse[list[NormalizedPlace]](
+            provider_name=self.provider_name,
+            provider_type=self.provider_type,
+            status=ProviderStatus.SUCCESS,
+            data_status=DataStatus.LIVE,
+            data=places,
+            confidence=0.65,
+            message="Test fixture data; not a real provider call.",
+        )
+
+    def search_restaurants(
+        self, area: str, filters: dict[str, Any] | None = None
+    ) -> ProviderResponse[Any]:
+        return unavailable_response(
+            self.provider_name, self.provider_type, unavailable_fields=["restaurants"]
+        )
+
+    def search_accommodation_pois(
+        self, destination: str, filters: dict[str, Any] | None = None
+    ) -> ProviderResponse[Any]:
+        return unavailable_response(
+            self.provider_name, self.provider_type, unavailable_fields=["accommodation_pois"]
+        )
+
+
+def test_experience_plan_orders_within_day_by_nearest_straight_line_distance(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(provider_gateway, "places", _GeoOrderingTestPlacesProvider())
+
+    create_response = client.post(
+        "/trips",
+        json={
+            "destination_scope": "single_city",
+            "primary_destination": "Testville, Testland",
+            "origin_city": "Home City",
+            "start_date": "2026-08-10",
+            "end_date": "2026-08-10",
+            "travelers_count": 2,
+            "travel_group_type": "couple",
+            "pace": "balanced",
+        },
+    )
+    assert create_response.status_code == 201
+    trip_id = create_response.json()["data"]["trip_id"]
+
+    generate_response = client.post(f"/trips/{trip_id}/generate")
+    assert generate_response.status_code == 200
+
+    response = client.get(f"/trips/{trip_id}/experience-plan")
+    assert response.status_code == 200
+    daily_plans = response.json()["data"]["experience_plan"]["daily_plans"]
+    assert len(daily_plans) == 1
+
+    day_plan = daily_plans[0]
+    scheduled_names = [experience["name"] for experience in day_plan["experiences"]]
+
+    # Provider returned [Anchor, Far, Near]; nearest-neighbor from Anchor must
+    # pick Near (~111km) before Far (~555km), proving straight-line distance
+    # -- not provider order -- determines the within-day sequence.
+    assert scheduled_names == ["Anchor Point", "Near Point", "Far Point"]
+
+    # The reordering step must not invent any route/timing/walking/cost facts.
+    for experience in day_plan["experiences"]:
+        assert experience["start_time"] is None
+        assert experience["end_time"] is None
+        assert experience["estimated_duration_minutes"] is None
+    assert day_plan["estimated_walking_km"] is None
+    assert day_plan["estimated_travel_time_minutes"] is None
+    assert day_plan["estimated_cost"] is None
+    assert any("straight-line" in warning for warning in day_plan["warnings"])
+    assert any("not route optimization" in warning for warning in day_plan["warnings"])
+
+
+class _GeoOrderingMissingCoordinatesTestPlacesProvider(PlacesProvider):
+    """Test-only double mixing coordinate-backed and coordinate-less
+    candidates, used to prove missing coordinates are handled safely (no
+    crash) and coordinate-less candidates are kept in stable/provider order
+    rather than guessed at geographically.
+    """
+
+    provider_name = "openstreetmap_places"
+
+    def search_attractions(
+        self, destination: str, filters: dict[str, Any] | None = None
+    ) -> ProviderResponse[Any]:
+        places = [
+            _geo_place("test/geo/start", "Start Point", "landmark", 0.0),
+            _geo_place("test/geo/nocoords", "No Coordinates Point", "landmark", None),
+            _geo_place("test/geo/near", "Near Point", "landmark", 1.0),
+        ]
+        return ProviderResponse[list[NormalizedPlace]](
+            provider_name=self.provider_name,
+            provider_type=self.provider_type,
+            status=ProviderStatus.SUCCESS,
+            data_status=DataStatus.LIVE,
+            data=places,
+            confidence=0.65,
+            message="Test fixture data; not a real provider call.",
+        )
+
+    def search_restaurants(
+        self, area: str, filters: dict[str, Any] | None = None
+    ) -> ProviderResponse[Any]:
+        return unavailable_response(
+            self.provider_name, self.provider_type, unavailable_fields=["restaurants"]
+        )
+
+    def search_accommodation_pois(
+        self, destination: str, filters: dict[str, Any] | None = None
+    ) -> ProviderResponse[Any]:
+        return unavailable_response(
+            self.provider_name, self.provider_type, unavailable_fields=["accommodation_pois"]
+        )
+
+
+def test_experience_plan_handles_missing_coordinates_without_crashing(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        provider_gateway, "places", _GeoOrderingMissingCoordinatesTestPlacesProvider()
+    )
+
+    create_response = client.post(
+        "/trips",
+        json={
+            "destination_scope": "single_city",
+            "primary_destination": "Testville, Testland",
+            "origin_city": "Home City",
+            "start_date": "2026-08-10",
+            "end_date": "2026-08-10",
+            "travelers_count": 2,
+            "travel_group_type": "couple",
+            "pace": "balanced",
+        },
+    )
+    assert create_response.status_code == 201
+    trip_id = create_response.json()["data"]["trip_id"]
+
+    generate_response = client.post(f"/trips/{trip_id}/generate")
+    assert generate_response.status_code == 200
+
+    response = client.get(f"/trips/{trip_id}/experience-plan")
+    assert response.status_code == 200
+    daily_plans = response.json()["data"]["experience_plan"]["daily_plans"]
+    experiences = daily_plans[0]["experiences"]
+    scheduled_names = [experience["name"] for experience in experiences]
+
+    # Start and Near are geographically ordered; the coordinate-less
+    # candidate is kept in its stable/provider-order position at the end
+    # instead of crashing planning or being guessed at geographically.
+    assert scheduled_names == ["Start Point", "Near Point", "No Coordinates Point"]
+
+    by_name = {experience["name"]: experience for experience in experiences}
+    # No coordinates are invented for the candidate that never had any.
+    assert by_name["No Coordinates Point"]["coordinates"] is None
+
+
+class _GeoOrderingPriorityTestPlacesProvider(PlacesProvider):
+    """Test-only double combining must-visit, interest, and unmatched tiers
+    with coordinates chosen so a correct nearest-neighbor reorder would place
+    the unmatched candidate ahead of the interest candidate -- proving
+    must-visit priority still wins the first slot even though within-day
+    ordering after that point follows geography rather than tier.
+    """
+
+    provider_name = "openstreetmap_places"
+
+    def search_attractions(
+        self, destination: str, filters: dict[str, Any] | None = None
+    ) -> ProviderResponse[Any]:
+        places = [
+            _geo_place("test/geo/mustvisit", "Old Fort", "landmark", 10.0),
+            _geo_place("test/geo/interest", "City Museum", "museum", 0.0),
+            _geo_place("test/geo/unmatched", "Riverside Walk", "park", 0.5),
+        ]
+        return ProviderResponse[list[NormalizedPlace]](
+            provider_name=self.provider_name,
+            provider_type=self.provider_type,
+            status=ProviderStatus.SUCCESS,
+            data_status=DataStatus.LIVE,
+            data=places,
+            confidence=0.65,
+            message="Test fixture data; not a real provider call.",
+        )
+
+    def search_restaurants(
+        self, area: str, filters: dict[str, Any] | None = None
+    ) -> ProviderResponse[Any]:
+        return unavailable_response(
+            self.provider_name, self.provider_type, unavailable_fields=["restaurants"]
+        )
+
+    def search_accommodation_pois(
+        self, destination: str, filters: dict[str, Any] | None = None
+    ) -> ProviderResponse[Any]:
+        return unavailable_response(
+            self.provider_name, self.provider_type, unavailable_fields=["accommodation_pois"]
+        )
+
+
+def test_experience_plan_geo_ordering_keeps_must_visit_before_interest_and_unmatched(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(provider_gateway, "places", _GeoOrderingPriorityTestPlacesProvider())
+
+    create_response = client.post(
+        "/trips",
+        json={
+            "destination_scope": "single_city",
+            "primary_destination": "Testville, Testland",
+            "origin_city": "Home City",
+            "start_date": "2026-08-10",
+            "end_date": "2026-08-10",
+            "travelers_count": 2,
+            "travel_group_type": "couple",
+            "pace": "balanced",
+            "interests": ["museum"],
+            "must_visit": ["Old Fort"],
+        },
+    )
+    assert create_response.status_code == 201
+    trip_id = create_response.json()["data"]["trip_id"]
+
+    generate_response = client.post(f"/trips/{trip_id}/generate")
+    assert generate_response.status_code == 200
+
+    response = client.get(f"/trips/{trip_id}/experience-plan")
+    assert response.status_code == 200
+    experiences = response.json()["data"]["experience_plan"]["daily_plans"][0]["experiences"]
+    scheduled_names = [experience["name"] for experience in experiences]
+
+    # Old Fort (must-visit) is geographically far from the other two, so a
+    # pure nearest-neighbor walk starting elsewhere would not pick it first --
+    # it stays first only because must-visit priority still wins the day's
+    # first slot. Riverside Walk (unmatched) legitimately lands ahead of City
+    # Museum (interest) because it is geographically closer to Old Fort,
+    # proving distance -- not tier -- governs ordering after the first slot.
+    assert scheduled_names == ["Old Fort", "Riverside Walk", "City Museum"]
+    assert scheduled_names.index("Old Fort") < scheduled_names.index("City Museum")
+    assert scheduled_names.index("Old Fort") < scheduled_names.index("Riverside Walk")
+
+    by_name = {experience["name"]: experience for experience in experiences}
+    assert by_name["Old Fort"]["why_included"] == "Matches your must-visit request."
+    assert "interests" in by_name["City Museum"]["why_included"]
