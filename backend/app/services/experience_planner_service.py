@@ -22,11 +22,12 @@ _MAX_ATTRACTIONS_PER_DAY: dict[TripPace, int] = {
 }
 _DEFAULT_CATEGORY = "attraction"
 _FEASIBILITY_WARNING = (
-    "Within each day, attractions are ordered using straight-line (haversine) "
-    "distance only when coordinates are available; this is geographic ordering, "
-    "not route optimization. Route ordering, timing, opening hours, and "
-    "feasibility checks are not implemented yet, so scheduled attractions have "
-    "no start/end time, duration, walking distance, or cost estimate."
+    "Days are grouped and attractions are ordered within each day using "
+    "straight-line (haversine) geographic proximity when coordinates are "
+    "available; this is not route optimization. Route ordering, timing, "
+    "opening hours, and feasibility checks are not implemented yet, so "
+    "scheduled attractions have no start/end time, duration, walking "
+    "distance, or cost estimate."
 )
 
 
@@ -41,10 +42,10 @@ class ExperiencePlannerService(PlanningStageService):
 
     First conservative scheduling step: attractions are distributed across
     days directly from `destination_context.candidate_pois` (real
-    provider-backed places only, never invented), using a simple
-    deterministic per-day cap based on trip pace (relaxed=2, balanced=3,
-    packed=4). Candidates are ordered into three tiers before scheduling,
-    with the relative provider order preserved within each tier:
+    provider-backed places only, never invented), respecting a deterministic
+    per-day cap based on trip pace (relaxed=2, balanced=3, packed=4).
+    Candidates are ordered into three priority tiers first, with the
+    relative provider order preserved within each tier:
 
     1. must-visit matches (candidate `name` contains a `must_visit` term)
     2. interest matches (candidate `name`, `category`, or `address` contains
@@ -55,17 +56,25 @@ class ExperiencePlannerService(PlanningStageService):
     only existing `candidate_pois` are reordered. Restaurants and
     accommodation POIs are intentionally not used yet.
 
-    Within each day, the tiered candidates assigned to that day are further
-    reordered using a simple nearest-neighbor walk over straight-line
-    (haversine) distance: the day's highest-tier candidate stays first, and
-    each following slot is filled by the closest remaining coordinate-backed
-    candidate. This is geographic ordering only, not route optimization —
-    candidates are never moved across days, and candidates with missing or
-    invalid coordinates are left in their existing stable/provider order at
-    the end of the day rather than guessed at. No route ordering, timing,
-    opening-hours, walking, or cost estimation is implemented yet, so every
-    scheduled item keeps `start_time`/`end_time`/`estimated_duration_minutes`
-    unset and every day carries an explicit feasibility warning.
+    Days are grouped geographically: for each day, in order, the next
+    highest-priority unscheduled candidate becomes that day's anchor, and
+    the day's remaining slots (up to the pace cap) are filled with the
+    nearest remaining coordinate-backed candidates to that anchor by
+    straight-line (haversine) distance. This means a must-visit or interest
+    candidate still anchors the earliest possible day, but which other
+    candidates join it is driven by geography rather than tier. If the
+    anchor has no coordinates, or too few coordinate-backed candidates
+    remain, the day falls back to filling its remaining slots from the next
+    candidates in stable priority/provider order — coordinates are never
+    guessed at. Within each day, the resulting group is further ordered
+    using a nearest-neighbor walk over straight-line distance, keeping the
+    anchor first. This is geographic grouping/ordering only, not route
+    optimization — candidates are never moved across days, and the total
+    number of scheduled candidates never exceeds the previous per-day-cap
+    behavior. No route ordering, timing, opening-hours, walking, or cost
+    estimation is implemented yet, so every scheduled item keeps
+    `start_time`/`end_time`/`estimated_duration_minutes` unset and every day
+    carries an explicit feasibility warning.
     """
 
     def run(self, planning_state: PlanningState) -> PlanningState:
@@ -91,13 +100,12 @@ class ExperiencePlannerService(PlanningStageService):
             candidate_pois, must_visit_terms, interest_terms
         )
 
+        day_groups = _group_candidates_into_days(ordered_pois, num_days, max_per_day)
+
         daily_plans: list[DailyPlan] = []
-        cursor = 0
         for day_number in range(1, num_days + 1):
             day_date = trip_request.start_date + timedelta(days=day_number - 1)
-            day_pois = ordered_pois[cursor : cursor + max_per_day]
-            cursor += max_per_day
-            day_pois = _order_day_by_distance(day_pois)
+            day_pois = _order_day_by_distance(day_groups[day_number - 1])
 
             warnings: list[str] = []
             if not candidate_pois:
@@ -125,11 +133,13 @@ class ExperiencePlannerService(PlanningStageService):
             )
 
         assumptions = [
-            "Attractions are scheduled directly from provider-backed candidates using a "
-            "simple per-day cap based on pace, then ordered within each day using "
-            "straight-line (haversine) distance only where coordinates are available. "
-            "This is geographic ordering only, not route optimization, and route "
-            "ordering, timing, and opening-hours feasibility are not implemented yet."
+            "Attractions are scheduled directly from provider-backed candidates: each "
+            "day's highest-priority unscheduled candidate anchors that day, and "
+            "remaining slots (up to the pace-based per-day cap) are filled and ordered "
+            "using straight-line (haversine) geographic proximity when coordinates are "
+            "available. Days are grouped using geographic proximity, not route "
+            "optimization, and route ordering, timing, and opening-hours feasibility "
+            "are not implemented yet."
         ]
         if not candidate_pois:
             assumptions.insert(
@@ -199,6 +209,76 @@ def _order_candidates(
     interest_ids = {id(poi) for poi in interest_matched}
     ordered = must_visit_matched + interest_matched + unmatched
     return ordered, must_visit_ids, interest_ids
+
+
+def _group_candidates_into_days(
+    ordered_pois: list[dict[str, Any]], num_days: int, max_per_day: int
+) -> list[list[dict[str, Any]]]:
+    """Group priority-ordered candidates into `num_days` day-groups.
+
+    For each day, in order, the next highest-priority unscheduled candidate
+    becomes that day's anchor. The day's remaining slots (up to
+    `max_per_day`) are filled with the nearest remaining coordinate-backed
+    candidates to that anchor, by straight-line (haversine) distance — this
+    is geographic grouping only, never a claim of route optimization.
+    Candidates are never invented and never scheduled onto more than one
+    day, so the total number of candidates scheduled across all days never
+    exceeds `num_days * max_per_day`, exactly as before.
+
+    If the anchor has no coordinates, or too few coordinate-backed
+    candidates remain nearby, the day's remaining slots fall back to the
+    next candidates in stable priority/provider order — coordinates are
+    never guessed at and this never raises.
+    """
+    remaining = list(ordered_pois)
+    day_groups: list[list[dict[str, Any]]] = []
+
+    for _ in range(num_days):
+        if not remaining or max_per_day <= 0:
+            day_groups.append([])
+            continue
+
+        anchor = remaining.pop(0)
+        day_group = [anchor]
+        slots_left = max_per_day - 1
+
+        anchor_point = _poi_coordinates(anchor) if slots_left > 0 else None
+        if anchor_point is None:
+            # No anchor coordinates to measure from; keep stable
+            # priority/provider order for this day's remaining slots.
+            day_group.extend(remaining[:slots_left])
+            remaining = remaining[slots_left:]
+            day_groups.append(day_group)
+            continue
+
+        with_coords: list[tuple[int, dict[str, Any], GeoPoint]] = []
+        for index, poi in enumerate(remaining):
+            point = _poi_coordinates(poi)
+            if point is not None:
+                with_coords.append((index, poi, point))
+
+        with_coords.sort(key=lambda item: haversine_distance_km(anchor_point, item[2]))
+        nearest = with_coords[:slots_left]
+        selected_indices = {index for index, _, _ in nearest}
+        day_group.extend(poi for _, poi, _ in nearest)
+        slots_left -= len(nearest)
+
+        if slots_left > 0:
+            # Not enough coordinate-backed candidates nearby; fall back to
+            # stable priority/provider order for the rest, never guessing.
+            for index, poi in enumerate(remaining):
+                if slots_left <= 0:
+                    break
+                if index in selected_indices:
+                    continue
+                day_group.append(poi)
+                selected_indices.add(index)
+                slots_left -= 1
+
+        remaining = [poi for index, poi in enumerate(remaining) if index not in selected_indices]
+        day_groups.append(day_group)
+
+    return day_groups
 
 
 def _poi_coordinates(poi: dict[str, Any]) -> GeoPoint | None:

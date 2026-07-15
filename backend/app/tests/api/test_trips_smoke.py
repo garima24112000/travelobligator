@@ -1200,3 +1200,267 @@ def test_validation_report_missing_coordinates_do_not_crash(
         for warning in validation_report["warnings"]
     )
     assert validation_report["readiness_status"] == "needs_review"
+
+
+class _DayGroupingClustersTestPlacesProvider(PlacesProvider):
+    """Test-only double with two geographic clusters interleaved in provider
+    order, used to prove day grouping is driven by geographic proximity to
+    each day's anchor rather than naive sequential slicing of provider
+    order. Provider order is [Cluster One Landmark, Cluster Two Landmark,
+    Cluster One Annex, Cluster Two Annex] -- naive slicing into 2-per-day
+    would pair Landmark/Landmark and Annex/Annex (both far apart); correct
+    geographic grouping must instead pair each Landmark with its own
+    ~11km-away Annex.
+    """
+
+    provider_name = "openstreetmap_places"
+
+    def search_attractions(
+        self, destination: str, filters: dict[str, Any] | None = None
+    ) -> ProviderResponse[Any]:
+        places = [
+            _geo_place("test/geo/cluster1/landmark", "Cluster One Landmark", "landmark", 0.0),
+            _geo_place("test/geo/cluster2/landmark", "Cluster Two Landmark", "landmark", 10.0),
+            _geo_place("test/geo/cluster1/annex", "Cluster One Annex", "landmark", 0.1),
+            _geo_place("test/geo/cluster2/annex", "Cluster Two Annex", "landmark", 10.1),
+        ]
+        return ProviderResponse[list[NormalizedPlace]](
+            provider_name=self.provider_name,
+            provider_type=self.provider_type,
+            status=ProviderStatus.SUCCESS,
+            data_status=DataStatus.LIVE,
+            data=places,
+            confidence=0.65,
+            message="Test fixture data; not a real provider call.",
+        )
+
+    def search_restaurants(
+        self, area: str, filters: dict[str, Any] | None = None
+    ) -> ProviderResponse[Any]:
+        return unavailable_response(
+            self.provider_name, self.provider_type, unavailable_fields=["restaurants"]
+        )
+
+    def search_accommodation_pois(
+        self, destination: str, filters: dict[str, Any] | None = None
+    ) -> ProviderResponse[Any]:
+        return unavailable_response(
+            self.provider_name, self.provider_type, unavailable_fields=["accommodation_pois"]
+        )
+
+
+def test_experience_plan_groups_nearby_attractions_into_the_same_day(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(provider_gateway, "places", _DayGroupingClustersTestPlacesProvider())
+
+    create_response = client.post(
+        "/trips",
+        json={
+            "destination_scope": "single_city",
+            "primary_destination": "Testville, Testland",
+            "origin_city": "Home City",
+            "start_date": "2026-08-10",
+            "end_date": "2026-08-11",
+            "travelers_count": 2,
+            "travel_group_type": "couple",
+            "pace": "relaxed",
+        },
+    )
+    assert create_response.status_code == 201
+    trip_id = create_response.json()["data"]["trip_id"]
+
+    generate_response = client.post(f"/trips/{trip_id}/generate")
+    assert generate_response.status_code == 200
+
+    response = client.get(f"/trips/{trip_id}/experience-plan")
+    assert response.status_code == 200
+    daily_plans = response.json()["data"]["experience_plan"]["daily_plans"]
+    assert len(daily_plans) == 2
+
+    day1_names = [experience["name"] for experience in daily_plans[0]["experiences"]]
+    day2_names = [experience["name"] for experience in daily_plans[1]["experiences"]]
+
+    # Each geographic cluster (Landmark + its ~11km-away Annex) is grouped
+    # onto the same day, proving grouping follows distance to the day's
+    # anchor rather than the provider's original interleaved order.
+    assert day1_names == ["Cluster One Landmark", "Cluster One Annex"]
+    assert day2_names == ["Cluster Two Landmark", "Cluster Two Annex"]
+
+    # The grouping/ordering step must not invent any route/timing/walking/
+    # cost facts.
+    for day_plan in daily_plans:
+        assert day_plan["estimated_walking_km"] is None
+        assert day_plan["estimated_travel_time_minutes"] is None
+        assert day_plan["estimated_cost"] is None
+        assert any("straight-line" in warning for warning in day_plan["warnings"])
+        assert any("not route optimization" in warning for warning in day_plan["warnings"])
+        for experience in day_plan["experiences"]:
+            assert experience["start_time"] is None
+            assert experience["end_time"] is None
+            assert experience["estimated_duration_minutes"] is None
+
+
+class _DayGroupingMustVisitAnchorTestPlacesProvider(PlacesProvider):
+    """Test-only double where the must-visit candidate is returned last in
+    provider order and is geographically far from everything else, used to
+    prove must-visit priority -- not geography or provider order -- decides
+    which candidate anchors the earliest day.
+    """
+
+    provider_name = "openstreetmap_places"
+
+    def search_attractions(
+        self, destination: str, filters: dict[str, Any] | None = None
+    ) -> ProviderResponse[Any]:
+        places = [
+            _geo_place("test/geo/anchor/x", "Nearby Point X", "landmark", 0.0),
+            _geo_place("test/geo/anchor/y", "Nearby Point Y", "landmark", 0.1),
+            _geo_place("test/geo/anchor/z", "Nearby Point Z", "landmark", 0.2),
+            _geo_place("test/geo/anchor/mv", "Distant Must-Visit Fort", "landmark", 100.0),
+        ]
+        return ProviderResponse[list[NormalizedPlace]](
+            provider_name=self.provider_name,
+            provider_type=self.provider_type,
+            status=ProviderStatus.SUCCESS,
+            data_status=DataStatus.LIVE,
+            data=places,
+            confidence=0.65,
+            message="Test fixture data; not a real provider call.",
+        )
+
+    def search_restaurants(
+        self, area: str, filters: dict[str, Any] | None = None
+    ) -> ProviderResponse[Any]:
+        return unavailable_response(
+            self.provider_name, self.provider_type, unavailable_fields=["restaurants"]
+        )
+
+    def search_accommodation_pois(
+        self, destination: str, filters: dict[str, Any] | None = None
+    ) -> ProviderResponse[Any]:
+        return unavailable_response(
+            self.provider_name, self.provider_type, unavailable_fields=["accommodation_pois"]
+        )
+
+
+def test_experience_plan_must_visit_anchors_earliest_day(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        provider_gateway, "places", _DayGroupingMustVisitAnchorTestPlacesProvider()
+    )
+
+    create_response = client.post(
+        "/trips",
+        json={
+            "destination_scope": "single_city",
+            "primary_destination": "Testville, Testland",
+            "origin_city": "Home City",
+            "start_date": "2026-08-10",
+            "end_date": "2026-08-11",
+            "travelers_count": 2,
+            "travel_group_type": "couple",
+            "pace": "relaxed",
+            "must_visit": ["Distant Must-Visit Fort"],
+        },
+    )
+    assert create_response.status_code == 201
+    trip_id = create_response.json()["data"]["trip_id"]
+
+    generate_response = client.post(f"/trips/{trip_id}/generate")
+    assert generate_response.status_code == 200
+
+    response = client.get(f"/trips/{trip_id}/experience-plan")
+    assert response.status_code == 200
+    daily_plans = response.json()["data"]["experience_plan"]["daily_plans"]
+
+    # The must-visit candidate anchors day 1 despite being returned last in
+    # provider order and being geographically far from every other
+    # candidate -- a pure nearest-neighbor grouping would never choose it
+    # first, so this proves must-visit priority still governs anchor order.
+    day1_experiences = daily_plans[0]["experiences"]
+    assert day1_experiences[0]["name"] == "Distant Must-Visit Fort"
+    assert day1_experiences[0]["why_included"] == "Matches your must-visit request."
+
+
+class _DayGroupingSparseCoordinatesTestPlacesProvider(PlacesProvider):
+    """Test-only double where one of three same-day candidates has no
+    coordinates, used to prove missing coordinates never crash day grouping
+    and are never guessed at -- the coordinate-less candidate is kept in
+    stable priority/provider order instead.
+    """
+
+    provider_name = "openstreetmap_places"
+
+    def search_attractions(
+        self, destination: str, filters: dict[str, Any] | None = None
+    ) -> ProviderResponse[Any]:
+        places = [
+            _geo_place("test/geo/sparse-group/a", "Point A", "landmark", 0.0),
+            _geo_place("test/geo/sparse-group/b", "Point B (no coords)", "landmark", None),
+            _geo_place("test/geo/sparse-group/c", "Point C", "landmark", 0.05),
+        ]
+        return ProviderResponse[list[NormalizedPlace]](
+            provider_name=self.provider_name,
+            provider_type=self.provider_type,
+            status=ProviderStatus.SUCCESS,
+            data_status=DataStatus.LIVE,
+            data=places,
+            confidence=0.65,
+            message="Test fixture data; not a real provider call.",
+        )
+
+    def search_restaurants(
+        self, area: str, filters: dict[str, Any] | None = None
+    ) -> ProviderResponse[Any]:
+        return unavailable_response(
+            self.provider_name, self.provider_type, unavailable_fields=["restaurants"]
+        )
+
+    def search_accommodation_pois(
+        self, destination: str, filters: dict[str, Any] | None = None
+    ) -> ProviderResponse[Any]:
+        return unavailable_response(
+            self.provider_name, self.provider_type, unavailable_fields=["accommodation_pois"]
+        )
+
+
+def test_experience_plan_day_grouping_handles_missing_coordinates_without_crashing(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        provider_gateway, "places", _DayGroupingSparseCoordinatesTestPlacesProvider()
+    )
+
+    create_response = client.post(
+        "/trips",
+        json={
+            "destination_scope": "single_city",
+            "primary_destination": "Testville, Testland",
+            "origin_city": "Home City",
+            "start_date": "2026-08-10",
+            "end_date": "2026-08-10",
+            "travelers_count": 2,
+            "travel_group_type": "couple",
+            "pace": "balanced",
+        },
+    )
+    assert create_response.status_code == 201
+    trip_id = create_response.json()["data"]["trip_id"]
+
+    generate_response = client.post(f"/trips/{trip_id}/generate")
+    assert generate_response.status_code == 200
+
+    response = client.get(f"/trips/{trip_id}/experience-plan")
+    assert response.status_code == 200
+    experiences = response.json()["data"]["experience_plan"]["daily_plans"][0]["experiences"]
+    scheduled_names = [experience["name"] for experience in experiences]
+
+    # A and C are geographically grouped/ordered; the coordinate-less
+    # candidate is kept in its stable/provider-order position at the end
+    # instead of crashing grouping or being guessed at geographically.
+    assert scheduled_names == ["Point A", "Point C", "Point B (no coords)"]
+
+    by_name = {experience["name"]: experience for experience in experiences}
+    assert by_name["Point B (no coords)"]["coordinates"] is None
