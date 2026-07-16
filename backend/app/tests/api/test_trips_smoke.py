@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 
 from app.models.common import DataStatus, GeoPoint, ProviderStatus
 from app.models.providers import NormalizedPlace, ProviderResponse
-from app.providers.base import PlacesProvider, unavailable_response
+from app.providers.base import PlacesProvider, failed_response, unavailable_response
 from app.providers.gateway import provider_gateway
 
 
@@ -231,6 +231,145 @@ def test_provider_coverage_after_generate(client: TestClient, generated_trip_id:
     body = response.json()
     assert_api_response_shape(body)
     assert body["data"]["provider_coverage"]["places"] == "success"
+
+
+class _MixedFieldStatusTestPlacesProvider(PlacesProvider):
+    """Test-only double where the same provider (`openstreetmap_places`)
+    succeeds for attractions, falls back for restaurants, and fails for
+    accommodation POIs -- used to prove `provider_status` keeps a separate
+    entry per provider+field instead of the later accommodation failure
+    overwriting the earlier places/restaurants results (see
+    ProviderCoverageService.record_provider_result).
+    """
+
+    provider_name = "openstreetmap_places"
+
+    def search_attractions(
+        self, destination: str, filters: dict[str, Any] | None = None
+    ) -> ProviderResponse[Any]:
+        places = [
+            NormalizedPlace(
+                place_id="test/mixed/attraction",
+                name="Mixed Fixture Attraction",
+                category="landmark",
+                coordinates=GeoPoint(lat=0.0, lng=0.0),
+                source=self.provider_name,
+                data_status=DataStatus.LIVE,
+                confidence=0.6,
+            )
+        ]
+        return ProviderResponse[list[NormalizedPlace]](
+            provider_name=self.provider_name,
+            provider_type=self.provider_type,
+            status=ProviderStatus.SUCCESS,
+            data_status=DataStatus.LIVE,
+            data=places,
+            confidence=0.65,
+            message="Test fixture data; not a real provider call.",
+        )
+
+    def search_restaurants(
+        self, area: str, filters: dict[str, Any] | None = None
+    ) -> ProviderResponse[Any]:
+        places = [
+            NormalizedPlace(
+                place_id="test/mixed/restaurant",
+                name="Mixed Fixture Restaurant",
+                category="restaurant",
+                coordinates=GeoPoint(lat=0.0, lng=0.0),
+                source=self.provider_name,
+                data_status=DataStatus.FALLBACK_USED,
+                confidence=0.4,
+            )
+        ]
+        return ProviderResponse[list[NormalizedPlace]](
+            provider_name=self.provider_name,
+            provider_type=self.provider_type,
+            status=ProviderStatus.FALLBACK_USED,
+            data_status=DataStatus.FALLBACK_USED,
+            data=places,
+            fallback_used=True,
+            confidence=0.4,
+            message="Test fixture fallback data; not a real provider call.",
+        )
+
+    def search_accommodation_pois(
+        self, destination: str, filters: dict[str, Any] | None = None
+    ) -> ProviderResponse[Any]:
+        return failed_response(
+            self.provider_name,
+            self.provider_type,
+            unavailable_fields=["accommodation_pois"],
+            message="Test fixture failure; not a real provider call.",
+        )
+
+
+def test_provider_status_keeps_separate_entries_per_field_for_same_provider(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(provider_gateway, "places", _MixedFieldStatusTestPlacesProvider())
+
+    create_response = client.post(
+        "/trips",
+        json={
+            "destination_scope": "single_city",
+            "primary_destination": "Testville, Testland",
+            "origin_city": "Home City",
+            "start_date": "2026-08-10",
+            "end_date": "2026-08-12",
+            "travelers_count": 2,
+            "travel_group_type": "couple",
+        },
+    )
+    assert create_response.status_code == 201
+    trip_id = create_response.json()["data"]["trip_id"]
+
+    generate_response = client.post(f"/trips/{trip_id}/generate")
+    assert generate_response.status_code == 200
+
+    response = client.get(f"/trips/{trip_id}/provider-coverage")
+    assert response.status_code == 200
+    data = response.json()["data"]
+    provider_status = data["provider_status"]
+
+    # Each field gets its own status entry, keyed by provider + field, so the
+    # later accommodation failure does not overwrite the earlier
+    # places/restaurants results under a single "openstreetmap_places" key.
+    assert "openstreetmap_places" not in provider_status
+    places_entry = provider_status["openstreetmap_places:places"]
+    restaurants_entry = provider_status["openstreetmap_places:restaurants"]
+    accommodations_entry = provider_status["openstreetmap_places:accommodations"]
+
+    assert places_entry["status"] == "success"
+    assert places_entry["provider_name"] == "openstreetmap_places"
+
+    assert restaurants_entry["status"] == "fallback_used"
+    assert restaurants_entry["provider_name"] == "openstreetmap_places"
+
+    assert accommodations_entry["status"] == "failed"
+    assert accommodations_entry["provider_name"] == "openstreetmap_places"
+
+    # provider_coverage (the per-field summary) is untouched by this fix;
+    # places/restaurants still reflect the real openstreetmap_places result.
+    # accommodations is later overwritten to "not_connected" by
+    # StayTransportService's separate (still-unconnected) accommodation
+    # provider -- that single-value-per-field overwrite is pre-existing
+    # behavior this fix does not change, which is exactly why
+    # provider_status (asserted above) needs a per-field key instead.
+    provider_coverage = data["provider_coverage"]
+    assert provider_coverage["places"] == "success"
+    assert provider_coverage["restaurants"] == "fallback_used"
+    assert provider_coverage["accommodations"] == "not_connected"
+
+    # No fake provider status was created for any provider/field pair that
+    # was never called. The only other entries come from the routes lookup
+    # and the separate (still-unconnected) booking-capable accommodation
+    # provider, which StayTransportService also records under "accommodations".
+    assert all(
+        entry["provider_name"] in {"openstreetmap_places", "routes_provider", "accommodation_provider"}
+        for entry in provider_status.values()
+    )
+    assert provider_status["accommodation_provider:accommodations"]["status"] == "not_connected"
 
 
 class _NoCandidatesTestPlacesProvider(PlacesProvider):

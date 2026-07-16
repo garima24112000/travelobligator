@@ -40,7 +40,21 @@ class ProviderCoverageService:
     ) -> PlanningState:
         entry = provider_gateway.to_status_entry(response)
 
-        existing_entry = planning_state.provider_status.get(response.provider_name)
+        # Keyed by provider + coverage field (not just provider name) so that
+        # one provider handling multiple fields (e.g. openstreetmap_places
+        # serving places, restaurants, and accommodations) gets a separate
+        # status entry per field. Otherwise a later field's result (e.g. a
+        # failed accommodation_pois lookup) would silently overwrite an
+        # earlier field's real success (e.g. a successful places lookup) in
+        # `provider_status`, even though `provider_coverage` already tracks
+        # those fields separately.
+        status_key = (
+            f"{response.provider_name}:{coverage_field}"
+            if coverage_field is not None
+            else response.provider_name
+        )
+
+        existing_entry = planning_state.provider_status.get(status_key)
         if existing_entry is not None:
             merged_fields = list(existing_entry.unavailable_fields)
             for field in entry.unavailable_fields:
@@ -48,7 +62,7 @@ class ProviderCoverageService:
                     merged_fields.append(field)
             entry.unavailable_fields = merged_fields
 
-        planning_state.provider_status[response.provider_name] = entry
+        planning_state.provider_status[status_key] = entry
 
         if coverage_field is not None and hasattr(planning_state.provider_coverage, coverage_field):
             new_value = response.status.value
