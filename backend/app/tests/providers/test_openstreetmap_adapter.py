@@ -297,6 +297,167 @@ def test_fallback_result_creates_no_fake_rating_price_review_or_hours(
             assert forbidden_field not in dumped
 
 
+def test_primary_accommodation_query_success_uses_primary_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    primary_elements = [
+        _element(50, "The Ritz-Carlton", tourism="hotel"),
+        _element(51, "Downtown Hostel", tourism="hostel"),
+        _element(52, "Sunset Guest House", tourism="guest_house"),
+    ]
+    fake_client = _install_fake_client(
+        monkeypatch,
+        geocode_response=_geocode_ok(),
+        post_responses=[_FakeResponse(json_data={"elements": primary_elements})],
+    )
+
+    adapter = OpenStreetMapPlacesAdapter()
+    response = adapter.search_accommodation_pois("Los Angeles")
+
+    assert response.status == ProviderStatus.SUCCESS
+    assert response.data_status == DataStatus.LIVE
+    assert response.fallback_used is False
+    assert response.fallback_provider is None
+    names = {place.name for place in response.data}
+    assert names == {"The Ritz-Carlton", "Downtown Hostel", "Sunset Guest House"}
+    # Only the primary Overpass query was made; fallback was never attempted.
+    assert fake_client.post_call_count == 1
+
+
+def test_primary_accommodation_failure_uses_fallback_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fallback_elements = [
+        _element(60, "Palm Springs Resort", tourism="resort"),
+        _element(61, "Mountain Chalet", tourism="chalet"),
+        _element(62, "City Apartments", tourism="apartment"),
+    ]
+    fake_client = _install_fake_client(
+        monkeypatch,
+        geocode_response=_geocode_ok(),
+        post_responses=[
+            _FakeResponse(should_fail=True),  # primary query fails
+            _FakeResponse(json_data={"elements": fallback_elements}),  # fallback succeeds
+        ],
+    )
+
+    adapter = OpenStreetMapPlacesAdapter()
+    response = adapter.search_accommodation_pois("Los Angeles")
+
+    assert response.status == ProviderStatus.FALLBACK_USED
+    assert response.data_status == DataStatus.FALLBACK_USED
+    assert response.fallback_used is True
+    assert response.fallback_provider == "openstreetmap_places"
+    assert "fallback" in (response.message or "").lower()
+    names = {place.name for place in response.data}
+    assert names == {"Palm Springs Resort", "Mountain Chalet", "City Apartments"}
+    # Both the primary (failed) and fallback queries were attempted.
+    assert fake_client.post_call_count == 2
+
+
+def test_accommodation_fallback_still_filters_unnamed_places(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fallback_elements = [
+        _element(70, None, tourism="hotel"),  # unnamed, must be dropped
+        _element(71, "Hillside Motel", tourism="motel"),
+        _element(72, None, tourism="resort"),  # unnamed, must be dropped
+    ]
+    fake_client = _install_fake_client(
+        monkeypatch,
+        geocode_response=_geocode_ok(),
+        post_responses=[
+            _FakeResponse(json_data={"elements": []}),  # primary returns nothing usable
+            _FakeResponse(json_data={"elements": fallback_elements}),
+        ],
+    )
+
+    adapter = OpenStreetMapPlacesAdapter()
+    response = adapter.search_accommodation_pois("Los Angeles")
+
+    assert response.fallback_used is True
+    assert [place.name for place in response.data] == ["Hillside Motel"]
+    assert fake_client.post_call_count == 2
+
+
+def test_accommodation_fallback_result_creates_no_fake_price_rating_review_or_hours(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The raw OSM element carries opening_hours/rating/price-shaped tags, but
+    # the adapter must not read or propagate them into NormalizedPlace --
+    # accommodation POIs are open-data location candidates only, never
+    # bookable inventory.
+    fallback_elements = [
+        _element(
+            80,
+            "Seaside Resort",
+            tourism="resort",
+            opening_hours="24/7",
+            stars="4.5",
+            fee="yes",
+        ),
+        _element(81, "Backpacker Hostel", tourism="hostel"),
+        _element(82, "Lakeview Chalet", tourism="chalet"),
+    ]
+    _install_fake_client(
+        monkeypatch,
+        geocode_response=_geocode_ok(),
+        post_responses=[
+            _FakeResponse(should_fail=True),
+            _FakeResponse(json_data={"elements": fallback_elements}),
+        ],
+    )
+
+    adapter = OpenStreetMapPlacesAdapter()
+    response = adapter.search_accommodation_pois("Los Angeles")
+
+    assert response.fallback_used is True
+    for place in response.data:
+        dumped = place.model_dump()
+        assert set(dumped.keys()) == {
+            "place_id",
+            "name",
+            "category",
+            "coordinates",
+            "address",
+            "source",
+            "data_status",
+            "confidence",
+        }
+        for forbidden_field in (
+            "rating",
+            "price",
+            "review",
+            "opening_hours",
+            "booking_url",
+            "reservation_url",
+            "availability",
+        ):
+            assert forbidden_field not in dumped
+
+
+def test_both_primary_and_fallback_accommodation_failing_stays_honest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_fake_client(
+        monkeypatch,
+        geocode_response=_geocode_ok(),
+        post_responses=[
+            _FakeResponse(should_fail=True),
+            _FakeResponse(should_fail=True),
+        ],
+    )
+
+    adapter = OpenStreetMapPlacesAdapter()
+    response = adapter.search_accommodation_pois("Nowhere Land")
+
+    assert response.status == ProviderStatus.FAILED
+    assert response.data_status == DataStatus.FAILED
+    assert response.data is None
+    assert response.fallback_used is False
+    assert "accommodation_pois" in response.unavailable_fields
+
+
 def test_search_must_visit_place_returns_named_result_with_coordinates(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

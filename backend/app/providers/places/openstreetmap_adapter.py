@@ -46,6 +46,9 @@ _ATTRACTION_FALLBACK_TAG_FILTERS = [
 _RESTAURANT_FALLBACK_TAG_FILTERS = [
     '"amenity"~"restaurant|cafe|fast_food|bar|pub"',
 ]
+_ACCOMMODATION_FALLBACK_TAG_FILTERS = [
+    '"tourism"~"hotel|hostel|guest_house|motel|apartment|chalet|resort"',
+]
 
 
 class OpenStreetMapPlacesAdapter(PlacesProvider):
@@ -72,17 +75,23 @@ class OpenStreetMapPlacesAdapter(PlacesProvider):
     Overpass does not reliably supply those fields so they are simply
     omitted rather than guessed.
 
-    For `search_attractions` and `search_restaurants`, if the primary
-    Overpass query fails (request error) or returns no usable named results,
-    a conservative fallback query is attempted using a broader set of safe,
+    For `search_attractions`, `search_restaurants`, and
+    `search_accommodation_pois`, if the primary Overpass query fails
+    (request error) or returns no usable named results, a conservative
+    fallback query is attempted using a broader set of safe,
     well-established OSM tags at a wider search radius. Fallback results are
     normalized through the exact same code path as primary results, so they
     are still real, named, provider-backed places — never invented — and
     the response honestly reports `fallback_used`/`FALLBACK_USED` status so
     callers can tell fallback data from a primary result. If both the
     primary and fallback queries fail or return nothing usable, the response
-    honestly stays `failed`/`unavailable`. `search_accommodation_pois` has no
-    fallback query and is unchanged.
+    honestly stays `failed`/`unavailable`. The accommodation fallback query
+    only uses safe, well-established `tourism` tags (hotel, hostel,
+    guest_house, motel, apartment, chalet, resort) at the wider radius;
+    accommodation POIs returned this way are still open-data location
+    candidates only, never bookable inventory — no price, availability,
+    rating, review, opening hours, or booking/reservation link is ever
+    attached, exactly like the primary accommodation query.
     """
 
     provider_name = "openstreetmap_places"
@@ -116,7 +125,12 @@ class OpenStreetMapPlacesAdapter(PlacesProvider):
     def search_accommodation_pois(
         self, destination: str, filters: dict[str, Any] | None = None
     ) -> ProviderResponse[Any]:
-        return self._search(destination, _ACCOMMODATION_TAG_FILTERS, "accommodation_pois")
+        return self._search(
+            destination,
+            _ACCOMMODATION_TAG_FILTERS,
+            "accommodation_pois",
+            fallback_tag_filters=_ACCOMMODATION_FALLBACK_TAG_FILTERS,
+        )
 
     def search_must_visit_place(
         self,
