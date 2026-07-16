@@ -768,6 +768,46 @@ export default function Home() {
                         </ul>
                       </div>
                     )}
+                    {day.accommodation_suggestions.length > 0 && (
+                      <div className="mt-3">
+                        <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">
+                          Nearby accommodation POI suggestions
+                        </p>
+                        <p className="mt-1 text-xs text-amber-300/90">
+                          Open-data location candidates only, not bookable
+                          inventory.
+                        </p>
+                        <ul className="mt-1 flex flex-col gap-2">
+                          {day.accommodation_suggestions.map((accommodation, index) => (
+                            <li
+                              key={`${accommodation.name}-${index}`}
+                              className="text-sm text-slate-200"
+                            >
+                              <span className="font-medium">
+                                {accommodation.name}
+                              </span>
+                              {accommodation.category && (
+                                <span className="text-slate-400">
+                                  {" "}
+                                  ({accommodation.category})
+                                </span>
+                              )}
+                              {accommodation.address && (
+                                <p className="text-xs text-slate-400">
+                                  {accommodation.address}
+                                </p>
+                              )}
+                              <p className="text-[11px] uppercase tracking-wide text-slate-500">
+                                {accommodation.source} · {accommodation.data_status}
+                              </p>
+                              <p className="text-xs text-slate-400">
+                                {accommodation.why_suggested}
+                              </p>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
                     {day.warnings.map((warning) => (
                       <p
                         key={warning}

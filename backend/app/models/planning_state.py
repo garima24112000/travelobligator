@@ -356,6 +356,27 @@ class RestaurantSuggestion(BaseModel):
     why_suggested: str
 
 
+class AccommodationSuggestion(BaseModel):
+    """A day-level nearby-accommodation-POI suggestion drawn from
+    `destination_context.candidate_accommodation_pois` only
+    (docs/14_backend_architecture.md section 13). Deliberately carries only
+    fields already present on a provider-backed candidate plus
+    `why_suggested` -- no rating, price, review, opening-hours, booking
+    link, availability, route time, walking distance, or cost is ever
+    attached here. These are open-data location candidates only, never
+    bookable inventory.
+    """
+
+    name: str
+    category: str | None = None
+    coordinates: GeoPoint | None = None
+    address: str | None = None
+    source: str | None = None
+    data_status: DataStatus
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    why_suggested: str
+
+
 class MealPlanItem(BaseModel):
     meal_plan_id: str = Field(default_factory=lambda: _new_id("meal_plan"))
 
@@ -385,6 +406,12 @@ class DailyPlan(BaseModel):
     # (haversine) proximity to this day's first coordinate-backed scheduled
     # experience. Never a reservation, rating, price, or route recommendation.
     restaurant_suggestions: list[RestaurantSuggestion] = Field(default_factory=list)
+    # Up to 2 nearby accommodation POIs per day, drawn only from
+    # destination_context.candidate_accommodation_pois and selected by the
+    # same straight-line (haversine) proximity rule. Open-data location
+    # candidates only, never bookable inventory, and never a price,
+    # availability, rating, booking, or route recommendation.
+    accommodation_suggestions: list[AccommodationSuggestion] = Field(default_factory=list)
 
     estimated_walking_km: float | None = Field(default=None, ge=0.0)
     estimated_travel_time_minutes: int | None = Field(default=None, ge=0)

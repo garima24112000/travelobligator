@@ -109,12 +109,24 @@ export type RestaurantSuggestion = {
   why_suggested: string;
 };
 
+export type AccommodationSuggestion = {
+  name: string;
+  category: string | null;
+  coordinates: GeoPoint | null;
+  address: string | null;
+  source: string | null;
+  data_status: string;
+  confidence: number;
+  why_suggested: string;
+};
+
 export type DailyPlan = {
   day_plan_id: string;
   day_number: number;
   date: string;
   experiences: ExperienceItem[];
   restaurant_suggestions: RestaurantSuggestion[];
+  accommodation_suggestions: AccommodationSuggestion[];
   warnings: string[];
 };
 

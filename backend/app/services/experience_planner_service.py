@@ -5,6 +5,7 @@ from typing import Any
 
 from app.models.common import ClaimSource, ClaimSourceType, DataQuality, DataStatus, GeoPoint
 from app.models.planning_state import (
+    AccommodationSuggestion,
     DailyPlan,
     ExperienceItem,
     ExperiencePlan,
@@ -51,6 +52,28 @@ _NO_COORDINATE_BACKED_RESTAURANTS_WARNING = (
     "restaurant suggestions could not be computed for this day."
 )
 
+_MAX_ACCOMMODATION_SUGGESTIONS_PER_DAY = 2
+_ACCOMMODATION_SUGGESTION_WHY = (
+    "Suggested from provider-backed accommodation POI candidates in "
+    "destination_context.candidate_accommodation_pois, selected by "
+    "straight-line (haversine) proximity to this day's scheduled "
+    "attractions only. These are open-data location candidates only, not "
+    "bookable inventory, and this is not a price, availability, rating, "
+    "booking, or route recommendation."
+)
+_NO_ACCOMMODATION_CANDIDATES_WARNING = (
+    "No accommodation POI candidates are available yet, so no nearby "
+    "accommodation suggestions could be made for this day."
+)
+_NO_DAY_ANCHOR_FOR_ACCOMMODATION_WARNING = (
+    "No coordinate-backed scheduled experiences are available for this day, "
+    "so nearby accommodation suggestions could not be computed."
+)
+_NO_COORDINATE_BACKED_ACCOMMODATIONS_WARNING = (
+    "No coordinate-backed accommodation POI candidates are available, so "
+    "nearby accommodation suggestions could not be computed for this day."
+)
+
 
 class ExperiencePlannerService(PlanningStageService):
     """Owns `experience_plan`, `experience_cards`, and itinerary decision
@@ -74,10 +97,10 @@ class ExperiencePlannerService(PlanningStageService):
     3. everything else, in existing provider order
 
     No new place is invented to satisfy a must-visit or interest match —
-    only existing `candidate_pois` are reordered. Accommodation POIs are
-    intentionally not used yet. Restaurants are used only for the day-level
-    `restaurant_suggestions` described below; they are never scheduled into
-    `experiences`.
+    only existing `candidate_pois` are reordered. Restaurants and
+    accommodation POIs are used only for the day-level
+    `restaurant_suggestions`/`accommodation_suggestions` described below;
+    they are never scheduled into `experiences`.
 
     Days are grouped geographically: for each day, in order, the next
     highest-priority unscheduled candidate becomes that day's anchor, and
@@ -109,6 +132,14 @@ class ExperiencePlannerService(PlanningStageService):
     exist, no scheduled experience has coordinates, or no restaurant
     candidate has coordinates, suggestions stay empty and an honest warning
     is added instead of guessing.
+
+    Each day also gets up to 2 `accommodation_suggestions` drawn only from
+    `destination_context.candidate_accommodation_pois`, using the exact same
+    anchor and straight-line-nearest-2 rule as restaurant suggestions. These
+    are open-data location candidates only, never bookable inventory, and
+    never carry a price, availability, rating, booking, or route claim. The
+    same empty-list-plus-honest-warning fallback applies when no candidates,
+    no day anchor, or no coordinate-backed candidates are available.
     """
 
     def run(self, planning_state: PlanningState) -> PlanningState:
@@ -118,6 +149,11 @@ class ExperiencePlannerService(PlanningStageService):
         candidate_pois = list(destination_context.candidate_pois) if destination_context else []
         candidate_restaurants = (
             list(destination_context.candidate_restaurants) if destination_context else []
+        )
+        candidate_accommodation_pois = (
+            list(destination_context.candidate_accommodation_pois)
+            if destination_context
+            else []
         )
 
         traveler_profile = planning_state.traveler_profile
@@ -163,6 +199,9 @@ class ExperiencePlannerService(PlanningStageService):
             restaurant_suggestions = _suggest_nearby_restaurants(
                 experiences, candidate_restaurants, warnings
             )
+            accommodation_suggestions = _suggest_nearby_accommodations(
+                experiences, candidate_accommodation_pois, warnings
+            )
 
             daily_plans.append(
                 DailyPlan(
@@ -170,6 +209,7 @@ class ExperiencePlannerService(PlanningStageService):
                     date=day_date,
                     experiences=experiences,
                     restaurant_suggestions=restaurant_suggestions,
+                    accommodation_suggestions=accommodation_suggestions,
                     warnings=warnings,
                 )
             )
@@ -443,6 +483,64 @@ def _build_restaurant_suggestion(restaurant: dict[str, Any]) -> RestaurantSugges
         data_status=DataStatus(data_status_value),
         confidence=float(restaurant.get("confidence") or 0.0),
         why_suggested=_RESTAURANT_SUGGESTION_WHY,
+    )
+
+
+def _suggest_nearby_accommodations(
+    experiences: list[ExperienceItem],
+    candidate_accommodation_pois: list[dict[str, Any]],
+    warnings: list[str],
+) -> list[AccommodationSuggestion]:
+    """Suggest up to `_MAX_ACCOMMODATION_SUGGESTIONS_PER_DAY` accommodation
+    POIs near this day's scheduled experiences.
+
+    Only ever draws from `candidate_accommodation_pois` (real open-data
+    location candidates); never invents an accommodation. The day anchor is
+    the first coordinate-backed scheduled experience, and suggestions are
+    the nearest coordinate-backed accommodation POI candidates to that
+    anchor by straight-line (haversine) distance only -- never a price,
+    availability, rating, booking, or route claim. If no accommodation POI
+    candidates exist, no scheduled experience has coordinates, or no
+    accommodation candidate has coordinates, suggestions stay empty and an
+    honest warning is appended instead of guessing.
+    """
+    if not candidate_accommodation_pois:
+        warnings.append(_NO_ACCOMMODATION_CANDIDATES_WARNING)
+        return []
+
+    anchor_point = next(
+        (experience.coordinates for experience in experiences if experience.coordinates), None
+    )
+    if anchor_point is None:
+        warnings.append(_NO_DAY_ANCHOR_FOR_ACCOMMODATION_WARNING)
+        return []
+
+    with_coords: list[tuple[dict[str, Any], GeoPoint]] = []
+    for accommodation in candidate_accommodation_pois:
+        point = _poi_coordinates(accommodation)
+        if point is not None:
+            with_coords.append((accommodation, point))
+
+    if not with_coords:
+        warnings.append(_NO_COORDINATE_BACKED_ACCOMMODATIONS_WARNING)
+        return []
+
+    with_coords.sort(key=lambda item: haversine_distance_km(anchor_point, item[1]))
+    nearest = with_coords[:_MAX_ACCOMMODATION_SUGGESTIONS_PER_DAY]
+    return [_build_accommodation_suggestion(accommodation) for accommodation, _ in nearest]
+
+
+def _build_accommodation_suggestion(accommodation: dict[str, Any]) -> AccommodationSuggestion:
+    data_status_value = accommodation.get("data_status") or DataStatus.LIVE.value
+    return AccommodationSuggestion(
+        name=accommodation.get("name") or "",
+        category=accommodation.get("category"),
+        coordinates=_poi_coordinates(accommodation),
+        address=accommodation.get("address"),
+        source=accommodation.get("source"),
+        data_status=DataStatus(data_status_value),
+        confidence=float(accommodation.get("confidence") or 0.0),
+        why_suggested=_ACCOMMODATION_SUGGESTION_WHY,
     )
 
 
