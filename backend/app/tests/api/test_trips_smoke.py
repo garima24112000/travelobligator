@@ -1830,3 +1830,381 @@ def test_failed_targeted_lookup_keeps_unmatched_must_visit_warning(
     assert len(must_visit_warnings) == 1
     assert "Hidden Cave" in must_visit_warnings[0]["message"]
     assert "not found in provider-backed attraction candidates" in must_visit_warnings[0]["message"]
+
+
+class _RestaurantSuggestionTestPlacesProvider(PlacesProvider):
+    """Test-only double with one coordinate-backed anchor attraction and
+    three restaurants at known straight-line distances, used to prove
+    `restaurant_suggestions` are drawn only from `candidate_restaurants` and
+    picked by nearest straight-line distance -- not provider order.
+
+    All points sit on the equator so straight-line distance is monotonic in
+    longitude. Restaurant provider order is deliberately [Far, Near, Mid] so
+    a correct nearest-2 result ([Near, Mid]) can only come from actual
+    distance calculation, not pass-through.
+    """
+
+    provider_name = "openstreetmap_places"
+
+    def search_attractions(
+        self, destination: str, filters: dict[str, Any] | None = None
+    ) -> ProviderResponse[Any]:
+        places = [
+            _geo_place("test/restaurant-suggest/anchor", "Anchor Attraction", "landmark", 0.0)
+        ]
+        return ProviderResponse[list[NormalizedPlace]](
+            provider_name=self.provider_name,
+            provider_type=self.provider_type,
+            status=ProviderStatus.SUCCESS,
+            data_status=DataStatus.LIVE,
+            data=places,
+            confidence=0.65,
+            message="Test fixture data; not a real provider call.",
+        )
+
+    def search_restaurants(
+        self, area: str, filters: dict[str, Any] | None = None
+    ) -> ProviderResponse[Any]:
+        places = [
+            _geo_place("test/restaurant-suggest/far", "Far Restaurant", "restaurant", 6.0),
+            _geo_place("test/restaurant-suggest/near", "Near Restaurant", "restaurant", 1.0),
+            _geo_place("test/restaurant-suggest/mid", "Mid Restaurant", "restaurant", 3.0),
+        ]
+        return ProviderResponse[list[NormalizedPlace]](
+            provider_name=self.provider_name,
+            provider_type=self.provider_type,
+            status=ProviderStatus.SUCCESS,
+            data_status=DataStatus.LIVE,
+            data=places,
+            confidence=0.6,
+            message="Test fixture data; not a real provider call.",
+        )
+
+    def search_accommodation_pois(
+        self, destination: str, filters: dict[str, Any] | None = None
+    ) -> ProviderResponse[Any]:
+        return unavailable_response(
+            self.provider_name, self.provider_type, unavailable_fields=["accommodation_pois"]
+        )
+
+
+def test_restaurant_suggestions_nearest_two_by_straight_line_distance(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(provider_gateway, "places", _RestaurantSuggestionTestPlacesProvider())
+
+    create_response = client.post(
+        "/trips",
+        json={
+            "destination_scope": "single_city",
+            "primary_destination": "Testville, Testland",
+            "origin_city": "Home City",
+            "start_date": "2026-08-10",
+            "end_date": "2026-08-10",
+            "travelers_count": 2,
+            "travel_group_type": "couple",
+            "pace": "balanced",
+        },
+    )
+    assert create_response.status_code == 201
+    trip_id = create_response.json()["data"]["trip_id"]
+
+    generate_response = client.post(f"/trips/{trip_id}/generate")
+    assert generate_response.status_code == 200
+
+    response = client.get(f"/trips/{trip_id}/experience-plan")
+    assert response.status_code == 200
+    day_plan = response.json()["data"]["experience_plan"]["daily_plans"][0]
+
+    suggestions = day_plan["restaurant_suggestions"]
+    suggested_names = [item["name"] for item in suggestions]
+
+    # Only the 2 nearest restaurants (by straight-line distance from the
+    # anchor attraction) are suggested, proving distance -- not the provider
+    # order [Far, Near, Mid] -- determines selection, and the excluded "Far"
+    # candidate proves suggestions are capped, not just passed through.
+    assert suggested_names == ["Near Restaurant", "Mid Restaurant"]
+
+    # Every suggestion is one of the real fixture restaurant candidates --
+    # nothing is drawn from anywhere else / invented.
+    known_restaurant_names = {"Far Restaurant", "Near Restaurant", "Mid Restaurant"}
+    for suggestion in suggestions:
+        assert suggestion["name"] in known_restaurant_names
+
+    for suggestion in suggestions:
+        # Only provider-backed fields plus why_suggested are ever present --
+        # no rating/price/review/opening-hours/reservation/booking/
+        # availability/route/walking/cost field is invented.
+        assert set(suggestion.keys()) == {
+            "name",
+            "category",
+            "coordinates",
+            "address",
+            "source",
+            "data_status",
+            "confidence",
+            "why_suggested",
+        }
+        assert suggestion["source"] == "openstreetmap_places"
+        why_suggested = suggestion["why_suggested"]
+        assert "provider-backed restaurant candidates" in why_suggested
+        assert "straight-line" in why_suggested
+        assert "not a reservation, rating, price, or route recommendation" in why_suggested
+
+
+class _NoRestaurantCandidatesTestPlacesProvider(PlacesProvider):
+    """Test-only double with a real coordinate-backed attraction but no
+    restaurant candidates, used to prove `restaurant_suggestions` stay
+    empty (never invented) and an honest day warning is added instead.
+    """
+
+    provider_name = "openstreetmap_places"
+
+    def search_attractions(
+        self, destination: str, filters: dict[str, Any] | None = None
+    ) -> ProviderResponse[Any]:
+        places = [_geo_place("test/no-restaurants/anchor", "Anchor Attraction", "landmark", 0.0)]
+        return ProviderResponse[list[NormalizedPlace]](
+            provider_name=self.provider_name,
+            provider_type=self.provider_type,
+            status=ProviderStatus.SUCCESS,
+            data_status=DataStatus.LIVE,
+            data=places,
+            confidence=0.65,
+            message="Test fixture data; not a real provider call.",
+        )
+
+    def search_restaurants(
+        self, area: str, filters: dict[str, Any] | None = None
+    ) -> ProviderResponse[Any]:
+        return unavailable_response(
+            self.provider_name, self.provider_type, unavailable_fields=["restaurants"]
+        )
+
+    def search_accommodation_pois(
+        self, destination: str, filters: dict[str, Any] | None = None
+    ) -> ProviderResponse[Any]:
+        return unavailable_response(
+            self.provider_name, self.provider_type, unavailable_fields=["accommodation_pois"]
+        )
+
+
+def test_restaurant_suggestions_empty_when_no_restaurant_candidates(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(provider_gateway, "places", _NoRestaurantCandidatesTestPlacesProvider())
+
+    create_response = client.post(
+        "/trips",
+        json={
+            "destination_scope": "single_city",
+            "primary_destination": "Testville, Testland",
+            "origin_city": "Home City",
+            "start_date": "2026-08-10",
+            "end_date": "2026-08-10",
+            "travelers_count": 2,
+            "travel_group_type": "couple",
+        },
+    )
+    assert create_response.status_code == 201
+    trip_id = create_response.json()["data"]["trip_id"]
+
+    generate_response = client.post(f"/trips/{trip_id}/generate")
+    assert generate_response.status_code == 200
+
+    response = client.get(f"/trips/{trip_id}/experience-plan")
+    assert response.status_code == 200
+    day_plan = response.json()["data"]["experience_plan"]["daily_plans"][0]
+
+    assert day_plan["restaurant_suggestions"] == []
+    assert any(
+        "No restaurant candidates are available yet" in warning
+        for warning in day_plan["warnings"]
+    )
+
+
+class _RestaurantsMissingCoordinatesTestPlacesProvider(PlacesProvider):
+    """Test-only double where the attraction anchor has coordinates but the
+    only restaurant candidate does not, used to prove a restaurant
+    candidate without coordinates never crashes suggestion and is never
+    guessed at geographically.
+    """
+
+    provider_name = "openstreetmap_places"
+
+    def search_attractions(
+        self, destination: str, filters: dict[str, Any] | None = None
+    ) -> ProviderResponse[Any]:
+        places = [
+            _geo_place("test/restaurant-no-coords/anchor", "Anchor Attraction", "landmark", 0.0)
+        ]
+        return ProviderResponse[list[NormalizedPlace]](
+            provider_name=self.provider_name,
+            provider_type=self.provider_type,
+            status=ProviderStatus.SUCCESS,
+            data_status=DataStatus.LIVE,
+            data=places,
+            confidence=0.65,
+            message="Test fixture data; not a real provider call.",
+        )
+
+    def search_restaurants(
+        self, area: str, filters: dict[str, Any] | None = None
+    ) -> ProviderResponse[Any]:
+        places = [
+            _geo_place(
+                "test/restaurant-no-coords/restaurant",
+                "No Coordinates Restaurant",
+                "restaurant",
+                None,
+            )
+        ]
+        return ProviderResponse[list[NormalizedPlace]](
+            provider_name=self.provider_name,
+            provider_type=self.provider_type,
+            status=ProviderStatus.SUCCESS,
+            data_status=DataStatus.LIVE,
+            data=places,
+            confidence=0.6,
+            message="Test fixture data; not a real provider call.",
+        )
+
+    def search_accommodation_pois(
+        self, destination: str, filters: dict[str, Any] | None = None
+    ) -> ProviderResponse[Any]:
+        return unavailable_response(
+            self.provider_name, self.provider_type, unavailable_fields=["accommodation_pois"]
+        )
+
+
+def test_restaurant_suggestions_missing_restaurant_coordinates_do_not_crash(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        provider_gateway, "places", _RestaurantsMissingCoordinatesTestPlacesProvider()
+    )
+
+    create_response = client.post(
+        "/trips",
+        json={
+            "destination_scope": "single_city",
+            "primary_destination": "Testville, Testland",
+            "origin_city": "Home City",
+            "start_date": "2026-08-10",
+            "end_date": "2026-08-10",
+            "travelers_count": 2,
+            "travel_group_type": "couple",
+        },
+    )
+    assert create_response.status_code == 201
+    trip_id = create_response.json()["data"]["trip_id"]
+
+    generate_response = client.post(f"/trips/{trip_id}/generate")
+    assert generate_response.status_code == 200
+
+    response = client.get(f"/trips/{trip_id}/experience-plan")
+    assert response.status_code == 200
+    day_plan = response.json()["data"]["experience_plan"]["daily_plans"][0]
+
+    # No coordinates are invented for the coordinate-less restaurant
+    # candidate, so it can't be measured and no suggestion is made.
+    assert day_plan["restaurant_suggestions"] == []
+    assert any(
+        "No coordinate-backed restaurant candidates are available" in warning
+        for warning in day_plan["warnings"]
+    )
+
+
+class _NoExperienceCoordinatesTestPlacesProvider(PlacesProvider):
+    """Test-only double where the only scheduled attraction has no
+    coordinates but a restaurant candidate does, used to prove a missing
+    day anchor never crashes suggestion and restaurant_suggestions stay
+    empty with an honest warning instead of guessing at a day anchor.
+    """
+
+    provider_name = "openstreetmap_places"
+
+    def search_attractions(
+        self, destination: str, filters: dict[str, Any] | None = None
+    ) -> ProviderResponse[Any]:
+        places = [
+            _geo_place(
+                "test/no-experience-coords/attraction", "No Coordinates Attraction", "landmark", None
+            )
+        ]
+        return ProviderResponse[list[NormalizedPlace]](
+            provider_name=self.provider_name,
+            provider_type=self.provider_type,
+            status=ProviderStatus.SUCCESS,
+            data_status=DataStatus.LIVE,
+            data=places,
+            confidence=0.65,
+            message="Test fixture data; not a real provider call.",
+        )
+
+    def search_restaurants(
+        self, area: str, filters: dict[str, Any] | None = None
+    ) -> ProviderResponse[Any]:
+        places = [
+            _geo_place(
+                "test/no-experience-coords/restaurant", "Coordinate Restaurant", "restaurant", 0.0
+            )
+        ]
+        return ProviderResponse[list[NormalizedPlace]](
+            provider_name=self.provider_name,
+            provider_type=self.provider_type,
+            status=ProviderStatus.SUCCESS,
+            data_status=DataStatus.LIVE,
+            data=places,
+            confidence=0.6,
+            message="Test fixture data; not a real provider call.",
+        )
+
+    def search_accommodation_pois(
+        self, destination: str, filters: dict[str, Any] | None = None
+    ) -> ProviderResponse[Any]:
+        return unavailable_response(
+            self.provider_name, self.provider_type, unavailable_fields=["accommodation_pois"]
+        )
+
+
+def test_restaurant_suggestions_missing_experience_coordinates_do_not_crash(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        provider_gateway, "places", _NoExperienceCoordinatesTestPlacesProvider()
+    )
+
+    create_response = client.post(
+        "/trips",
+        json={
+            "destination_scope": "single_city",
+            "primary_destination": "Testville, Testland",
+            "origin_city": "Home City",
+            "start_date": "2026-08-10",
+            "end_date": "2026-08-10",
+            "travelers_count": 2,
+            "travel_group_type": "couple",
+        },
+    )
+    assert create_response.status_code == 201
+    trip_id = create_response.json()["data"]["trip_id"]
+
+    generate_response = client.post(f"/trips/{trip_id}/generate")
+    assert generate_response.status_code == 200
+
+    response = client.get(f"/trips/{trip_id}/experience-plan")
+    assert response.status_code == 200
+    day_plan = response.json()["data"]["experience_plan"]["daily_plans"][0]
+
+    # The attraction is still scheduled with no invented coordinates...
+    assert len(day_plan["experiences"]) == 1
+    assert day_plan["experiences"][0]["name"] == "No Coordinates Attraction"
+
+    # ...but with no coordinate-backed day anchor, no restaurant suggestion
+    # can be made, and this is stated honestly rather than guessed at.
+    assert day_plan["restaurant_suggestions"] == []
+    assert any(
+        "No coordinate-backed scheduled experiences are available for this day" in warning
+        for warning in day_plan["warnings"]
+    )

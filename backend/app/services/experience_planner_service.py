@@ -10,6 +10,7 @@ from app.models.planning_state import (
     ExperiencePlan,
     PlanningStage,
     PlanningState,
+    RestaurantSuggestion,
     TripPace,
 )
 from app.services.base import PlanningStageService
@@ -28,6 +29,26 @@ _FEASIBILITY_WARNING = (
     "opening hours, and feasibility checks are not implemented yet, so "
     "scheduled attractions have no start/end time, duration, walking "
     "distance, or cost estimate."
+)
+
+_MAX_RESTAURANT_SUGGESTIONS_PER_DAY = 2
+_RESTAURANT_SUGGESTION_WHY = (
+    "Suggested from provider-backed restaurant candidates in "
+    "destination_context.candidate_restaurants, selected by straight-line "
+    "(haversine) proximity to this day's scheduled attractions only. This "
+    "is not a reservation, rating, price, or route recommendation."
+)
+_NO_RESTAURANT_CANDIDATES_WARNING = (
+    "No restaurant candidates are available yet, so no nearby restaurant "
+    "suggestions could be made for this day."
+)
+_NO_DAY_ANCHOR_WARNING = (
+    "No coordinate-backed scheduled experiences are available for this day, "
+    "so nearby restaurant suggestions could not be computed."
+)
+_NO_COORDINATE_BACKED_RESTAURANTS_WARNING = (
+    "No coordinate-backed restaurant candidates are available, so nearby "
+    "restaurant suggestions could not be computed for this day."
 )
 
 
@@ -53,8 +74,10 @@ class ExperiencePlannerService(PlanningStageService):
     3. everything else, in existing provider order
 
     No new place is invented to satisfy a must-visit or interest match —
-    only existing `candidate_pois` are reordered. Restaurants and
-    accommodation POIs are intentionally not used yet.
+    only existing `candidate_pois` are reordered. Accommodation POIs are
+    intentionally not used yet. Restaurants are used only for the day-level
+    `restaurant_suggestions` described below; they are never scheduled into
+    `experiences`.
 
     Days are grouped geographically: for each day, in order, the next
     highest-priority unscheduled candidate becomes that day's anchor, and
@@ -75,6 +98,17 @@ class ExperiencePlannerService(PlanningStageService):
     estimation is implemented yet, so every scheduled item keeps
     `start_time`/`end_time`/`estimated_duration_minutes` unset and every day
     carries an explicit feasibility warning.
+
+    After scheduling, each day gets up to 2 `restaurant_suggestions` drawn
+    only from `destination_context.candidate_restaurants`: the day's first
+    coordinate-backed scheduled experience is the anchor, and the nearest
+    coordinate-backed restaurant candidates to that anchor by straight-line
+    (haversine) distance are suggested. No rating, price, review,
+    opening-hours, reservation/booking link, availability, route time,
+    walking distance, or cost is ever attached. If no restaurant candidates
+    exist, no scheduled experience has coordinates, or no restaurant
+    candidate has coordinates, suggestions stay empty and an honest warning
+    is added instead of guessing.
     """
 
     def run(self, planning_state: PlanningState) -> PlanningState:
@@ -82,6 +116,9 @@ class ExperiencePlannerService(PlanningStageService):
 
         destination_context = planning_state.destination_context
         candidate_pois = list(destination_context.candidate_pois) if destination_context else []
+        candidate_restaurants = (
+            list(destination_context.candidate_restaurants) if destination_context else []
+        )
 
         traveler_profile = planning_state.traveler_profile
         trip_request = planning_state.trip_request
@@ -123,11 +160,16 @@ class ExperiencePlannerService(PlanningStageService):
                 _build_experience_item(poi, must_visit_ids, interest_ids) for poi in day_pois
             ]
 
+            restaurant_suggestions = _suggest_nearby_restaurants(
+                experiences, candidate_restaurants, warnings
+            )
+
             daily_plans.append(
                 DailyPlan(
                     day_number=day_number,
                     date=day_date,
                     experiences=experiences,
+                    restaurant_suggestions=restaurant_suggestions,
                     warnings=warnings,
                 )
             )
@@ -345,6 +387,63 @@ def _order_day_by_distance(day_pois: list[dict[str, Any]]) -> list[dict[str, Any
         geo_chain.append(next_poi)
 
     return [anchor, *geo_chain, *remaining_without_coords]
+
+
+def _suggest_nearby_restaurants(
+    experiences: list[ExperienceItem],
+    candidate_restaurants: list[dict[str, Any]],
+    warnings: list[str],
+) -> list[RestaurantSuggestion]:
+    """Suggest up to `_MAX_RESTAURANT_SUGGESTIONS_PER_DAY` restaurants near
+    this day's scheduled experiences.
+
+    Only ever draws from `candidate_restaurants` (real provider-backed
+    candidates); never invents a restaurant. The day anchor is the first
+    coordinate-backed scheduled experience, and suggestions are the nearest
+    coordinate-backed restaurant candidates to that anchor by straight-line
+    (haversine) distance only -- never a reservation, rating, price, or
+    route claim. If no restaurant candidates exist, no scheduled experience
+    has coordinates, or no restaurant candidate has coordinates, suggestions
+    stay empty and an honest warning is appended instead of guessing.
+    """
+    if not candidate_restaurants:
+        warnings.append(_NO_RESTAURANT_CANDIDATES_WARNING)
+        return []
+
+    anchor_point = next(
+        (experience.coordinates for experience in experiences if experience.coordinates), None
+    )
+    if anchor_point is None:
+        warnings.append(_NO_DAY_ANCHOR_WARNING)
+        return []
+
+    with_coords: list[tuple[dict[str, Any], GeoPoint]] = []
+    for restaurant in candidate_restaurants:
+        point = _poi_coordinates(restaurant)
+        if point is not None:
+            with_coords.append((restaurant, point))
+
+    if not with_coords:
+        warnings.append(_NO_COORDINATE_BACKED_RESTAURANTS_WARNING)
+        return []
+
+    with_coords.sort(key=lambda item: haversine_distance_km(anchor_point, item[1]))
+    nearest = with_coords[:_MAX_RESTAURANT_SUGGESTIONS_PER_DAY]
+    return [_build_restaurant_suggestion(restaurant) for restaurant, _ in nearest]
+
+
+def _build_restaurant_suggestion(restaurant: dict[str, Any]) -> RestaurantSuggestion:
+    data_status_value = restaurant.get("data_status") or DataStatus.LIVE.value
+    return RestaurantSuggestion(
+        name=restaurant.get("name") or "",
+        category=restaurant.get("category"),
+        coordinates=_poi_coordinates(restaurant),
+        address=restaurant.get("address"),
+        source=restaurant.get("source"),
+        data_status=DataStatus(data_status_value),
+        confidence=float(restaurant.get("confidence") or 0.0),
+        why_suggested=_RESTAURANT_SUGGESTION_WHY,
+    )
 
 
 def _build_experience_item(

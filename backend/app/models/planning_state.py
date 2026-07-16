@@ -337,6 +337,25 @@ class RestaurantOption(BaseModel):
     claim_sources: list[ClaimSource] = Field(default_factory=list)
 
 
+class RestaurantSuggestion(BaseModel):
+    """A day-level nearby-restaurant suggestion drawn from
+    `destination_context.candidate_restaurants` only (docs/14_backend_architecture.md
+    section 13). Deliberately carries only fields already present on a
+    provider-backed candidate plus `why_suggested` -- no rating, price,
+    review, opening-hours, reservation/booking link, availability, route
+    time, walking distance, or cost is ever attached here.
+    """
+
+    name: str
+    category: str | None = None
+    coordinates: GeoPoint | None = None
+    address: str | None = None
+    source: str | None = None
+    data_status: DataStatus
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    why_suggested: str
+
+
 class MealPlanItem(BaseModel):
     meal_plan_id: str = Field(default_factory=lambda: _new_id("meal_plan"))
 
@@ -361,6 +380,11 @@ class DailyPlan(BaseModel):
 
     experiences: list[ExperienceItem] = Field(default_factory=list)
     meal_plan: list[MealPlanItem] = Field(default_factory=list)
+    # Up to 2 nearby restaurants per day, drawn only from
+    # destination_context.candidate_restaurants and selected by straight-line
+    # (haversine) proximity to this day's first coordinate-backed scheduled
+    # experience. Never a reservation, rating, price, or route recommendation.
+    restaurant_suggestions: list[RestaurantSuggestion] = Field(default_factory=list)
 
     estimated_walking_km: float | None = Field(default=None, ge=0.0)
     estimated_travel_time_minutes: int | None = Field(default=None, ge=0)

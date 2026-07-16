@@ -732,6 +732,42 @@ export default function Home() {
                         ))}
                       </ul>
                     )}
+                    {day.restaurant_suggestions.length > 0 && (
+                      <div className="mt-3">
+                        <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">
+                          Nearby restaurant suggestions
+                        </p>
+                        <ul className="mt-1 flex flex-col gap-2">
+                          {day.restaurant_suggestions.map((restaurant, index) => (
+                            <li
+                              key={`${restaurant.name}-${index}`}
+                              className="text-sm text-slate-200"
+                            >
+                              <span className="font-medium">
+                                {restaurant.name}
+                              </span>
+                              {restaurant.category && (
+                                <span className="text-slate-400">
+                                  {" "}
+                                  ({restaurant.category})
+                                </span>
+                              )}
+                              {restaurant.address && (
+                                <p className="text-xs text-slate-400">
+                                  {restaurant.address}
+                                </p>
+                              )}
+                              <p className="text-[11px] uppercase tracking-wide text-slate-500">
+                                {restaurant.source} · {restaurant.data_status}
+                              </p>
+                              <p className="text-xs text-slate-400">
+                                {restaurant.why_suggested}
+                              </p>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
                     {day.warnings.map((warning) => (
                       <p
                         key={warning}
