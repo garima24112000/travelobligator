@@ -292,7 +292,8 @@ function ProviderCoverageSection({ coverage }: { coverage: ProviderCoverageData 
                 key={key}
                 className="rounded-lg border border-white/10 bg-slate-900/60 p-3 text-sm"
               >
-                <p className="text-[11px] uppercase tracking-wide text-slate-500">
+                <p className="font-mono text-xs text-slate-300">{key}</p>
+                <p className="mt-1 text-[11px] uppercase tracking-wide text-slate-500">
                   {entry.provider_name} · {entry.provider_type}
                 </p>
                 <p className="mt-1 text-slate-200">
