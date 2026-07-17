@@ -13,6 +13,7 @@ import {
 } from "@/lib/api";
 import type {
   CandidatePoi,
+  ChecklistItemStatus,
   DailyPlan,
   DecisionSummary,
   ImplementationGaps,
@@ -248,6 +249,79 @@ function ReadinessChecklistSection({
           </li>
         ))}
       </ul>
+    </div>
+  );
+}
+
+const CHECKLIST_STATUS_GROUPS: { title: string; status: ChecklistItemStatus }[] = [
+  { title: "Checked", status: "checked" },
+  { title: "Needs review", status: "needs_review" },
+  { title: "Missing data", status: "missing_data" },
+  { title: "Not implemented", status: "not_implemented" },
+];
+
+function planStatusMessage(validationStatus: string | null): string {
+  if (validationStatus === "blocked") {
+    return "This plan is blocked because required provider-backed data is missing. Do not use it as an itinerary yet.";
+  }
+  if (validationStatus === "ready") {
+    return "This plan has passed the current validation checks.";
+  }
+  if (validationStatus === "needs_review") {
+    return "This plan is provider-backed but not travel-ready yet. Use it as a planning draft, not a final itinerary.";
+  }
+  return "Plan status is not yet available.";
+}
+
+function PlanStatusSection({
+  validationStatus,
+  checklist,
+}: {
+  validationStatus: string | null;
+  checklist: ReadinessChecklist;
+}) {
+  const grouped: Record<ChecklistItemStatus, string[]> = {
+    checked: [],
+    needs_review: [],
+    missing_data: [],
+    not_implemented: [],
+  };
+  for (const item of checklist.items) {
+    grouped[item.status].push(item.label);
+  }
+
+  return (
+    <div className="rounded-2xl border border-white/10 bg-white/5 p-5">
+      <h2 className="text-lg font-semibold">Plan status</h2>
+      <p className="mt-2 text-sm text-slate-300">
+        {planStatusMessage(validationStatus)}
+      </p>
+
+      <dl className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
+        {CHECKLIST_STATUS_GROUPS.map((group) => (
+          <div
+            key={group.status}
+            className="rounded-lg border border-white/10 bg-slate-900/60 p-3 text-sm"
+          >
+            <dt className="text-[11px] uppercase tracking-wide text-slate-500">
+              {group.title}
+            </dt>
+            <dd className="mt-1 text-base font-semibold text-slate-100">
+              {grouped[group.status].length}
+            </dd>
+          </div>
+        ))}
+      </dl>
+
+      <div className="mt-3 flex flex-col">
+        {CHECKLIST_STATUS_GROUPS.map((group) => (
+          <SummaryList
+            key={group.status}
+            title={group.title}
+            items={grouped[group.status]}
+          />
+        ))}
+      </div>
     </div>
   );
 }
@@ -847,6 +921,11 @@ export default function Home() {
                 </div>
               </dl>
             </div>
+
+            <PlanStatusSection
+              validationStatus={result.summary.validation_status}
+              checklist={result.readinessChecklist}
+            />
 
             <div className="rounded-2xl border border-white/10 bg-white/5 p-5">
               <h2 className="text-lg font-semibold">Day-wise experiences</h2>
