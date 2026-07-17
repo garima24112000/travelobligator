@@ -32,11 +32,13 @@ _ACCOMMODATION_TAG_FILTERS = [
 
 # Conservative fallback tags used only when the primary query for that field
 # fails or returns no *named* usable results. Kept deliberately broad-but-safe
-# (well-established, common OSM tags) and combined with a wider search
-# radius, so common destinations are less likely to come back empty. Fallback
-# results go through the exact same `_normalize` step as primary results, so
-# unnamed elements are still discarded and no rating/price/review/opening-hour
-# fields are ever attached.
+# (well-established, common OSM tags) and queried at a wider search radius,
+# so common destinations are less likely to come back empty. Each tag filter
+# below is run as its own Overpass query (see `_try_fallback_queries`) rather
+# than combined into one large query, so a single failing/empty tag can't
+# sink the others. Fallback results go through the exact same `_normalize`
+# step as primary results, so unnamed elements are still discarded and no
+# rating/price/review/opening-hour fields are ever attached.
 _ATTRACTION_FALLBACK_TAG_FILTERS = [
     '"tourism"~"attraction|museum|viewpoint"',
     '"historic"',
@@ -77,21 +79,28 @@ class OpenStreetMapPlacesAdapter(PlacesProvider):
 
     For `search_attractions`, `search_restaurants`, and
     `search_accommodation_pois`, if the primary Overpass query fails
-    (request error) or returns no usable named results, a conservative
-    fallback query is attempted using a broader set of safe,
-    well-established OSM tags at a wider search radius. Fallback results are
-    normalized through the exact same code path as primary results, so they
-    are still real, named, provider-backed places — never invented — and
-    the response honestly reports `fallback_used`/`FALLBACK_USED` status so
-    callers can tell fallback data from a primary result. If both the
-    primary and fallback queries fail or return nothing usable, the response
-    honestly stays `failed`/`unavailable`. The accommodation fallback query
-    only uses safe, well-established `tourism` tags (hotel, hostel,
-    guest_house, motel, apartment, chalet, resort) at the wider radius;
-    accommodation POIs returned this way are still open-data location
-    candidates only, never bookable inventory — no price, availability,
-    rating, review, opening hours, or booking/reservation link is ever
-    attached, exactly like the primary accommodation query.
+    (request error) or returns no usable named results, conservative
+    fallback tag filters are attempted using a broader set of safe,
+    well-established OSM tags at a wider search radius. Fallback tag
+    filters are queried one at a time (not combined into a single large
+    query), so one oversized/failing query can't take the whole field down
+    with it: named results are aggregated across every fallback tag query
+    that succeeds, deduplicated by `place_id`, and capped at `_MAX_RESULTS`.
+    Fallback results are normalized through the exact same code path as
+    primary results, so they are still real, named, provider-backed places
+    — never invented — and the response honestly reports
+    `fallback_used`/`FALLBACK_USED` status so callers can tell fallback data
+    from a primary result. If at least one fallback tag query returns usable
+    named results, the field succeeds via fallback even if other fallback
+    tag queries failed or came back empty. Only if the primary query and
+    *every* fallback tag query fail or return nothing usable does the
+    response honestly stay `failed`/`unavailable`. The accommodation
+    fallback tags are limited to safe, well-established `tourism` values
+    (hotel, hostel, guest_house, motel, apartment, chalet, resort) at the
+    wider radius; accommodation POIs returned this way are still open-data
+    location candidates only, never bookable inventory — no price,
+    availability, rating, review, opening hours, or booking/reservation link
+    is ever attached, exactly like the primary accommodation query.
     """
 
     provider_name = "openstreetmap_places"
@@ -265,7 +274,7 @@ class OpenStreetMapPlacesAdapter(PlacesProvider):
                         field_name, place_name, request_failed=primary_failed
                     )
 
-                fallback_places, fallback_failed = self._try_query(
+                fallback_places, fallback_failed = self._try_fallback_queries(
                     client, point, fallback_tag_filters, _FALLBACK_SEARCH_RADIUS_METERS, place_name
                 )
                 if fallback_places:
@@ -310,6 +319,51 @@ class OpenStreetMapPlacesAdapter(PlacesProvider):
             logger.warning("OpenStreetMap Overpass query failed for %s: %s", place_name, exc)
             return [], True
         return self._normalize(elements), False
+
+    def _try_fallback_queries(
+        self,
+        client: httpx.Client,
+        point: GeoPoint,
+        tag_filters: list[str],
+        radius_meters: int,
+        place_name: str,
+    ) -> tuple[list[NormalizedPlace], bool]:
+        """Run each fallback tag filter as its own Overpass query, one at a
+        time, instead of combining them into a single large query.
+
+        A single oversized Overpass query can fail (timeout/error) as a
+        whole even when some of its tag filters would have succeeded on
+        their own. Running tags individually means one failing or empty tag
+        filter never sinks the others: named results are aggregated across
+        every tag query that does succeed, deduplicated by `place_id`, and
+        capped at `_MAX_RESULTS` (stopping early once reached, so remaining
+        tag filters aren't queried unnecessarily).
+
+        Returns `(places, any_request_failed)`. `any_request_failed` is
+        only used by the caller when `places` ends up empty, to decide
+        between an honest `failed` vs `unavailable` response.
+        """
+        places: list[NormalizedPlace] = []
+        seen_ids: set[str] = set()
+        any_request_failed = False
+
+        for tag in tag_filters:
+            tag_places, tag_failed = self._try_query(
+                client, point, [tag], radius_meters, place_name
+            )
+            if tag_failed:
+                any_request_failed = True
+                continue
+
+            for place in tag_places:
+                if place.place_id in seen_ids:
+                    continue
+                places.append(place)
+                seen_ids.add(place.place_id)
+                if len(places) >= _MAX_RESULTS:
+                    return places, any_request_failed
+
+        return places, any_request_failed
 
     def _named_results_response(
         self, places: list[NormalizedPlace], field_name: str, fallback_used: bool

@@ -153,17 +153,17 @@ def test_primary_attraction_query_success_uses_primary_result(
 def test_primary_attraction_failure_uses_fallback_result(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    fallback_elements = [
-        _element(10, "Echo Park", leisure="park"),
-        _element(11, "La Brea Tar Pits", tourism="museum"),
-        _element(12, "Hollywood Bowl", amenity="arts_centre"),
-    ]
+    # Attraction fallback has 4 tag filters, each now queried one at a time;
+    # named results from each successful tag query are aggregated together.
     fake_client = _install_fake_client(
         monkeypatch,
         geocode_response=_geocode_ok(),
         post_responses=[
             _FakeResponse(should_fail=True),  # primary query fails
-            _FakeResponse(json_data={"elements": fallback_elements}),  # fallback succeeds
+            _FakeResponse(json_data={"elements": [_element(11, "La Brea Tar Pits", tourism="museum")]}),
+            _FakeResponse(json_data={"elements": []}),  # historic tag: nothing usable
+            _FakeResponse(json_data={"elements": [_element(12, "Hollywood Bowl", amenity="arts_centre")]}),
+            _FakeResponse(json_data={"elements": [_element(10, "Echo Park", leisure="park")]}),
         ],
     )
 
@@ -177,23 +177,28 @@ def test_primary_attraction_failure_uses_fallback_result(
     assert "fallback" in (response.message or "").lower()
     names = {place.name for place in response.data}
     assert names == {"Echo Park", "La Brea Tar Pits", "Hollywood Bowl"}
-    # Both the primary (failed) and fallback queries were attempted.
-    assert fake_client.post_call_count == 2
+    # The primary (failed) query plus all 4 individual fallback tag queries.
+    assert fake_client.post_call_count == 5
 
 
 def test_fallback_still_filters_unnamed_places(monkeypatch: pytest.MonkeyPatch) -> None:
     primary_elements = [_element(1, None, tourism="attraction")]  # unnamed only
-    fallback_elements = [
-        _element(20, None, leisure="park"),  # unnamed, must be dropped
-        _element(21, "Runyon Canyon Park", leisure="park"),
-        _element(22, None, amenity="arts_centre"),  # unnamed, must be dropped
-    ]
     fake_client = _install_fake_client(
         monkeypatch,
         geocode_response=_geocode_ok(),
         post_responses=[
             _FakeResponse(json_data={"elements": primary_elements}),
-            _FakeResponse(json_data={"elements": fallback_elements}),
+            _FakeResponse(json_data={"elements": []}),  # tourism~attraction|museum|viewpoint tag
+            _FakeResponse(json_data={"elements": []}),  # historic tag
+            _FakeResponse(json_data={"elements": [_element(22, None, amenity="arts_centre")]}),  # unnamed, dropped
+            _FakeResponse(
+                json_data={
+                    "elements": [
+                        _element(20, None, leisure="park"),  # unnamed, must be dropped
+                        _element(21, "Runyon Canyon Park", leisure="park"),
+                    ]
+                }
+            ),
         ],
     )
 
@@ -202,7 +207,7 @@ def test_fallback_still_filters_unnamed_places(monkeypatch: pytest.MonkeyPatch) 
 
     assert response.fallback_used is True
     assert [place.name for place in response.data] == ["Runyon Canyon Park"]
-    assert fake_client.post_call_count == 2
+    assert fake_client.post_call_count == 5
 
 
 def test_restaurant_fallback_works(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -233,12 +238,18 @@ def test_restaurant_fallback_works(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_both_primary_and_fallback_failing_stays_honest(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # Primary fails, and every one of the 4 individual attraction fallback
+    # tag queries also fails -- the field must stay honestly failed rather
+    # than silently downgrading to a partial/empty success.
     _install_fake_client(
         monkeypatch,
         geocode_response=_geocode_ok(),
         post_responses=[
-            _FakeResponse(should_fail=True),
-            _FakeResponse(should_fail=True),
+            _FakeResponse(should_fail=True),  # primary
+            _FakeResponse(should_fail=True),  # fallback tag 1
+            _FakeResponse(should_fail=True),  # fallback tag 2
+            _FakeResponse(should_fail=True),  # fallback tag 3
+            _FakeResponse(should_fail=True),  # fallback tag 4
         ],
     )
 
@@ -252,28 +263,155 @@ def test_both_primary_and_fallback_failing_stays_honest(
     assert "attractions" in response.unavailable_fields
 
 
+def test_one_failing_fallback_tag_does_not_fail_field_when_another_succeeds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 2 of the 4 attraction fallback tag queries fail outright (request
+    # error), but the other 2 succeed with named results. The field must
+    # still succeed via fallback -- one bad tag can't sink the others.
+    fake_client = _install_fake_client(
+        monkeypatch,
+        geocode_response=_geocode_ok(),
+        post_responses=[
+            _FakeResponse(should_fail=True),  # primary query fails
+            _FakeResponse(should_fail=True),  # fallback tag 1 fails
+            _FakeResponse(json_data={"elements": [_element(11, "La Brea Tar Pits", tourism="museum")]}),
+            _FakeResponse(should_fail=True),  # fallback tag 3 fails
+            _FakeResponse(json_data={"elements": [_element(12, "Hollywood Bowl", amenity="arts_centre")]}),
+        ],
+    )
+
+    adapter = OpenStreetMapPlacesAdapter()
+    response = adapter.search_attractions("Los Angeles")
+
+    assert response.status == ProviderStatus.FALLBACK_USED
+    assert response.fallback_used is True
+    names = {place.name for place in response.data}
+    assert names == {"La Brea Tar Pits", "Hollywood Bowl"}
+    assert fake_client.post_call_count == 5
+
+
+def test_fallback_aggregation_deduplicates_by_place_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The same OSM element (same type/id) can legitimately match more than
+    # one fallback tag filter (e.g. a place tagged both "historic" and
+    # "tourism=attraction"). It must only appear once in the aggregated
+    # result.
+    _install_fake_client(
+        monkeypatch,
+        geocode_response=_geocode_ok(),
+        post_responses=[
+            _FakeResponse(should_fail=True),  # primary query fails
+            _FakeResponse(json_data={"elements": [_element(11, "La Brea Tar Pits", tourism="museum")]}),
+            _FakeResponse(json_data={"elements": [_element(11, "La Brea Tar Pits", tourism="museum")]}),
+            _FakeResponse(json_data={"elements": []}),
+            _FakeResponse(json_data={"elements": [_element(12, "Hollywood Bowl", amenity="arts_centre")]}),
+        ],
+    )
+
+    adapter = OpenStreetMapPlacesAdapter()
+    response = adapter.search_attractions("Los Angeles")
+
+    assert response.fallback_used is True
+    names = [place.name for place in response.data]
+    assert names == ["La Brea Tar Pits", "Hollywood Bowl"]
+    assert len({place.place_id for place in response.data}) == len(response.data)
+
+
+def test_fallback_stops_once_max_results_reached(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Lower the cap so it's reachable within a single fallback tag query's
+    # results. Once reached, remaining fallback tag filters must not be
+    # queried at all -- only enough fake responses for the primary query and
+    # the one fallback tag query that fills the cap are provided, so an
+    # extra call would raise an IndexError.
+    monkeypatch.setattr(openstreetmap_adapter, "_MAX_RESULTS", 2)
+    fake_client = _install_fake_client(
+        monkeypatch,
+        geocode_response=_geocode_ok(),
+        post_responses=[
+            _FakeResponse(should_fail=True),  # primary query fails
+            _FakeResponse(
+                json_data={
+                    "elements": [
+                        _element(11, "La Brea Tar Pits", tourism="museum"),
+                        _element(12, "The Getty", tourism="museum"),
+                        _element(13, "Griffith Observatory", tourism="attraction"),
+                    ]
+                }
+            ),
+        ],
+    )
+
+    adapter = OpenStreetMapPlacesAdapter()
+    response = adapter.search_attractions("Los Angeles")
+
+    assert response.fallback_used is True
+    assert len(response.data) == 2
+    # Only the primary query and the first fallback tag query were made;
+    # the remaining 3 fallback tag filters were never queried.
+    assert fake_client.post_call_count == 2
+
+
+def test_all_fallback_tag_queries_returning_nothing_usable_stays_honest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Primary returns an unnamed-only element (no usable results, no
+    # request failure), and every fallback tag query also comes back with
+    # nothing usable (empty, not a request failure). The field must stay
+    # honestly unavailable rather than fabricating a success.
+    primary_elements = [_element(1, None, tourism="attraction")]  # unnamed only
+    _install_fake_client(
+        monkeypatch,
+        geocode_response=_geocode_ok(),
+        post_responses=[
+            _FakeResponse(json_data={"elements": primary_elements}),
+            _FakeResponse(json_data={"elements": []}),
+            _FakeResponse(json_data={"elements": []}),
+            _FakeResponse(json_data={"elements": []}),
+            _FakeResponse(json_data={"elements": [_element(2, None, leisure="park")]}),  # unnamed, dropped
+        ],
+    )
+
+    adapter = OpenStreetMapPlacesAdapter()
+    response = adapter.search_attractions("Nowhere Land")
+
+    assert response.status == ProviderStatus.UNAVAILABLE
+    assert response.data_status == DataStatus.UNAVAILABLE
+    assert response.data is None
+    assert response.fallback_used is False
+    assert "attractions" in response.unavailable_fields
+
+
 def test_fallback_result_creates_no_fake_rating_price_review_or_hours(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # The raw OSM element carries opening_hours/rating-shaped tags, but the
     # adapter must not read or propagate them into NormalizedPlace.
-    fallback_elements = [
-        _element(
-            40,
-            "Griffith Park",
-            leisure="park",
-            opening_hours="Mo-Su 05:00-22:30",
-            stars="4.5",
-        ),
-        _element(41, "Bronson Canyon", leisure="park"),
-        _element(42, "Barnsdall Art Park", amenity="arts_centre"),
-    ]
     _install_fake_client(
         monkeypatch,
         geocode_response=_geocode_ok(),
         post_responses=[
-            _FakeResponse(should_fail=True),
-            _FakeResponse(json_data={"elements": fallback_elements}),
+            _FakeResponse(should_fail=True),  # primary query fails
+            _FakeResponse(json_data={"elements": []}),  # tourism~attraction|museum|viewpoint tag
+            _FakeResponse(json_data={"elements": []}),  # historic tag
+            _FakeResponse(json_data={"elements": [_element(42, "Barnsdall Art Park", amenity="arts_centre")]}),
+            _FakeResponse(
+                json_data={
+                    "elements": [
+                        _element(
+                            40,
+                            "Griffith Park",
+                            leisure="park",
+                            opening_hours="Mo-Su 05:00-22:30",
+                            stars="4.5",
+                        ),
+                        _element(41, "Bronson Canyon", leisure="park"),
+                    ]
+                }
+            ),
         ],
     )
 
