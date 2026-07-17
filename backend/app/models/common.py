@@ -57,6 +57,13 @@ class ValidationSeverity(str, Enum):
     SUGGESTION = "suggestion"
 
 
+class ChecklistItemStatus(str, Enum):
+    CHECKED = "checked"
+    NEEDS_REVIEW = "needs_review"
+    MISSING_DATA = "missing_data"
+    NOT_IMPLEMENTED = "not_implemented"
+
+
 class RegenerationStrategy(str, Enum):
     EXPLANATION_ONLY = "explanation_only"
     SECTION_LEVEL_UPDATE = "section_level_update"

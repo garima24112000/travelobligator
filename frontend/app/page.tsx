@@ -17,6 +17,7 @@ import type {
   DecisionSummary,
   ImplementationGaps,
   ProviderCoverageData,
+  ReadinessChecklist,
   StayAreaGuidance,
   TripRequestInput,
   TripSummary,
@@ -43,6 +44,7 @@ type PlanResult = {
   stayAreaGuidance: StayAreaGuidance;
   decisionSummary: DecisionSummary;
   implementationGaps: ImplementationGaps;
+  readinessChecklist: ReadinessChecklist;
   validationReport: ValidationReport;
   providerCoverage: ProviderCoverageData;
   destinationAssumptions: string[];
@@ -208,6 +210,44 @@ function ImplementationGapsSection({ gaps }: { gaps: ImplementationGaps }) {
       <SummaryList title="Missing data" items={gaps.missing_data} />
       <SummaryList title="Next data needed" items={gaps.next_data_needed} />
       <SummaryList title="Why this still needs review" items={gaps.why_needs_review} />
+    </div>
+  );
+}
+
+function checklistStatusLabel(status: string): string {
+  if (status === "checked") return "Checked";
+  if (status === "needs_review") return "Needs Review";
+  if (status === "missing_data") return "Missing Data";
+  if (status === "not_implemented") return "Not Implemented";
+  return status;
+}
+
+function ReadinessChecklistSection({
+  checklist,
+}: {
+  checklist: ReadinessChecklist;
+}) {
+  return (
+    <div className="rounded-2xl border border-white/10 bg-white/5 p-5">
+      <h2 className="text-lg font-semibold">Readiness checklist</h2>
+      <p className="mt-2 text-sm text-slate-300">{checklist.summary}</p>
+
+      <ul className="mt-3 flex flex-col gap-2">
+        {checklist.items.map((item) => (
+          <li
+            key={item.label}
+            className="rounded-lg border border-white/10 bg-slate-900/60 p-3 text-sm"
+          >
+            <p className="flex items-center justify-between gap-2">
+              <span className="font-semibold text-slate-200">{item.label}</span>
+              <span className="text-[11px] uppercase tracking-wide text-slate-400">
+                {checklistStatusLabel(item.status)}
+              </span>
+            </p>
+            <p className="mt-1 text-xs text-slate-400">{item.explanation}</p>
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }
@@ -511,6 +551,7 @@ export default function Home() {
         stayAreaGuidance: experiencePlan.experience_plan.stay_area_guidance,
         decisionSummary: experiencePlan.experience_plan.decision_summary,
         implementationGaps: experiencePlan.experience_plan.implementation_gaps,
+        readinessChecklist: experiencePlan.experience_plan.readiness_checklist,
         validationReport: validationReport.validation_report,
         providerCoverage,
         destinationAssumptions:
@@ -943,6 +984,8 @@ export default function Home() {
             <DecisionSummarySection summary={result.decisionSummary} />
 
             <ImplementationGapsSection gaps={result.implementationGaps} />
+
+            <ReadinessChecklistSection checklist={result.readinessChecklist} />
 
             <ValidationSection report={result.validationReport} />
 

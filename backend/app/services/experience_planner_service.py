@@ -3,7 +3,14 @@ from __future__ import annotations
 from datetime import timedelta
 from typing import Any
 
-from app.models.common import ClaimSource, ClaimSourceType, DataQuality, DataStatus, GeoPoint
+from app.models.common import (
+    ChecklistItemStatus,
+    ClaimSource,
+    ClaimSourceType,
+    DataQuality,
+    DataStatus,
+    GeoPoint,
+)
 from app.models.planning_state import (
     AccommodationSuggestion,
     DailyPlan,
@@ -13,6 +20,8 @@ from app.models.planning_state import (
     ImplementationGaps,
     PlanningStage,
     PlanningState,
+    ReadinessChecklist,
+    ReadinessChecklistItem,
     RestaurantSuggestion,
     StayAreaGuidance,
     TripPace,
@@ -140,6 +149,21 @@ _DECISION_SUMMARY_USER_REVIEW_REQUIRED = [
 # Coverage values that mean a real provider actually returned usable data
 # for that field, as opposed to "not_connected"/"failed"/"unavailable".
 _CONNECTED_COVERAGE_STATUSES = {"success", "partial", "fallback_used", "open_poi_available"}
+
+# For each candidate-availability checklist item, the coverage value that
+# means the field's provider fully succeeded (as opposed to only partially
+# succeeding). Accommodation POIs come from an open-data places provider, so
+# their own top-tier value is "open_poi_available", never literal "success"
+# (see ProviderCoverageService._OPEN_DATA_ACCOMMODATION_STATUSES).
+_CHECKLIST_TOP_TIER_STATUS = {
+    "places": "success",
+    "restaurants": "success",
+    "accommodations": "open_poi_available",
+}
+# Coverage values that mean a provider is connected and returned something,
+# but only partially -- present, but not yet trustworthy as a final result.
+_CHECKLIST_PARTIAL_TIER_STATUSES = {"partial", "fallback_used"}
+
 _IMPLEMENTATION_GAPS_WHY_NEEDS_REVIEW = [
     "Route ordering between scheduled attractions is not validated.",
     "Opening hours are not validated against the schedule.",
@@ -251,6 +275,18 @@ class ExperiencePlannerService(PlanningStageService):
     location candidates only, not bookable inventory). No provider call, no
     AI/LLM, no invented fact, and it never affects validation readiness by
     itself -- it explains existing gaps rather than resolving them.
+
+    Finally, the plan gets a plan-level `readiness_checklist`: a fixed list
+    of checklist items (attractions/restaurants/accommodation POI
+    availability, route times, opening hours, walking feasibility,
+    budget/cost fit, accommodation price/availability, weather impact,
+    holiday/closure context, booking links), each labeled `checked`,
+    `needs_review`, `missing_data`, or `not_implemented` from
+    `provider_coverage`/`provider_status`/the candidate lists already
+    computed above. No provider call, no AI/LLM, no invented fact, and it
+    never marks the plan ready by itself -- `ValidationReport.
+    readiness_status` remains the single source of truth for overall
+    readiness.
     """
 
     def run(self, planning_state: PlanningState) -> PlanningState:
@@ -348,12 +384,16 @@ class ExperiencePlannerService(PlanningStageService):
             candidate_pois, candidate_restaurants, candidate_accommodation_pois, daily_plans
         )
         implementation_gaps = _build_implementation_gaps(planning_state)
+        readiness_checklist = _build_readiness_checklist(
+            planning_state, candidate_pois, candidate_restaurants, candidate_accommodation_pois
+        )
 
         experience_plan = ExperiencePlan(
             daily_plans=daily_plans,
             stay_area_guidance=stay_area_guidance,
             decision_summary=decision_summary,
             implementation_gaps=implementation_gaps,
+            readiness_checklist=readiness_checklist,
             provider_coverage=planning_state.provider_coverage.model_copy(),
             assumptions=assumptions,
             confidence=0.35 if candidate_pois else 0.0,
@@ -950,6 +990,262 @@ def _build_implementation_gaps(planning_state: PlanningState) -> ImplementationG
         next_data_needed=next_data_needed,
         why_needs_review=list(_IMPLEMENTATION_GAPS_WHY_NEEDS_REVIEW),
     )
+
+
+def _candidate_availability_status(
+    coverage_value: str | None, candidates_exist: bool, coverage_field: str
+) -> ChecklistItemStatus:
+    """Status for a "candidates available" checklist item.
+
+    `checked` only if candidates exist and the field's coverage is at its
+    top tier (e.g. places/restaurants="success",
+    accommodations="open_poi_available"). `needs_review` if candidates exist
+    but coverage is only partially connected ("partial"/"fallback_used") --
+    provider-backed but not yet trustworthy as final. `missing_data`
+    whenever no candidates exist at all, since then nothing was actually
+    returned to check.
+    """
+    if not candidates_exist:
+        return ChecklistItemStatus.MISSING_DATA
+    top_tier = _CHECKLIST_TOP_TIER_STATUS[coverage_field]
+    if coverage_value == top_tier:
+        return ChecklistItemStatus.CHECKED
+    return ChecklistItemStatus.NEEDS_REVIEW
+
+
+def _not_yet_checked_status(connected: bool) -> ChecklistItemStatus:
+    """Status for a checklist item describing a check this app never runs.
+
+    `missing_data` when the provider that would supply the underlying data
+    is not connected; `not_implemented` when a provider is connected but the
+    app still has no code path that performs this check.
+    """
+    return ChecklistItemStatus.MISSING_DATA if not connected else ChecklistItemStatus.NOT_IMPLEMENTED
+
+
+def _build_readiness_checklist(
+    planning_state: PlanningState,
+    candidate_pois: list[dict[str, Any]],
+    candidate_restaurants: list[dict[str, Any]],
+    candidate_accommodation_pois: list[dict[str, Any]],
+) -> ReadinessChecklist:
+    """Plan-level checklist of what has and has not been validated yet,
+    built purely from `planning_state.provider_coverage`,
+    `planning_state.provider_status`, and the candidate lists already
+    computed for this `ExperiencePlan` -- no provider call, no AI/LLM, no
+    invented fact. This never marks the plan ready by itself;
+    `ValidationReport.readiness_status` remains the single source of truth.
+    """
+    coverage = planning_state.provider_coverage
+
+    accommodation_provider_status = planning_state.provider_status.get(
+        "accommodation_provider:accommodations"
+    )
+    accommodation_provider_connected = (
+        accommodation_provider_status is not None
+        and accommodation_provider_status.status.value in _CONNECTED_COVERAGE_STATUSES
+    )
+
+    items: list[ReadinessChecklistItem] = []
+
+    places_status = _candidate_availability_status(coverage.places, bool(candidate_pois), "places")
+    items.append(
+        ReadinessChecklistItem(
+            label="Provider-backed attractions available",
+            status=places_status,
+            explanation={
+                ChecklistItemStatus.CHECKED: (
+                    f"{len(candidate_pois)} attraction candidate(s) came from a real "
+                    f"places provider (coverage: places={coverage.places})."
+                ),
+                ChecklistItemStatus.NEEDS_REVIEW: (
+                    f"{len(candidate_pois)} attraction candidate(s) exist, but places "
+                    f"coverage is only '{coverage.places}', so this is provider-backed "
+                    "but not yet trustworthy as a final result."
+                ),
+                ChecklistItemStatus.MISSING_DATA: (
+                    f"No provider-backed attraction candidates are available yet "
+                    f"(coverage: places={coverage.places})."
+                ),
+            }[places_status],
+        )
+    )
+
+    restaurants_status = _candidate_availability_status(
+        coverage.restaurants, bool(candidate_restaurants), "restaurants"
+    )
+    items.append(
+        ReadinessChecklistItem(
+            label="Restaurant candidates available",
+            status=restaurants_status,
+            explanation={
+                ChecklistItemStatus.CHECKED: (
+                    f"{len(candidate_restaurants)} restaurant candidate(s) came from a "
+                    f"real places provider (coverage: restaurants={coverage.restaurants})."
+                ),
+                ChecklistItemStatus.NEEDS_REVIEW: (
+                    f"{len(candidate_restaurants)} restaurant candidate(s) exist, but "
+                    f"restaurants coverage is only '{coverage.restaurants}', so this is "
+                    "provider-backed but not yet trustworthy as a final result."
+                ),
+                ChecklistItemStatus.MISSING_DATA: (
+                    f"No provider-backed restaurant candidates are available yet "
+                    f"(coverage: restaurants={coverage.restaurants})."
+                ),
+            }[restaurants_status],
+        )
+    )
+
+    accommodations_status = _candidate_availability_status(
+        coverage.accommodations, bool(candidate_accommodation_pois), "accommodations"
+    )
+    items.append(
+        ReadinessChecklistItem(
+            label="Accommodation POI candidates available",
+            status=accommodations_status,
+            explanation={
+                ChecklistItemStatus.CHECKED: (
+                    f"{len(candidate_accommodation_pois)} accommodation POI candidate(s) "
+                    "came from an open-data places provider (coverage: "
+                    f"accommodations={coverage.accommodations}); these are open-data "
+                    "location candidates only, not bookable inventory."
+                ),
+                ChecklistItemStatus.NEEDS_REVIEW: (
+                    f"{len(candidate_accommodation_pois)} accommodation POI candidate(s) "
+                    f"exist, but accommodations coverage is only "
+                    f"'{coverage.accommodations}', so this is provider-backed but not yet "
+                    "trustworthy as a final result."
+                ),
+                ChecklistItemStatus.MISSING_DATA: (
+                    "No provider-backed accommodation POI candidates are available yet "
+                    f"(coverage: accommodations={coverage.accommodations})."
+                ),
+            }[accommodations_status],
+        )
+    )
+
+    routes_connected = coverage.routes in _CONNECTED_COVERAGE_STATUSES
+    route_times_status = _not_yet_checked_status(routes_connected)
+    items.append(
+        ReadinessChecklistItem(
+            label="Route times checked",
+            status=route_times_status,
+            explanation=(
+                f"A routes provider is not connected (coverage: routes={coverage.routes}), "
+                "so route time cannot be checked."
+                if route_times_status == ChecklistItemStatus.MISSING_DATA
+                else "Route ordering and timing are not implemented yet, so route time is not checked."
+            ),
+        )
+    )
+
+    items.append(
+        ReadinessChecklistItem(
+            label="Opening hours checked",
+            status=ChecklistItemStatus.NOT_IMPLEMENTED,
+            explanation=(
+                "Checking scheduled attractions against opening hours is not "
+                "implemented yet, so opening hours are not checked."
+            ),
+        )
+    )
+
+    walking_status = _not_yet_checked_status(routes_connected)
+    items.append(
+        ReadinessChecklistItem(
+            label="Walking feasibility checked",
+            status=walking_status,
+            explanation=(
+                f"A routes provider is not connected (coverage: routes={coverage.routes}), "
+                "so walking feasibility cannot be checked."
+                if walking_status == ChecklistItemStatus.MISSING_DATA
+                else "Walking-distance feasibility is not implemented yet, so it is not checked."
+            ),
+        )
+    )
+
+    items.append(
+        ReadinessChecklistItem(
+            label="Budget/cost fit checked",
+            status=ChecklistItemStatus.NOT_IMPLEMENTED,
+            explanation=(
+                "Calculating estimated costs and checking them against the traveler's "
+                "budget is not implemented yet, so budget/cost fit is not checked."
+            ),
+        )
+    )
+
+    accommodation_price_status = _not_yet_checked_status(accommodation_provider_connected)
+    items.append(
+        ReadinessChecklistItem(
+            label="Accommodation price/availability checked",
+            status=accommodation_price_status,
+            explanation=(
+                "A booking-capable accommodation provider is not connected, so "
+                "accommodation price and availability cannot be checked."
+                if accommodation_price_status == ChecklistItemStatus.MISSING_DATA
+                else (
+                    "Accommodation price/availability checking is not implemented yet, "
+                    "so it is not checked."
+                )
+            ),
+        )
+    )
+
+    weather_connected = coverage.weather in _CONNECTED_COVERAGE_STATUSES
+    weather_status = _not_yet_checked_status(weather_connected)
+    items.append(
+        ReadinessChecklistItem(
+            label="Weather impact checked",
+            status=weather_status,
+            explanation=(
+                f"A weather provider is not connected (coverage: weather={coverage.weather}), "
+                "so weather impact cannot be checked."
+                if weather_status == ChecklistItemStatus.MISSING_DATA
+                else "Weather-aware planning is not implemented yet, so weather impact is not checked."
+            ),
+        )
+    )
+
+    holidays_connected = coverage.holidays in _CONNECTED_COVERAGE_STATUSES
+    holidays_status = _not_yet_checked_status(holidays_connected)
+    items.append(
+        ReadinessChecklistItem(
+            label="Holiday/closure context checked",
+            status=holidays_status,
+            explanation=(
+                f"A holidays provider is not connected (coverage: "
+                f"holidays={coverage.holidays}), so holiday/closure context cannot be checked."
+                if holidays_status == ChecklistItemStatus.MISSING_DATA
+                else (
+                    "Holiday/closure context is not implemented yet, so it is not checked."
+                )
+            ),
+        )
+    )
+
+    booking_links_status = _not_yet_checked_status(accommodation_provider_connected)
+    items.append(
+        ReadinessChecklistItem(
+            label="Booking links available",
+            status=booking_links_status,
+            explanation=(
+                "A booking-capable accommodation provider is not connected, so no "
+                "booking links are available."
+                if booking_links_status == ChecklistItemStatus.MISSING_DATA
+                else "Booking link generation is not implemented yet, so none is available."
+            ),
+        )
+    )
+
+    checked_count = sum(1 for item in items if item.status == ChecklistItemStatus.CHECKED)
+    summary = (
+        f"{checked_count} of {len(items)} checklist items are checked. This checklist "
+        "never marks the plan ready by itself -- see the validation report for overall "
+        "readiness."
+    )
+
+    return ReadinessChecklist(summary=summary, items=items)
 
 
 def _build_experience_item(

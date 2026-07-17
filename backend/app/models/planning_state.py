@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.models.common import (
     AccommodationType,
+    ChecklistItemStatus,
     ClaimSource,
     DataQuality,
     DataStatus,
@@ -482,6 +483,34 @@ class ImplementationGaps(BaseModel):
     why_needs_review: list[str] = Field(default_factory=list)
 
 
+class ReadinessChecklistItem(BaseModel):
+    """One user-facing checklist line explaining whether a specific kind of
+    validation has actually happened yet. `status` is one of
+    `ChecklistItemStatus` (`checked`/`needs_review`/`missing_data`/
+    `not_implemented`) and is derived purely from existing `PlanningState`/
+    `provider_coverage`/`provider_status`/`unavailable_data`/`ExperiencePlan`
+    data -- never from a provider call, AI/LLM, or an invented fact.
+    """
+
+    label: str
+    status: ChecklistItemStatus
+    explanation: str
+
+
+class ReadinessChecklist(BaseModel):
+    """Plan-level checklist explaining what has and has not been validated
+    before the user trusts the plan (docs/14_backend_architecture.md section
+    13). Built purely from existing `PlanningState`/`provider_coverage`/
+    `provider_status`/`unavailable_data`/`ExperiencePlan` data. No provider
+    call, no AI/LLM, no invented fact. This never marks the plan ready by
+    itself -- `ValidationReport.readiness_status` remains the single source
+    of truth for overall readiness.
+    """
+
+    summary: str
+    items: list[ReadinessChecklistItem] = Field(default_factory=list)
+
+
 class ExperiencePlan(BaseModel):
     experience_plan_id: str = Field(default_factory=lambda: _new_id("experience_plan"))
 
@@ -496,6 +525,11 @@ class ExperiencePlan(BaseModel):
     implementation_gaps: ImplementationGaps = Field(
         default_factory=lambda: ImplementationGaps(
             summary="Implementation gaps not yet computed."
+        )
+    )
+    readiness_checklist: ReadinessChecklist = Field(
+        default_factory=lambda: ReadinessChecklist(
+            summary="Readiness checklist not yet computed."
         )
     )
 

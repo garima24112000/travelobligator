@@ -3224,3 +3224,179 @@ def test_implementation_gaps_creates_no_fake_values(
         "estimated_cost",
     ):
         assert forbidden_field not in implementation_gaps
+
+
+_NOT_YET_CHECKED_ITEM_LABELS = {
+    "Route times checked",
+    "Opening hours checked",
+    "Walking feasibility checked",
+    "Budget/cost fit checked",
+    "Accommodation price/availability checked",
+    "Weather impact checked",
+    "Holiday/closure context checked",
+    "Booking links available",
+}
+
+_CANDIDATE_AVAILABILITY_ITEM_LABELS = {
+    "Provider-backed attractions available",
+    "Restaurant candidates available",
+    "Accommodation POI candidates available",
+}
+
+
+def _checklist_items_by_label(checklist: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    return {item["label"]: item for item in checklist["items"]}
+
+
+def test_readiness_checklist_exists_after_generate(
+    client: TestClient, generated_trip_id: str
+) -> None:
+    response = client.get(f"/trips/{generated_trip_id}/experience-plan")
+    assert response.status_code == 200
+    experience_plan = response.json()["data"]["experience_plan"]
+
+    assert "readiness_checklist" in experience_plan
+    readiness_checklist = experience_plan["readiness_checklist"]
+
+    assert set(readiness_checklist.keys()) == {"summary", "items"}
+    assert readiness_checklist["summary"] != ""
+    assert isinstance(readiness_checklist["items"], list)
+    assert len(readiness_checklist["items"]) > 0
+
+    valid_statuses = {"checked", "needs_review", "missing_data", "not_implemented"}
+    for item in readiness_checklist["items"]:
+        assert set(item.keys()) == {"label", "status", "explanation"}
+        assert isinstance(item["label"], str) and item["label"] != ""
+        assert item["status"] in valid_statuses
+        assert isinstance(item["explanation"], str) and item["explanation"] != ""
+
+    # This checklist is purely explanatory and must never flip readiness by
+    # itself; the deterministic test provider still leaves the plan
+    # needs_review (route/timing feasibility is not implemented yet).
+    validation_response = client.get(f"/trips/{generated_trip_id}/validation-report")
+    assert validation_response.status_code == 200
+    assert (
+        validation_response.json()["data"]["validation_report"]["readiness_status"]
+        == "needs_review"
+    )
+
+
+def test_readiness_checklist_checks_candidates_only_when_available(
+    client: TestClient, generated_trip_id: str
+) -> None:
+    # The deterministic test provider returns real attraction/restaurant/
+    # accommodation POI candidates, so all three availability items must be
+    # "checked".
+    response = client.get(f"/trips/{generated_trip_id}/experience-plan")
+    assert response.status_code == 200
+    readiness_checklist = response.json()["data"]["experience_plan"]["readiness_checklist"]
+    items_by_label = _checklist_items_by_label(readiness_checklist)
+
+    for label in _CANDIDATE_AVAILABILITY_ITEM_LABELS:
+        assert items_by_label[label]["status"] == "checked"
+
+
+def test_readiness_checklist_marks_candidates_missing_when_unavailable(
+    client: TestClient, created_trip_id: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # With no attraction/restaurant/accommodation POI candidates available at
+    # all, the availability items must not be reported as "checked".
+    monkeypatch.setattr(provider_gateway, "places", _NoCandidatesTestPlacesProvider())
+
+    generate_response = client.post(f"/trips/{created_trip_id}/generate")
+    assert generate_response.status_code == 200
+
+    response = client.get(f"/trips/{created_trip_id}/experience-plan")
+    assert response.status_code == 200
+    readiness_checklist = response.json()["data"]["experience_plan"]["readiness_checklist"]
+    items_by_label = _checklist_items_by_label(readiness_checklist)
+
+    for label in _CANDIDATE_AVAILABILITY_ITEM_LABELS:
+        assert items_by_label[label]["status"] == "missing_data"
+
+
+def test_readiness_checklist_marks_unimplemented_checks_honestly(
+    client: TestClient, generated_trip_id: str
+) -> None:
+    # Route times, opening hours, walking feasibility, budget/cost fit,
+    # accommodation price/availability, weather impact, holiday/closure
+    # context, and booking links are never actually checked yet in this
+    # deployment, no matter how the candidate data looks, so none of these
+    # may ever be reported as "checked" or "needs_review".
+    response = client.get(f"/trips/{generated_trip_id}/experience-plan")
+    assert response.status_code == 200
+    readiness_checklist = response.json()["data"]["experience_plan"]["readiness_checklist"]
+    items_by_label = _checklist_items_by_label(readiness_checklist)
+
+    assert set(items_by_label.keys()) == (
+        _CANDIDATE_AVAILABILITY_ITEM_LABELS | _NOT_YET_CHECKED_ITEM_LABELS
+    )
+
+    for label in _NOT_YET_CHECKED_ITEM_LABELS:
+        assert items_by_label[label]["status"] in {"missing_data", "not_implemented"}
+
+    # Opening hours and budget/cost fit have no connected provider at all in
+    # this deployment, and the app also has no code path for them yet --
+    # honestly "not_implemented" rather than blaming a missing provider.
+    assert items_by_label["Opening hours checked"]["status"] == "not_implemented"
+    assert items_by_label["Budget/cost fit checked"]["status"] == "not_implemented"
+
+
+def test_readiness_checklist_labels_missing_providers_honestly(
+    client: TestClient, generated_trip_id: str
+) -> None:
+    # A routes provider, a booking-capable accommodation provider, a weather
+    # provider, and a holidays provider are never connected in this
+    # deployment, so the checklist items that depend on them must say
+    # "missing_data" (the provider itself is absent), not blame unimplemented
+    # app logic.
+    response = client.get(f"/trips/{generated_trip_id}/experience-plan")
+    assert response.status_code == 200
+    readiness_checklist = response.json()["data"]["experience_plan"]["readiness_checklist"]
+    items_by_label = _checklist_items_by_label(readiness_checklist)
+
+    for label in (
+        "Route times checked",
+        "Walking feasibility checked",
+        "Accommodation price/availability checked",
+        "Weather impact checked",
+        "Holiday/closure context checked",
+        "Booking links available",
+    ):
+        item = items_by_label[label]
+        assert item["status"] == "missing_data"
+        assert "not connected" in item["explanation"].lower()
+
+
+def test_readiness_checklist_creates_no_fake_values(
+    client: TestClient, generated_trip_id: str
+) -> None:
+    response = client.get(f"/trips/{generated_trip_id}/experience-plan")
+    assert response.status_code == 200
+    readiness_checklist = response.json()["data"]["experience_plan"]["readiness_checklist"]
+
+    assert set(readiness_checklist.keys()) == {"summary", "items"}
+    assert isinstance(readiness_checklist["summary"], str)
+
+    # Every item is plain explanatory text plus an enum status -- no
+    # structured price/rating/review/opening-hour/booking/availability/
+    # route/walking/cost value is ever attached to this section itself.
+    for item in readiness_checklist["items"]:
+        assert set(item.keys()) == {"label", "status", "explanation"}
+        assert isinstance(item["label"], str)
+        assert isinstance(item["status"], str)
+        assert isinstance(item["explanation"], str)
+
+    for forbidden_field in (
+        "rating",
+        "review",
+        "opening_hours",
+        "booking_url",
+        "reservation_url",
+        "route_time",
+        "walking_distance",
+        "estimated_cost",
+    ):
+        assert forbidden_field not in readiness_checklist
+        for item in readiness_checklist["items"]:
+            assert forbidden_field not in item

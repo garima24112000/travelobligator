@@ -153,6 +153,23 @@ export type ImplementationGaps = {
   why_needs_review: string[];
 };
 
+export type ChecklistItemStatus =
+  | "checked"
+  | "needs_review"
+  | "missing_data"
+  | "not_implemented";
+
+export type ReadinessChecklistItem = {
+  label: string;
+  status: ChecklistItemStatus;
+  explanation: string;
+};
+
+export type ReadinessChecklist = {
+  summary: string;
+  items: ReadinessChecklistItem[];
+};
+
 export type ExperiencePlanData = {
   trip_id: string;
   experience_plan: {
@@ -160,6 +177,7 @@ export type ExperiencePlanData = {
     stay_area_guidance: StayAreaGuidance;
     decision_summary: DecisionSummary;
     implementation_gaps: ImplementationGaps;
+    readiness_checklist: ReadinessChecklist;
     assumptions: string[];
     confidence: number;
   };
