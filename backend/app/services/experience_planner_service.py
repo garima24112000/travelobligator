@@ -10,6 +10,7 @@ from app.models.planning_state import (
     DecisionSummary,
     ExperienceItem,
     ExperiencePlan,
+    ImplementationGaps,
     PlanningStage,
     PlanningState,
     RestaurantSuggestion,
@@ -136,6 +137,18 @@ _DECISION_SUMMARY_USER_REVIEW_REQUIRED = [
     "provided by this plan.",
 ]
 
+# Coverage values that mean a real provider actually returned usable data
+# for that field, as opposed to "not_connected"/"failed"/"unavailable".
+_CONNECTED_COVERAGE_STATUSES = {"success", "partial", "fallback_used", "open_poi_available"}
+_IMPLEMENTATION_GAPS_WHY_NEEDS_REVIEW = [
+    "Route ordering between scheduled attractions is not validated.",
+    "Opening hours are not validated against the schedule.",
+    "Walking time between scheduled attractions is not calculated.",
+    "Costs and budget fit are not validated.",
+    "Suggested accommodation POIs are open-data location candidates only, "
+    "not bookable inventory.",
+]
+
 
 class ExperiencePlannerService(PlanningStageService):
     """Owns `experience_plan`, `experience_cards`, and itinerary decision
@@ -224,6 +237,20 @@ class ExperiencePlannerService(PlanningStageService):
     states when restaurant or accommodation POI candidates are unavailable
     rather than omitting them silently. No provider call, no AI/LLM, no
     invented fact, and it never affects validation readiness by itself.
+
+    Finally, the plan gets a plan-level `implementation_gaps` section, built
+    purely from `planning_state.provider_coverage` and
+    `planning_state.provider_status`: which data is connected now (e.g.
+    attractions/restaurants/accommodation POIs from the open-data places
+    provider), which data is missing (routes/transit, a booking-capable
+    accommodation provider, hotel prices, vacation rentals/Airbnb, weather,
+    holidays, currency -- none of which are connected in this deployment),
+    what provider would be needed next for each gap, and why the plan stays
+    Needs Review (route ordering, opening hours, walking time, and
+    costs/budget fit are unvalidated, and accommodation POIs are open-data
+    location candidates only, not bookable inventory). No provider call, no
+    AI/LLM, no invented fact, and it never affects validation readiness by
+    itself -- it explains existing gaps rather than resolving them.
     """
 
     def run(self, planning_state: PlanningState) -> PlanningState:
@@ -320,11 +347,13 @@ class ExperiencePlannerService(PlanningStageService):
         decision_summary = _build_decision_summary(
             candidate_pois, candidate_restaurants, candidate_accommodation_pois, daily_plans
         )
+        implementation_gaps = _build_implementation_gaps(planning_state)
 
         experience_plan = ExperiencePlan(
             daily_plans=daily_plans,
             stay_area_guidance=stay_area_guidance,
             decision_summary=decision_summary,
+            implementation_gaps=implementation_gaps,
             provider_coverage=planning_state.provider_coverage.model_copy(),
             assumptions=assumptions,
             confidence=0.35 if candidate_pois else 0.0,
@@ -803,6 +832,123 @@ def _build_decision_summary(
         proximity_based_decisions=list(_DECISION_SUMMARY_PROXIMITY_DECISIONS),
         unvalidated_items=list(_DECISION_SUMMARY_UNVALIDATED_ITEMS),
         user_review_required=list(_DECISION_SUMMARY_USER_REVIEW_REQUIRED),
+    )
+
+
+def _build_implementation_gaps(planning_state: PlanningState) -> ImplementationGaps:
+    """Plan-level summary of what data is connected now, what is missing,
+    what provider would be needed next, and why the plan is still Needs
+    Review -- built purely from `planning_state.provider_coverage` and
+    `planning_state.provider_status`. No provider call, no AI/LLM, no
+    invented fact.
+    """
+    coverage = planning_state.provider_coverage
+
+    connected_data: list[str] = []
+    missing_data: list[str] = []
+    next_data_needed: list[str] = []
+
+    if coverage.places in _CONNECTED_COVERAGE_STATUSES:
+        connected_data.append(
+            "Attractions are connected: provider-backed candidate_pois came "
+            f"from a real places provider (coverage: places={coverage.places})."
+        )
+
+    if coverage.restaurants in {"success", "fallback_used", "partial"}:
+        connected_data.append(
+            "Restaurants are connected: provider-backed candidate_restaurants "
+            f"came from a real places provider (coverage: "
+            f"restaurants={coverage.restaurants})."
+        )
+
+    if coverage.accommodations in _CONNECTED_COVERAGE_STATUSES:
+        connected_data.append(
+            "Accommodation POIs are connected: provider-backed "
+            "candidate_accommodation_pois came from an open-data places "
+            f"provider (coverage: accommodations={coverage.accommodations}), "
+            "not a booking-capable accommodation provider."
+        )
+
+    if coverage.routes not in _CONNECTED_COVERAGE_STATUSES:
+        missing_data.append(
+            "Routes/transit feasibility is not connected (coverage: "
+            f"routes={coverage.routes})."
+        )
+        next_data_needed.append(
+            "A routes provider is needed for route time and walking feasibility."
+        )
+
+    accommodation_provider_status = planning_state.provider_status.get(
+        "accommodation_provider:accommodations"
+    )
+    accommodation_provider_connected = (
+        accommodation_provider_status is not None
+        and accommodation_provider_status.status.value in _CONNECTED_COVERAGE_STATUSES
+    )
+    if not accommodation_provider_connected:
+        missing_data.append(
+            "A booking-capable accommodation provider is not connected, so no "
+            "hotel/accommodation price, availability, rating, or booking link "
+            "is available."
+        )
+        next_data_needed.append(
+            "An accommodation provider is needed for prices, availability, "
+            "and booking links."
+        )
+
+    if coverage.hotel_prices not in _CONNECTED_COVERAGE_STATUSES:
+        missing_data.append(
+            f"Hotel prices are not connected (coverage: hotel_prices={coverage.hotel_prices})."
+        )
+
+    if (
+        coverage.vacation_rentals not in _CONNECTED_COVERAGE_STATUSES
+        and coverage.airbnb not in _CONNECTED_COVERAGE_STATUSES
+    ):
+        missing_data.append(
+            "Vacation rentals/Airbnb-style listings are not connected "
+            f"(coverage: vacation_rentals={coverage.vacation_rentals}, "
+            f"airbnb={coverage.airbnb})."
+        )
+
+    if coverage.weather not in _CONNECTED_COVERAGE_STATUSES:
+        missing_data.append(f"Weather is not connected (coverage: weather={coverage.weather}).")
+        next_data_needed.append(
+            "A weather provider is needed for weather-aware planning."
+        )
+
+    if coverage.holidays not in _CONNECTED_COVERAGE_STATUSES:
+        missing_data.append(
+            f"Holidays are not connected (coverage: holidays={coverage.holidays})."
+        )
+        next_data_needed.append(
+            "A holidays provider is needed for closure/crowd-risk context."
+        )
+
+    if coverage.currency not in _CONNECTED_COVERAGE_STATUSES:
+        missing_data.append(
+            f"Currency conversion is not connected (coverage: currency={coverage.currency})."
+        )
+        next_data_needed.append(
+            "A currency provider is needed for budget conversion."
+        )
+
+    summary = (
+        f"{len(connected_data)} data area"
+        f"{'s' if len(connected_data) != 1 else ''} "
+        f"{'are' if len(connected_data) != 1 else 'is'} connected to a real "
+        f"provider; {len(missing_data)} data area"
+        f"{'s' if len(missing_data) != 1 else ''} "
+        f"{'are' if len(missing_data) != 1 else 'is'} still missing, which is "
+        "why this plan stays Needs Review."
+    )
+
+    return ImplementationGaps(
+        summary=summary,
+        connected_data=connected_data,
+        missing_data=missing_data,
+        next_data_needed=next_data_needed,
+        why_needs_review=list(_IMPLEMENTATION_GAPS_WHY_NEEDS_REVIEW),
     )
 
 

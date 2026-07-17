@@ -463,6 +463,25 @@ class DecisionSummary(BaseModel):
     user_review_required: list[str] = Field(default_factory=list)
 
 
+class ImplementationGaps(BaseModel):
+    """Plan-level summary of which providers/data sources are connected now,
+    which are missing, what would be needed next, and why the plan still
+    needs review -- built purely from `PlanningState.provider_coverage`,
+    `PlanningState.provider_status`, `PlanningState.unavailable_data`, and
+    already-computed `ExperiencePlan` data (docs/12_provider_architecture.md,
+    docs/14_backend_architecture.md section 13). No provider call, no
+    AI/LLM, no invented fact. This section explains the readiness gaps that
+    already exist elsewhere in the pipeline; it does not create or resolve
+    them, and it never affects validation readiness by itself.
+    """
+
+    summary: str
+    connected_data: list[str] = Field(default_factory=list)
+    missing_data: list[str] = Field(default_factory=list)
+    next_data_needed: list[str] = Field(default_factory=list)
+    why_needs_review: list[str] = Field(default_factory=list)
+
+
 class ExperiencePlan(BaseModel):
     experience_plan_id: str = Field(default_factory=lambda: _new_id("experience_plan"))
 
@@ -473,6 +492,11 @@ class ExperiencePlan(BaseModel):
     )
     decision_summary: DecisionSummary = Field(
         default_factory=lambda: DecisionSummary(summary="Decision summary not yet computed.")
+    )
+    implementation_gaps: ImplementationGaps = Field(
+        default_factory=lambda: ImplementationGaps(
+            summary="Implementation gaps not yet computed."
+        )
     )
 
     provider_coverage: ProviderCoverage = Field(default_factory=ProviderCoverage)

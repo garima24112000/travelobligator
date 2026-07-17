@@ -15,6 +15,7 @@ import type {
   CandidatePoi,
   DailyPlan,
   DecisionSummary,
+  ImplementationGaps,
   ProviderCoverageData,
   StayAreaGuidance,
   TripRequestInput,
@@ -41,6 +42,7 @@ type PlanResult = {
   dailyPlans: DailyPlan[];
   stayAreaGuidance: StayAreaGuidance;
   decisionSummary: DecisionSummary;
+  implementationGaps: ImplementationGaps;
   validationReport: ValidationReport;
   providerCoverage: ProviderCoverageData;
   destinationAssumptions: string[];
@@ -158,7 +160,7 @@ function StayAreaGuidanceSection({
   );
 }
 
-function DecisionSummaryList({ title, items }: { title: string; items: string[] }) {
+function SummaryList({ title, items }: { title: string; items: string[] }) {
   if (items.length === 0) return null;
 
   return (
@@ -179,19 +181,33 @@ function DecisionSummarySection({ summary }: { summary: DecisionSummary }) {
       <h2 className="text-lg font-semibold">Decision summary</h2>
       <p className="mt-2 text-sm text-slate-300">{summary.summary}</p>
 
-      <DecisionSummaryList
+      <SummaryList
         title="Provider-backed facts"
         items={summary.provider_backed_facts}
       />
-      <DecisionSummaryList
+      <SummaryList
         title="Proximity-based decisions"
         items={summary.proximity_based_decisions}
       />
-      <DecisionSummaryList title="Still unvalidated" items={summary.unvalidated_items} />
-      <DecisionSummaryList
+      <SummaryList title="Still unvalidated" items={summary.unvalidated_items} />
+      <SummaryList
         title="Review before trusting"
         items={summary.user_review_required}
       />
+    </div>
+  );
+}
+
+function ImplementationGapsSection({ gaps }: { gaps: ImplementationGaps }) {
+  return (
+    <div className="rounded-2xl border border-white/10 bg-white/5 p-5">
+      <h2 className="text-lg font-semibold">Implementation gaps</h2>
+      <p className="mt-2 text-sm text-slate-300">{gaps.summary}</p>
+
+      <SummaryList title="Connected data" items={gaps.connected_data} />
+      <SummaryList title="Missing data" items={gaps.missing_data} />
+      <SummaryList title="Next data needed" items={gaps.next_data_needed} />
+      <SummaryList title="Why this still needs review" items={gaps.why_needs_review} />
     </div>
   );
 }
@@ -494,6 +510,7 @@ export default function Home() {
         dailyPlans: experiencePlan.experience_plan.daily_plans,
         stayAreaGuidance: experiencePlan.experience_plan.stay_area_guidance,
         decisionSummary: experiencePlan.experience_plan.decision_summary,
+        implementationGaps: experiencePlan.experience_plan.implementation_gaps,
         validationReport: validationReport.validation_report,
         providerCoverage,
         destinationAssumptions:
@@ -924,6 +941,8 @@ export default function Home() {
             <StayAreaGuidanceSection guidance={result.stayAreaGuidance} />
 
             <DecisionSummarySection summary={result.decisionSummary} />
+
+            <ImplementationGapsSection gaps={result.implementationGaps} />
 
             <ValidationSection report={result.validationReport} />
 

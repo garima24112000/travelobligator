@@ -145,12 +145,21 @@ export type DecisionSummary = {
   user_review_required: string[];
 };
 
+export type ImplementationGaps = {
+  summary: string;
+  connected_data: string[];
+  missing_data: string[];
+  next_data_needed: string[];
+  why_needs_review: string[];
+};
+
 export type ExperiencePlanData = {
   trip_id: string;
   experience_plan: {
     daily_plans: DailyPlan[];
     stay_area_guidance: StayAreaGuidance;
     decision_summary: DecisionSummary;
+    implementation_gaps: ImplementationGaps;
     assumptions: string[];
     confidence: number;
   };

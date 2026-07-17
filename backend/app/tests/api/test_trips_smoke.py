@@ -3071,3 +3071,156 @@ def test_decision_summary_creates_no_fake_fields(
         "estimated_cost",
     ):
         assert forbidden_field not in decision_summary
+
+
+def test_implementation_gaps_exists_after_generate(
+    client: TestClient, generated_trip_id: str
+) -> None:
+    response = client.get(f"/trips/{generated_trip_id}/experience-plan")
+    assert response.status_code == 200
+    experience_plan = response.json()["data"]["experience_plan"]
+
+    assert "implementation_gaps" in experience_plan
+    implementation_gaps = experience_plan["implementation_gaps"]
+
+    assert set(implementation_gaps.keys()) == {
+        "summary",
+        "connected_data",
+        "missing_data",
+        "next_data_needed",
+        "why_needs_review",
+    }
+    assert implementation_gaps["summary"] != ""
+    assert isinstance(implementation_gaps["connected_data"], list)
+    assert isinstance(implementation_gaps["missing_data"], list)
+    assert isinstance(implementation_gaps["next_data_needed"], list)
+    assert isinstance(implementation_gaps["why_needs_review"], list)
+
+    # This section is purely explanatory and must never flip readiness by
+    # itself; the deterministic test provider still leaves the plan
+    # needs_review (route/timing feasibility is not implemented yet).
+    validation_response = client.get(f"/trips/{generated_trip_id}/validation-report")
+    assert validation_response.status_code == 200
+    assert (
+        validation_response.json()["data"]["validation_report"]["readiness_status"]
+        == "needs_review"
+    )
+
+
+def test_implementation_gaps_reflects_connected_provider_backed_data(
+    client: TestClient, generated_trip_id: str
+) -> None:
+    coverage_response = client.get(f"/trips/{generated_trip_id}/provider-coverage")
+    assert coverage_response.status_code == 200
+    provider_coverage = coverage_response.json()["data"]["provider_coverage"]
+
+    # The deterministic test provider returns real data for all three
+    # fields, so all three must be reflected as connected.
+    assert provider_coverage["places"] == "success"
+    assert provider_coverage["restaurants"] == "success"
+    assert provider_coverage["accommodations"] == "open_poi_available"
+
+    response = client.get(f"/trips/{generated_trip_id}/experience-plan")
+    assert response.status_code == 200
+    implementation_gaps = response.json()["data"]["experience_plan"]["implementation_gaps"]
+
+    connected_text = " ".join(implementation_gaps["connected_data"])
+    assert "places=success" in connected_text
+    assert "restaurants=success" in connected_text
+    assert "accommodations=open_poi_available" in connected_text
+    assert "attraction" in connected_text.lower()
+    assert "restaurant" in connected_text.lower()
+    assert "accommodation" in connected_text.lower()
+    # Honest about accommodations being open-data, not booking inventory.
+    assert "not a booking-capable accommodation provider" in connected_text
+
+
+def test_implementation_gaps_reflects_missing_data_sources(
+    client: TestClient, generated_trip_id: str
+) -> None:
+    response = client.get(f"/trips/{generated_trip_id}/experience-plan")
+    assert response.status_code == 200
+    implementation_gaps = response.json()["data"]["experience_plan"]["implementation_gaps"]
+
+    missing_text = " ".join(implementation_gaps["missing_data"]).lower()
+    next_needed_text = " ".join(implementation_gaps["next_data_needed"]).lower()
+
+    # Routes/transit feasibility is never connected in this deployment.
+    assert "route" in missing_text or "transit" in missing_text
+    assert "route" in next_needed_text
+
+    # A booking-capable accommodation provider is never connected either,
+    # distinct from the open-data accommodation POI candidates.
+    assert "booking-capable accommodation provider" in missing_text
+    assert "accommodation provider" in next_needed_text
+
+    # Hotel prices, vacation rentals/Airbnb, weather, holidays, and currency
+    # are never connected in this deployment.
+    assert "hotel price" in missing_text
+    assert "vacation rental" in missing_text and "airbnb" in missing_text
+    assert "weather" in missing_text
+    assert "weather" in next_needed_text
+    assert "holiday" in missing_text
+    assert "holiday" in next_needed_text
+    assert "currency" in missing_text
+    assert "currency" in next_needed_text
+
+
+def test_implementation_gaps_explains_why_needs_review(
+    client: TestClient, generated_trip_id: str
+) -> None:
+    response = client.get(f"/trips/{generated_trip_id}/experience-plan")
+    assert response.status_code == 200
+    implementation_gaps = response.json()["data"]["experience_plan"]["implementation_gaps"]
+
+    why_text = " ".join(implementation_gaps["why_needs_review"]).lower()
+
+    assert "route ordering" in why_text
+    assert "opening hours" in why_text
+    assert "walking time" in why_text
+    assert "cost" in why_text and "budget" in why_text
+    assert "not bookable inventory" in why_text
+
+
+def test_implementation_gaps_creates_no_fake_values(
+    client: TestClient, generated_trip_id: str
+) -> None:
+    response = client.get(f"/trips/{generated_trip_id}/experience-plan")
+    assert response.status_code == 200
+    implementation_gaps = response.json()["data"]["experience_plan"]["implementation_gaps"]
+
+    assert set(implementation_gaps.keys()) == {
+        "summary",
+        "connected_data",
+        "missing_data",
+        "next_data_needed",
+        "why_needs_review",
+    }
+
+    # Every value is plain explanatory text -- no structured
+    # price/rating/review/opening-hour/booking/availability/route/walking/
+    # cost value is ever attached to this section itself.
+    assert isinstance(implementation_gaps["summary"], str)
+    for list_field in (
+        "connected_data",
+        "missing_data",
+        "next_data_needed",
+        "why_needs_review",
+    ):
+        for item in implementation_gaps[list_field]:
+            assert isinstance(item, str)
+
+    for forbidden_field in (
+        "rating",
+        "price",
+        "review",
+        "opening_hours",
+        "booking_url",
+        "reservation_url",
+        "availability",
+        "route_time",
+        "walking_distance",
+        "cost",
+        "estimated_cost",
+    ):
+        assert forbidden_field not in implementation_gaps
