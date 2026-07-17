@@ -445,6 +445,24 @@ class StayAreaGuidance(BaseModel):
     warnings: list[str] = Field(default_factory=list)
 
 
+class DecisionSummary(BaseModel):
+    """Plan-level decision summary explaining, from existing `PlanningState`/
+    `ExperiencePlan`/`DestinationContext` data only, why the plan was built
+    this way, what is provider-backed, what is proximity-based only, what is
+    still unvalidated, and what the user should review before trusting it
+    (docs/14_backend_architecture.md section 13). No provider call, no
+    AI/LLM, no invented fact -- purely a restatement of decisions already
+    made elsewhere in the pipeline. This never affects validation readiness
+    by itself.
+    """
+
+    summary: str
+    provider_backed_facts: list[str] = Field(default_factory=list)
+    proximity_based_decisions: list[str] = Field(default_factory=list)
+    unvalidated_items: list[str] = Field(default_factory=list)
+    user_review_required: list[str] = Field(default_factory=list)
+
+
 class ExperiencePlan(BaseModel):
     experience_plan_id: str = Field(default_factory=lambda: _new_id("experience_plan"))
 
@@ -452,6 +470,9 @@ class ExperiencePlan(BaseModel):
     daily_plans: list[DailyPlan] = Field(default_factory=list)
     stay_area_guidance: StayAreaGuidance = Field(
         default_factory=lambda: StayAreaGuidance(summary="Stay-area guidance not yet computed.")
+    )
+    decision_summary: DecisionSummary = Field(
+        default_factory=lambda: DecisionSummary(summary="Decision summary not yet computed.")
     )
 
     provider_coverage: ProviderCoverage = Field(default_factory=ProviderCoverage)

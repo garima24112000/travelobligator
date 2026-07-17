@@ -137,11 +137,20 @@ export type StayAreaGuidance = {
   warnings: string[];
 };
 
+export type DecisionSummary = {
+  summary: string;
+  provider_backed_facts: string[];
+  proximity_based_decisions: string[];
+  unvalidated_items: string[];
+  user_review_required: string[];
+};
+
 export type ExperiencePlanData = {
   trip_id: string;
   experience_plan: {
     daily_plans: DailyPlan[];
     stay_area_guidance: StayAreaGuidance;
+    decision_summary: DecisionSummary;
     assumptions: string[];
     confidence: number;
   };

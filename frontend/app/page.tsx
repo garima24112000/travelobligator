@@ -14,6 +14,7 @@ import {
 import type {
   CandidatePoi,
   DailyPlan,
+  DecisionSummary,
   ProviderCoverageData,
   StayAreaGuidance,
   TripRequestInput,
@@ -39,6 +40,7 @@ type PlanResult = {
   candidateAccommodationPois: CandidatePoi[];
   dailyPlans: DailyPlan[];
   stayAreaGuidance: StayAreaGuidance;
+  decisionSummary: DecisionSummary;
   validationReport: ValidationReport;
   providerCoverage: ProviderCoverageData;
   destinationAssumptions: string[];
@@ -152,6 +154,44 @@ function StayAreaGuidanceSection({
           {warning}
         </p>
       ))}
+    </div>
+  );
+}
+
+function DecisionSummaryList({ title, items }: { title: string; items: string[] }) {
+  if (items.length === 0) return null;
+
+  return (
+    <div className="mt-3">
+      <p className="text-sm font-semibold text-slate-200">{title}</p>
+      <ul className="mt-2 list-disc pl-5 text-sm text-slate-300">
+        {items.map((item, index) => (
+          <li key={`${title}-${index}`}>{item}</li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function DecisionSummarySection({ summary }: { summary: DecisionSummary }) {
+  return (
+    <div className="rounded-2xl border border-white/10 bg-white/5 p-5">
+      <h2 className="text-lg font-semibold">Decision summary</h2>
+      <p className="mt-2 text-sm text-slate-300">{summary.summary}</p>
+
+      <DecisionSummaryList
+        title="Provider-backed facts"
+        items={summary.provider_backed_facts}
+      />
+      <DecisionSummaryList
+        title="Proximity-based decisions"
+        items={summary.proximity_based_decisions}
+      />
+      <DecisionSummaryList title="Still unvalidated" items={summary.unvalidated_items} />
+      <DecisionSummaryList
+        title="Review before trusting"
+        items={summary.user_review_required}
+      />
     </div>
   );
 }
@@ -453,6 +493,7 @@ export default function Home() {
           destinationContext.destination_context.candidate_accommodation_pois,
         dailyPlans: experiencePlan.experience_plan.daily_plans,
         stayAreaGuidance: experiencePlan.experience_plan.stay_area_guidance,
+        decisionSummary: experiencePlan.experience_plan.decision_summary,
         validationReport: validationReport.validation_report,
         providerCoverage,
         destinationAssumptions:
@@ -881,6 +922,8 @@ export default function Home() {
             </div>
 
             <StayAreaGuidanceSection guidance={result.stayAreaGuidance} />
+
+            <DecisionSummarySection summary={result.decisionSummary} />
 
             <ValidationSection report={result.validationReport} />
 

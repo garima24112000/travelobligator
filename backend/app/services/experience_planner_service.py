@@ -7,6 +7,7 @@ from app.models.common import ClaimSource, ClaimSourceType, DataQuality, DataSta
 from app.models.planning_state import (
     AccommodationSuggestion,
     DailyPlan,
+    DecisionSummary,
     ExperienceItem,
     ExperiencePlan,
     PlanningStage,
@@ -103,6 +104,38 @@ _NO_COORDINATE_BACKED_STAY_GUIDANCE_ACCOMMODATIONS_WARNING = (
     "stay-area guidance could not be computed."
 )
 
+_DECISION_SUMMARY_PROXIMITY_DECISIONS = [
+    "Which candidates are grouped into the same day is decided by "
+    "straight-line (haversine) distance to that day's anchor candidate, not "
+    "route optimization.",
+    "The order attractions appear within a day is decided by a "
+    "nearest-neighbor walk over straight-line distance, not route "
+    "optimization.",
+    "Nearby restaurant and accommodation POI suggestions, both day-level and "
+    "the plan-level stay-area guidance, are selected by straight-line "
+    "proximity to scheduled attractions only.",
+]
+_DECISION_SUMMARY_UNVALIDATED_ITEMS = [
+    "Route ordering between scheduled attractions is not validated.",
+    "Opening hours are not checked against the schedule.",
+    "Feasibility of the day-by-day schedule is not validated.",
+    "Walking time between scheduled attractions is not calculated.",
+    "Costs for the plan are not calculated.",
+    "Hotel prices for suggested accommodation POIs are not checked.",
+    "Availability for any suggested accommodation or restaurant is not checked.",
+    "Ratings for suggested restaurants and accommodation POIs are not verified.",
+    "Booking links are not generated or validated.",
+]
+_DECISION_SUMMARY_USER_REVIEW_REQUIRED = [
+    "Confirm opening hours, travel time, and day-by-day feasibility before "
+    "relying on this schedule.",
+    "Treat restaurant and accommodation POI suggestions as location "
+    "candidates only -- confirm details directly with the venue or a "
+    "booking provider before visiting or booking.",
+    "Do not treat any price, availability, or rating as final -- none is "
+    "provided by this plan.",
+]
+
 
 class ExperiencePlannerService(PlanningStageService):
     """Owns `experience_plan`, `experience_cards`, and itinerary decision
@@ -180,6 +213,17 @@ class ExperiencePlannerService(PlanningStageService):
     readiness by itself. The same empty-list-plus-honest-warning fallback
     applies when no accommodation candidates, no coordinate-backed scheduled
     experiences, or no coordinate-backed accommodation candidates exist.
+
+    The plan also gets a single plan-level `decision_summary` explaining, in
+    plain terms and built purely from data already computed above, why the
+    plan looks the way it does: which sections are provider-backed, which
+    decisions are straight-line-proximity-based only, which aspects are
+    still unvalidated (route ordering, opening hours, feasibility, walking
+    time, costs, hotel prices, availability, ratings, booking links), and
+    what the user should review before trusting the plan. It honestly
+    states when restaurant or accommodation POI candidates are unavailable
+    rather than omitting them silently. No provider call, no AI/LLM, no
+    invented fact, and it never affects validation readiness by itself.
     """
 
     def run(self, planning_state: PlanningState) -> PlanningState:
@@ -273,10 +317,14 @@ class ExperiencePlannerService(PlanningStageService):
         stay_area_guidance = _build_stay_area_guidance(
             daily_plans, candidate_accommodation_pois
         )
+        decision_summary = _build_decision_summary(
+            candidate_pois, candidate_restaurants, candidate_accommodation_pois, daily_plans
+        )
 
         experience_plan = ExperiencePlan(
             daily_plans=daily_plans,
             stay_area_guidance=stay_area_guidance,
+            decision_summary=decision_summary,
             provider_coverage=planning_state.provider_coverage.model_copy(),
             assumptions=assumptions,
             confidence=0.35 if candidate_pois else 0.0,
@@ -674,6 +722,87 @@ def _build_stay_area_guidance(
         suggested_anchor_accommodation_pois=suggestions,
         assumptions=list(_STAY_GUIDANCE_ASSUMPTIONS),
         warnings=[],
+    )
+
+
+def _build_decision_summary(
+    candidate_pois: list[dict[str, Any]],
+    candidate_restaurants: list[dict[str, Any]],
+    candidate_accommodation_pois: list[dict[str, Any]],
+    daily_plans: list[DailyPlan],
+) -> DecisionSummary:
+    """Plan-level decision summary explaining why the plan looks the way it
+    does, built purely from data already on `PlanningState`/`ExperiencePlan`/
+    `DestinationContext` -- no provider call, no AI/LLM, no invented fact.
+    Restaurant/accommodation unavailability is stated honestly rather than
+    silently omitted. Never affects validation readiness by itself.
+    """
+    scheduled_experiences_count = sum(len(day_plan.experiences) for day_plan in daily_plans)
+
+    provider_backed_facts: list[str] = []
+    summary_parts: list[str] = []
+
+    if candidate_pois:
+        provider_backed_facts.append(
+            f"{scheduled_experiences_count} scheduled attraction"
+            f"{'s' if scheduled_experiences_count != 1 else ''} came from "
+            "provider-backed destination_context.candidate_pois."
+        )
+        summary_parts.append(
+            "Attractions were scheduled from provider-backed candidate_pois."
+        )
+    else:
+        summary_parts.append(
+            "No attraction candidates were available, so no attractions were scheduled."
+        )
+
+    if candidate_restaurants:
+        provider_backed_facts.append(
+            f"{len(candidate_restaurants)} restaurant candidate"
+            f"{'s' if len(candidate_restaurants) != 1 else ''} came from "
+            "provider-backed destination_context.candidate_restaurants."
+        )
+        summary_parts.append(
+            "Nearby restaurant suggestions used provider-backed candidate_restaurants."
+        )
+    else:
+        summary_parts.append(
+            "Restaurant candidates are unavailable, so no restaurant suggestions could be made."
+        )
+
+    if candidate_accommodation_pois:
+        provider_backed_facts.append(
+            f"{len(candidate_accommodation_pois)} accommodation POI candidate"
+            f"{'s' if len(candidate_accommodation_pois) != 1 else ''} came from "
+            "provider-backed destination_context.candidate_accommodation_pois."
+        )
+        summary_parts.append(
+            "Nearby accommodation POI suggestions and stay-area guidance used "
+            "provider-backed candidate_accommodation_pois."
+        )
+    else:
+        summary_parts.append(
+            "Accommodation POI candidates are unavailable, so no accommodation "
+            "suggestions or stay-area guidance could be made."
+        )
+
+    summary_parts.append(
+        "Day grouping, within-day ordering, and nearby restaurant/accommodation "
+        "suggestions use straight-line (haversine) geographic proximity only, "
+        "not route optimization."
+    )
+    summary_parts.append(
+        "Route ordering, opening hours, feasibility, walking time, costs, "
+        "hotel prices, availability, ratings, and booking links are not "
+        "validated yet."
+    )
+
+    return DecisionSummary(
+        summary=" ".join(summary_parts),
+        provider_backed_facts=provider_backed_facts,
+        proximity_based_decisions=list(_DECISION_SUMMARY_PROXIMITY_DECISIONS),
+        unvalidated_items=list(_DECISION_SUMMARY_UNVALIDATED_ITEMS),
+        user_review_required=list(_DECISION_SUMMARY_USER_REVIEW_REQUIRED),
     )
 
 

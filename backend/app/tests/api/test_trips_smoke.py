@@ -2888,3 +2888,186 @@ def test_stay_area_guidance_creates_no_fake_fields(
         assert "availability" in why_suggested
         assert "rating" in why_suggested
         assert "booking" in why_suggested
+
+
+def test_decision_summary_exists_after_generate(
+    client: TestClient, generated_trip_id: str
+) -> None:
+    response = client.get(f"/trips/{generated_trip_id}/experience-plan")
+    assert response.status_code == 200
+    experience_plan = response.json()["data"]["experience_plan"]
+
+    assert "decision_summary" in experience_plan
+    decision_summary = experience_plan["decision_summary"]
+
+    assert set(decision_summary.keys()) == {
+        "summary",
+        "provider_backed_facts",
+        "proximity_based_decisions",
+        "unvalidated_items",
+        "user_review_required",
+    }
+    assert decision_summary["summary"] != ""
+    assert isinstance(decision_summary["provider_backed_facts"], list)
+    assert isinstance(decision_summary["proximity_based_decisions"], list)
+    assert isinstance(decision_summary["unvalidated_items"], list)
+    assert isinstance(decision_summary["user_review_required"], list)
+
+    # This section is purely explanatory and must never flip readiness by
+    # itself; the deterministic test provider still leaves the plan
+    # needs_review (route/timing feasibility is not implemented yet).
+    assert experience_plan["decision_summary"] is not None
+    validation_response = client.get(f"/trips/{generated_trip_id}/validation-report")
+    assert validation_response.status_code == 200
+    assert (
+        validation_response.json()["data"]["validation_report"]["readiness_status"]
+        == "needs_review"
+    )
+
+
+def test_decision_summary_reflects_available_provider_backed_data(
+    client: TestClient, generated_trip_id: str
+) -> None:
+    destination_response = client.get(f"/trips/{generated_trip_id}/destination-context")
+    assert destination_response.status_code == 200
+    destination_context = destination_response.json()["data"]["destination_context"]
+
+    experience_response = client.get(f"/trips/{generated_trip_id}/experience-plan")
+    assert experience_response.status_code == 200
+    experience_plan = experience_response.json()["data"]["experience_plan"]
+    decision_summary = experience_plan["decision_summary"]
+
+    scheduled_experiences_count = sum(
+        len(day_plan["experiences"]) for day_plan in experience_plan["daily_plans"]
+    )
+    restaurant_count = len(destination_context["candidate_restaurants"])
+    accommodation_count = len(destination_context["candidate_accommodation_pois"])
+    assert scheduled_experiences_count > 0
+    assert restaurant_count > 0
+    assert accommodation_count > 0
+
+    facts_text = " ".join(decision_summary["provider_backed_facts"])
+    assert "candidate_pois" in facts_text
+    assert "candidate_restaurants" in facts_text
+    assert "candidate_accommodation_pois" in facts_text
+    assert str(scheduled_experiences_count) in facts_text
+    assert str(restaurant_count) in facts_text
+    assert str(accommodation_count) in facts_text
+
+    summary = decision_summary["summary"]
+    assert "candidate_pois" in summary
+    assert "candidate_restaurants" in summary
+    assert "candidate_accommodation_pois" in summary
+
+
+def test_decision_summary_honestly_reports_unavailable_restaurants_and_accommodations(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Attractions are available but restaurants/accommodation POIs are not,
+    # from the same fixture used elsewhere to prove must-visit/interest
+    # ranking; here it proves decision_summary states unavailability
+    # honestly instead of silently omitting it or inventing data.
+    monkeypatch.setattr(provider_gateway, "places", _RankingTestPlacesProvider())
+
+    create_response = client.post(
+        "/trips",
+        json={
+            "destination_scope": "single_city",
+            "primary_destination": "Testville, Testland",
+            "origin_city": "Home City",
+            "start_date": "2026-08-10",
+            "end_date": "2026-08-10",
+            "travelers_count": 2,
+            "travel_group_type": "couple",
+        },
+    )
+    assert create_response.status_code == 201
+    trip_id = create_response.json()["data"]["trip_id"]
+
+    generate_response = client.post(f"/trips/{trip_id}/generate")
+    assert generate_response.status_code == 200
+
+    response = client.get(f"/trips/{trip_id}/experience-plan")
+    assert response.status_code == 200
+    decision_summary = response.json()["data"]["experience_plan"]["decision_summary"]
+
+    summary = decision_summary["summary"]
+    assert "restaurant" in summary.lower() and "unavailable" in summary.lower()
+    assert "accommodation" in summary.lower()
+
+    facts_text = " ".join(decision_summary["provider_backed_facts"])
+    # No restaurant/accommodation provider-backed fact is fabricated when
+    # those candidates are unavailable.
+    assert "candidate_restaurants" not in facts_text
+    assert "candidate_accommodation_pois" not in facts_text
+    # Attractions were available, so that fact is still honestly present.
+    assert "candidate_pois" in facts_text
+
+
+def test_decision_summary_includes_route_feasibility_and_cost_limitations(
+    client: TestClient, generated_trip_id: str
+) -> None:
+    response = client.get(f"/trips/{generated_trip_id}/experience-plan")
+    assert response.status_code == 200
+    decision_summary = response.json()["data"]["experience_plan"]["decision_summary"]
+
+    combined_text = " ".join(
+        [decision_summary["summary"], *decision_summary["unvalidated_items"]]
+    ).lower()
+
+    for expected_term in (
+        "route",
+        "opening hours",
+        "feasibility",
+        "walking time",
+        "cost",
+        "hotel price",
+        "availability",
+        "rating",
+        "booking",
+    ):
+        assert expected_term in combined_text
+
+
+def test_decision_summary_creates_no_fake_fields(
+    client: TestClient, generated_trip_id: str
+) -> None:
+    response = client.get(f"/trips/{generated_trip_id}/experience-plan")
+    assert response.status_code == 200
+    decision_summary = response.json()["data"]["experience_plan"]["decision_summary"]
+
+    assert set(decision_summary.keys()) == {
+        "summary",
+        "provider_backed_facts",
+        "proximity_based_decisions",
+        "unvalidated_items",
+        "user_review_required",
+    }
+
+    # Every value is plain explanatory text -- no structured
+    # price/rating/review/opening-hour/booking/availability/route/walking/
+    # cost field is ever attached to the decision summary itself.
+    assert isinstance(decision_summary["summary"], str)
+    for list_field in (
+        "provider_backed_facts",
+        "proximity_based_decisions",
+        "unvalidated_items",
+        "user_review_required",
+    ):
+        for item in decision_summary[list_field]:
+            assert isinstance(item, str)
+
+    for forbidden_field in (
+        "rating",
+        "price",
+        "review",
+        "opening_hours",
+        "booking_url",
+        "reservation_url",
+        "availability",
+        "route_time",
+        "walking_distance",
+        "cost",
+        "estimated_cost",
+    ):
+        assert forbidden_field not in decision_summary
