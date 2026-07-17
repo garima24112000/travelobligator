@@ -12,6 +12,7 @@ from app.models.planning_state import (
     PlanningStage,
     PlanningState,
     RestaurantSuggestion,
+    StayAreaGuidance,
     TripPace,
 )
 from app.services.base import PlanningStageService
@@ -72,6 +73,34 @@ _NO_DAY_ANCHOR_FOR_ACCOMMODATION_WARNING = (
 _NO_COORDINATE_BACKED_ACCOMMODATIONS_WARNING = (
     "No coordinate-backed accommodation POI candidates are available, so "
     "nearby accommodation suggestions could not be computed for this day."
+)
+
+_MAX_STAY_GUIDANCE_ANCHORS = 3
+_STAY_GUIDANCE_SUGGESTION_WHY = (
+    "Selected from provider-backed accommodation POI candidates in "
+    "destination_context.candidate_accommodation_pois, ranked by average "
+    "straight-line (haversine) proximity to this plan's scheduled "
+    "attractions. This is an open-data location candidate only, not "
+    "bookable inventory, not a hotel recommendation, and not validated for "
+    "price, availability, rating, or booking."
+)
+_STAY_GUIDANCE_ASSUMPTIONS = [
+    "Suggested anchor accommodation POIs are ranked by average straight-line "
+    "(haversine) distance to every coordinate-backed scheduled experience "
+    "across the whole plan, not a single day, and not a walking or route "
+    "distance."
+]
+_NO_STAY_GUIDANCE_ACCOMMODATION_CANDIDATES_WARNING = (
+    "No accommodation POI candidates are available yet, so no stay-area "
+    "guidance could be produced."
+)
+_NO_STAY_GUIDANCE_ANCHOR_WARNING = (
+    "No coordinate-backed scheduled experiences are available across the "
+    "plan, so stay-area guidance could not be computed."
+)
+_NO_COORDINATE_BACKED_STAY_GUIDANCE_ACCOMMODATIONS_WARNING = (
+    "No coordinate-backed accommodation POI candidates are available, so "
+    "stay-area guidance could not be computed."
 )
 
 
@@ -140,6 +169,17 @@ class ExperiencePlannerService(PlanningStageService):
     never carry a price, availability, rating, booking, or route claim. The
     same empty-list-plus-honest-warning fallback applies when no candidates,
     no day anchor, or no coordinate-backed candidates are available.
+
+    Finally, the plan gets a single plan-level `stay_area_guidance`: up to 3
+    accommodation POI candidates (again only from `candidate_accommodation_
+    pois`) ranked by average straight-line (haversine) distance to every
+    coordinate-backed scheduled experience across the whole plan, not just
+    one day. This is a summary of where candidates cluster relative to the
+    whole itinerary, not a recommendation of a hotel, a booking, or a
+    price/availability/rating claim, and it never affects validation
+    readiness by itself. The same empty-list-plus-honest-warning fallback
+    applies when no accommodation candidates, no coordinate-backed scheduled
+    experiences, or no coordinate-backed accommodation candidates exist.
     """
 
     def run(self, planning_state: PlanningState) -> PlanningState:
@@ -230,8 +270,13 @@ class ExperiencePlannerService(PlanningStageService):
                 "candidates are available.",
             )
 
+        stay_area_guidance = _build_stay_area_guidance(
+            daily_plans, candidate_accommodation_pois
+        )
+
         experience_plan = ExperiencePlan(
             daily_plans=daily_plans,
+            stay_area_guidance=stay_area_guidance,
             provider_coverage=planning_state.provider_coverage.model_copy(),
             assumptions=assumptions,
             confidence=0.35 if candidate_pois else 0.0,
@@ -530,7 +575,9 @@ def _suggest_nearby_accommodations(
     return [_build_accommodation_suggestion(accommodation) for accommodation, _ in nearest]
 
 
-def _build_accommodation_suggestion(accommodation: dict[str, Any]) -> AccommodationSuggestion:
+def _build_accommodation_suggestion(
+    accommodation: dict[str, Any], why: str = _ACCOMMODATION_SUGGESTION_WHY
+) -> AccommodationSuggestion:
     data_status_value = accommodation.get("data_status") or DataStatus.LIVE.value
     return AccommodationSuggestion(
         name=accommodation.get("name") or "",
@@ -540,7 +587,93 @@ def _build_accommodation_suggestion(accommodation: dict[str, Any]) -> Accommodat
         source=accommodation.get("source"),
         data_status=DataStatus(data_status_value),
         confidence=float(accommodation.get("confidence") or 0.0),
-        why_suggested=_ACCOMMODATION_SUGGESTION_WHY,
+        why_suggested=why,
+    )
+
+
+def _build_stay_area_guidance(
+    daily_plans: list[DailyPlan],
+    candidate_accommodation_pois: list[dict[str, Any]],
+) -> StayAreaGuidance:
+    """Plan-level (not day-level) stay-area guidance: up to
+    `_MAX_STAY_GUIDANCE_ANCHORS` accommodation POI candidates ranked by
+    average straight-line (haversine) distance to every coordinate-backed
+    scheduled experience across every day.
+
+    Only ever draws from `candidate_accommodation_pois` (the same open-data
+    candidates day-level `accommodation_suggestions` use) and experiences
+    already scheduled onto `daily_plans`; never invents a place, calls a
+    provider, or uses AI/LLM. If no accommodation POI candidates exist, no
+    scheduled experience has coordinates, or no accommodation candidate has
+    coordinates, suggestions stay empty and an honest warning is returned
+    instead of guessing.
+    """
+    if not candidate_accommodation_pois:
+        return StayAreaGuidance(
+            summary=(
+                "No accommodation POI candidates are available yet, so no "
+                "stay-area guidance could be produced."
+            ),
+            suggested_anchor_accommodation_pois=[],
+            assumptions=list(_STAY_GUIDANCE_ASSUMPTIONS),
+            warnings=[_NO_STAY_GUIDANCE_ACCOMMODATION_CANDIDATES_WARNING],
+        )
+
+    experience_points = [
+        experience.coordinates
+        for day_plan in daily_plans
+        for experience in day_plan.experiences
+        if experience.coordinates is not None
+    ]
+    if not experience_points:
+        return StayAreaGuidance(
+            summary=(
+                "No coordinate-backed scheduled experiences are available "
+                "yet, so no stay-area guidance could be produced."
+            ),
+            suggested_anchor_accommodation_pois=[],
+            assumptions=list(_STAY_GUIDANCE_ASSUMPTIONS),
+            warnings=[_NO_STAY_GUIDANCE_ANCHOR_WARNING],
+        )
+
+    scored: list[tuple[float, dict[str, Any]]] = []
+    for accommodation in candidate_accommodation_pois:
+        point = _poi_coordinates(accommodation)
+        if point is None:
+            continue
+        distances = [haversine_distance_km(point, exp_point) for exp_point in experience_points]
+        scored.append((sum(distances) / len(distances), accommodation))
+
+    if not scored:
+        return StayAreaGuidance(
+            summary=(
+                "No coordinate-backed accommodation POI candidates are "
+                "available, so no stay-area guidance could be produced."
+            ),
+            suggested_anchor_accommodation_pois=[],
+            assumptions=list(_STAY_GUIDANCE_ASSUMPTIONS),
+            warnings=[_NO_COORDINATE_BACKED_STAY_GUIDANCE_ACCOMMODATIONS_WARNING],
+        )
+
+    scored.sort(key=lambda item: item[0])
+    nearest = scored[:_MAX_STAY_GUIDANCE_ANCHORS]
+    suggestions = [
+        _build_accommodation_suggestion(accommodation, why=_STAY_GUIDANCE_SUGGESTION_WHY)
+        for _, accommodation in nearest
+    ]
+
+    summary = (
+        f"{len(suggestions)} accommodation POI candidate"
+        f"{'s' if len(suggestions) != 1 else ''} identified as closest, on "
+        "average, to this plan's scheduled attractions by straight-line "
+        "distance."
+    )
+
+    return StayAreaGuidance(
+        summary=summary,
+        suggested_anchor_accommodation_pois=suggestions,
+        assumptions=list(_STAY_GUIDANCE_ASSUMPTIONS),
+        warnings=[],
     )
 
 

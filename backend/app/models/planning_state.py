@@ -422,11 +422,37 @@ class DailyPlan(BaseModel):
     assumptions: list[str] = Field(default_factory=list)
 
 
+class StayAreaGuidance(BaseModel):
+    """Plan-level (not day-level) stay-area guidance summarizing which
+    `destination_context.candidate_accommodation_pois` sit closest, on
+    average, to every coordinate-backed scheduled experience across the
+    whole plan (docs/14_backend_architecture.md section 13). Built purely
+    from existing candidates and already-scheduled experiences -- no
+    provider call, no AI/LLM, no invented place. `suggested_anchor_
+    accommodation_pois` carries only fields already present on a
+    provider-backed candidate plus `why_suggested`; like the day-level
+    `AccommodationSuggestion`, it never carries a price, availability,
+    rating, review, opening-hours, booking link, route time, walking
+    distance, or cost. This guidance never affects validation readiness by
+    itself.
+    """
+
+    summary: str
+    suggested_anchor_accommodation_pois: list[AccommodationSuggestion] = Field(
+        default_factory=list
+    )
+    assumptions: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+
 class ExperiencePlan(BaseModel):
     experience_plan_id: str = Field(default_factory=lambda: _new_id("experience_plan"))
 
     trip_overview: str | None = None
     daily_plans: list[DailyPlan] = Field(default_factory=list)
+    stay_area_guidance: StayAreaGuidance = Field(
+        default_factory=lambda: StayAreaGuidance(summary="Stay-area guidance not yet computed.")
+    )
 
     provider_coverage: ProviderCoverage = Field(default_factory=ProviderCoverage)
     unavailable_data: list[UnavailableDataItem] = Field(default_factory=list)

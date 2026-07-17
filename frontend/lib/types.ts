@@ -130,10 +130,18 @@ export type DailyPlan = {
   warnings: string[];
 };
 
+export type StayAreaGuidance = {
+  summary: string;
+  suggested_anchor_accommodation_pois: AccommodationSuggestion[];
+  assumptions: string[];
+  warnings: string[];
+};
+
 export type ExperiencePlanData = {
   trip_id: string;
   experience_plan: {
     daily_plans: DailyPlan[];
+    stay_area_guidance: StayAreaGuidance;
     assumptions: string[];
     confidence: number;
   };

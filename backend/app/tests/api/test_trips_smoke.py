@@ -2605,3 +2605,286 @@ def test_accommodation_suggestions_missing_experience_coordinates_do_not_crash(
         in warning
         for warning in day_plan["warnings"]
     )
+
+
+class _StayAreaGuidanceTestPlacesProvider(PlacesProvider):
+    """Test-only double with attractions and accommodation POIs at known
+    coordinates, used to prove plan-level stay-area guidance selects the 3
+    lowest-average-straight-line-distance accommodation candidates across
+    every scheduled attraction, drawing only from
+    `candidate_accommodation_pois`.
+
+    All points sit on the equator, so straight-line distance is monotonic in
+    longitude. Attractions cluster near lng=0 and lng=0.05; of the 4
+    accommodation candidates, "Very Far Hotel" (lng=10.0) has the highest
+    average distance to both attractions and must be excluded from the top
+    3.
+    """
+
+    provider_name = "openstreetmap_places"
+
+    def search_attractions(
+        self, destination: str, filters: dict[str, Any] | None = None
+    ) -> ProviderResponse[Any]:
+        places = [
+            _geo_place("test/stay/attraction/a", "Stay Attraction A", "landmark", 0.0),
+            _geo_place("test/stay/attraction/b", "Stay Attraction B", "landmark", 0.05),
+        ]
+        return ProviderResponse[list[NormalizedPlace]](
+            provider_name=self.provider_name,
+            provider_type=self.provider_type,
+            status=ProviderStatus.SUCCESS,
+            data_status=DataStatus.LIVE,
+            data=places,
+            confidence=0.65,
+            message="Test fixture data; not a real provider call.",
+        )
+
+    def search_restaurants(
+        self, area: str, filters: dict[str, Any] | None = None
+    ) -> ProviderResponse[Any]:
+        return unavailable_response(
+            self.provider_name, self.provider_type, unavailable_fields=["restaurants"]
+        )
+
+    def search_accommodation_pois(
+        self, destination: str, filters: dict[str, Any] | None = None
+    ) -> ProviderResponse[Any]:
+        places = [
+            _geo_place("test/stay/accommodation/near", "Near Hotel", "hotel", 0.02),
+            _geo_place("test/stay/accommodation/mid", "Mid Hotel", "hotel", 0.5),
+            _geo_place("test/stay/accommodation/far", "Far Hotel", "hotel", 5.0),
+            _geo_place("test/stay/accommodation/veryfar", "Very Far Hotel", "hotel", 10.0),
+        ]
+        return ProviderResponse[list[NormalizedPlace]](
+            provider_name=self.provider_name,
+            provider_type=self.provider_type,
+            status=ProviderStatus.SUCCESS,
+            data_status=DataStatus.LIVE,
+            data=places,
+            confidence=0.6,
+            message="Test fixture data; not a real provider call.",
+        )
+
+
+def _generate_stay_area_guidance(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, provider: PlacesProvider
+) -> dict[str, Any]:
+    monkeypatch.setattr(provider_gateway, "places", provider)
+
+    create_response = client.post(
+        "/trips",
+        json={
+            "destination_scope": "single_city",
+            "primary_destination": "Testville, Testland",
+            "origin_city": "Home City",
+            "start_date": "2026-08-10",
+            "end_date": "2026-08-10",
+            "travelers_count": 2,
+            "travel_group_type": "couple",
+            "pace": "balanced",
+        },
+    )
+    assert create_response.status_code == 201
+    trip_id = create_response.json()["data"]["trip_id"]
+
+    generate_response = client.post(f"/trips/{trip_id}/generate")
+    assert generate_response.status_code == 200
+
+    response = client.get(f"/trips/{trip_id}/experience-plan")
+    assert response.status_code == 200
+    return response.json()["data"]["experience_plan"]["stay_area_guidance"]
+
+
+def test_stay_area_guidance_selects_lowest_average_distance_accommodation_pois(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stay_area_guidance = _generate_stay_area_guidance(
+        client, monkeypatch, _StayAreaGuidanceTestPlacesProvider()
+    )
+
+    suggested_names = [
+        poi["name"] for poi in stay_area_guidance["suggested_anchor_accommodation_pois"]
+    ]
+    # The 3 lowest-average-distance candidates are chosen, in ascending
+    # distance order; "Very Far Hotel" (the highest average distance) is
+    # excluded.
+    assert suggested_names == ["Near Hotel", "Mid Hotel", "Far Hotel"]
+    assert stay_area_guidance["warnings"] == []
+    assert stay_area_guidance["summary"] != ""
+
+
+def test_stay_area_guidance_uses_only_candidate_accommodation_pois(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stay_area_guidance = _generate_stay_area_guidance(
+        client, monkeypatch, _StayAreaGuidanceTestPlacesProvider()
+    )
+
+    # Every suggested anchor is a real candidate returned by
+    # search_accommodation_pois -- nothing outside that set (e.g. an
+    # attraction name, or an invented hotel) is ever suggested.
+    known_accommodation_names = {"Near Hotel", "Mid Hotel", "Far Hotel", "Very Far Hotel"}
+    for poi in stay_area_guidance["suggested_anchor_accommodation_pois"]:
+        assert poi["name"] in known_accommodation_names
+    assert len(stay_area_guidance["suggested_anchor_accommodation_pois"]) <= 3
+
+
+class _StayAreaGuidanceNoAccommodationTestPlacesProvider(PlacesProvider):
+    """Test-only double with a real, coordinate-backed attraction but no
+    accommodation POI candidates at all, used to prove stay-area guidance
+    stays honestly empty rather than inventing an accommodation suggestion.
+    """
+
+    provider_name = "openstreetmap_places"
+
+    def search_attractions(
+        self, destination: str, filters: dict[str, Any] | None = None
+    ) -> ProviderResponse[Any]:
+        places = [_geo_place("test/stay/none/attraction", "Solo Attraction", "landmark", 0.0)]
+        return ProviderResponse[list[NormalizedPlace]](
+            provider_name=self.provider_name,
+            provider_type=self.provider_type,
+            status=ProviderStatus.SUCCESS,
+            data_status=DataStatus.LIVE,
+            data=places,
+            confidence=0.6,
+            message="Test fixture data; not a real provider call.",
+        )
+
+    def search_restaurants(
+        self, area: str, filters: dict[str, Any] | None = None
+    ) -> ProviderResponse[Any]:
+        return unavailable_response(
+            self.provider_name, self.provider_type, unavailable_fields=["restaurants"]
+        )
+
+    def search_accommodation_pois(
+        self, destination: str, filters: dict[str, Any] | None = None
+    ) -> ProviderResponse[Any]:
+        return unavailable_response(
+            self.provider_name, self.provider_type, unavailable_fields=["accommodation_pois"]
+        )
+
+
+def test_stay_area_guidance_no_accommodation_pois_stays_honestly_empty(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stay_area_guidance = _generate_stay_area_guidance(
+        client, monkeypatch, _StayAreaGuidanceNoAccommodationTestPlacesProvider()
+    )
+
+    assert stay_area_guidance["suggested_anchor_accommodation_pois"] == []
+    assert len(stay_area_guidance["warnings"]) == 1
+    assert "accommodation" in stay_area_guidance["warnings"][0].lower()
+
+
+class _StayAreaGuidanceNoExperienceCoordinatesTestPlacesProvider(PlacesProvider):
+    """Test-only double where the only scheduled attraction has no
+    coordinates but a real accommodation POI candidate does, used to prove
+    missing scheduled-experience coordinates are handled honestly (empty
+    suggestions plus a warning) rather than crashing or guessing.
+    """
+
+    provider_name = "openstreetmap_places"
+
+    def search_attractions(
+        self, destination: str, filters: dict[str, Any] | None = None
+    ) -> ProviderResponse[Any]:
+        places = [
+            _geo_place("test/stay/nocoord/attraction", "No Coordinates Attraction", "landmark", None)
+        ]
+        return ProviderResponse[list[NormalizedPlace]](
+            provider_name=self.provider_name,
+            provider_type=self.provider_type,
+            status=ProviderStatus.SUCCESS,
+            data_status=DataStatus.LIVE,
+            data=places,
+            confidence=0.6,
+            message="Test fixture data; not a real provider call.",
+        )
+
+    def search_restaurants(
+        self, area: str, filters: dict[str, Any] | None = None
+    ) -> ProviderResponse[Any]:
+        return unavailable_response(
+            self.provider_name, self.provider_type, unavailable_fields=["restaurants"]
+        )
+
+    def search_accommodation_pois(
+        self, destination: str, filters: dict[str, Any] | None = None
+    ) -> ProviderResponse[Any]:
+        places = [_geo_place("test/stay/nocoord/hotel", "Some Hotel", "hotel", 0.0)]
+        return ProviderResponse[list[NormalizedPlace]](
+            provider_name=self.provider_name,
+            provider_type=self.provider_type,
+            status=ProviderStatus.SUCCESS,
+            data_status=DataStatus.LIVE,
+            data=places,
+            confidence=0.6,
+            message="Test fixture data; not a real provider call.",
+        )
+
+
+def test_stay_area_guidance_missing_scheduled_experience_coordinates_does_not_crash(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stay_area_guidance = _generate_stay_area_guidance(
+        client, monkeypatch, _StayAreaGuidanceNoExperienceCoordinatesTestPlacesProvider()
+    )
+
+    assert stay_area_guidance["suggested_anchor_accommodation_pois"] == []
+    assert len(stay_area_guidance["warnings"]) == 1
+    assert "coordinate" in stay_area_guidance["warnings"][0].lower()
+
+
+def test_stay_area_guidance_creates_no_fake_fields(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stay_area_guidance = _generate_stay_area_guidance(
+        client, monkeypatch, _StayAreaGuidanceTestPlacesProvider()
+    )
+
+    assert set(stay_area_guidance.keys()) == {
+        "summary",
+        "suggested_anchor_accommodation_pois",
+        "assumptions",
+        "warnings",
+    }
+    assert len(stay_area_guidance["suggested_anchor_accommodation_pois"]) == 3
+
+    for poi in stay_area_guidance["suggested_anchor_accommodation_pois"]:
+        assert set(poi.keys()) == {
+            "name",
+            "category",
+            "coordinates",
+            "address",
+            "source",
+            "data_status",
+            "confidence",
+            "why_suggested",
+        }
+        for forbidden_field in (
+            "rating",
+            "price",
+            "review",
+            "opening_hours",
+            "booking_url",
+            "reservation_url",
+            "availability",
+            "route_time",
+            "walking_distance",
+            "cost",
+        ):
+            assert forbidden_field not in poi
+
+        why_suggested = poi["why_suggested"]
+        assert "accommodation POI candidates" in why_suggested
+        assert "straight-line" in why_suggested
+        assert "open-data location candidate" in why_suggested
+        assert "not bookable inventory" in why_suggested
+        assert "not a hotel recommendation" in why_suggested
+        assert "price" in why_suggested
+        assert "availability" in why_suggested
+        assert "rating" in why_suggested
+        assert "booking" in why_suggested

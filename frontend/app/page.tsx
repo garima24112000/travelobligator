@@ -15,6 +15,7 @@ import type {
   CandidatePoi,
   DailyPlan,
   ProviderCoverageData,
+  StayAreaGuidance,
   TripRequestInput,
   TripSummary,
   ValidationReport,
@@ -37,6 +38,7 @@ type PlanResult = {
   candidateRestaurants: CandidatePoi[];
   candidateAccommodationPois: CandidatePoi[];
   dailyPlans: DailyPlan[];
+  stayAreaGuidance: StayAreaGuidance;
   validationReport: ValidationReport;
   providerCoverage: ProviderCoverageData;
   destinationAssumptions: string[];
@@ -94,6 +96,62 @@ function ValidationIssueList({
           </li>
         ))}
       </ul>
+    </div>
+  );
+}
+
+function StayAreaGuidanceSection({
+  guidance,
+}: {
+  guidance: StayAreaGuidance;
+}) {
+  return (
+    <div className="rounded-2xl border border-white/10 bg-white/5 p-5">
+      <h2 className="text-lg font-semibold">Stay-area guidance</h2>
+      <p className="mt-1 text-xs text-amber-300/90">
+        Open-data accommodation location candidates only, not bookable
+        inventory.
+      </p>
+      <p className="mt-2 text-sm text-slate-300">{guidance.summary}</p>
+
+      {guidance.suggested_anchor_accommodation_pois.length === 0 ? (
+        <p className="mt-2 text-sm text-slate-400">
+          No suggested anchor accommodation POIs available.
+        </p>
+      ) : (
+        <ul className="mt-3 flex flex-col gap-2">
+          {guidance.suggested_anchor_accommodation_pois.map(
+            (accommodation, index) => (
+              <li
+                key={`${accommodation.name}-${index}`}
+                className="rounded-lg border border-white/10 bg-slate-900/60 p-3 text-sm"
+              >
+                <span className="font-medium">{accommodation.name}</span>
+                {accommodation.category && (
+                  <span className="text-slate-400"> ({accommodation.category})</span>
+                )}
+                {accommodation.address && (
+                  <p className="text-xs text-slate-400">
+                    {accommodation.address}
+                  </p>
+                )}
+                <p className="mt-1 text-[11px] uppercase tracking-wide text-slate-500">
+                  {accommodation.source} · {accommodation.data_status}
+                </p>
+                <p className="mt-1 text-xs text-slate-400">
+                  {accommodation.why_suggested}
+                </p>
+              </li>
+            ),
+          )}
+        </ul>
+      )}
+
+      {guidance.warnings.map((warning) => (
+        <p key={warning} className="mt-2 text-xs text-amber-300/90">
+          {warning}
+        </p>
+      ))}
     </div>
   );
 }
@@ -394,6 +452,7 @@ export default function Home() {
         candidateAccommodationPois:
           destinationContext.destination_context.candidate_accommodation_pois,
         dailyPlans: experiencePlan.experience_plan.daily_plans,
+        stayAreaGuidance: experiencePlan.experience_plan.stay_area_guidance,
         validationReport: validationReport.validation_report,
         providerCoverage,
         destinationAssumptions:
@@ -820,6 +879,8 @@ export default function Home() {
                 ))}
               </div>
             </div>
+
+            <StayAreaGuidanceSection guidance={result.stayAreaGuidance} />
 
             <ValidationSection report={result.validationReport} />
 
