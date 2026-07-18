@@ -49,6 +49,18 @@ class PlanValidatorService(PlanningStageService):
       that day. This is a straight-line-only signal -- never called walking
       or route distance -- and does not change scheduling/order or block
       the plan; it only adds a warning.
+    * If `planning_state.weather_context` has usable provider-backed
+      `daily_weather`, a `category="weather"` warning says provider-backed
+      weather data is available, that the itinerary has not been adjusted
+      around weather yet, and that outdoor/long-walk days should be
+      reviewed manually. It restates only existing
+      `precipitation_probability_max`/`temperature_max_c`/
+      `temperature_min_c` threshold breaches already present on
+      `daily_weather` (no rain/heat/cold/comfort-risk/weather-description/
+      UV/humidity/alert/severe-weather value is ever invented). If weather
+      is missing/unavailable, no warning is added. This never blocks the
+      plan or marks it ready by itself -- it only adds a warning, and it
+      does not modify `daily_plans`.
     """
 
     def run(self, planning_state: PlanningState) -> PlanningState:
@@ -253,6 +265,10 @@ class PlanValidatorService(PlanningStageService):
                 )
             )
 
+        weather_warning = _build_weather_warning(planning_state)
+        if weather_warning is not None:
+            warnings.append(weather_warning)
+
         readiness_status = (
             ReadinessStatus.BLOCKED if critical_issues else ReadinessStatus.NEEDS_REVIEW
         )
@@ -268,6 +284,85 @@ class PlanValidatorService(PlanningStageService):
         planning_state.validation_report = validation_report
         planning_state.touch()
         return planning_state
+
+
+_HIGH_PRECIPITATION_PROBABILITY_THRESHOLD = 50
+_HIGH_TEMPERATURE_C_THRESHOLD = 30
+_LOW_TEMPERATURE_C_THRESHOLD = 5
+
+
+def _build_weather_warning(planning_state: PlanningState) -> ValidationIssue | None:
+    """Deterministic review warning built purely from
+    `planning_state.weather_context` -- no provider call, no AI/LLM, no
+    invented fact, and `daily_plans` are never modified.
+
+    Only added when `weather_context` has usable provider-backed
+    `daily_weather`; if weather is missing/unavailable (or
+    `weather_context` itself is unset), returns None instead of guessing.
+    The message restates only existing
+    `precipitation_probability_max`/`temperature_max_c`/`temperature_min_c`
+    threshold breaches already present on `daily_weather` -- never a
+    rain/heat/cold/comfort-risk/weather-description/UV/humidity/alert/
+    severe-weather value that isn't already there. Always a `WARNING`, never
+    a critical issue, so it never blocks the plan or marks it ready by
+    itself.
+    """
+    weather_context = planning_state.weather_context
+    if weather_context is None or not weather_context.daily_weather:
+        return None
+
+    high_precipitation_dates = [
+        day.date.isoformat()
+        for day in weather_context.daily_weather
+        if day.precipitation_probability_max is not None
+        and day.precipitation_probability_max >= _HIGH_PRECIPITATION_PROBABILITY_THRESHOLD
+    ]
+    high_temperature_dates = [
+        day.date.isoformat()
+        for day in weather_context.daily_weather
+        if day.temperature_max_c is not None
+        and day.temperature_max_c >= _HIGH_TEMPERATURE_C_THRESHOLD
+    ]
+    low_temperature_dates = [
+        day.date.isoformat()
+        for day in weather_context.daily_weather
+        if day.temperature_min_c is not None
+        and day.temperature_min_c <= _LOW_TEMPERATURE_C_THRESHOLD
+    ]
+
+    message_parts = [
+        "Provider-backed weather data is available for this trip, but the "
+        "itinerary has not been adjusted around weather yet -- review "
+        "outdoor/long-walk days manually."
+    ]
+    if high_precipitation_dates:
+        message_parts.append(
+            f"High precipitation probability (>={_HIGH_PRECIPITATION_PROBABILITY_THRESHOLD}%) "
+            f"forecast on: {', '.join(high_precipitation_dates)}."
+        )
+    if high_temperature_dates:
+        message_parts.append(
+            f"High temperature (>={_HIGH_TEMPERATURE_C_THRESHOLD}°C) forecast on: "
+            f"{', '.join(high_temperature_dates)}."
+        )
+    if low_temperature_dates:
+        message_parts.append(
+            f"Low temperature (<={_LOW_TEMPERATURE_C_THRESHOLD}°C) forecast on: "
+            f"{', '.join(low_temperature_dates)}."
+        )
+
+    return ValidationIssue(
+        severity=ValidationSeverity.WARNING,
+        category="weather",
+        message=" ".join(message_parts),
+        affected_section="experience_plan",
+        suggested_fix=(
+            "Implement weather-aware itinerary adjustment (e.g. rescheduling or "
+            "rerouting outdoor/long-walk activities around high precipitation "
+            "probability, high temperature, or low temperature) before treating "
+            "this plan as weather-checked."
+        ),
+    )
 
 
 def _day_geographic_spread_km(day: DailyPlan) -> float | None:

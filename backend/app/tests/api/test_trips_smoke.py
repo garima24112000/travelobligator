@@ -3588,3 +3588,240 @@ def test_implementation_gaps_lists_weather_connected_when_usable(
 
     assert "weather" in connected_text
     assert "weather" not in missing_text
+
+
+class _CustomTestWeatherProvider(WeatherProvider):
+    """Test double returning caller-specified daily forecast entries, so
+    tests can exercise specific precipitation/temperature threshold values
+    without depending on real Open-Meteo network data."""
+
+    provider_name = "open_meteo"
+
+    def __init__(self, daily: list[NormalizedDailyWeather]) -> None:
+        self._daily = daily
+
+    def get_weather_forecast(
+        self,
+        destination: str,
+        dates: dict[str, Any],
+        coordinates: GeoPoint | None = None,
+    ) -> ProviderResponse[Any]:
+        return ProviderResponse[list[NormalizedDailyWeather]](
+            provider_name=self.provider_name,
+            provider_type=self.provider_type,
+            status=ProviderStatus.SUCCESS,
+            data_status=DataStatus.LIVE,
+            data=self._daily,
+            confidence=0.6,
+            message="Test fixture weather data; not a real provider call.",
+        )
+
+
+def _mild_daily_weather(day: date) -> NormalizedDailyWeather:
+    return NormalizedDailyWeather(
+        date=day,
+        temperature_max_c=22.0,
+        temperature_min_c=14.0,
+        precipitation_probability_max=10.0,
+        precipitation_sum_mm=0.0,
+        weather_code=1,
+        source="open_meteo",
+        data_status=DataStatus.LIVE,
+    )
+
+
+def _find_weather_warning(warnings: list[dict[str, Any]]) -> dict[str, Any] | None:
+    return next((issue for issue in warnings if issue["category"] == "weather"), None)
+
+
+def test_validation_report_includes_weather_warning_when_usable_daily_weather_exists(
+    client: TestClient, created_trip_id: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(provider_gateway, "weather", _ConnectedTestWeatherProvider())
+
+    generate_response = client.post(f"/trips/{created_trip_id}/generate")
+    assert generate_response.status_code == 200
+
+    response = client.get(f"/trips/{created_trip_id}/validation-report")
+    assert response.status_code == 200
+    validation_report = response.json()["data"]["validation_report"]
+
+    weather_warning = _find_weather_warning(validation_report["warnings"])
+    assert weather_warning is not None
+    assert weather_warning["severity"] == "warning"
+
+    message = weather_warning["message"].lower()
+    assert "provider-backed" in message
+    assert "weather" in message
+    assert "not been adjusted" in message
+    assert "review" in message and "manually" in message
+
+    # Weather never marks the plan ready by itself.
+    assert validation_report["readiness_status"] == "needs_review"
+
+
+def test_validation_report_weather_warning_includes_high_precipitation_date(
+    client: TestClient, created_trip_id: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    daily = [
+        _mild_daily_weather(date(2026, 8, 10)),
+        NormalizedDailyWeather(
+            date=date(2026, 8, 11),
+            temperature_max_c=22.0,
+            temperature_min_c=14.0,
+            precipitation_probability_max=60.0,
+            precipitation_sum_mm=8.0,
+            weather_code=61,
+            source="open_meteo",
+            data_status=DataStatus.LIVE,
+        ),
+    ]
+    monkeypatch.setattr(provider_gateway, "weather", _CustomTestWeatherProvider(daily))
+
+    generate_response = client.post(f"/trips/{created_trip_id}/generate")
+    assert generate_response.status_code == 200
+
+    response = client.get(f"/trips/{created_trip_id}/validation-report")
+    assert response.status_code == 200
+    warnings = response.json()["data"]["validation_report"]["warnings"]
+
+    weather_warning = _find_weather_warning(warnings)
+    assert weather_warning is not None
+    assert "2026-08-11" in weather_warning["message"]
+    assert "2026-08-10" not in weather_warning["message"]
+
+
+def test_validation_report_weather_warning_includes_high_temperature_date(
+    client: TestClient, created_trip_id: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    daily = [
+        _mild_daily_weather(date(2026, 8, 10)),
+        NormalizedDailyWeather(
+            date=date(2026, 8, 12),
+            temperature_max_c=32.0,
+            temperature_min_c=20.0,
+            precipitation_probability_max=5.0,
+            precipitation_sum_mm=0.0,
+            weather_code=1,
+            source="open_meteo",
+            data_status=DataStatus.LIVE,
+        ),
+    ]
+    monkeypatch.setattr(provider_gateway, "weather", _CustomTestWeatherProvider(daily))
+
+    generate_response = client.post(f"/trips/{created_trip_id}/generate")
+    assert generate_response.status_code == 200
+
+    response = client.get(f"/trips/{created_trip_id}/validation-report")
+    assert response.status_code == 200
+    warnings = response.json()["data"]["validation_report"]["warnings"]
+
+    weather_warning = _find_weather_warning(warnings)
+    assert weather_warning is not None
+    assert "2026-08-12" in weather_warning["message"]
+    assert "2026-08-10" not in weather_warning["message"]
+
+
+def test_validation_report_weather_warning_includes_low_temperature_date(
+    client: TestClient, created_trip_id: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    daily = [
+        _mild_daily_weather(date(2026, 8, 11)),
+        NormalizedDailyWeather(
+            date=date(2026, 8, 10),
+            temperature_max_c=8.0,
+            temperature_min_c=3.0,
+            precipitation_probability_max=5.0,
+            precipitation_sum_mm=0.0,
+            weather_code=1,
+            source="open_meteo",
+            data_status=DataStatus.LIVE,
+        ),
+    ]
+    monkeypatch.setattr(provider_gateway, "weather", _CustomTestWeatherProvider(daily))
+
+    generate_response = client.post(f"/trips/{created_trip_id}/generate")
+    assert generate_response.status_code == 200
+
+    response = client.get(f"/trips/{created_trip_id}/validation-report")
+    assert response.status_code == 200
+    warnings = response.json()["data"]["validation_report"]["warnings"]
+
+    weather_warning = _find_weather_warning(warnings)
+    assert weather_warning is not None
+    assert "2026-08-10" in weather_warning["message"]
+    assert "2026-08-11" not in weather_warning["message"]
+
+
+def test_validation_report_no_weather_warning_when_weather_unavailable(
+    client: TestClient, generated_trip_id: str
+) -> None:
+    # The deterministic test places provider never resolves coordinates, so
+    # weather stays honestly unavailable in this default test environment --
+    # no weather warning should be fabricated.
+    response = client.get(f"/trips/{generated_trip_id}/validation-report")
+    assert response.status_code == 200
+    validation_report = response.json()["data"]["validation_report"]
+
+    assert _find_weather_warning(validation_report["warnings"]) is None
+    assert validation_report["readiness_status"] == "needs_review"
+
+
+def test_validation_report_weather_warning_creates_no_fake_fields(
+    client: TestClient, created_trip_id: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    daily = [
+        NormalizedDailyWeather(
+            date=date(2026, 8, 10),
+            temperature_max_c=32.0,
+            temperature_min_c=3.0,
+            precipitation_probability_max=60.0,
+            precipitation_sum_mm=8.0,
+            weather_code=61,
+            source="open_meteo",
+            data_status=DataStatus.LIVE,
+        )
+    ]
+    monkeypatch.setattr(provider_gateway, "weather", _CustomTestWeatherProvider(daily))
+
+    generate_response = client.post(f"/trips/{created_trip_id}/generate")
+    assert generate_response.status_code == 200
+
+    response = client.get(f"/trips/{created_trip_id}/validation-report")
+    assert response.status_code == 200
+    warnings = response.json()["data"]["validation_report"]["warnings"]
+
+    weather_warning = _find_weather_warning(warnings)
+    assert weather_warning is not None
+
+    assert set(weather_warning.keys()) == {
+        "issue_id",
+        "severity",
+        "category",
+        "message",
+        "affected_section",
+        "suggested_fix",
+        "claim_sources",
+    }
+
+    combined_text = f"{weather_warning['message']} {weather_warning['suggested_fix']}".lower()
+    for forbidden_term in (
+        "uv",
+        "humidity",
+        "alert",
+        "severe weather",
+        "condition",
+        "description",
+        "comfort risk",
+        "rain",
+        "heat",
+        "cold",
+    ):
+        assert forbidden_term not in combined_text
+
+    # This warning never edits daily plans -- scheduling stays unchanged.
+    experience_plan_response = client.get(f"/trips/{created_trip_id}/experience-plan")
+    assert experience_plan_response.status_code == 200
+    daily_plans = experience_plan_response.json()["data"]["experience_plan"]["daily_plans"]
+    for day_plan in daily_plans:
+        assert isinstance(day_plan["experiences"], list)
