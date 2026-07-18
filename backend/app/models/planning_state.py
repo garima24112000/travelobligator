@@ -204,6 +204,49 @@ class DestinationContext(BaseModel):
     claim_sources: list[ClaimSource] = Field(default_factory=list)
 
 
+class DailyWeather(BaseModel):
+    """One day of provider-backed weather forecast data
+    (docs/12_provider_architecture.md section 15). Only fields the
+    underlying source (Open-Meteo) actually returned are populated -- no
+    weather description/condition is invented from `weather_code`, and no
+    humidity, UV, alert, or severe-weather value is ever fabricated.
+    """
+
+    date: date
+    temperature_max_c: float | None = None
+    temperature_min_c: float | None = None
+    precipitation_probability_max: float | None = None
+    precipitation_sum_mm: float | None = None
+    weather_code: int | None = None
+    source: str
+    data_status: DataStatus
+
+
+class WeatherContext(BaseModel):
+    """Plan-level provider-backed weather forecast for the trip's date range
+    (docs/12_provider_architecture.md section 15, docs/14_backend_architecture.md
+    section 10). Built from a real WeatherProvider call (Open-Meteo) using
+    destination coordinates resolved via the existing places/geocoding flow
+    -- no provider call is duplicated to get those coordinates. Weather data
+    here is not yet used to adjust the itinerary; no rerouting or
+    rescheduling reasoning is implemented yet, and no rain, temperature,
+    humidity, alert, UV, or severe-weather value is ever invented. If
+    coordinates or usable daily data are unavailable, `daily_weather` stays
+    empty and this is reported honestly via `data_status`/`warnings` rather
+    than guessed.
+    """
+
+    destination: str
+    start_date: date
+    end_date: date
+    daily_weather: list[DailyWeather] = Field(default_factory=list)
+    source: str | None = None
+    data_status: DataStatus
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    assumptions: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+
 class TripStrategy(BaseModel):
     strategy_id: str = Field(default_factory=lambda: _new_id("trip_strategy"))
 
@@ -655,6 +698,7 @@ class PlanningState(BaseModel):
 
     traveler_profile: TravelerProfile | None = None
     destination_context: DestinationContext | None = None
+    weather_context: WeatherContext | None = None
     trip_strategy: TripStrategy | None = None
     stay_transport: StayTransportDecision | None = None
     experience_plan: ExperiencePlan | None = None

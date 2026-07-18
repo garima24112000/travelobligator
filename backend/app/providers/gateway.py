@@ -16,6 +16,7 @@ from app.providers.base import (
     WeatherProvider,
 )
 from app.providers.places.openstreetmap_adapter import OpenStreetMapPlacesAdapter
+from app.providers.weather.open_meteo_adapter import OpenMeteoWeatherAdapter
 
 
 class ProviderGateway:
@@ -26,8 +27,9 @@ class ProviderGateway:
     docs/14_backend_architecture.md section 18).
 
     Each provider slot defaults to its interface's base implementation,
-    which honestly reports `not_connected` for every method. Real adapters
-    (e.g. an OpenStreetMap-backed PlacesProvider) can be injected later
+    which honestly reports `not_connected` for every method, except
+    `places` (OpenStreetMap-backed) and `weather` (Open-Meteo-backed), which
+    default to real adapters. Further real adapters can be injected later
     without changing calling code.
     """
 
@@ -48,7 +50,7 @@ class ProviderGateway:
         self.transit = transit or TransitProvider()
         self.accommodation = accommodation or AccommodationProvider()
         self.flight = flight or FlightProvider()
-        self.weather = weather or WeatherProvider()
+        self.weather = weather or OpenMeteoWeatherAdapter()
         self.holiday = holiday or HolidayProvider()
         self.currency = currency or CurrencyProvider()
         self.ai_reasoning = ai_reasoning or AIReasoningProvider()

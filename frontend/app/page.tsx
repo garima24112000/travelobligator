@@ -23,6 +23,7 @@ import type {
   TripRequestInput,
   TripSummary,
   ValidationReport,
+  WeatherContext,
 } from "@/lib/types";
 
 const DEFAULT_TRIP_REQUEST: TripRequestInput = {
@@ -46,6 +47,7 @@ type PlanResult = {
   decisionSummary: DecisionSummary;
   implementationGaps: ImplementationGaps;
   readinessChecklist: ReadinessChecklist;
+  weatherContext: WeatherContext | null;
   validationReport: ValidationReport;
   providerCoverage: ProviderCoverageData;
   destinationAssumptions: string[];
@@ -322,6 +324,68 @@ function PlanStatusSection({
           />
         ))}
       </div>
+    </div>
+  );
+}
+
+function WeatherContextSection({ weather }: { weather: WeatherContext | null }) {
+  if (!weather) {
+    return (
+      <div className="rounded-2xl border border-white/10 bg-white/5 p-5">
+        <h2 className="text-lg font-semibold">Weather context</h2>
+        <p className="mt-2 text-sm text-slate-400">
+          Weather data is unavailable for this trip.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="rounded-2xl border border-white/10 bg-white/5 p-5">
+      <h2 className="text-lg font-semibold">Weather context</h2>
+      <p className="mt-1 text-sm text-slate-300">
+        Source: <span className="font-semibold">{weather.source ?? "None"}</span>
+        {" · "}
+        Status: <span className="font-semibold">{weather.data_status}</span>
+        {" · "}
+        Confidence: <span className="font-semibold">{weather.confidence}</span>
+      </p>
+
+      {weather.daily_weather.length === 0 ? (
+        <p className="mt-2 text-sm text-slate-400">
+          No usable provider-backed daily forecast data is available for{" "}
+          {weather.destination} between {weather.start_date} and {weather.end_date}.
+        </p>
+      ) : (
+        <ul className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
+          {weather.daily_weather.map((day) => (
+            <li
+              key={day.date}
+              className="rounded-lg border border-white/10 bg-slate-900/60 p-3 text-sm"
+            >
+              <p className="font-medium">{day.date}</p>
+              <p className="mt-1 text-xs text-slate-400">
+                High: {day.temperature_max_c ?? "N/A"}°C · Low:{" "}
+                {day.temperature_min_c ?? "N/A"}°C
+              </p>
+              <p className="mt-1 text-xs text-slate-400">
+                Precipitation probability:{" "}
+                {day.precipitation_probability_max ?? "N/A"}% · Sum:{" "}
+                {day.precipitation_sum_mm ?? "N/A"}mm
+              </p>
+              <p className="mt-1 text-xs text-slate-400">
+                Weather code: {day.weather_code ?? "N/A"}
+              </p>
+              <p className="mt-1 text-[11px] uppercase tracking-wide text-slate-500">
+                {day.source} · {day.data_status}
+              </p>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      <SummaryList title="Assumptions" items={weather.assumptions} />
+      <SummaryList title="Warnings" items={weather.warnings} />
     </div>
   );
 }
@@ -626,6 +690,7 @@ export default function Home() {
         decisionSummary: experiencePlan.experience_plan.decision_summary,
         implementationGaps: experiencePlan.experience_plan.implementation_gaps,
         readinessChecklist: experiencePlan.experience_plan.readiness_checklist,
+        weatherContext: destinationContext.weather_context,
         validationReport: validationReport.validation_report,
         providerCoverage,
         destinationAssumptions:
@@ -926,6 +991,8 @@ export default function Home() {
               validationStatus={result.summary.validation_status}
               checklist={result.readinessChecklist}
             />
+
+            <WeatherContextSection weather={result.weatherContext} />
 
             <div className="rounded-2xl border border-white/10 bg-white/5 p-5">
               <h2 className="text-lg font-semibold">Day-wise experiences</h2>

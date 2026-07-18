@@ -59,9 +59,14 @@ class OpenStreetMapPlacesAdapter(PlacesProvider):
     section 10).
 
     Only `search_attractions`, `search_restaurants`,
-    `search_accommodation_pois`, and `search_must_visit_place` are
-    implemented. `search_places` and `get_place_details` fall back to the
-    base class's honest `not_connected` response.
+    `search_accommodation_pois`, `search_must_visit_place`, and
+    `resolve_coordinates` are implemented. `search_places` and
+    `get_place_details` fall back to the base class's honest
+    `not_connected` response. `resolve_coordinates` is a thin public wrapper
+    around the same cached `_geocode` Nominatim lookup the search methods
+    already use, so other providers/services (e.g. WeatherProvider) can
+    reuse real destination coordinates without a second geocoding
+    implementation.
 
     `search_must_visit_place` is a targeted lookup for one explicit
     must-visit place, used only as a fallback when general attraction
@@ -187,6 +192,27 @@ class OpenStreetMapPlacesAdapter(PlacesProvider):
                 f"'{must_visit_term}' via a targeted Nominatim lookup."
             ),
         )
+
+    def resolve_coordinates(self, destination: str) -> GeoPoint | None:
+        """Best-effort geocode of `destination` for other providers/services
+        (e.g. WeatherProvider) that need real coordinates, reusing the exact
+        same cached Nominatim geocoding already used by `search_attractions`/
+        `search_restaurants`/`search_accommodation_pois` -- never a second,
+        duplicated geocoding implementation. Returns None (never a guessed
+        coordinate) if geocoding finds nothing or the request fails.
+        """
+        cached = self._geocode_cache.get(destination)
+        if cached is not None:
+            return cached
+
+        try:
+            with httpx.Client(
+                timeout=_REQUEST_TIMEOUT_SECONDS, headers={"User-Agent": _USER_AGENT}
+            ) as client:
+                return self._geocode(client, destination)
+        except (httpx.HTTPError, ValueError) as exc:
+            logger.warning("OpenStreetMap geocoding failed for %s: %s", destination, exc)
+            return None
 
     def _lookup_named_place(self, client: httpx.Client, query: str) -> NormalizedPlace | None:
         """Look up exactly one named, coordinate-backed place for `query` via

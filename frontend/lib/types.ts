@@ -85,6 +85,30 @@ export type DestinationContextData = {
     assumptions: string[];
     confidence: number;
   };
+  weather_context: WeatherContext | null;
+};
+
+export type DailyWeather = {
+  date: string;
+  temperature_max_c: number | null;
+  temperature_min_c: number | null;
+  precipitation_probability_max: number | null;
+  precipitation_sum_mm: number | null;
+  weather_code: number | null;
+  source: string;
+  data_status: string;
+};
+
+export type WeatherContext = {
+  destination: string;
+  start_date: string;
+  end_date: string;
+  daily_weather: DailyWeather[];
+  source: string | null;
+  data_status: string;
+  confidence: number;
+  assumptions: string[];
+  warnings: string[];
 };
 
 export type ExperienceItem = {

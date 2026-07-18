@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from enum import Enum
 from typing import Generic, TypeVar
 
@@ -59,3 +59,21 @@ class NormalizedPlace(BaseModel):
     source: str
     data_status: DataStatus
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+
+
+class NormalizedDailyWeather(BaseModel):
+    """Real weather data for one day, returned by a WeatherProvider adapter
+    (docs/12_provider_architecture.md section 15). Only fields the
+    underlying source actually returned are populated; no weather
+    description/condition, humidity, UV, or alert is fabricated when the
+    source doesn't supply it.
+    """
+
+    date: date
+    temperature_max_c: float | None = None
+    temperature_min_c: float | None = None
+    precipitation_probability_max: float | None = None
+    precipitation_sum_mm: float | None = None
+    weather_code: int | None = None
+    source: str
+    data_status: DataStatus

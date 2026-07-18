@@ -266,15 +266,16 @@ class ExperiencePlannerService(PlanningStageService):
     purely from `planning_state.provider_coverage` and
     `planning_state.provider_status`: which data is connected now (e.g.
     attractions/restaurants/accommodation POIs from the open-data places
-    provider), which data is missing (routes/transit, a booking-capable
-    accommodation provider, hotel prices, vacation rentals/Airbnb, weather,
-    holidays, currency -- none of which are connected in this deployment),
-    what provider would be needed next for each gap, and why the plan stays
-    Needs Review (route ordering, opening hours, walking time, and
-    costs/budget fit are unvalidated, and accommodation POIs are open-data
-    location candidates only, not bookable inventory). No provider call, no
-    AI/LLM, no invented fact, and it never affects validation readiness by
-    itself -- it explains existing gaps rather than resolving them.
+    provider, and weather when Open-Meteo returns usable daily forecast
+    data), which data is missing (routes/transit, a booking-capable
+    accommodation provider, hotel prices, vacation rentals/Airbnb, weather
+    when unavailable, holidays, currency), what provider would be needed
+    next for each gap, and why the plan stays Needs Review (route ordering,
+    opening hours, walking time, and costs/budget fit are unvalidated, and
+    accommodation POIs are open-data location candidates only, not bookable
+    inventory). No provider call, no AI/LLM, no invented fact, and it never
+    affects validation readiness by itself -- it explains existing gaps
+    rather than resolving them.
 
     Finally, the plan gets a plan-level `readiness_checklist`: a fixed list
     of checklist items (attractions/restaurants/accommodation POI
@@ -283,10 +284,13 @@ class ExperiencePlannerService(PlanningStageService):
     holiday/closure context, booking links), each labeled `checked`,
     `needs_review`, `missing_data`, or `not_implemented` from
     `provider_coverage`/`provider_status`/the candidate lists already
-    computed above. No provider call, no AI/LLM, no invented fact, and it
-    never marks the plan ready by itself -- `ValidationReport.
-    readiness_status` remains the single source of truth for overall
-    readiness.
+    computed above. "Weather impact checked" is `needs_review` (never
+    `checked`) whenever `weather_context` has usable provider-backed daily
+    data, since weather-aware itinerary adjustment is not implemented yet;
+    it stays `missing_data` when weather is unavailable/failed/not
+    connected. No provider call, no AI/LLM, no invented fact, and it never
+    marks the plan ready by itself -- `ValidationReport.readiness_status`
+    remains the single source of truth for overall readiness.
     """
 
     def run(self, planning_state: PlanningState) -> PlanningState:
@@ -951,7 +955,12 @@ def _build_implementation_gaps(planning_state: PlanningState) -> ImplementationG
             f"airbnb={coverage.airbnb})."
         )
 
-    if coverage.weather not in _CONNECTED_COVERAGE_STATUSES:
+    if coverage.weather in _CONNECTED_COVERAGE_STATUSES:
+        connected_data.append(
+            "Weather is connected: provider-backed daily forecast data came from a "
+            f"real weather provider (coverage: weather={coverage.weather})."
+        )
+    else:
         missing_data.append(f"Weather is not connected (coverage: weather={coverage.weather}).")
         next_data_needed.append(
             "A weather provider is needed for weather-aware planning."
@@ -1192,18 +1201,32 @@ def _build_readiness_checklist(
         )
     )
 
+    # Unlike the other "not yet checked" items, a connected weather provider
+    # means real daily forecast data does exist -- so this is NEEDS_REVIEW
+    # (data available, but weather-aware itinerary adjustment such as
+    # rerouting or rescheduling around rain is not implemented yet), not
+    # NOT_IMPLEMENTED. It still never becomes CHECKED: having weather data
+    # is not the same as having used it to validate/adjust the plan.
     weather_connected = coverage.weather in _CONNECTED_COVERAGE_STATUSES
-    weather_status = _not_yet_checked_status(weather_connected)
+    if weather_connected:
+        weather_status = ChecklistItemStatus.NEEDS_REVIEW
+        weather_explanation = (
+            "Provider-backed daily forecast data is available (coverage: "
+            f"weather={coverage.weather}), but weather-aware itinerary adjustment "
+            "(e.g. rerouting or rescheduling around rain) is not implemented yet, so "
+            "weather impact is not checked."
+        )
+    else:
+        weather_status = ChecklistItemStatus.MISSING_DATA
+        weather_explanation = (
+            f"A weather provider is not connected (coverage: weather={coverage.weather}), "
+            "so weather impact cannot be checked."
+        )
     items.append(
         ReadinessChecklistItem(
             label="Weather impact checked",
             status=weather_status,
-            explanation=(
-                f"A weather provider is not connected (coverage: weather={coverage.weather}), "
-                "so weather impact cannot be checked."
-                if weather_status == ChecklistItemStatus.MISSING_DATA
-                else "Weather-aware planning is not implemented yet, so weather impact is not checked."
-            ),
+            explanation=weather_explanation,
         )
     )
 

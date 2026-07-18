@@ -2,7 +2,13 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.models.planning_state import DestinationContext, PlanningStage, PlanningState
+from app.models.planning_state import (
+    DailyWeather,
+    DestinationContext,
+    PlanningStage,
+    PlanningState,
+    WeatherContext,
+)
 from app.providers.gateway import ProviderGateway, provider_gateway
 from app.services.base import PlanningStageService
 from app.services.experience_planner_service import _matches_must_visit
@@ -14,15 +20,27 @@ def _normalize_name(name: Any) -> str:
 
 
 class DestinationContextService(PlanningStageService):
-    """Owns `destination_context`, `provider_status`, `provider_coverage`,
-    `unavailable_data`, and `data_sources_used` (docs/14_backend_architecture.md
-    section 10).
+    """Owns `destination_context`, `weather_context`, `provider_status`,
+    `provider_coverage`, `unavailable_data`, and `data_sources_used`
+    (docs/14_backend_architecture.md section 10).
 
     Consumes `trip_request` and `traveler_profile`. Reaches provider-backed
     data only through ProviderGateway, calling only the OSM PlacesProvider
     methods it actually implements: `search_attractions`,
-    `search_restaurants`, `search_accommodation_pois`, and (as a targeted
-    fallback, see below) `search_must_visit_place`.
+    `search_restaurants`, `search_accommodation_pois`, `resolve_coordinates`,
+    and (as a targeted fallback, see below) `search_must_visit_place`; and
+    the WeatherProvider's `get_weather_forecast`.
+
+    `weather_context` is built from a real WeatherProvider call
+    (Open-Meteo) using destination coordinates resolved via
+    `gateway.places.resolve_coordinates` -- the exact same cached
+    Nominatim geocoding the places searches above already use, never a
+    second geocoding implementation. If coordinates can't be resolved, or
+    Open-Meteo has no usable daily data for the trip's date range, this is
+    reported honestly (`data_status`/`warnings`) rather than guessed. No
+    weather description/condition, humidity, UV, alert, or severe-weather
+    value is ever invented, and weather data is not yet used to adjust the
+    itinerary.
 
     `candidate_pois`, `candidate_restaurants`, and
     `candidate_accommodation_pois` are filled with real OSM POIs when the
@@ -73,6 +91,9 @@ class DestinationContextService(PlanningStageService):
             origin={"name": destination_name}, destination={"name": destination_name}
         )
         self.coverage_service.record_provider_result(planning_state, transit_response, "routes")
+
+        weather_context = self._build_weather_context(planning_state, destination_name)
+        planning_state.weather_context = weather_context
 
         candidate_pois = (
             [poi.model_dump(mode="json") for poi in attractions_response.data]
@@ -133,6 +154,78 @@ class DestinationContextService(PlanningStageService):
         planning_state.destination_context = context
         planning_state.touch()
         return planning_state
+
+    def _build_weather_context(
+        self, planning_state: PlanningState, destination_name: str
+    ) -> WeatherContext:
+        """Plan-level provider-backed weather forecast for the trip's date
+        range (docs/12_provider_architecture.md section 15).
+
+        Resolves real coordinates via `gateway.places.resolve_coordinates`
+        (the same cached Nominatim geocoding `_search` already uses -- never
+        a second geocoding implementation) and asks the WeatherProvider
+        (Open-Meteo) for a daily forecast over `trip_request.start_date`..
+        `trip_request.end_date`. If coordinates can't be resolved or the
+        provider has no usable daily data, `daily_weather` stays empty and
+        this is reported honestly via `data_status`/`warnings` -- never
+        guessed. No weather description/condition, humidity, UV, alert, or
+        severe-weather value is ever invented.
+        """
+        trip_request = planning_state.trip_request
+        coordinates = self.gateway.places.resolve_coordinates(destination_name)
+
+        weather_response = self.gateway.weather.get_weather_forecast(
+            destination_name,
+            {
+                "start_date": trip_request.start_date.isoformat(),
+                "end_date": trip_request.end_date.isoformat(),
+            },
+            coordinates=coordinates,
+        )
+        self.coverage_service.record_provider_result(planning_state, weather_response, "weather")
+
+        daily_weather = (
+            [
+                DailyWeather(
+                    date=day.date,
+                    temperature_max_c=day.temperature_max_c,
+                    temperature_min_c=day.temperature_min_c,
+                    precipitation_probability_max=day.precipitation_probability_max,
+                    precipitation_sum_mm=day.precipitation_sum_mm,
+                    weather_code=day.weather_code,
+                    source=day.source,
+                    data_status=day.data_status,
+                )
+                for day in weather_response.data
+            ]
+            if weather_response.data
+            else []
+        )
+
+        assumptions = [
+            "Weather data is provider-backed daily forecast only; it is not used to "
+            "adjust the itinerary (e.g. rerouting or rescheduling around rain) -- that "
+            "reasoning is not implemented yet."
+        ]
+        warnings: list[str] = []
+        if not daily_weather:
+            warnings.append(
+                weather_response.message
+                or "No usable weather forecast data is available for this destination "
+                "and date range."
+            )
+
+        return WeatherContext(
+            destination=destination_name,
+            start_date=trip_request.start_date,
+            end_date=trip_request.end_date,
+            daily_weather=daily_weather,
+            source=weather_response.provider_name if daily_weather else None,
+            data_status=weather_response.data_status,
+            confidence=weather_response.confidence,
+            assumptions=assumptions,
+            warnings=warnings,
+        )
 
     def _append_must_visit_candidates(
         self,

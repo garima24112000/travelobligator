@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.models.common import DataStatus, ProviderStatus
+from app.models.common import DataStatus, GeoPoint, ProviderStatus
 from app.models.providers import ProviderResponse, ProviderType
 
 
@@ -124,6 +124,13 @@ class PlacesProvider(BaseProvider):
         provider result."""
         return self.not_connected(unavailable_fields=["must_visit_place"])
 
+    def resolve_coordinates(self, destination: str) -> GeoPoint | None:
+        """Best-effort geocode of `destination` for other providers/services
+        that need real coordinates (e.g. WeatherProvider) without
+        duplicating geocoding logic. Returns None (never a guessed
+        coordinate) unless a concrete adapter overrides this."""
+        return None
+
 
 class RoutesProvider(BaseProvider):
     provider_name = "routes_provider"
@@ -213,7 +220,10 @@ class WeatherProvider(BaseProvider):
     provider_type = ProviderType.WEATHER
 
     def get_weather_forecast(
-        self, destination: str, dates: dict[str, Any]
+        self,
+        destination: str,
+        dates: dict[str, Any],
+        coordinates: GeoPoint | None = None,
     ) -> ProviderResponse[Any]:
         return self.not_connected(unavailable_fields=["weather_forecast"])
 

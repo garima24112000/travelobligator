@@ -695,3 +695,47 @@ def test_search_must_visit_place_result_has_no_fake_rating_price_review_or_hours
     }
     for forbidden_field in ("rating", "price", "review", "opening_hours", "booking_url", "availability"):
         assert forbidden_field not in dumped
+
+
+def test_resolve_coordinates_returns_geocoded_point(monkeypatch: pytest.MonkeyPatch) -> None:
+    _install_fake_client_for_get(monkeypatch, get_responses=[_geocode_ok()])
+
+    adapter = OpenStreetMapPlacesAdapter()
+    point = adapter.resolve_coordinates("Los Angeles")
+
+    assert point is not None
+    assert point.lat == pytest.approx(34.0522)
+    assert point.lng == pytest.approx(-118.2437)
+
+
+def test_resolve_coordinates_reuses_geocode_cache(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake_client = _install_fake_client_for_get(monkeypatch, get_responses=[_geocode_ok()])
+
+    adapter = OpenStreetMapPlacesAdapter()
+    first = adapter.resolve_coordinates("Los Angeles")
+    second = adapter.resolve_coordinates("Los Angeles")
+
+    assert first == second
+    # Only one real geocoding request was made; the second call was served
+    # from the same cache `_search` already uses.
+    assert fake_client.get_call_count == 1
+
+
+def test_resolve_coordinates_returns_none_when_not_found(monkeypatch: pytest.MonkeyPatch) -> None:
+    _install_fake_client_for_get(monkeypatch, get_responses=[_FakeResponse(json_data=[])])
+
+    adapter = OpenStreetMapPlacesAdapter()
+    point = adapter.resolve_coordinates("Nowhere")
+
+    assert point is None
+
+
+def test_resolve_coordinates_returns_none_on_request_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_fake_client_for_get(monkeypatch, get_responses=[_FakeResponse(should_fail=True)])
+
+    adapter = OpenStreetMapPlacesAdapter()
+    point = adapter.resolve_coordinates("Nowhere")
+
+    assert point is None

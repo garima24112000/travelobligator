@@ -1,13 +1,14 @@
 from __future__ import annotations
 
+from datetime import date
 from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
 
 from app.models.common import DataStatus, GeoPoint, ProviderStatus
-from app.models.providers import NormalizedPlace, ProviderResponse
-from app.providers.base import PlacesProvider, failed_response, unavailable_response
+from app.models.providers import NormalizedDailyWeather, NormalizedPlace, ProviderResponse
+from app.providers.base import PlacesProvider, WeatherProvider, failed_response, unavailable_response
 from app.providers.gateway import provider_gateway
 
 
@@ -362,11 +363,14 @@ def test_provider_status_keeps_separate_entries_per_field_for_same_provider(
     assert provider_coverage["accommodations"] == "not_connected"
 
     # No fake provider status was created for any provider/field pair that
-    # was never called. The only other entries come from the routes lookup
-    # and the separate (still-unconnected) booking-capable accommodation
-    # provider, which StayTransportService also records under "accommodations".
+    # was never called. The only other entries come from the routes lookup,
+    # the weather lookup (Open-Meteo; unavailable here since this test's
+    # places double never resolves coordinates), and the separate
+    # (still-unconnected) booking-capable accommodation provider, which
+    # StayTransportService also records under "accommodations".
     assert all(
-        entry["provider_name"] in {"openstreetmap_places", "routes_provider", "accommodation_provider"}
+        entry["provider_name"]
+        in {"openstreetmap_places", "routes_provider", "accommodation_provider", "open_meteo"}
         for entry in provider_status.values()
     )
     assert provider_status["accommodation_provider:accommodations"]["status"] == "not_connected"
@@ -3400,3 +3404,187 @@ def test_readiness_checklist_creates_no_fake_values(
         assert forbidden_field not in readiness_checklist
         for item in readiness_checklist["items"]:
             assert forbidden_field not in item
+
+
+class _ConnectedTestWeatherProvider(WeatherProvider):
+    """Deterministic test double standing in for `OpenMeteoWeatherAdapter`,
+    always returning usable daily forecast data regardless of coordinates.
+    Only used by tests that need to exercise the "weather is connected"
+    path; other tests keep the real `OpenMeteoWeatherAdapter`, which stays
+    honestly unavailable in tests because the deterministic test places
+    provider never resolves coordinates."""
+
+    provider_name = "open_meteo"
+
+    def get_weather_forecast(
+        self,
+        destination: str,
+        dates: dict[str, Any],
+        coordinates: GeoPoint | None = None,
+    ) -> ProviderResponse[Any]:
+        daily = [
+            NormalizedDailyWeather(
+                date=date(2026, 8, 10),
+                temperature_max_c=28.0,
+                temperature_min_c=18.0,
+                precipitation_probability_max=10.0,
+                precipitation_sum_mm=0.0,
+                weather_code=1,
+                source=self.provider_name,
+                data_status=DataStatus.LIVE,
+            )
+        ]
+        return ProviderResponse[list[NormalizedDailyWeather]](
+            provider_name=self.provider_name,
+            provider_type=self.provider_type,
+            status=ProviderStatus.SUCCESS,
+            data_status=DataStatus.LIVE,
+            data=daily,
+            confidence=0.6,
+            message="Test fixture weather data; not a real provider call.",
+        )
+
+
+def test_weather_context_exists_after_generate(
+    client: TestClient, generated_trip_id: str
+) -> None:
+    response = client.get(f"/trips/{generated_trip_id}/destination-context")
+    assert response.status_code == 200
+    data = response.json()["data"]
+
+    assert "weather_context" in data
+    weather_context = data["weather_context"]
+    assert weather_context is not None
+
+    assert set(weather_context.keys()) == {
+        "destination",
+        "start_date",
+        "end_date",
+        "daily_weather",
+        "source",
+        "data_status",
+        "confidence",
+        "assumptions",
+        "warnings",
+    }
+    assert weather_context["destination"]
+    assert weather_context["start_date"] == "2026-08-10"
+    assert weather_context["end_date"] == "2026-08-12"
+    assert isinstance(weather_context["daily_weather"], list)
+
+    # The deterministic test places provider never resolves coordinates
+    # (it doesn't override `resolve_coordinates`), so weather honestly stays
+    # unavailable in this default test environment -- never invented.
+    assert weather_context["daily_weather"] == []
+    assert weather_context["data_status"] == "unavailable"
+
+
+def test_weather_context_has_usable_daily_data_when_connected(
+    client: TestClient, created_trip_id: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(provider_gateway, "weather", _ConnectedTestWeatherProvider())
+
+    generate_response = client.post(f"/trips/{created_trip_id}/generate")
+    assert generate_response.status_code == 200
+
+    response = client.get(f"/trips/{created_trip_id}/destination-context")
+    assert response.status_code == 200
+    weather_context = response.json()["data"]["weather_context"]
+
+    assert weather_context["data_status"] == "live"
+    assert weather_context["source"] == "open_meteo"
+    assert len(weather_context["daily_weather"]) == 1
+
+    day = weather_context["daily_weather"][0]
+    assert set(day.keys()) == {
+        "date",
+        "temperature_max_c",
+        "temperature_min_c",
+        "precipitation_probability_max",
+        "precipitation_sum_mm",
+        "weather_code",
+        "source",
+        "data_status",
+    }
+    assert day["date"] == "2026-08-10"
+    assert day["temperature_max_c"] == 28.0
+    assert day["source"] == "open_meteo"
+
+
+def test_provider_coverage_weather_success_only_with_usable_data(
+    client: TestClient, created_trip_id: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Default deterministic test environment: weather stays unavailable
+    # because coordinates cannot be resolved, so coverage must never claim
+    # "success" for weather that doesn't exist.
+    generate_response = client.post(f"/trips/{created_trip_id}/generate")
+    assert generate_response.status_code == 200
+
+    coverage_response = client.get(f"/trips/{created_trip_id}/provider-coverage")
+    assert coverage_response.status_code == 200
+    assert coverage_response.json()["data"]["provider_coverage"]["weather"] != "success"
+
+    # With a connected weather provider returning usable daily data, coverage
+    # must become "success".
+    monkeypatch.setattr(provider_gateway, "weather", _ConnectedTestWeatherProvider())
+
+    create_response = client.post(
+        "/trips",
+        json={
+            "destination_scope": "single_city",
+            "primary_destination": "Testville, Testland",
+            "origin_city": "Home City",
+            "start_date": "2026-08-10",
+            "end_date": "2026-08-12",
+            "travelers_count": 2,
+            "travel_group_type": "couple",
+        },
+    )
+    assert create_response.status_code == 201
+    connected_trip_id = create_response.json()["data"]["trip_id"]
+
+    generate_response = client.post(f"/trips/{connected_trip_id}/generate")
+    assert generate_response.status_code == 200
+
+    coverage_response = client.get(f"/trips/{connected_trip_id}/provider-coverage")
+    assert coverage_response.status_code == 200
+    assert coverage_response.json()["data"]["provider_coverage"]["weather"] == "success"
+
+
+def test_readiness_checklist_marks_weather_needs_review_when_connected(
+    client: TestClient, created_trip_id: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(provider_gateway, "weather", _ConnectedTestWeatherProvider())
+
+    generate_response = client.post(f"/trips/{created_trip_id}/generate")
+    assert generate_response.status_code == 200
+
+    response = client.get(f"/trips/{created_trip_id}/experience-plan")
+    assert response.status_code == 200
+    readiness_checklist = response.json()["data"]["experience_plan"]["readiness_checklist"]
+    items_by_label = _checklist_items_by_label(readiness_checklist)
+
+    weather_item = items_by_label["Weather impact checked"]
+    # Weather data exists, but weather-aware itinerary adjustment is not
+    # implemented yet -- needs_review, never checked.
+    assert weather_item["status"] == "needs_review"
+    assert "not implemented" in weather_item["explanation"].lower()
+
+
+def test_implementation_gaps_lists_weather_connected_when_usable(
+    client: TestClient, created_trip_id: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(provider_gateway, "weather", _ConnectedTestWeatherProvider())
+
+    generate_response = client.post(f"/trips/{created_trip_id}/generate")
+    assert generate_response.status_code == 200
+
+    response = client.get(f"/trips/{created_trip_id}/experience-plan")
+    assert response.status_code == 200
+    implementation_gaps = response.json()["data"]["experience_plan"]["implementation_gaps"]
+
+    connected_text = " ".join(implementation_gaps["connected_data"]).lower()
+    missing_text = " ".join(implementation_gaps["missing_data"]).lower()
+
+    assert "weather" in connected_text
+    assert "weather" not in missing_text
