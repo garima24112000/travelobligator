@@ -3319,6 +3319,62 @@ def test_readiness_checklist_marks_candidates_missing_when_unavailable(
         assert items_by_label[label]["status"] == "missing_data"
 
 
+def test_readiness_checklist_checks_candidates_even_with_partial_or_fallback_coverage(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Candidate availability is a data-availability check, not a
+    # travel-readiness check: real candidates from a "fallback_used"
+    # restaurants field must still be "checked", not "needs_review", even
+    # though the overall plan stays "needs_review" for unrelated reasons
+    # (route/timing feasibility is not implemented yet).
+    monkeypatch.setattr(provider_gateway, "places", _MixedFieldStatusTestPlacesProvider())
+
+    create_response = client.post(
+        "/trips",
+        json={
+            "destination_scope": "single_city",
+            "primary_destination": "Testville, Testland",
+            "origin_city": "Home City",
+            "start_date": "2026-08-10",
+            "end_date": "2026-08-12",
+            "travelers_count": 2,
+            "travel_group_type": "couple",
+        },
+    )
+    assert create_response.status_code == 201
+    trip_id = create_response.json()["data"]["trip_id"]
+
+    generate_response = client.post(f"/trips/{trip_id}/generate")
+    assert generate_response.status_code == 200
+
+    coverage_response = client.get(f"/trips/{trip_id}/provider-coverage")
+    assert coverage_response.status_code == 200
+    provider_coverage = coverage_response.json()["data"]["provider_coverage"]
+    assert provider_coverage["places"] == "success"
+    assert provider_coverage["restaurants"] == "fallback_used"
+    assert provider_coverage["accommodations"] == "not_connected"
+
+    response = client.get(f"/trips/{trip_id}/experience-plan")
+    assert response.status_code == 200
+    readiness_checklist = response.json()["data"]["experience_plan"]["readiness_checklist"]
+    items_by_label = _checklist_items_by_label(readiness_checklist)
+
+    assert items_by_label["Provider-backed attractions available"]["status"] == "checked"
+    # Real restaurant candidates exist via fallback -- still "checked", not
+    # "needs_review", since this item only checks candidate availability.
+    assert items_by_label["Restaurant candidates available"]["status"] == "checked"
+    # No accommodation POI candidates at all (search_accommodation_pois
+    # failed for this double) -- correctly "missing_data".
+    assert items_by_label["Accommodation POI candidates available"]["status"] == "missing_data"
+
+    validation_response = client.get(f"/trips/{trip_id}/validation-report")
+    assert validation_response.status_code == 200
+    assert (
+        validation_response.json()["data"]["validation_report"]["readiness_status"]
+        == "needs_review"
+    )
+
+
 def test_readiness_checklist_marks_unimplemented_checks_honestly(
     client: TestClient, generated_trip_id: str
 ) -> None:
@@ -3569,6 +3625,33 @@ def test_readiness_checklist_marks_weather_needs_review_when_connected(
     # implemented yet -- needs_review, never checked.
     assert weather_item["status"] == "needs_review"
     assert "not implemented" in weather_item["explanation"].lower()
+
+
+def test_readiness_checklist_checked_count_is_three_with_weather_needs_review(
+    client: TestClient, created_trip_id: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The deterministic test places provider returns real attraction/
+    # restaurant/accommodation POI candidates (all three "checked"), and a
+    # connected weather provider makes "Weather impact checked" only
+    # "needs_review" -- so exactly 3 items are "checked" overall.
+    monkeypatch.setattr(provider_gateway, "weather", _ConnectedTestWeatherProvider())
+
+    generate_response = client.post(f"/trips/{created_trip_id}/generate")
+    assert generate_response.status_code == 200
+
+    response = client.get(f"/trips/{created_trip_id}/experience-plan")
+    assert response.status_code == 200
+    readiness_checklist = response.json()["data"]["experience_plan"]["readiness_checklist"]
+    items_by_label = _checklist_items_by_label(readiness_checklist)
+
+    checked_labels = {
+        label for label, item in items_by_label.items() if item["status"] == "checked"
+    }
+    assert checked_labels == _CANDIDATE_AVAILABILITY_ITEM_LABELS
+    assert len(checked_labels) == 3
+
+    assert items_by_label["Weather impact checked"]["status"] == "needs_review"
+    assert f"{len(checked_labels)} of" in readiness_checklist["summary"]
 
 
 def test_implementation_gaps_lists_weather_connected_when_usable(

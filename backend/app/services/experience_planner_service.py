@@ -150,20 +150,6 @@ _DECISION_SUMMARY_USER_REVIEW_REQUIRED = [
 # for that field, as opposed to "not_connected"/"failed"/"unavailable".
 _CONNECTED_COVERAGE_STATUSES = {"success", "partial", "fallback_used", "open_poi_available"}
 
-# For each candidate-availability checklist item, the coverage value that
-# means the field's provider fully succeeded (as opposed to only partially
-# succeeding). Accommodation POIs come from an open-data places provider, so
-# their own top-tier value is "open_poi_available", never literal "success"
-# (see ProviderCoverageService._OPEN_DATA_ACCOMMODATION_STATUSES).
-_CHECKLIST_TOP_TIER_STATUS = {
-    "places": "success",
-    "restaurants": "success",
-    "accommodations": "open_poi_available",
-}
-# Coverage values that mean a provider is connected and returned something,
-# but only partially -- present, but not yet trustworthy as a final result.
-_CHECKLIST_PARTIAL_TIER_STATUSES = {"partial", "fallback_used"}
-
 _IMPLEMENTATION_GAPS_WHY_NEEDS_REVIEW = [
     "Route ordering between scheduled attractions is not validated.",
     "Opening hours are not validated against the schedule.",
@@ -284,13 +270,19 @@ class ExperiencePlannerService(PlanningStageService):
     holiday/closure context, booking links), each labeled `checked`,
     `needs_review`, `missing_data`, or `not_implemented` from
     `provider_coverage`/`provider_status`/the candidate lists already
-    computed above. "Weather impact checked" is `needs_review` (never
-    `checked`) whenever `weather_context` has usable provider-backed daily
-    data, since weather-aware itinerary adjustment is not implemented yet;
-    it stays `missing_data` when weather is unavailable/failed/not
-    connected. No provider call, no AI/LLM, no invented fact, and it never
-    marks the plan ready by itself -- `ValidationReport.readiness_status`
-    remains the single source of truth for overall readiness.
+    computed above. The three candidate-availability items (attractions/
+    restaurants/accommodation POIs) are plain data-availability checks, not
+    travel-readiness checks: `checked` whenever provider-backed candidates
+    exist at all, regardless of coverage tier, and `missing_data` only when
+    none exist. Every other item is a travel-readiness check and never
+    becomes `checked` in this deployment. "Weather impact checked" is
+    `needs_review` (never `checked`) whenever `weather_context` has usable
+    provider-backed daily data, since weather-aware itinerary adjustment is
+    not implemented yet; it stays `missing_data` when weather is
+    unavailable/failed/not connected. No provider call, no AI/LLM, no
+    invented fact, and it never marks the plan ready by itself --
+    `ValidationReport.readiness_status` remains the single source of truth
+    for overall readiness.
     """
 
     def run(self, planning_state: PlanningState) -> PlanningState:
@@ -1001,25 +993,17 @@ def _build_implementation_gaps(planning_state: PlanningState) -> ImplementationG
     )
 
 
-def _candidate_availability_status(
-    coverage_value: str | None, candidates_exist: bool, coverage_field: str
-) -> ChecklistItemStatus:
+def _candidate_availability_status(candidates_exist: bool) -> ChecklistItemStatus:
     """Status for a "candidates available" checklist item.
 
-    `checked` only if candidates exist and the field's coverage is at its
-    top tier (e.g. places/restaurants="success",
-    accommodations="open_poi_available"). `needs_review` if candidates exist
-    but coverage is only partially connected ("partial"/"fallback_used") --
-    provider-backed but not yet trustworthy as final. `missing_data`
-    whenever no candidates exist at all, since then nothing was actually
-    returned to check.
+    This is a data-availability check, not a travel-readiness check:
+    `checked` whenever provider-backed candidates exist at all, regardless
+    of coverage tier (full success, partial, or fallback -- all mean a real
+    provider actually returned usable candidates). `missing_data` only when
+    no candidates exist at all, since then nothing was actually returned to
+    check.
     """
-    if not candidates_exist:
-        return ChecklistItemStatus.MISSING_DATA
-    top_tier = _CHECKLIST_TOP_TIER_STATUS[coverage_field]
-    if coverage_value == top_tier:
-        return ChecklistItemStatus.CHECKED
-    return ChecklistItemStatus.NEEDS_REVIEW
+    return ChecklistItemStatus.CHECKED if candidates_exist else ChecklistItemStatus.MISSING_DATA
 
 
 def _not_yet_checked_status(connected: bool) -> ChecklistItemStatus:
@@ -1057,79 +1041,56 @@ def _build_readiness_checklist(
 
     items: list[ReadinessChecklistItem] = []
 
-    places_status = _candidate_availability_status(coverage.places, bool(candidate_pois), "places")
+    places_status = _candidate_availability_status(bool(candidate_pois))
     items.append(
         ReadinessChecklistItem(
             label="Provider-backed attractions available",
             status=places_status,
-            explanation={
-                ChecklistItemStatus.CHECKED: (
-                    f"{len(candidate_pois)} attraction candidate(s) came from a real "
-                    f"places provider (coverage: places={coverage.places})."
-                ),
-                ChecklistItemStatus.NEEDS_REVIEW: (
-                    f"{len(candidate_pois)} attraction candidate(s) exist, but places "
-                    f"coverage is only '{coverage.places}', so this is provider-backed "
-                    "but not yet trustworthy as a final result."
-                ),
-                ChecklistItemStatus.MISSING_DATA: (
+            explanation=(
+                f"{len(candidate_pois)} attraction candidate(s) came from a real "
+                f"places provider (coverage: places={coverage.places})."
+                if places_status == ChecklistItemStatus.CHECKED
+                else (
                     f"No provider-backed attraction candidates are available yet "
                     f"(coverage: places={coverage.places})."
-                ),
-            }[places_status],
+                )
+            ),
         )
     )
 
-    restaurants_status = _candidate_availability_status(
-        coverage.restaurants, bool(candidate_restaurants), "restaurants"
-    )
+    restaurants_status = _candidate_availability_status(bool(candidate_restaurants))
     items.append(
         ReadinessChecklistItem(
             label="Restaurant candidates available",
             status=restaurants_status,
-            explanation={
-                ChecklistItemStatus.CHECKED: (
-                    f"{len(candidate_restaurants)} restaurant candidate(s) came from a "
-                    f"real places provider (coverage: restaurants={coverage.restaurants})."
-                ),
-                ChecklistItemStatus.NEEDS_REVIEW: (
-                    f"{len(candidate_restaurants)} restaurant candidate(s) exist, but "
-                    f"restaurants coverage is only '{coverage.restaurants}', so this is "
-                    "provider-backed but not yet trustworthy as a final result."
-                ),
-                ChecklistItemStatus.MISSING_DATA: (
+            explanation=(
+                f"{len(candidate_restaurants)} restaurant candidate(s) came from a "
+                f"real places provider (coverage: restaurants={coverage.restaurants})."
+                if restaurants_status == ChecklistItemStatus.CHECKED
+                else (
                     f"No provider-backed restaurant candidates are available yet "
                     f"(coverage: restaurants={coverage.restaurants})."
-                ),
-            }[restaurants_status],
+                )
+            ),
         )
     )
 
-    accommodations_status = _candidate_availability_status(
-        coverage.accommodations, bool(candidate_accommodation_pois), "accommodations"
-    )
+    accommodations_status = _candidate_availability_status(bool(candidate_accommodation_pois))
     items.append(
         ReadinessChecklistItem(
             label="Accommodation POI candidates available",
             status=accommodations_status,
-            explanation={
-                ChecklistItemStatus.CHECKED: (
-                    f"{len(candidate_accommodation_pois)} accommodation POI candidate(s) "
-                    "came from an open-data places provider (coverage: "
-                    f"accommodations={coverage.accommodations}); these are open-data "
-                    "location candidates only, not bookable inventory."
-                ),
-                ChecklistItemStatus.NEEDS_REVIEW: (
-                    f"{len(candidate_accommodation_pois)} accommodation POI candidate(s) "
-                    f"exist, but accommodations coverage is only "
-                    f"'{coverage.accommodations}', so this is provider-backed but not yet "
-                    "trustworthy as a final result."
-                ),
-                ChecklistItemStatus.MISSING_DATA: (
+            explanation=(
+                f"{len(candidate_accommodation_pois)} accommodation POI candidate(s) "
+                "came from an open-data places provider (coverage: "
+                f"accommodations={coverage.accommodations}); these are open-data "
+                "location candidates only, not bookable inventory."
+                if accommodations_status == ChecklistItemStatus.CHECKED
+                else (
                     "No provider-backed accommodation POI candidates are available yet "
                     f"(coverage: accommodations={coverage.accommodations})."
-                ),
-            }[accommodations_status],
+                )
+            ),
         )
     )
 
