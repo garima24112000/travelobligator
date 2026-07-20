@@ -5,11 +5,14 @@ from typing import Any
 from app.models.planning_state import (
     DailyWeather,
     DestinationContext,
+    Holiday,
+    HolidayContext,
     PlanningStage,
     PlanningState,
     WeatherContext,
 )
 from app.providers.gateway import ProviderGateway, provider_gateway
+from app.providers.holidays.nager_date_adapter import infer_country_code
 from app.services.base import PlanningStageService
 from app.services.experience_planner_service import _matches_must_visit
 from app.services.provider_coverage_service import ProviderCoverageService, provider_coverage_service
@@ -20,16 +23,17 @@ def _normalize_name(name: Any) -> str:
 
 
 class DestinationContextService(PlanningStageService):
-    """Owns `destination_context`, `weather_context`, `provider_status`,
-    `provider_coverage`, `unavailable_data`, and `data_sources_used`
-    (docs/14_backend_architecture.md section 10).
+    """Owns `destination_context`, `weather_context`, `holiday_context`,
+    `provider_status`, `provider_coverage`, `unavailable_data`, and
+    `data_sources_used` (docs/14_backend_architecture.md section 10).
 
     Consumes `trip_request` and `traveler_profile`. Reaches provider-backed
     data only through ProviderGateway, calling only the OSM PlacesProvider
     methods it actually implements: `search_attractions`,
     `search_restaurants`, `search_accommodation_pois`, `resolve_coordinates`,
-    and (as a targeted fallback, see below) `search_must_visit_place`; and
-    the WeatherProvider's `get_weather_forecast`.
+    and (as a targeted fallback, see below) `search_must_visit_place`; the
+    WeatherProvider's `get_weather_forecast`; and the HolidayProvider's
+    `get_public_holidays`.
 
     `weather_context` is built from a real WeatherProvider call
     (Open-Meteo) using destination coordinates resolved via
@@ -41,6 +45,18 @@ class DestinationContextService(PlanningStageService):
     weather description/condition, humidity, UV, alert, or severe-weather
     value is ever invented, and weather data is not yet used to adjust the
     itinerary.
+
+    `holiday_context` is built from a real HolidayProvider call
+    (Nager.Date) covering the trip's date range. The country code is
+    conservatively inferred from the destination (`infer_country_code`, no
+    LLM, no fuzzy guess) rather than a second geocoding call. If the
+    country can't be inferred, or the provider has no usable data for the
+    relevant year(s), this is reported honestly rather than guessed. If the
+    provider has real data but none of it falls inside the trip's date
+    range, `holidays` stays empty while `data_status` still reflects the
+    successful response. No closure, crowd, opening-hour, event, festival,
+    strike, or risk assessment is ever invented, and holiday data is not
+    yet used to adjust the itinerary.
 
     `candidate_pois`, `candidate_restaurants`, and
     `candidate_accommodation_pois` are filled with real OSM POIs when the
@@ -94,6 +110,9 @@ class DestinationContextService(PlanningStageService):
 
         weather_context = self._build_weather_context(planning_state, destination_name)
         planning_state.weather_context = weather_context
+
+        holiday_context = self._build_holiday_context(planning_state, destination_name)
+        planning_state.holiday_context = holiday_context
 
         candidate_pois = (
             [poi.model_dump(mode="json") for poi in attractions_response.data]
@@ -223,6 +242,87 @@ class DestinationContextService(PlanningStageService):
             source=weather_response.provider_name if daily_weather else None,
             data_status=weather_response.data_status,
             confidence=weather_response.confidence,
+            assumptions=assumptions,
+            warnings=warnings,
+        )
+
+    def _build_holiday_context(
+        self, planning_state: PlanningState, destination_name: str
+    ) -> HolidayContext:
+        """Plan-level provider-backed public holiday context for the trip's
+        date range (docs/12_provider_architecture.md section 16).
+
+        Asks the HolidayProvider (Nager.Date) for public holidays covering
+        `trip_request.start_date`..`trip_request.end_date`. The adapter
+        itself conservatively infers a country code from `destination_name`
+        (`infer_country_code` -- no LLM, no fuzzy guess); this method calls
+        the same pure function directly (a cheap local string mapping, not
+        a provider call) only to populate `HolidayContext.country_code` for
+        display. If the country can't be inferred, or the provider has no
+        usable data at all, `holidays` stays empty and this is reported
+        honestly via `data_status`/`warnings`. If the provider has real
+        data for the relevant year(s) but none of it falls inside the trip
+        dates, `holidays` stays empty while `data_status` still reflects
+        the successful response, noted honestly via `assumptions` instead.
+        No closure, crowd, opening-hour, event, festival, strike, or risk
+        assessment is ever invented.
+        """
+        trip_request = planning_state.trip_request
+        holiday_response = self.gateway.holiday.get_public_holidays(
+            destination_name,
+            {
+                "start_date": trip_request.start_date.isoformat(),
+                "end_date": trip_request.end_date.isoformat(),
+            },
+        )
+        self.coverage_service.record_provider_result(planning_state, holiday_response, "holidays")
+
+        provider_succeeded = holiday_response.data is not None
+        holidays = (
+            [
+                Holiday(
+                    date=holiday.date,
+                    local_name=holiday.local_name,
+                    name=holiday.name,
+                    country_code=holiday.country_code,
+                    is_global=holiday.is_global,
+                    counties=holiday.counties,
+                    types=holiday.types,
+                    source=holiday.source,
+                    data_status=holiday.data_status,
+                )
+                for holiday in holiday_response.data
+            ]
+            if provider_succeeded
+            else []
+        )
+
+        assumptions = [
+            "Public holidays are provider-backed calendar data only; they are not used "
+            "to infer closures, crowds, opening hours, events, festivals, strikes, or "
+            "risk -- that reasoning is not implemented yet."
+        ]
+        warnings: list[str] = []
+        if provider_succeeded and not holidays:
+            assumptions.append(
+                "No public holidays from provider data fall within this trip date range."
+            )
+        if not provider_succeeded:
+            warnings.append(
+                holiday_response.message
+                or "No usable public holiday data is available for this destination "
+                "and date range."
+            )
+
+        return HolidayContext(
+            destination=destination_name,
+            start_date=trip_request.start_date,
+            end_date=trip_request.end_date,
+            country_code=infer_country_code(destination_name),
+            holidays=holidays,
+            source=holiday_response.provider_name if provider_succeeded else None,
+            data_status=holiday_response.data_status,
+            confidence=holiday_response.confidence,
             assumptions=assumptions,
             warnings=warnings,
         )

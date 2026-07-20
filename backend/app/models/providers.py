@@ -77,3 +77,22 @@ class NormalizedDailyWeather(BaseModel):
     weather_code: int | None = None
     source: str
     data_status: DataStatus
+
+
+class NormalizedHoliday(BaseModel):
+    """Real public holiday data for one day, returned by a HolidayProvider
+    adapter (docs/12_provider_architecture.md section 16). Only fields the
+    underlying source actually returned are populated; no closure, crowd,
+    opening-hour, event, festival, strike, or risk assessment is ever
+    fabricated -- the source doesn't supply any of that.
+    """
+
+    date: date
+    local_name: str
+    name: str
+    country_code: str
+    is_global: bool
+    counties: list[str] = Field(default_factory=list)
+    types: list[str] = Field(default_factory=list)
+    source: str
+    data_status: DataStatus

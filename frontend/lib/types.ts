@@ -86,6 +86,7 @@ export type DestinationContextData = {
     confidence: number;
   };
   weather_context: WeatherContext | null;
+  holiday_context: HolidayContext | null;
 };
 
 export type DailyWeather = {
@@ -104,6 +105,31 @@ export type WeatherContext = {
   start_date: string;
   end_date: string;
   daily_weather: DailyWeather[];
+  source: string | null;
+  data_status: string;
+  confidence: number;
+  assumptions: string[];
+  warnings: string[];
+};
+
+export type Holiday = {
+  date: string;
+  local_name: string;
+  name: string;
+  country_code: string;
+  is_global: boolean;
+  counties: string[];
+  types: string[];
+  source: string;
+  data_status: string;
+};
+
+export type HolidayContext = {
+  destination: string;
+  start_date: string;
+  end_date: string;
+  country_code: string | null;
+  holidays: Holiday[];
   source: string | null;
   data_status: string;
   confidence: number;

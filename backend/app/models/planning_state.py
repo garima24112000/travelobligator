@@ -247,6 +247,55 @@ class WeatherContext(BaseModel):
     warnings: list[str] = Field(default_factory=list)
 
 
+class Holiday(BaseModel):
+    """One provider-backed public holiday falling within the trip's date
+    range (docs/12_provider_architecture.md section 16). Only fields the
+    underlying source (Nager.Date) actually returned are populated -- no
+    closure, crowd, opening-hour, event, festival, strike, or risk
+    assessment is ever fabricated.
+    """
+
+    date: date
+    local_name: str
+    name: str
+    country_code: str
+    is_global: bool
+    counties: list[str] = Field(default_factory=list)
+    types: list[str] = Field(default_factory=list)
+    source: str
+    data_status: DataStatus
+
+
+class HolidayContext(BaseModel):
+    """Plan-level provider-backed public holiday context for the trip's
+    date range (docs/12_provider_architecture.md section 16,
+    docs/14_backend_architecture.md section 10). Built from a real
+    HolidayProvider call (Nager.Date) using a country code conservatively
+    inferred from the destination -- no LLM, no fuzzy guess. `holidays`
+    only ever contains real provider-backed public holidays that fall
+    inside the trip's date range; it is never used to infer closures,
+    crowds, opening hours, events, festivals, strikes, or risk, and no such
+    value is ever invented. If the provider has real data for the relevant
+    year(s) but none of it falls inside the trip's date range, `holidays`
+    stays empty while `data_status` still reflects a successful/live
+    response -- that is reported honestly via `assumptions`, not treated as
+    unavailable. If the country can't be inferred, or the provider truly
+    has no usable data, `holidays` stays empty and `data_status`/`warnings`
+    honestly reflect that instead.
+    """
+
+    destination: str
+    start_date: date
+    end_date: date
+    country_code: str | None = None
+    holidays: list[Holiday] = Field(default_factory=list)
+    source: str | None = None
+    data_status: DataStatus
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    assumptions: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+
 class TripStrategy(BaseModel):
     strategy_id: str = Field(default_factory=lambda: _new_id("trip_strategy"))
 
@@ -699,6 +748,7 @@ class PlanningState(BaseModel):
     traveler_profile: TravelerProfile | None = None
     destination_context: DestinationContext | None = None
     weather_context: WeatherContext | None = None
+    holiday_context: HolidayContext | None = None
     trip_strategy: TripStrategy | None = None
     stay_transport: StayTransportDecision | None = None
     experience_plan: ExperiencePlan | None = None

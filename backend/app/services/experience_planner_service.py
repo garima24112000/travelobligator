@@ -157,6 +157,8 @@ _IMPLEMENTATION_GAPS_WHY_NEEDS_REVIEW = [
     "Costs and budget fit are not validated.",
     "Suggested accommodation POIs are open-data location candidates only, "
     "not bookable inventory.",
+    "Public holiday data, when available, is not yet used to check venue "
+    "closures or crowd risk against the schedule.",
 ]
 
 
@@ -252,16 +254,18 @@ class ExperiencePlannerService(PlanningStageService):
     purely from `planning_state.provider_coverage` and
     `planning_state.provider_status`: which data is connected now (e.g.
     attractions/restaurants/accommodation POIs from the open-data places
-    provider, and weather when Open-Meteo returns usable daily forecast
-    data), which data is missing (routes/transit, a booking-capable
-    accommodation provider, hotel prices, vacation rentals/Airbnb, weather
-    when unavailable, holidays, currency), what provider would be needed
-    next for each gap, and why the plan stays Needs Review (route ordering,
-    opening hours, walking time, and costs/budget fit are unvalidated, and
-    accommodation POIs are open-data location candidates only, not bookable
-    inventory). No provider call, no AI/LLM, no invented fact, and it never
-    affects validation readiness by itself -- it explains existing gaps
-    rather than resolving them.
+    provider, weather when Open-Meteo returns usable daily forecast data,
+    and holidays when Nager.Date returns usable public holiday data), which
+    data is missing (routes/transit, a booking-capable accommodation
+    provider, hotel prices, vacation rentals/Airbnb, weather when
+    unavailable, holidays when unavailable, currency), what provider would
+    be needed next for each gap, and why the plan stays Needs Review (route
+    ordering, opening hours, walking time, and costs/budget fit are
+    unvalidated, accommodation POIs are open-data location candidates only,
+    not bookable inventory, and public holiday data, when available, is not
+    yet used to check venue closures or crowd risk). No provider call, no
+    AI/LLM, no invented fact, and it never affects validation readiness by
+    itself -- it explains existing gaps rather than resolving them.
 
     Finally, the plan gets a plan-level `readiness_checklist`: a fixed list
     of checklist items (attractions/restaurants/accommodation POI
@@ -279,6 +283,12 @@ class ExperiencePlannerService(PlanningStageService):
     `needs_review` (never `checked`) whenever `weather_context` has usable
     provider-backed daily data, since weather-aware itinerary adjustment is
     not implemented yet; it stays `missing_data` when weather is
+    unavailable/failed/not connected. "Holiday/closure context checked"
+    follows the same pattern: `needs_review` (never `checked`) whenever
+    `holiday_context` has usable provider-backed holiday data (even an
+    empty in-range list, as long as the provider call itself succeeded),
+    since checking it against venue closures/crowd risk is not implemented
+    yet; it stays `missing_data` when holidays are
     unavailable/failed/not connected. No provider call, no AI/LLM, no
     invented fact, and it never marks the plan ready by itself --
     `ValidationReport.readiness_status` remains the single source of truth
@@ -996,7 +1006,12 @@ def _build_implementation_gaps(planning_state: PlanningState) -> ImplementationG
             "A weather provider is needed for weather-aware planning."
         )
 
-    if coverage.holidays not in _CONNECTED_COVERAGE_STATUSES:
+    if coverage.holidays in _CONNECTED_COVERAGE_STATUSES:
+        connected_data.append(
+            "Holidays are connected: provider-backed public holiday data came from a "
+            f"real holidays provider (coverage: holidays={coverage.holidays})."
+        )
+    else:
         missing_data.append(
             f"{_provider_missing_explanation('holidays provider', 'holiday data', coverage.holidays)} "
             f"(coverage: holidays={coverage.holidays})."
@@ -1235,20 +1250,32 @@ def _build_readiness_checklist(
         )
     )
 
+    # Unlike a plain "not yet checked" item, a connected holidays provider
+    # means real public holiday data does exist -- so this is NEEDS_REVIEW
+    # (data available, but interpreting it against venue closures/crowd risk
+    # is not implemented yet), not NOT_IMPLEMENTED. It still never becomes
+    # CHECKED: having holiday data is not the same as having used it to
+    # check closures or crowd risk.
     holidays_connected = coverage.holidays in _CONNECTED_COVERAGE_STATUSES
-    holidays_status = _not_yet_checked_status(holidays_connected)
+    if holidays_connected:
+        holidays_status = ChecklistItemStatus.NEEDS_REVIEW
+        holidays_explanation = (
+            "Provider-backed public holiday data is available (coverage: "
+            f"holidays={coverage.holidays}), but checking it against venue closures "
+            "or crowd risk is not implemented yet, so holiday/closure context is not "
+            "checked."
+        )
+    else:
+        holidays_status = ChecklistItemStatus.MISSING_DATA
+        holidays_explanation = (
+            f"{_provider_missing_explanation('holidays provider', 'holiday data', coverage.holidays)}, "
+            "so holiday/closure context cannot be checked."
+        )
     items.append(
         ReadinessChecklistItem(
             label="Holiday/closure context checked",
             status=holidays_status,
-            explanation=(
-                f"{_provider_missing_explanation('holidays provider', 'holiday data', coverage.holidays)}, "
-                "so holiday/closure context cannot be checked."
-                if holidays_status == ChecklistItemStatus.MISSING_DATA
-                else (
-                    "Holiday/closure context is not implemented yet, so it is not checked."
-                )
-            ),
+            explanation=holidays_explanation,
         )
     )
 

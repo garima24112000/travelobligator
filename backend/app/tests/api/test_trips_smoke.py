@@ -7,8 +7,14 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.models.common import DataStatus, GeoPoint, ProviderStatus
-from app.models.providers import NormalizedDailyWeather, NormalizedPlace, ProviderResponse
+from app.models.providers import (
+    NormalizedDailyWeather,
+    NormalizedHoliday,
+    NormalizedPlace,
+    ProviderResponse,
+)
 from app.providers.base import (
+    HolidayProvider,
     PlacesProvider,
     RoutesProvider,
     WeatherProvider,
@@ -371,12 +377,20 @@ def test_provider_status_keeps_separate_entries_per_field_for_same_provider(
     # No fake provider status was created for any provider/field pair that
     # was never called. The only other entries come from the routes lookup,
     # the weather lookup (Open-Meteo; unavailable here since this test's
-    # places double never resolves coordinates), and the separate
-    # (still-unconnected) booking-capable accommodation provider, which
-    # StayTransportService also records under "accommodations".
+    # places double never resolves coordinates), the holidays lookup
+    # (Nager.Date; unavailable here since "Testland" isn't a real country),
+    # and the separate (still-unconnected) booking-capable accommodation
+    # provider, which StayTransportService also records under
+    # "accommodations".
     assert all(
         entry["provider_name"]
-        in {"openstreetmap_places", "routes_provider", "accommodation_provider", "open_meteo"}
+        in {
+            "openstreetmap_places",
+            "routes_provider",
+            "accommodation_provider",
+            "open_meteo",
+            "nager_date",
+        }
         for entry in provider_status.values()
     )
     assert provider_status["accommodation_provider:accommodations"]["status"] == "not_connected"
@@ -3411,11 +3425,11 @@ def test_readiness_checklist_marks_unimplemented_checks_honestly(
 def test_readiness_checklist_labels_missing_providers_honestly(
     client: TestClient, generated_trip_id: str
 ) -> None:
-    # A routes provider, a booking-capable accommodation provider, and a
-    # holidays provider are never connected at all in this deployment, so
-    # the checklist items that depend on them must say "missing_data" and
-    # accurately say "not connected" (the provider itself is absent) --
-    # never blaming unimplemented app logic.
+    # A routes provider and a booking-capable accommodation provider are
+    # never connected at all in this deployment, so the checklist items
+    # that depend on them must say "missing_data" and accurately say "not
+    # connected" (the provider itself is absent) -- never blaming
+    # unimplemented app logic.
     response = client.get(f"/trips/{generated_trip_id}/experience-plan")
     assert response.status_code == 200
     readiness_checklist = response.json()["data"]["experience_plan"]["readiness_checklist"]
@@ -3425,7 +3439,6 @@ def test_readiness_checklist_labels_missing_providers_honestly(
         "Route times checked",
         "Walking feasibility checked",
         "Accommodation price/availability checked",
-        "Holiday/closure context checked",
         "Booking links available",
     ):
         item = items_by_label[label]
@@ -3441,6 +3454,14 @@ def test_readiness_checklist_labels_missing_providers_honestly(
     assert weather_item["status"] == "missing_data"
     assert "not connected" not in weather_item["explanation"].lower()
     assert "returned no usable weather data" in weather_item["explanation"].lower()
+
+    # "Testville, Testland" isn't a real country, so the real Nager.Date
+    # holidays adapter is reached but can't infer a country code -- it
+    # honestly reports "unavailable", not "not_connected".
+    holidays_item = items_by_label["Holiday/closure context checked"]
+    assert holidays_item["status"] == "missing_data"
+    assert "not connected" not in holidays_item["explanation"].lower()
+    assert "returned no usable holiday data" in holidays_item["explanation"].lower()
 
 
 def test_readiness_checklist_creates_no_fake_values(
@@ -3686,6 +3707,272 @@ def test_implementation_gaps_lists_weather_connected_when_usable(
 
     assert "weather" in connected_text
     assert "weather" not in missing_text
+
+
+class _ConnectedTestHolidayProvider(HolidayProvider):
+    """Deterministic test double standing in for `NagerDateHolidaysAdapter`,
+    always returning one usable in-range public holiday regardless of the
+    destination it's given. Only used by tests that need to exercise the
+    "holidays is connected" path; other tests keep the real
+    `NagerDateHolidaysAdapter`, which stays honestly unavailable in tests
+    because "Testville, Testland" isn't a real country."""
+
+    provider_name = "nager_date"
+
+    def get_public_holidays(
+        self, destination: str, dates: dict[str, Any]
+    ) -> ProviderResponse[Any]:
+        holidays = [
+            NormalizedHoliday(
+                date=date(2026, 8, 11),
+                local_name="Feriado de Teste",
+                name="Test Holiday",
+                country_code="PT",
+                is_global=True,
+                counties=[],
+                types=["Public"],
+                source=self.provider_name,
+                data_status=DataStatus.LIVE,
+            )
+        ]
+        return ProviderResponse[list[NormalizedHoliday]](
+            provider_name=self.provider_name,
+            provider_type=self.provider_type,
+            status=ProviderStatus.SUCCESS,
+            data_status=DataStatus.LIVE,
+            data=holidays,
+            confidence=0.6,
+            message="Test fixture holiday data; not a real provider call.",
+        )
+
+
+def test_holiday_context_exists_after_generate(
+    client: TestClient, generated_trip_id: str
+) -> None:
+    response = client.get(f"/trips/{generated_trip_id}/destination-context")
+    assert response.status_code == 200
+    data = response.json()["data"]
+
+    assert "holiday_context" in data
+    holiday_context = data["holiday_context"]
+    assert holiday_context is not None
+
+    assert set(holiday_context.keys()) == {
+        "destination",
+        "start_date",
+        "end_date",
+        "country_code",
+        "holidays",
+        "source",
+        "data_status",
+        "confidence",
+        "assumptions",
+        "warnings",
+    }
+    assert holiday_context["destination"]
+    assert holiday_context["start_date"] == "2026-08-10"
+    assert holiday_context["end_date"] == "2026-08-12"
+    assert isinstance(holiday_context["holidays"], list)
+
+    # "Testville, Testland" isn't a real country, so the real Nager.Date
+    # adapter honestly can't infer a country code -- unavailable, never
+    # invented.
+    assert holiday_context["country_code"] is None
+    assert holiday_context["holidays"] == []
+    assert holiday_context["data_status"] == "unavailable"
+
+    # This section is purely provider-backed and must never flip readiness
+    # by itself; the deterministic test provider still leaves the plan
+    # needs_review (route/timing feasibility is not implemented yet).
+    validation_response = client.get(f"/trips/{generated_trip_id}/validation-report")
+    assert validation_response.status_code == 200
+    assert (
+        validation_response.json()["data"]["validation_report"]["readiness_status"]
+        == "needs_review"
+    )
+
+
+def test_holiday_context_has_usable_holiday_data_when_connected(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(provider_gateway, "holiday", _ConnectedTestHolidayProvider())
+
+    # A real, country-mappable destination, unlike the default
+    # "Testville, Testland" fixture, so `country_code` (independently
+    # inferred by the service from the destination text) genuinely lines up
+    # with the "PT" holiday data this test double fabricates.
+    create_response = client.post(
+        "/trips",
+        json={
+            "destination_scope": "single_city",
+            "primary_destination": "Lisbon, Portugal",
+            "origin_city": "Home City",
+            "start_date": "2026-08-10",
+            "end_date": "2026-08-12",
+            "travelers_count": 2,
+            "travel_group_type": "couple",
+        },
+    )
+    assert create_response.status_code == 201
+    trip_id = create_response.json()["data"]["trip_id"]
+
+    generate_response = client.post(f"/trips/{trip_id}/generate")
+    assert generate_response.status_code == 200
+
+    response = client.get(f"/trips/{trip_id}/destination-context")
+    assert response.status_code == 200
+    holiday_context = response.json()["data"]["holiday_context"]
+
+    assert holiday_context["data_status"] == "live"
+    assert holiday_context["source"] == "nager_date"
+    assert holiday_context["country_code"] == "PT"
+    assert len(holiday_context["holidays"]) == 1
+
+    holiday = holiday_context["holidays"][0]
+    assert set(holiday.keys()) == {
+        "date",
+        "local_name",
+        "name",
+        "country_code",
+        "is_global",
+        "counties",
+        "types",
+        "source",
+        "data_status",
+    }
+    assert holiday["date"] == "2026-08-11"
+    assert holiday["source"] == "nager_date"
+
+
+def test_provider_coverage_holidays_success_only_with_usable_data(
+    client: TestClient, created_trip_id: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Default deterministic test environment: holidays stays unavailable
+    # because "Testville, Testland" isn't a real country, so coverage must
+    # never claim "success" for holiday data that doesn't exist.
+    generate_response = client.post(f"/trips/{created_trip_id}/generate")
+    assert generate_response.status_code == 200
+
+    coverage_response = client.get(f"/trips/{created_trip_id}/provider-coverage")
+    assert coverage_response.status_code == 200
+    assert coverage_response.json()["data"]["provider_coverage"]["holidays"] != "success"
+
+    # With a connected holidays provider returning usable data, coverage
+    # must become "success".
+    monkeypatch.setattr(provider_gateway, "holiday", _ConnectedTestHolidayProvider())
+
+    create_response = client.post(
+        "/trips",
+        json={
+            "destination_scope": "single_city",
+            "primary_destination": "Testville, Testland",
+            "origin_city": "Home City",
+            "start_date": "2026-08-10",
+            "end_date": "2026-08-12",
+            "travelers_count": 2,
+            "travel_group_type": "couple",
+        },
+    )
+    assert create_response.status_code == 201
+    connected_trip_id = create_response.json()["data"]["trip_id"]
+
+    generate_response = client.post(f"/trips/{connected_trip_id}/generate")
+    assert generate_response.status_code == 200
+
+    coverage_response = client.get(f"/trips/{connected_trip_id}/provider-coverage")
+    assert coverage_response.status_code == 200
+    assert coverage_response.json()["data"]["provider_coverage"]["holidays"] == "success"
+
+
+def test_readiness_checklist_marks_holidays_needs_review_when_connected(
+    client: TestClient, created_trip_id: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(provider_gateway, "holiday", _ConnectedTestHolidayProvider())
+
+    generate_response = client.post(f"/trips/{created_trip_id}/generate")
+    assert generate_response.status_code == 200
+
+    response = client.get(f"/trips/{created_trip_id}/experience-plan")
+    assert response.status_code == 200
+    readiness_checklist = response.json()["data"]["experience_plan"]["readiness_checklist"]
+    items_by_label = _checklist_items_by_label(readiness_checklist)
+
+    holiday_item = items_by_label["Holiday/closure context checked"]
+    # Holiday data exists, but checking it against venue closures/crowd risk
+    # is not implemented yet -- needs_review, never checked.
+    assert holiday_item["status"] == "needs_review"
+    assert "not implemented" in holiday_item["explanation"].lower()
+
+
+def test_implementation_gaps_lists_holidays_connected_when_usable(
+    client: TestClient, created_trip_id: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(provider_gateway, "holiday", _ConnectedTestHolidayProvider())
+
+    generate_response = client.post(f"/trips/{created_trip_id}/generate")
+    assert generate_response.status_code == 200
+
+    response = client.get(f"/trips/{created_trip_id}/experience-plan")
+    assert response.status_code == 200
+    implementation_gaps = response.json()["data"]["experience_plan"]["implementation_gaps"]
+
+    connected_text = " ".join(implementation_gaps["connected_data"]).lower()
+    missing_text = " ".join(implementation_gaps["missing_data"]).lower()
+
+    assert "holiday" in connected_text
+    assert "holiday" not in missing_text
+
+
+def test_holiday_context_success_with_no_holidays_in_range(
+    client: TestClient, created_trip_id: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """holiday_context stays live/success with an empty list and an honest
+    assumption when the provider has real data for the year but none of it
+    falls inside the trip's date range."""
+
+    class _NoInRangeHolidayProvider(HolidayProvider):
+        provider_name = "nager_date"
+
+        def get_public_holidays(
+            self, destination: str, dates: dict[str, Any]
+        ) -> ProviderResponse[Any]:
+            return ProviderResponse[list[NormalizedHoliday]](
+                provider_name=self.provider_name,
+                provider_type=self.provider_type,
+                status=ProviderStatus.SUCCESS,
+                data_status=DataStatus.LIVE,
+                data=[],
+                confidence=0.6,
+                message="Test fixture: provider has data, none in range.",
+            )
+
+    monkeypatch.setattr(provider_gateway, "holiday", _NoInRangeHolidayProvider())
+
+    generate_response = client.post(f"/trips/{created_trip_id}/generate")
+    assert generate_response.status_code == 200
+
+    response = client.get(f"/trips/{created_trip_id}/destination-context")
+    assert response.status_code == 200
+    holiday_context = response.json()["data"]["holiday_context"]
+
+    assert holiday_context["data_status"] == "live"
+    assert holiday_context["holidays"] == []
+    assert any(
+        "no public holidays from provider data fall within this trip date range" in a.lower()
+        for a in holiday_context["assumptions"]
+    )
+
+    coverage_response = client.get(f"/trips/{created_trip_id}/provider-coverage")
+    assert coverage_response.status_code == 200
+    assert coverage_response.json()["data"]["provider_coverage"]["holidays"] == "success"
+
+    readiness_response = client.get(f"/trips/{created_trip_id}/experience-plan")
+    assert readiness_response.status_code == 200
+    readiness_checklist = readiness_response.json()["data"]["experience_plan"][
+        "readiness_checklist"
+    ]
+    holiday_item = _checklist_items_by_label(readiness_checklist)["Holiday/closure context checked"]
+    assert holiday_item["status"] == "needs_review"
 
 
 class _CustomTestWeatherProvider(WeatherProvider):
@@ -4046,13 +4333,14 @@ def test_readiness_checklist_routes_explanation_distinguishes_failed_from_not_co
     assert "not connected" not in walking_explanation
     assert "the routes provider request failed or returned no usable route data" in walking_explanation
 
-    # A genuinely not-connected routes provider (the default deployment
-    # state, unaffected by this test's monkeypatch) still says "not
-    # connected" honestly for holidays, which is never touched by this
-    # double.
+    # Holidays is unaffected by this test's routes double: "Testville,
+    # Testland" isn't a real country, so the real Nager.Date adapter is
+    # reached but can't infer a country code -- it honestly reports
+    # "unavailable", not "not_connected".
     holidays_item = items_by_label["Holiday/closure context checked"]
     assert holidays_item["status"] == "missing_data"
-    assert "not connected" in holidays_item["explanation"].lower()
+    assert "not connected" not in holidays_item["explanation"].lower()
+    assert "returned no usable holiday data" in holidays_item["explanation"].lower()
 
 
 def test_implementation_gaps_routes_and_holidays_explanations_distinguish_failure_reasons(
@@ -4069,6 +4357,9 @@ def test_implementation_gaps_routes_and_holidays_explanations_distinguish_failur
     missing_text = " ".join(implementation_gaps["missing_data"]).lower()
 
     assert "the routes/transit provider request failed or returned no usable route/transit data" in missing_text
-    # Holidays is genuinely not connected (no adapter exists), unaffected by
-    # this test's routes double, and must still say so accurately.
-    assert "a holidays provider is not connected" in missing_text
+    # Holidays is unaffected by this test's routes double: "Testville,
+    # Testland" isn't a real country, so the real Nager.Date adapter is
+    # reached but can't infer a country code -- it honestly reports
+    # "unavailable", not "not_connected".
+    assert "a holidays provider is not connected" not in missing_text
+    assert "the holidays provider returned no usable holiday data" in missing_text

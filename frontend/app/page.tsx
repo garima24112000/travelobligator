@@ -16,6 +16,7 @@ import type {
   ChecklistItemStatus,
   DailyPlan,
   DecisionSummary,
+  HolidayContext,
   ImplementationGaps,
   ProviderCoverageData,
   ReadinessChecklist,
@@ -48,6 +49,7 @@ type PlanResult = {
   implementationGaps: ImplementationGaps;
   readinessChecklist: ReadinessChecklist;
   weatherContext: WeatherContext | null;
+  holidayContext: HolidayContext | null;
   validationReport: ValidationReport;
   providerCoverage: ProviderCoverageData;
   destinationAssumptions: string[];
@@ -390,6 +392,75 @@ function WeatherContextSection({ weather }: { weather: WeatherContext | null }) 
   );
 }
 
+function HolidayContextSection({ holiday }: { holiday: HolidayContext | null }) {
+  if (!holiday) {
+    return (
+      <div className="rounded-2xl border border-white/10 bg-white/5 p-5">
+        <h2 className="text-lg font-semibold">Holiday context</h2>
+        <p className="mt-2 text-sm text-slate-400">
+          Holiday data is unavailable for this trip.
+        </p>
+      </div>
+    );
+  }
+
+  const providerHasData = holiday.data_status === "live";
+
+  return (
+    <div className="rounded-2xl border border-white/10 bg-white/5 p-5">
+      <h2 className="text-lg font-semibold">Holiday context</h2>
+      <p className="mt-1 text-sm text-slate-300">
+        Source: <span className="font-semibold">{holiday.source ?? "None"}</span>
+        {" · "}
+        Status: <span className="font-semibold">{holiday.data_status}</span>
+        {" · "}
+        Confidence: <span className="font-semibold">{holiday.confidence}</span>
+        {" · "}
+        Country: <span className="font-semibold">{holiday.country_code ?? "Unknown"}</span>
+      </p>
+
+      {holiday.holidays.length === 0 ? (
+        <p className="mt-2 text-sm text-slate-400">
+          {providerHasData
+            ? `Provider data exists for ${holiday.destination}, but no public holidays fall between ${holiday.start_date} and ${holiday.end_date}.`
+            : `No usable provider-backed public holiday data is available for ${holiday.destination} between ${holiday.start_date} and ${holiday.end_date}.`}
+        </p>
+      ) : (
+        <ul className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
+          {holiday.holidays.map((day, index) => (
+            <li
+              key={`${day.date}-${index}`}
+              className="rounded-lg border border-white/10 bg-slate-900/60 p-3 text-sm"
+            >
+              <p className="font-medium">
+                {day.date} · {day.local_name}
+              </p>
+              {day.name !== day.local_name && (
+                <p className="text-xs text-slate-400">{day.name}</p>
+              )}
+              <p className="mt-1 text-xs text-slate-400">
+                {day.is_global ? "Global" : "Regional"}
+                {day.counties.length > 0 ? ` · ${day.counties.join(", ")}` : ""}
+              </p>
+              {day.types.length > 0 && (
+                <p className="mt-1 text-xs text-slate-400">
+                  Type: {day.types.join(", ")}
+                </p>
+              )}
+              <p className="mt-1 text-[11px] uppercase tracking-wide text-slate-500">
+                {day.country_code} · {day.source} · {day.data_status}
+              </p>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      <SummaryList title="Assumptions" items={holiday.assumptions} />
+      <SummaryList title="Warnings" items={holiday.warnings} />
+    </div>
+  );
+}
+
 function ValidationSection({ report }: { report: ValidationReport }) {
   const hasNothingToShow =
     report.critical_issues.length === 0 &&
@@ -691,6 +762,7 @@ export default function Home() {
         implementationGaps: experiencePlan.experience_plan.implementation_gaps,
         readinessChecklist: experiencePlan.experience_plan.readiness_checklist,
         weatherContext: destinationContext.weather_context,
+        holidayContext: destinationContext.holiday_context,
         validationReport: validationReport.validation_report,
         providerCoverage,
         destinationAssumptions:
@@ -993,6 +1065,8 @@ export default function Home() {
             />
 
             <WeatherContextSection weather={result.weatherContext} />
+
+            <HolidayContextSection holiday={result.holidayContext} />
 
             <div className="rounded-2xl border border-white/10 bg-white/5 p-5">
               <h2 className="text-lg font-semibold">Day-wise experiences</h2>

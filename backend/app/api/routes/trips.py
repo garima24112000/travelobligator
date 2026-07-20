@@ -88,6 +88,7 @@ def get_destination_context(trip_id: str) -> ApiResponse[DestinationContextRespo
         trip_id=trip_id,
         destination_context=planning_state.destination_context,
         weather_context=planning_state.weather_context,
+        holiday_context=planning_state.holiday_context,
         provider_coverage=planning_state.provider_coverage,
         unavailable_data=planning_state.unavailable_data,
         data_sources_used=planning_state.data_sources_used,

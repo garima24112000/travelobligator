@@ -235,7 +235,17 @@ class HolidayProvider(BaseProvider):
     provider_name = "holiday_provider"
     provider_type = ProviderType.HOLIDAY
 
-    def get_public_holidays(self, country: str, dates: dict[str, Any]) -> ProviderResponse[Any]:
+    def get_public_holidays(
+        self, destination: str, dates: dict[str, Any]
+    ) -> ProviderResponse[Any]:
+        """Matches docs/12_provider_architecture.md section 16's
+        `get_public_holidays(country, dates)`, but takes the raw trip
+        `destination` (e.g. "Lisbon, Portugal") rather than a pre-resolved
+        country code -- concrete adapters (e.g. NagerDateHolidaysAdapter)
+        infer a country code from it themselves, conservatively and without
+        an LLM, the same way WeatherProvider.get_weather_forecast takes a
+        raw `destination` rather than pre-resolved coordinates.
+        """
         return self.not_connected(unavailable_fields=["public_holidays"])
 
     def get_city_events(self, destination: str, dates: dict[str, Any]) -> ProviderResponse[Any]:
