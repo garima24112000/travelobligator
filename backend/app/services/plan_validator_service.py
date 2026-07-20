@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.models.common import ReadinessStatus, ValidationSeverity
+from app.models.common import DataStatus, ReadinessStatus, ValidationSeverity
 from app.models.planning_state import (
     DailyPlan,
     PlanningStage,
@@ -61,6 +61,21 @@ class PlanValidatorService(PlanningStageService):
       is missing/unavailable, no warning is added. This never blocks the
       plan or marks it ready by itself -- it only adds a warning, and it
       does not modify `daily_plans`.
+    * If `planning_state.holiday_context` has a successful provider
+      response (`data_status == live`), a `category="holidays"` warning
+      says provider-backed public holiday data is available, that the
+      itinerary has not been checked against venue closures, opening
+      hours, or crowd context yet, and that affected dates should be
+      reviewed manually. If real holidays fall inside the trip's date
+      range, it restates only their existing dates/names from
+      `holiday_context.holidays`; if the provider succeeded but none fall
+      in range, it adds a softer version of the same warning instead. It
+      never claims a venue is closed or a place is crowded, and never
+      invents an event, festival, strike, opening hour, or crowd/closure/
+      safety risk. If holidays are missing/unavailable/failed/not
+      connected, no warning is added. This never blocks the plan or marks
+      it ready by itself -- it only adds a warning, and it does not modify
+      `daily_plans`.
     """
 
     def run(self, planning_state: PlanningState) -> PlanningState:
@@ -269,6 +284,10 @@ class PlanValidatorService(PlanningStageService):
         if weather_warning is not None:
             warnings.append(weather_warning)
 
+        holiday_warning = _build_holiday_warning(planning_state)
+        if holiday_warning is not None:
+            warnings.append(holiday_warning)
+
         readiness_status = (
             ReadinessStatus.BLOCKED if critical_issues else ReadinessStatus.NEEDS_REVIEW
         )
@@ -361,6 +380,60 @@ def _build_weather_warning(planning_state: PlanningState) -> ValidationIssue | N
             "rerouting outdoor/long-walk activities around high precipitation "
             "probability, high temperature, or low temperature) before treating "
             "this plan as weather-checked."
+        ),
+    )
+
+
+def _build_holiday_warning(planning_state: PlanningState) -> ValidationIssue | None:
+    """Deterministic review warning built purely from
+    `planning_state.holiday_context` -- no provider call, no AI/LLM, no
+    invented fact, and `daily_plans` are never modified.
+
+    Only added when `holiday_context` reflects a successful provider
+    response (`data_status == DataStatus.LIVE`); if holidays are missing/
+    unavailable/failed/not connected (or `holiday_context` itself is
+    unset), returns None instead of guessing. If real holidays fall inside
+    the trip's date range, the message restates only their existing
+    dates/names from `holiday_context.holidays`; if the provider succeeded
+    but none fall in range, a softer version of the same warning is
+    returned instead. Never claims a venue is closed or a place is
+    crowded, and never invents an event, festival, strike, opening hour,
+    or crowd/closure/safety risk -- venue closures, opening hours, and
+    crowd context are named only as dimensions that have not been checked
+    yet. Always a `WARNING`, never a critical issue, so it never blocks the
+    plan or marks it ready by itself.
+    """
+    holiday_context = planning_state.holiday_context
+    if holiday_context is None or holiday_context.data_status != DataStatus.LIVE:
+        return None
+
+    if holiday_context.holidays:
+        holiday_list = ", ".join(
+            f"{holiday.date.isoformat()} ({holiday.name})" for holiday in holiday_context.holidays
+        )
+        message = (
+            "Provider-backed public holiday data is available for this trip, but the "
+            "itinerary has not been checked against venue closures, opening hours, or "
+            "crowd context yet -- review these dates manually: "
+            f"{holiday_list}."
+        )
+    else:
+        message = (
+            "Provider-backed public holiday data was checked for this trip's date "
+            "range, but no public holidays fall within it. The itinerary still has "
+            "not been checked against venue closures, opening hours, or crowd "
+            "context for any date, since that interpretation is not implemented yet."
+        )
+
+    return ValidationIssue(
+        severity=ValidationSeverity.WARNING,
+        category="holidays",
+        message=message,
+        affected_section="experience_plan",
+        suggested_fix=(
+            "Implement holiday-aware itinerary checks (e.g. venue closures, opening "
+            "hours, or crowd context around public holidays) before treating this "
+            "plan as holiday-checked."
         ),
     )
 

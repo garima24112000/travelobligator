@@ -3975,6 +3975,233 @@ def test_holiday_context_success_with_no_holidays_in_range(
     assert holiday_item["status"] == "needs_review"
 
 
+class _CustomTestHolidayProvider(HolidayProvider):
+    """Test double returning caller-specified in-range holiday entries
+    (mirroring what a real adapter would return after filtering to the
+    trip's date range), so tests can exercise specific holiday-warning
+    scenarios without depending on real Nager.Date network data."""
+
+    provider_name = "nager_date"
+
+    def __init__(self, holidays: list[NormalizedHoliday]) -> None:
+        self._holidays = holidays
+
+    def get_public_holidays(
+        self, destination: str, dates: dict[str, Any]
+    ) -> ProviderResponse[Any]:
+        return ProviderResponse[list[NormalizedHoliday]](
+            provider_name=self.provider_name,
+            provider_type=self.provider_type,
+            status=ProviderStatus.SUCCESS,
+            data_status=DataStatus.LIVE,
+            data=self._holidays,
+            confidence=0.6,
+            message="Test fixture holiday data; not a real provider call.",
+        )
+
+
+def _find_holiday_warning(warnings: list[dict[str, Any]]) -> dict[str, Any] | None:
+    return next((issue for issue in warnings if issue["category"] == "holidays"), None)
+
+
+def test_validation_report_includes_holiday_warning_when_usable_holiday_data_exists(
+    client: TestClient, created_trip_id: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(provider_gateway, "holiday", _ConnectedTestHolidayProvider())
+
+    generate_response = client.post(f"/trips/{created_trip_id}/generate")
+    assert generate_response.status_code == 200
+
+    response = client.get(f"/trips/{created_trip_id}/validation-report")
+    assert response.status_code == 200
+    validation_report = response.json()["data"]["validation_report"]
+
+    holiday_warning = _find_holiday_warning(validation_report["warnings"])
+    assert holiday_warning is not None
+    assert holiday_warning["severity"] == "warning"
+
+    message = holiday_warning["message"].lower()
+    assert "provider-backed" in message
+    assert "public holiday" in message
+    assert "closures" in message
+    assert "opening hours" in message
+    assert "crowd" in message
+    assert "review" in message and "manually" in message
+
+    # Holidays never mark the plan ready by itself.
+    assert validation_report["readiness_status"] == "needs_review"
+
+
+def test_validation_report_holiday_warning_includes_dates_and_names_in_range(
+    client: TestClient, created_trip_id: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    holidays = [
+        NormalizedHoliday(
+            date=date(2026, 8, 11),
+            local_name="Feriado de Teste",
+            name="Test Holiday",
+            country_code="PT",
+            is_global=True,
+            counties=[],
+            types=["Public"],
+            source="nager_date",
+            data_status=DataStatus.LIVE,
+        ),
+        NormalizedHoliday(
+            date=date(2026, 8, 12),
+            local_name="Segundo Feriado",
+            name="Second Holiday",
+            country_code="PT",
+            is_global=True,
+            counties=[],
+            types=["Public"],
+            source="nager_date",
+            data_status=DataStatus.LIVE,
+        ),
+    ]
+    monkeypatch.setattr(provider_gateway, "holiday", _CustomTestHolidayProvider(holidays))
+
+    generate_response = client.post(f"/trips/{created_trip_id}/generate")
+    assert generate_response.status_code == 200
+
+    response = client.get(f"/trips/{created_trip_id}/validation-report")
+    assert response.status_code == 200
+    warnings = response.json()["data"]["validation_report"]["warnings"]
+
+    holiday_warning = _find_holiday_warning(warnings)
+    assert holiday_warning is not None
+    assert "2026-08-11" in holiday_warning["message"]
+    assert "Test Holiday" in holiday_warning["message"]
+    assert "2026-08-12" in holiday_warning["message"]
+    assert "Second Holiday" in holiday_warning["message"]
+
+
+def test_validation_report_softer_holiday_warning_when_none_in_range(
+    client: TestClient, created_trip_id: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(provider_gateway, "holiday", _CustomTestHolidayProvider([]))
+
+    generate_response = client.post(f"/trips/{created_trip_id}/generate")
+    assert generate_response.status_code == 200
+
+    response = client.get(f"/trips/{created_trip_id}/validation-report")
+    assert response.status_code == 200
+    warnings = response.json()["data"]["validation_report"]["warnings"]
+
+    holiday_warning = _find_holiday_warning(warnings)
+    assert holiday_warning is not None
+    message = holiday_warning["message"].lower()
+    assert "no public holidays fall within" in message
+    assert "not implemented" in message
+
+
+def test_validation_report_no_holiday_warning_when_holidays_unavailable(
+    client: TestClient, generated_trip_id: str
+) -> None:
+    # "Testville, Testland" isn't a real country, so holidays stays
+    # honestly unavailable in this default test environment -- no holiday
+    # warning should be fabricated.
+    response = client.get(f"/trips/{generated_trip_id}/validation-report")
+    assert response.status_code == 200
+    validation_report = response.json()["data"]["validation_report"]
+
+    assert _find_holiday_warning(validation_report["warnings"]) is None
+    assert validation_report["readiness_status"] == "needs_review"
+
+
+def test_validation_report_no_holiday_warning_when_request_failed(
+    client: TestClient, created_trip_id: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class _FailedTestHolidayProvider(HolidayProvider):
+        provider_name = "nager_date"
+
+        def get_public_holidays(
+            self, destination: str, dates: dict[str, Any]
+        ) -> ProviderResponse[Any]:
+            return failed_response(
+                self.provider_name,
+                self.provider_type,
+                unavailable_fields=["public_holidays"],
+                message="Test fixture failure; not a real provider call.",
+            )
+
+    monkeypatch.setattr(provider_gateway, "holiday", _FailedTestHolidayProvider())
+
+    generate_response = client.post(f"/trips/{created_trip_id}/generate")
+    assert generate_response.status_code == 200
+
+    response = client.get(f"/trips/{created_trip_id}/validation-report")
+    assert response.status_code == 200
+    validation_report = response.json()["data"]["validation_report"]
+
+    assert _find_holiday_warning(validation_report["warnings"]) is None
+    assert validation_report["readiness_status"] == "needs_review"
+
+
+def test_validation_report_holiday_warning_creates_no_fake_claims(
+    client: TestClient, created_trip_id: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    holidays = [
+        NormalizedHoliday(
+            date=date(2026, 8, 11),
+            local_name="Feriado de Teste",
+            name="Test Holiday",
+            country_code="PT",
+            is_global=True,
+            counties=[],
+            types=["Public"],
+            source="nager_date",
+            data_status=DataStatus.LIVE,
+        )
+    ]
+    monkeypatch.setattr(provider_gateway, "holiday", _CustomTestHolidayProvider(holidays))
+
+    generate_response = client.post(f"/trips/{created_trip_id}/generate")
+    assert generate_response.status_code == 200
+
+    response = client.get(f"/trips/{created_trip_id}/validation-report")
+    assert response.status_code == 200
+    warnings = response.json()["data"]["validation_report"]["warnings"]
+
+    holiday_warning = _find_holiday_warning(warnings)
+    assert holiday_warning is not None
+
+    assert set(holiday_warning.keys()) == {
+        "issue_id",
+        "severity",
+        "category",
+        "message",
+        "affected_section",
+        "suggested_fix",
+        "claim_sources",
+    }
+
+    combined_text = f"{holiday_warning['message']} {holiday_warning['suggested_fix']}".lower()
+    for forbidden_term in (
+        "closed",
+        "crowded",
+        "crowd risk",
+        "closure risk",
+        "safety risk",
+        "event",
+        "festival",
+        "strike",
+        "uv",
+        "humidity",
+        "alert",
+        "rating",
+        "price",
+    ):
+        assert forbidden_term not in combined_text
+
+    # This warning never edits daily plans -- scheduling stays unchanged.
+    experience_plan_response = client.get(f"/trips/{created_trip_id}/experience-plan")
+    assert experience_plan_response.status_code == 200
+    daily_plans = experience_plan_response.json()["data"]["experience_plan"]["daily_plans"]
+    for day_plan in daily_plans:
+        assert isinstance(day_plan["experiences"], list)
+
+
 class _CustomTestWeatherProvider(WeatherProvider):
     """Test double returning caller-specified daily forecast entries, so
     tests can exercise specific precipitation/temperature threshold values
