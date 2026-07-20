@@ -8,7 +8,13 @@ from fastapi.testclient import TestClient
 
 from app.models.common import DataStatus, GeoPoint, ProviderStatus
 from app.models.providers import NormalizedDailyWeather, NormalizedPlace, ProviderResponse
-from app.providers.base import PlacesProvider, WeatherProvider, failed_response, unavailable_response
+from app.providers.base import (
+    PlacesProvider,
+    RoutesProvider,
+    WeatherProvider,
+    failed_response,
+    unavailable_response,
+)
 from app.providers.gateway import provider_gateway
 
 
@@ -3405,11 +3411,11 @@ def test_readiness_checklist_marks_unimplemented_checks_honestly(
 def test_readiness_checklist_labels_missing_providers_honestly(
     client: TestClient, generated_trip_id: str
 ) -> None:
-    # A routes provider, a booking-capable accommodation provider, a weather
-    # provider, and a holidays provider are never connected in this
-    # deployment, so the checklist items that depend on them must say
-    # "missing_data" (the provider itself is absent), not blame unimplemented
-    # app logic.
+    # A routes provider, a booking-capable accommodation provider, and a
+    # holidays provider are never connected at all in this deployment, so
+    # the checklist items that depend on them must say "missing_data" and
+    # accurately say "not connected" (the provider itself is absent) --
+    # never blaming unimplemented app logic.
     response = client.get(f"/trips/{generated_trip_id}/experience-plan")
     assert response.status_code == 200
     readiness_checklist = response.json()["data"]["experience_plan"]["readiness_checklist"]
@@ -3419,13 +3425,22 @@ def test_readiness_checklist_labels_missing_providers_honestly(
         "Route times checked",
         "Walking feasibility checked",
         "Accommodation price/availability checked",
-        "Weather impact checked",
         "Holiday/closure context checked",
         "Booking links available",
     ):
         item = items_by_label[label]
         assert item["status"] == "missing_data"
         assert "not connected" in item["explanation"].lower()
+
+    # The deterministic test places provider never resolves coordinates, so
+    # the real Open-Meteo weather adapter is reached but has nothing to
+    # request -- it honestly reports "unavailable", not "not_connected".
+    # The explanation must say so accurately instead of claiming "not
+    # connected" for a provider that is, in fact, connected and was tried.
+    weather_item = items_by_label["Weather impact checked"]
+    assert weather_item["status"] == "missing_data"
+    assert "not connected" not in weather_item["explanation"].lower()
+    assert "returned no usable weather data" in weather_item["explanation"].lower()
 
 
 def test_readiness_checklist_creates_no_fake_values(
@@ -3908,3 +3923,152 @@ def test_validation_report_weather_warning_creates_no_fake_fields(
     daily_plans = experience_plan_response.json()["data"]["experience_plan"]["daily_plans"]
     for day_plan in daily_plans:
         assert isinstance(day_plan["experiences"], list)
+
+
+class _FailedTestWeatherProvider(WeatherProvider):
+    """Test double standing in for a weather provider that was reached but
+    whose request failed -- distinct from no provider being connected."""
+
+    provider_name = "open_meteo"
+
+    def get_weather_forecast(
+        self,
+        destination: str,
+        dates: dict[str, Any],
+        coordinates: GeoPoint | None = None,
+    ) -> ProviderResponse[Any]:
+        return failed_response(
+            self.provider_name,
+            self.provider_type,
+            unavailable_fields=["weather_forecast"],
+            message="Test fixture failure; not a real provider call.",
+        )
+
+
+def test_readiness_checklist_weather_explanation_when_not_connected(
+    client: TestClient, created_trip_id: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The plain WeatherProvider base class honestly reports not_connected --
+    # no provider is wired up at all.
+    monkeypatch.setattr(provider_gateway, "weather", WeatherProvider())
+
+    generate_response = client.post(f"/trips/{created_trip_id}/generate")
+    assert generate_response.status_code == 200
+
+    response = client.get(f"/trips/{created_trip_id}/experience-plan")
+    assert response.status_code == 200
+    readiness_checklist = response.json()["data"]["experience_plan"]["readiness_checklist"]
+    weather_item = _checklist_items_by_label(readiness_checklist)["Weather impact checked"]
+
+    assert weather_item["status"] == "missing_data"
+    assert "a weather provider is not connected" in weather_item["explanation"].lower()
+
+
+def test_readiness_checklist_weather_explanation_when_failed(
+    client: TestClient, created_trip_id: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A provider was reached and tried, but the request failed -- this must
+    # never be worded as "not connected".
+    monkeypatch.setattr(provider_gateway, "weather", _FailedTestWeatherProvider())
+
+    generate_response = client.post(f"/trips/{created_trip_id}/generate")
+    assert generate_response.status_code == 200
+
+    response = client.get(f"/trips/{created_trip_id}/experience-plan")
+    assert response.status_code == 200
+    readiness_checklist = response.json()["data"]["experience_plan"]["readiness_checklist"]
+    weather_item = _checklist_items_by_label(readiness_checklist)["Weather impact checked"]
+
+    assert weather_item["status"] == "missing_data"
+    explanation = weather_item["explanation"].lower()
+    assert "not connected" not in explanation
+    assert "the weather provider request failed or returned no usable weather data" in explanation
+
+
+def test_readiness_checklist_weather_explanation_when_unavailable(
+    client: TestClient, generated_trip_id: str
+) -> None:
+    # The deterministic test places provider never resolves coordinates, so
+    # the real Open-Meteo adapter is reached but has nothing to request for
+    # -- it honestly reports "unavailable" (a provider that responded but
+    # had no usable data), never "not_connected".
+    response = client.get(f"/trips/{generated_trip_id}/experience-plan")
+    assert response.status_code == 200
+    readiness_checklist = response.json()["data"]["experience_plan"]["readiness_checklist"]
+    weather_item = _checklist_items_by_label(readiness_checklist)["Weather impact checked"]
+
+    assert weather_item["status"] == "missing_data"
+    explanation = weather_item["explanation"].lower()
+    assert "not connected" not in explanation
+    assert "the weather provider returned no usable weather data" in explanation
+
+
+class _FailedTestRoutesProvider(RoutesProvider):
+    """Test double standing in for a routes provider that was reached but
+    whose request failed -- distinct from no routes provider being
+    connected."""
+
+    provider_name = "test_routes_provider"
+
+    def estimate_transit_feasibility(
+        self, origin: dict[str, Any], destination: dict[str, Any], date_time: str | None = None
+    ) -> ProviderResponse[Any]:
+        return failed_response(
+            self.provider_name,
+            self.provider_type,
+            unavailable_fields=["transit_feasibility"],
+            message="Test fixture failure; not a real provider call.",
+        )
+
+
+def test_readiness_checklist_routes_explanation_distinguishes_failed_from_not_connected(
+    client: TestClient, created_trip_id: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(provider_gateway, "routes", _FailedTestRoutesProvider())
+
+    generate_response = client.post(f"/trips/{created_trip_id}/generate")
+    assert generate_response.status_code == 200
+
+    response = client.get(f"/trips/{created_trip_id}/experience-plan")
+    assert response.status_code == 200
+    readiness_checklist = response.json()["data"]["experience_plan"]["readiness_checklist"]
+    items_by_label = _checklist_items_by_label(readiness_checklist)
+
+    route_item = items_by_label["Route times checked"]
+    assert route_item["status"] == "missing_data"
+    route_explanation = route_item["explanation"].lower()
+    assert "not connected" not in route_explanation
+    assert "the routes provider request failed or returned no usable route data" in route_explanation
+
+    walking_item = items_by_label["Walking feasibility checked"]
+    assert walking_item["status"] == "missing_data"
+    walking_explanation = walking_item["explanation"].lower()
+    assert "not connected" not in walking_explanation
+    assert "the routes provider request failed or returned no usable route data" in walking_explanation
+
+    # A genuinely not-connected routes provider (the default deployment
+    # state, unaffected by this test's monkeypatch) still says "not
+    # connected" honestly for holidays, which is never touched by this
+    # double.
+    holidays_item = items_by_label["Holiday/closure context checked"]
+    assert holidays_item["status"] == "missing_data"
+    assert "not connected" in holidays_item["explanation"].lower()
+
+
+def test_implementation_gaps_routes_and_holidays_explanations_distinguish_failure_reasons(
+    client: TestClient, created_trip_id: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(provider_gateway, "routes", _FailedTestRoutesProvider())
+
+    generate_response = client.post(f"/trips/{created_trip_id}/generate")
+    assert generate_response.status_code == 200
+
+    response = client.get(f"/trips/{created_trip_id}/experience-plan")
+    assert response.status_code == 200
+    implementation_gaps = response.json()["data"]["experience_plan"]["implementation_gaps"]
+    missing_text = " ".join(implementation_gaps["missing_data"]).lower()
+
+    assert "the routes/transit provider request failed or returned no usable route/transit data" in missing_text
+    # Holidays is genuinely not connected (no adapter exists), unaffected by
+    # this test's routes double, and must still say so accurately.
+    assert "a holidays provider is not connected" in missing_text

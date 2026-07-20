@@ -871,6 +871,36 @@ def _build_decision_summary(
     )
 
 
+def _provider_missing_explanation(
+    provider_label: str, data_label: str, coverage_value: str | None
+) -> str:
+    """Plain-language explanation of why `provider_label` can't supply
+    `data_label` yet, accurately distinguishing what `coverage_value`
+    actually means instead of always saying "not connected":
+
+    - `not_connected` (or unset): no provider is connected at all.
+    - `failed`: a provider was reached, but the request failed or returned
+      no usable data -- different from no provider being connected.
+    - `unavailable`: a provider was reached and responded, but reported no
+      usable data for this request.
+    - `fallback_used`: a fallback result exists, but the check this
+      explanation is attached to still isn't implemented, so that fallback
+      data still needs review.
+
+    Used only to explain why a check is `missing_data`/`not_implemented`;
+    never invents a price, rating, review, opening hour, booking,
+    availability, route, walking, or cost value.
+    """
+    if coverage_value == "failed":
+        return f"The {provider_label} request failed or returned no usable {data_label}"
+    if coverage_value == "unavailable":
+        return f"The {provider_label} returned no usable {data_label}"
+    if coverage_value == "fallback_used":
+        return f"The {provider_label} returned fallback {data_label}, which still needs review"
+    # not_connected, None, or any other not-yet-connected value.
+    return f"A {provider_label} is not connected"
+
+
 def _build_implementation_gaps(planning_state: PlanningState) -> ImplementationGaps:
     """Plan-level summary of what data is connected now, what is missing,
     what provider would be needed next, and why the plan is still Needs
@@ -907,8 +937,8 @@ def _build_implementation_gaps(planning_state: PlanningState) -> ImplementationG
 
     if coverage.routes not in _CONNECTED_COVERAGE_STATUSES:
         missing_data.append(
-            "Routes/transit feasibility is not connected (coverage: "
-            f"routes={coverage.routes})."
+            f"{_provider_missing_explanation('routes/transit provider', 'route/transit data', coverage.routes)} "
+            f"(coverage: routes={coverage.routes})."
         )
         next_data_needed.append(
             "A routes provider is needed for route time and walking feasibility."
@@ -917,14 +947,18 @@ def _build_implementation_gaps(planning_state: PlanningState) -> ImplementationG
     accommodation_provider_status = planning_state.provider_status.get(
         "accommodation_provider:accommodations"
     )
+    accommodation_provider_coverage_value = (
+        accommodation_provider_status.status.value
+        if accommodation_provider_status is not None
+        else "not_connected"
+    )
     accommodation_provider_connected = (
-        accommodation_provider_status is not None
-        and accommodation_provider_status.status.value in _CONNECTED_COVERAGE_STATUSES
+        accommodation_provider_coverage_value in _CONNECTED_COVERAGE_STATUSES
     )
     if not accommodation_provider_connected:
         missing_data.append(
-            "A booking-capable accommodation provider is not connected, so no "
-            "hotel/accommodation price, availability, rating, or booking link "
+            f"{_provider_missing_explanation('booking-capable accommodation provider', 'accommodation data', accommodation_provider_coverage_value)}, "
+            "so no hotel/accommodation price, availability, rating, or booking link "
             "is available."
         )
         next_data_needed.append(
@@ -934,7 +968,8 @@ def _build_implementation_gaps(planning_state: PlanningState) -> ImplementationG
 
     if coverage.hotel_prices not in _CONNECTED_COVERAGE_STATUSES:
         missing_data.append(
-            f"Hotel prices are not connected (coverage: hotel_prices={coverage.hotel_prices})."
+            f"{_provider_missing_explanation('hotel prices provider', 'hotel price data', coverage.hotel_prices)} "
+            f"(coverage: hotel_prices={coverage.hotel_prices})."
         )
 
     if (
@@ -942,7 +977,7 @@ def _build_implementation_gaps(planning_state: PlanningState) -> ImplementationG
         and coverage.airbnb not in _CONNECTED_COVERAGE_STATUSES
     ):
         missing_data.append(
-            "Vacation rentals/Airbnb-style listings are not connected "
+            f"{_provider_missing_explanation('vacation rentals/Airbnb-style listings provider', 'vacation rental/Airbnb data', coverage.vacation_rentals)} "
             f"(coverage: vacation_rentals={coverage.vacation_rentals}, "
             f"airbnb={coverage.airbnb})."
         )
@@ -953,14 +988,18 @@ def _build_implementation_gaps(planning_state: PlanningState) -> ImplementationG
             f"real weather provider (coverage: weather={coverage.weather})."
         )
     else:
-        missing_data.append(f"Weather is not connected (coverage: weather={coverage.weather}).")
+        missing_data.append(
+            f"{_provider_missing_explanation('weather provider', 'weather data', coverage.weather)} "
+            f"(coverage: weather={coverage.weather})."
+        )
         next_data_needed.append(
             "A weather provider is needed for weather-aware planning."
         )
 
     if coverage.holidays not in _CONNECTED_COVERAGE_STATUSES:
         missing_data.append(
-            f"Holidays are not connected (coverage: holidays={coverage.holidays})."
+            f"{_provider_missing_explanation('holidays provider', 'holiday data', coverage.holidays)} "
+            f"(coverage: holidays={coverage.holidays})."
         )
         next_data_needed.append(
             "A holidays provider is needed for closure/crowd-risk context."
@@ -968,7 +1007,8 @@ def _build_implementation_gaps(planning_state: PlanningState) -> ImplementationG
 
     if coverage.currency not in _CONNECTED_COVERAGE_STATUSES:
         missing_data.append(
-            f"Currency conversion is not connected (coverage: currency={coverage.currency})."
+            f"{_provider_missing_explanation('currency provider', 'currency conversion data', coverage.currency)} "
+            f"(coverage: currency={coverage.currency})."
         )
         next_data_needed.append(
             "A currency provider is needed for budget conversion."
@@ -1034,9 +1074,13 @@ def _build_readiness_checklist(
     accommodation_provider_status = planning_state.provider_status.get(
         "accommodation_provider:accommodations"
     )
+    accommodation_provider_coverage_value = (
+        accommodation_provider_status.status.value
+        if accommodation_provider_status is not None
+        else "not_connected"
+    )
     accommodation_provider_connected = (
-        accommodation_provider_status is not None
-        and accommodation_provider_status.status.value in _CONNECTED_COVERAGE_STATUSES
+        accommodation_provider_coverage_value in _CONNECTED_COVERAGE_STATUSES
     )
 
     items: list[ReadinessChecklistItem] = []
@@ -1101,7 +1145,7 @@ def _build_readiness_checklist(
             label="Route times checked",
             status=route_times_status,
             explanation=(
-                f"A routes provider is not connected (coverage: routes={coverage.routes}), "
+                f"{_provider_missing_explanation('routes provider', 'route data', coverage.routes)}, "
                 "so route time cannot be checked."
                 if route_times_status == ChecklistItemStatus.MISSING_DATA
                 else "Route ordering and timing are not implemented yet, so route time is not checked."
@@ -1126,7 +1170,7 @@ def _build_readiness_checklist(
             label="Walking feasibility checked",
             status=walking_status,
             explanation=(
-                f"A routes provider is not connected (coverage: routes={coverage.routes}), "
+                f"{_provider_missing_explanation('routes provider', 'route data', coverage.routes)}, "
                 "so walking feasibility cannot be checked."
                 if walking_status == ChecklistItemStatus.MISSING_DATA
                 else "Walking-distance feasibility is not implemented yet, so it is not checked."
@@ -1151,8 +1195,8 @@ def _build_readiness_checklist(
             label="Accommodation price/availability checked",
             status=accommodation_price_status,
             explanation=(
-                "A booking-capable accommodation provider is not connected, so "
-                "accommodation price and availability cannot be checked."
+                f"{_provider_missing_explanation('booking-capable accommodation provider', 'accommodation data', accommodation_provider_coverage_value)}, "
+                "so accommodation price and availability cannot be checked."
                 if accommodation_price_status == ChecklistItemStatus.MISSING_DATA
                 else (
                     "Accommodation price/availability checking is not implemented yet, "
@@ -1180,7 +1224,7 @@ def _build_readiness_checklist(
     else:
         weather_status = ChecklistItemStatus.MISSING_DATA
         weather_explanation = (
-            f"A weather provider is not connected (coverage: weather={coverage.weather}), "
+            f"{_provider_missing_explanation('weather provider', 'weather data', coverage.weather)}, "
             "so weather impact cannot be checked."
         )
     items.append(
@@ -1198,8 +1242,8 @@ def _build_readiness_checklist(
             label="Holiday/closure context checked",
             status=holidays_status,
             explanation=(
-                f"A holidays provider is not connected (coverage: "
-                f"holidays={coverage.holidays}), so holiday/closure context cannot be checked."
+                f"{_provider_missing_explanation('holidays provider', 'holiday data', coverage.holidays)}, "
+                "so holiday/closure context cannot be checked."
                 if holidays_status == ChecklistItemStatus.MISSING_DATA
                 else (
                     "Holiday/closure context is not implemented yet, so it is not checked."
@@ -1214,8 +1258,8 @@ def _build_readiness_checklist(
             label="Booking links available",
             status=booking_links_status,
             explanation=(
-                "A booking-capable accommodation provider is not connected, so no "
-                "booking links are available."
+                f"{_provider_missing_explanation('booking-capable accommodation provider', 'accommodation data', accommodation_provider_coverage_value)}, "
+                "so no booking links are available."
                 if booking_links_status == ChecklistItemStatus.MISSING_DATA
                 else "Booking link generation is not implemented yet, so none is available."
             ),
