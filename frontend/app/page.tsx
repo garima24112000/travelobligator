@@ -494,12 +494,14 @@ function CurrencyContextSection({ currency }: { currency: CurrencyContext | null
       ) : (
         <div className="mt-3 rounded-lg border border-white/10 bg-slate-900/60 p-3 text-sm">
           <p className="font-medium">
-            {currency.base_currency} → {currency.destination_currency}
+            1 {currency.base_currency} = {currency.exchange_rate.toFixed(4)}{" "}
+            {currency.destination_currency}
           </p>
-          <p className="mt-1 text-xs text-slate-400">
-            Exchange rate: {currency.exchange_rate}
-            {currency.rate_date ? ` · Rate date: ${currency.rate_date}` : ""}
-          </p>
+          {currency.rate_date && (
+            <p className="mt-1 text-xs text-slate-400">
+              Rate date: {currency.rate_date}
+            </p>
+          )}
         </div>
       )}
 

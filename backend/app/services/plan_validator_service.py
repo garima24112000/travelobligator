@@ -260,11 +260,14 @@ class PlanValidatorService(PlanningStageService):
 
         if budget_min is not None or budget_max is not None:
             if budget_min is not None and budget_max is not None:
-                budget_range = f"{budget_min}-{budget_max} {budget_currency}"
+                budget_range = (
+                    f"{_format_budget_amount(budget_min)}-{_format_budget_amount(budget_max)} "
+                    f"{budget_currency}"
+                )
             elif budget_min is not None:
-                budget_range = f"{budget_min}+ {budget_currency}"
+                budget_range = f"{_format_budget_amount(budget_min)}+ {budget_currency}"
             else:
-                budget_range = f"up to {budget_max} {budget_currency}"
+                budget_range = f"up to {_format_budget_amount(budget_max)} {budget_currency}"
 
             budget_message = (
                 f"A budget of {budget_range} was captured, but budget/cost "
@@ -316,6 +319,18 @@ class PlanValidatorService(PlanningStageService):
         planning_state.validation_report = validation_report
         planning_state.touch()
         return planning_state
+
+
+def _format_budget_amount(value: float) -> str:
+    """Format a captured `budget_min`/`budget_max` figure cleanly for
+    display -- e.g. 1500.0 -> "1500", 2500.0 -> "2500", 1500.5 -> "1500.5"
+    -- never an unnecessary trailing ".0". This only reformats the exact
+    captured value; it never rounds to a different amount, estimates a
+    cost, or invents a price/fee/tax.
+    """
+    if value == int(value):
+        return str(int(value))
+    return f"{value:.2f}".rstrip("0").rstrip(".")
 
 
 _HIGH_PRECIPITATION_PROBABILITY_THRESHOLD = 50

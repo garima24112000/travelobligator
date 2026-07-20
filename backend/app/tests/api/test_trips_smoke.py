@@ -802,14 +802,119 @@ def test_validation_report_warns_about_unvalidated_budget(client: TestClient) ->
     assert len(budget_warnings) == 1
     budget_warning = budget_warnings[0]
 
-    # The captured budget range must be named exactly as provided, with no
-    # invented/estimated cost figures layered on top of it.
-    assert "1500" in budget_warning["message"]
-    assert "2500" in budget_warning["message"]
+    # The captured budget range must be formatted cleanly (1500-2500, not
+    # 1500.0-2500.0), with no invented/estimated cost figures layered on
+    # top of it.
+    assert "A budget of 1500-2500 USD was captured" in budget_warning["message"]
+    assert "1500.0" not in budget_warning["message"]
+    assert "2500.0" not in budget_warning["message"]
     # The report must clearly say cost validation isn't implemented and the
     # budget fit is unconfirmed, rather than claiming the plan fits.
+    assert "budget/cost validation is not implemented yet" in budget_warning["message"]
+    assert "does not confirm" in budget_warning["message"]
+    assert "fits within that budget" in budget_warning["message"]
+    assert "this plan fits" not in budget_warning["message"].lower()
+
+
+def test_validation_report_budget_warning_formats_min_only(client: TestClient) -> None:
+    create_response = client.post(
+        "/trips",
+        json={
+            "destination_scope": "single_city",
+            "primary_destination": "Testville, Testland",
+            "origin_city": "Home City",
+            "start_date": "2026-08-10",
+            "end_date": "2026-08-12",
+            "travelers_count": 2,
+            "travel_group_type": "couple",
+            "budget_min": 1500,
+        },
+    )
+    assert create_response.status_code == 201
+    trip_id = create_response.json()["data"]["trip_id"]
+
+    generate_response = client.post(f"/trips/{trip_id}/generate")
+    assert generate_response.status_code == 200
+
+    response = client.get(f"/trips/{trip_id}/validation-report")
+    assert response.status_code == 200
+    validation_report = response.json()["data"]["validation_report"]
+
+    budget_warning = next(
+        warning for warning in validation_report["warnings"] if warning["category"] == "budget"
+    )
+    assert "A budget of 1500+ USD was captured" in budget_warning["message"]
+    assert "1500.0" not in budget_warning["message"]
     assert "not implemented yet" in budget_warning["message"]
     assert "does not confirm" in budget_warning["message"]
+
+
+def test_validation_report_budget_warning_formats_max_only(client: TestClient) -> None:
+    create_response = client.post(
+        "/trips",
+        json={
+            "destination_scope": "single_city",
+            "primary_destination": "Testville, Testland",
+            "origin_city": "Home City",
+            "start_date": "2026-08-10",
+            "end_date": "2026-08-12",
+            "travelers_count": 2,
+            "travel_group_type": "couple",
+            "budget_max": 2500,
+        },
+    )
+    assert create_response.status_code == 201
+    trip_id = create_response.json()["data"]["trip_id"]
+
+    generate_response = client.post(f"/trips/{trip_id}/generate")
+    assert generate_response.status_code == 200
+
+    response = client.get(f"/trips/{trip_id}/validation-report")
+    assert response.status_code == 200
+    validation_report = response.json()["data"]["validation_report"]
+
+    budget_warning = next(
+        warning for warning in validation_report["warnings"] if warning["category"] == "budget"
+    )
+    assert "A budget of up to 2500 USD was captured" in budget_warning["message"]
+    assert "2500.0" not in budget_warning["message"]
+    assert "not implemented yet" in budget_warning["message"]
+    assert "does not confirm" in budget_warning["message"]
+
+
+def test_validation_report_budget_warning_formats_fractional_amount(
+    client: TestClient,
+) -> None:
+    create_response = client.post(
+        "/trips",
+        json={
+            "destination_scope": "single_city",
+            "primary_destination": "Testville, Testland",
+            "origin_city": "Home City",
+            "start_date": "2026-08-10",
+            "end_date": "2026-08-12",
+            "travelers_count": 2,
+            "travel_group_type": "couple",
+            "budget_min": 1500.5,
+            "budget_max": 2500,
+        },
+    )
+    assert create_response.status_code == 201
+    trip_id = create_response.json()["data"]["trip_id"]
+
+    generate_response = client.post(f"/trips/{trip_id}/generate")
+    assert generate_response.status_code == 200
+
+    response = client.get(f"/trips/{trip_id}/validation-report")
+    assert response.status_code == 200
+    validation_report = response.json()["data"]["validation_report"]
+
+    budget_warning = next(
+        warning for warning in validation_report["warnings"] if warning["category"] == "budget"
+    )
+    # A genuinely fractional amount keeps a clean decimal, never an
+    # unnecessary trailing ".0", and is never rounded to a different value.
+    assert "1500.5-2500 USD" in budget_warning["message"]
 
 
 def test_validation_report_no_budget_warning_when_none_captured(
