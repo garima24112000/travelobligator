@@ -255,17 +255,21 @@ class ExperiencePlannerService(PlanningStageService):
     `planning_state.provider_status`: which data is connected now (e.g.
     attractions/restaurants/accommodation POIs from the open-data places
     provider, weather when Open-Meteo returns usable daily forecast data,
-    and holidays when Nager.Date returns usable public holiday data), which
-    data is missing (routes/transit, a booking-capable accommodation
-    provider, hotel prices, vacation rentals/Airbnb, weather when
-    unavailable, holidays when unavailable, currency), what provider would
-    be needed next for each gap, and why the plan stays Needs Review (route
-    ordering, opening hours, walking time, and costs/budget fit are
+    holidays when Nager.Date returns usable public holiday data, and
+    currency when Frankfurter returns a usable exchange rate), which data
+    is missing (routes/transit, a booking-capable accommodation provider,
+    hotel prices, vacation rentals/Airbnb, weather when unavailable,
+    holidays when unavailable, currency when unavailable), what provider
+    would be needed next for each gap, and why the plan stays Needs Review
+    (route ordering, opening hours, walking time, and costs/budget fit are
     unvalidated, accommodation POIs are open-data location candidates only,
     not bookable inventory, and public holiday data, when available, is not
-    yet used to check venue closures or crowd risk). No provider call, no
-    AI/LLM, no invented fact, and it never affects validation readiness by
-    itself -- it explains existing gaps rather than resolving them.
+    yet used to check venue closures or crowd risk). A connected currency
+    provider only ever supplies a single-unit exchange rate; it never marks
+    costs/budget fit as validated -- that stays Needs Review regardless of
+    currency coverage. No provider call, no AI/LLM, no invented fact, and it
+    never affects validation readiness by itself -- it explains existing
+    gaps rather than resolving them.
 
     Finally, the plan gets a plan-level `readiness_checklist`: a fixed list
     of checklist items (attractions/restaurants/accommodation POI
@@ -1020,7 +1024,14 @@ def _build_implementation_gaps(planning_state: PlanningState) -> ImplementationG
             "A holidays provider is needed for closure/crowd-risk context."
         )
 
-    if coverage.currency not in _CONNECTED_COVERAGE_STATUSES:
+    if coverage.currency in _CONNECTED_COVERAGE_STATUSES:
+        connected_data.append(
+            "Currency is connected: provider-backed exchange-rate data came from a "
+            f"real currency provider (coverage: currency={coverage.currency}), but this "
+            "is a single-unit exchange rate only, not a calculated total trip cost or "
+            "budget fit."
+        )
+    else:
         missing_data.append(
             f"{_provider_missing_explanation('currency provider', 'currency conversion data', coverage.currency)} "
             f"(coverage: currency={coverage.currency})."

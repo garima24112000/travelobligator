@@ -79,6 +79,24 @@ class NormalizedDailyWeather(BaseModel):
     data_status: DataStatus
 
 
+class NormalizedExchangeRate(BaseModel):
+    """Real exchange-rate data returned by a CurrencyProvider adapter
+    (docs/12_provider_architecture.md section 17). Only fields the
+    underlying source actually returned are populated; no trip cost,
+    budget, hotel price, restaurant price, attraction price, fee, tax, or
+    total-cost value is ever fabricated -- the source doesn't supply any of
+    that, and this only ever converts one unit of currency, never a trip
+    total.
+    """
+
+    base_currency: str
+    destination_currency: str
+    exchange_rate: float
+    rate_date: date | None = None
+    source: str
+    data_status: DataStatus
+
+
 class NormalizedHoliday(BaseModel):
     """Real public holiday data for one day, returned by a HolidayProvider
     adapter (docs/12_provider_architecture.md section 16). Only fields the

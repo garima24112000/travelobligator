@@ -261,7 +261,18 @@ class CurrencyProvider(BaseProvider):
     ) -> ProviderResponse[Any]:
         return self.not_connected(unavailable_fields=["converted_amount"])
 
-    def get_exchange_rate(self, from_currency: str, to_currency: str) -> ProviderResponse[Any]:
+    def get_exchange_rate(
+        self, base_currency: str, destination: str
+    ) -> ProviderResponse[Any]:
+        """Matches docs/12_provider_architecture.md section 17's
+        `get_exchange_rate(from_currency, to_currency)`, but takes the raw
+        trip `destination` (e.g. "Lisbon, Portugal") rather than a
+        pre-resolved destination currency code -- concrete adapters (e.g.
+        FrankfurterCurrencyAdapter) infer a destination currency from it
+        themselves, conservatively and without an LLM, the same way
+        WeatherProvider.get_weather_forecast and HolidayProvider.
+        get_public_holidays take a raw `destination`.
+        """
         return self.not_connected(unavailable_fields=["exchange_rate"])
 
 

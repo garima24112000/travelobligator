@@ -3,7 +3,12 @@ from __future__ import annotations
 from pydantic import BaseModel, Field
 
 from app.models.common import ProviderCoverage, UnavailableDataItem
-from app.models.planning_state import DestinationContext, HolidayContext, WeatherContext
+from app.models.planning_state import (
+    CurrencyContext,
+    DestinationContext,
+    HolidayContext,
+    WeatherContext,
+)
 
 
 class DestinationContextResponseData(BaseModel):
@@ -11,6 +16,7 @@ class DestinationContextResponseData(BaseModel):
     destination_context: DestinationContext
     weather_context: WeatherContext | None = None
     holiday_context: HolidayContext | None = None
+    currency_context: CurrencyContext | None = None
     provider_coverage: ProviderCoverage
     unavailable_data: list[UnavailableDataItem] = Field(default_factory=list)
     data_sources_used: list[str] = Field(default_factory=list)

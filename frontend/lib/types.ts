@@ -87,6 +87,7 @@ export type DestinationContextData = {
   };
   weather_context: WeatherContext | null;
   holiday_context: HolidayContext | null;
+  currency_context: CurrencyContext | null;
 };
 
 export type DailyWeather = {
@@ -130,6 +131,18 @@ export type HolidayContext = {
   end_date: string;
   country_code: string | null;
   holidays: Holiday[];
+  source: string | null;
+  data_status: string;
+  confidence: number;
+  assumptions: string[];
+  warnings: string[];
+};
+
+export type CurrencyContext = {
+  base_currency: string;
+  destination_currency: string | null;
+  exchange_rate: number | null;
+  rate_date: string | null;
   source: string | null;
   data_status: string;
   confidence: number;

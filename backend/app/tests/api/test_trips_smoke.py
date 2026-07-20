@@ -9,11 +9,13 @@ from fastapi.testclient import TestClient
 from app.models.common import DataStatus, GeoPoint, ProviderStatus
 from app.models.providers import (
     NormalizedDailyWeather,
+    NormalizedExchangeRate,
     NormalizedHoliday,
     NormalizedPlace,
     ProviderResponse,
 )
 from app.providers.base import (
+    CurrencyProvider,
     HolidayProvider,
     PlacesProvider,
     RoutesProvider,
@@ -379,9 +381,10 @@ def test_provider_status_keeps_separate_entries_per_field_for_same_provider(
     # the weather lookup (Open-Meteo; unavailable here since this test's
     # places double never resolves coordinates), the holidays lookup
     # (Nager.Date; unavailable here since "Testland" isn't a real country),
-    # and the separate (still-unconnected) booking-capable accommodation
-    # provider, which StayTransportService also records under
-    # "accommodations".
+    # the currency lookup (Frankfurter; unavailable here for the same
+    # reason), and the separate (still-unconnected) booking-capable
+    # accommodation provider, which StayTransportService also records
+    # under "accommodations".
     assert all(
         entry["provider_name"]
         in {
@@ -390,6 +393,7 @@ def test_provider_status_keeps_separate_entries_per_field_for_same_provider(
             "accommodation_provider",
             "open_meteo",
             "nager_date",
+            "frankfurter",
         }
         for entry in provider_status.values()
     )
@@ -4200,6 +4204,286 @@ def test_validation_report_holiday_warning_creates_no_fake_claims(
     daily_plans = experience_plan_response.json()["data"]["experience_plan"]["daily_plans"]
     for day_plan in daily_plans:
         assert isinstance(day_plan["experiences"], list)
+
+
+class _ConnectedTestCurrencyProvider(CurrencyProvider):
+    """Deterministic test double standing in for
+    `FrankfurterCurrencyAdapter`, always returning a usable USD -> EUR
+    exchange rate regardless of the destination it's given. Only used by
+    tests that need to exercise the "currency is connected" path; other
+    tests keep the real `FrankfurterCurrencyAdapter`, which stays honestly
+    unavailable in tests because "Testville, Testland" isn't a real
+    country."""
+
+    provider_name = "frankfurter"
+
+    def get_exchange_rate(
+        self, base_currency: str, destination: str
+    ) -> ProviderResponse[Any]:
+        return ProviderResponse[NormalizedExchangeRate](
+            provider_name=self.provider_name,
+            provider_type=self.provider_type,
+            status=ProviderStatus.SUCCESS,
+            data_status=DataStatus.LIVE,
+            data=NormalizedExchangeRate(
+                base_currency=base_currency,
+                destination_currency="EUR",
+                exchange_rate=0.92,
+                rate_date=date(2026, 8, 10),
+                source=self.provider_name,
+                data_status=DataStatus.LIVE,
+            ),
+            confidence=0.6,
+            message="Test fixture exchange rate data; not a real provider call.",
+        )
+
+
+def test_currency_context_exists_after_generate(
+    client: TestClient, generated_trip_id: str
+) -> None:
+    response = client.get(f"/trips/{generated_trip_id}/destination-context")
+    assert response.status_code == 200
+    data = response.json()["data"]
+
+    assert "currency_context" in data
+    currency_context = data["currency_context"]
+    assert currency_context is not None
+
+    assert set(currency_context.keys()) == {
+        "base_currency",
+        "destination_currency",
+        "exchange_rate",
+        "rate_date",
+        "source",
+        "data_status",
+        "confidence",
+        "assumptions",
+        "warnings",
+    }
+    assert currency_context["base_currency"] == "USD"
+
+    # "Testville, Testland" isn't a real country, so the real Frankfurter
+    # adapter honestly can't infer a destination currency -- unavailable,
+    # never invented.
+    assert currency_context["destination_currency"] is None
+    assert currency_context["exchange_rate"] is None
+    assert currency_context["data_status"] == "unavailable"
+
+    # This section is purely provider-backed and must never flip readiness
+    # by itself; the deterministic test provider still leaves the plan
+    # needs_review (route/timing feasibility is not implemented yet).
+    validation_response = client.get(f"/trips/{generated_trip_id}/validation-report")
+    assert validation_response.status_code == 200
+    assert (
+        validation_response.json()["data"]["validation_report"]["readiness_status"]
+        == "needs_review"
+    )
+
+
+def test_currency_context_has_usable_rate_when_connected(
+    client: TestClient, created_trip_id: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(provider_gateway, "currency", _ConnectedTestCurrencyProvider())
+
+    generate_response = client.post(f"/trips/{created_trip_id}/generate")
+    assert generate_response.status_code == 200
+
+    response = client.get(f"/trips/{created_trip_id}/destination-context")
+    assert response.status_code == 200
+    currency_context = response.json()["data"]["currency_context"]
+
+    assert currency_context["data_status"] == "live"
+    assert currency_context["source"] == "frankfurter"
+    assert currency_context["base_currency"] == "USD"
+    assert currency_context["destination_currency"] == "EUR"
+    assert currency_context["exchange_rate"] == 0.92
+    assert currency_context["rate_date"] == "2026-08-10"
+
+
+def test_provider_coverage_currency_success_only_with_usable_data(
+    client: TestClient, created_trip_id: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Default deterministic test environment: currency stays unavailable
+    # because "Testville, Testland" isn't a real country, so coverage must
+    # never claim "success" for currency data that doesn't exist.
+    generate_response = client.post(f"/trips/{created_trip_id}/generate")
+    assert generate_response.status_code == 200
+
+    coverage_response = client.get(f"/trips/{created_trip_id}/provider-coverage")
+    assert coverage_response.status_code == 200
+    assert coverage_response.json()["data"]["provider_coverage"]["currency"] != "success"
+
+    # With a connected currency provider returning a usable rate, coverage
+    # must become "success".
+    monkeypatch.setattr(provider_gateway, "currency", _ConnectedTestCurrencyProvider())
+
+    create_response = client.post(
+        "/trips",
+        json={
+            "destination_scope": "single_city",
+            "primary_destination": "Testville, Testland",
+            "origin_city": "Home City",
+            "start_date": "2026-08-10",
+            "end_date": "2026-08-12",
+            "travelers_count": 2,
+            "travel_group_type": "couple",
+        },
+    )
+    assert create_response.status_code == 201
+    connected_trip_id = create_response.json()["data"]["trip_id"]
+
+    generate_response = client.post(f"/trips/{connected_trip_id}/generate")
+    assert generate_response.status_code == 200
+
+    coverage_response = client.get(f"/trips/{connected_trip_id}/provider-coverage")
+    assert coverage_response.status_code == 200
+    assert coverage_response.json()["data"]["provider_coverage"]["currency"] == "success"
+
+
+def test_readiness_checklist_budget_cost_fit_stays_not_implemented_when_currency_connected(
+    client: TestClient, created_trip_id: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(provider_gateway, "currency", _ConnectedTestCurrencyProvider())
+
+    generate_response = client.post(f"/trips/{created_trip_id}/generate")
+    assert generate_response.status_code == 200
+
+    response = client.get(f"/trips/{created_trip_id}/experience-plan")
+    assert response.status_code == 200
+    readiness_checklist = response.json()["data"]["experience_plan"]["readiness_checklist"]
+    items_by_label = _checklist_items_by_label(readiness_checklist)
+
+    # A connected currency provider only supplies a single-unit exchange
+    # rate, never a calculated total cost -- budget/cost fit must stay
+    # not_implemented, never checked or needs_review.
+    budget_item = items_by_label["Budget/cost fit checked"]
+    assert budget_item["status"] == "not_implemented"
+
+    # No new "currency" readiness checklist item was added.
+    assert "Currency" not in " ".join(items_by_label.keys())
+
+
+def test_implementation_gaps_lists_currency_connected_when_usable(
+    client: TestClient, created_trip_id: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(provider_gateway, "currency", _ConnectedTestCurrencyProvider())
+
+    generate_response = client.post(f"/trips/{created_trip_id}/generate")
+    assert generate_response.status_code == 200
+
+    response = client.get(f"/trips/{created_trip_id}/experience-plan")
+    assert response.status_code == 200
+    implementation_gaps = response.json()["data"]["experience_plan"]["implementation_gaps"]
+
+    connected_text = " ".join(implementation_gaps["connected_data"]).lower()
+    missing_text = " ".join(implementation_gaps["missing_data"]).lower()
+
+    assert "currency" in connected_text
+    assert "currency" not in missing_text
+
+    # Costs/budget fit still aren't validated, currency connection or not.
+    why_needs_review_text = " ".join(implementation_gaps["why_needs_review"]).lower()
+    assert "costs and budget fit are not validated" in why_needs_review_text
+
+
+def test_validation_report_budget_warning_mentions_currency_without_claiming_fit(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(provider_gateway, "currency", _ConnectedTestCurrencyProvider())
+
+    create_response = client.post(
+        "/trips",
+        json={
+            "destination_scope": "single_city",
+            "primary_destination": "Testville, Testland",
+            "origin_city": "Home City",
+            "start_date": "2026-08-10",
+            "end_date": "2026-08-12",
+            "travelers_count": 2,
+            "travel_group_type": "couple",
+            "budget_min": 1500,
+            "budget_max": 2500,
+        },
+    )
+    assert create_response.status_code == 201
+    trip_id = create_response.json()["data"]["trip_id"]
+
+    generate_response = client.post(f"/trips/{trip_id}/generate")
+    assert generate_response.status_code == 200
+
+    response = client.get(f"/trips/{trip_id}/validation-report")
+    assert response.status_code == 200
+    validation_report = response.json()["data"]["validation_report"]
+
+    budget_warnings = [
+        warning
+        for warning in validation_report["warnings"]
+        if warning["category"] == "budget"
+    ]
+    assert len(budget_warnings) == 1
+    message = budget_warnings[0]["message"]
+
+    # The captured budget range is still named exactly, and cost validation
+    # is still honestly unimplemented.
+    assert "1500" in message
+    assert "2500" in message
+    assert "not implemented yet" in message
+    assert "does not confirm" in message
+
+    # Currency context is mentioned, but budget fit is never claimed.
+    assert "exchange-rate" in message.lower()
+    assert "USD" in message and "EUR" in message
+    assert "still does not confirm" in message.lower()
+    assert "fits the budget" not in message.lower()
+    assert "meets the budget" not in message.lower()
+    assert "within budget" not in message.lower()
+
+    # Currency never marks the plan ready by itself.
+    assert validation_report["readiness_status"] == "needs_review"
+
+
+def test_validation_report_budget_warning_without_currency_still_does_not_claim_fit(
+    client: TestClient,
+) -> None:
+    # Default deterministic test environment: currency stays unavailable,
+    # so the budget warning must not mention exchange-rate context that
+    # doesn't exist.
+    create_response = client.post(
+        "/trips",
+        json={
+            "destination_scope": "single_city",
+            "primary_destination": "Testville, Testland",
+            "origin_city": "Home City",
+            "start_date": "2026-08-10",
+            "end_date": "2026-08-12",
+            "travelers_count": 2,
+            "travel_group_type": "couple",
+            "budget_min": 1500,
+            "budget_max": 2500,
+        },
+    )
+    assert create_response.status_code == 201
+    trip_id = create_response.json()["data"]["trip_id"]
+
+    generate_response = client.post(f"/trips/{trip_id}/generate")
+    assert generate_response.status_code == 200
+
+    response = client.get(f"/trips/{trip_id}/validation-report")
+    assert response.status_code == 200
+    validation_report = response.json()["data"]["validation_report"]
+
+    budget_warnings = [
+        warning
+        for warning in validation_report["warnings"]
+        if warning["category"] == "budget"
+    ]
+    assert len(budget_warnings) == 1
+    message = budget_warnings[0]["message"]
+
+    assert "not implemented yet" in message
+    assert "does not confirm" in message
+    assert "exchange-rate" not in message.lower()
+    assert "fits the budget" not in message.lower()
 
 
 class _CustomTestWeatherProvider(WeatherProvider):

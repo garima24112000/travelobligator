@@ -41,8 +41,11 @@ class PlanValidatorService(PlanningStageService):
     * If the trip request or traveler profile captured a budget (`budget_min`
       and/or `budget_max`), a warning names the captured range and says
       budget/cost validation is not implemented yet, so the plan never
-      claims to fit the budget. This never blocks the plan by itself; it
-      only adds a warning.
+      claims to fit the budget. If `planning_state.currency_context` also
+      has a live provider-backed exchange rate, the same warning notes that
+      exchange-rate context is available, but still never claims the
+      budget is met -- total trip cost is not calculated. This never
+      blocks the plan by itself; it only adds a warning.
     * If a day's coordinate-backed scheduled experiences sum to more than
       `_GEOGRAPHIC_SPREAD_WARNING_THRESHOLD_KM` of straight-line
       (haversine) distance between consecutive experiences, a warning flags
@@ -263,15 +266,25 @@ class PlanValidatorService(PlanningStageService):
             else:
                 budget_range = f"up to {budget_max} {budget_currency}"
 
+            budget_message = (
+                f"A budget of {budget_range} was captured, but budget/cost "
+                "validation is not implemented yet, so this plan does not "
+                "confirm it fits within that budget."
+            )
+            currency_context = planning_state.currency_context
+            if currency_context is not None and currency_context.data_status == DataStatus.LIVE:
+                budget_message += (
+                    " Provider-backed exchange-rate context is available "
+                    f"({currency_context.base_currency} -> "
+                    f"{currency_context.destination_currency}), but total trip cost is "
+                    "still not calculated, so this still does not confirm the budget is met."
+                )
+
             warnings.append(
                 ValidationIssue(
                     severity=ValidationSeverity.WARNING,
                     category="budget",
-                    message=(
-                        f"A budget of {budget_range} was captured, but budget/cost "
-                        "validation is not implemented yet, so this plan does not "
-                        "confirm it fits within that budget."
-                    ),
+                    message=budget_message,
                     affected_section="experience_plan",
                     suggested_fix=(
                         "Implement cost estimation and budget validation before "

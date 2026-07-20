@@ -14,6 +14,7 @@ import {
 import type {
   CandidatePoi,
   ChecklistItemStatus,
+  CurrencyContext,
   DailyPlan,
   DecisionSummary,
   HolidayContext,
@@ -50,6 +51,7 @@ type PlanResult = {
   readinessChecklist: ReadinessChecklist;
   weatherContext: WeatherContext | null;
   holidayContext: HolidayContext | null;
+  currencyContext: CurrencyContext | null;
   validationReport: ValidationReport;
   providerCoverage: ProviderCoverageData;
   destinationAssumptions: string[];
@@ -461,6 +463,52 @@ function HolidayContextSection({ holiday }: { holiday: HolidayContext | null }) 
   );
 }
 
+function CurrencyContextSection({ currency }: { currency: CurrencyContext | null }) {
+  if (!currency) {
+    return (
+      <div className="rounded-2xl border border-white/10 bg-white/5 p-5">
+        <h2 className="text-lg font-semibold">Currency context</h2>
+        <p className="mt-2 text-sm text-slate-400">
+          Currency data is unavailable for this trip.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="rounded-2xl border border-white/10 bg-white/5 p-5">
+      <h2 className="text-lg font-semibold">Currency context</h2>
+      <p className="mt-1 text-sm text-slate-300">
+        Source: <span className="font-semibold">{currency.source ?? "None"}</span>
+        {" · "}
+        Status: <span className="font-semibold">{currency.data_status}</span>
+        {" · "}
+        Confidence: <span className="font-semibold">{currency.confidence}</span>
+      </p>
+
+      {currency.exchange_rate === null || currency.destination_currency === null ? (
+        <p className="mt-2 text-sm text-slate-400">
+          No usable provider-backed exchange rate is available from{" "}
+          {currency.base_currency} for this destination.
+        </p>
+      ) : (
+        <div className="mt-3 rounded-lg border border-white/10 bg-slate-900/60 p-3 text-sm">
+          <p className="font-medium">
+            {currency.base_currency} → {currency.destination_currency}
+          </p>
+          <p className="mt-1 text-xs text-slate-400">
+            Exchange rate: {currency.exchange_rate}
+            {currency.rate_date ? ` · Rate date: ${currency.rate_date}` : ""}
+          </p>
+        </div>
+      )}
+
+      <SummaryList title="Assumptions" items={currency.assumptions} />
+      <SummaryList title="Warnings" items={currency.warnings} />
+    </div>
+  );
+}
+
 function ValidationSection({ report }: { report: ValidationReport }) {
   const hasNothingToShow =
     report.critical_issues.length === 0 &&
@@ -763,6 +811,7 @@ export default function Home() {
         readinessChecklist: experiencePlan.experience_plan.readiness_checklist,
         weatherContext: destinationContext.weather_context,
         holidayContext: destinationContext.holiday_context,
+        currencyContext: destinationContext.currency_context,
         validationReport: validationReport.validation_report,
         providerCoverage,
         destinationAssumptions:
@@ -1067,6 +1116,8 @@ export default function Home() {
             <WeatherContextSection weather={result.weatherContext} />
 
             <HolidayContextSection holiday={result.holidayContext} />
+
+            <CurrencyContextSection currency={result.currencyContext} />
 
             <div className="rounded-2xl border border-white/10 bg-white/5 p-5">
               <h2 className="text-lg font-semibold">Day-wise experiences</h2>

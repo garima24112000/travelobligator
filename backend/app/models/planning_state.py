@@ -296,6 +296,34 @@ class HolidayContext(BaseModel):
     warnings: list[str] = Field(default_factory=list)
 
 
+class CurrencyContext(BaseModel):
+    """Plan-level provider-backed currency exchange-rate context for the
+    trip (docs/12_provider_architecture.md section 17,
+    docs/14_backend_architecture.md section 10). Built from a real
+    CurrencyProvider call (Frankfurter) using a destination currency
+    conservatively inferred from the destination -- no LLM, no fuzzy
+    guess. This only ever converts one unit of currency; it does not
+    validate or calculate total trip cost, budget fit, hotel prices,
+    restaurant prices, attraction prices, fees, tax, or any other cost
+    value, and no such value is ever invented. If the destination currency
+    equals `base_currency`, this is still built honestly with
+    `exchange_rate=1.0` and an assumption explaining no conversion is
+    needed. If the destination currency can't be inferred, or the provider
+    has no usable rate, `exchange_rate` stays unset and this is reported
+    honestly via `data_status`/`warnings` rather than guessed.
+    """
+
+    base_currency: str
+    destination_currency: str | None = None
+    exchange_rate: float | None = None
+    rate_date: date | None = None
+    source: str | None = None
+    data_status: DataStatus
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    assumptions: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+
 class TripStrategy(BaseModel):
     strategy_id: str = Field(default_factory=lambda: _new_id("trip_strategy"))
 
@@ -749,6 +777,7 @@ class PlanningState(BaseModel):
     destination_context: DestinationContext | None = None
     weather_context: WeatherContext | None = None
     holiday_context: HolidayContext | None = None
+    currency_context: CurrencyContext | None = None
     trip_strategy: TripStrategy | None = None
     stay_transport: StayTransportDecision | None = None
     experience_plan: ExperiencePlan | None = None

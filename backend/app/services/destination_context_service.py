@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.models.planning_state import (
+    CurrencyContext,
     DailyWeather,
     DestinationContext,
     Holiday,
@@ -24,16 +25,17 @@ def _normalize_name(name: Any) -> str:
 
 class DestinationContextService(PlanningStageService):
     """Owns `destination_context`, `weather_context`, `holiday_context`,
-    `provider_status`, `provider_coverage`, `unavailable_data`, and
-    `data_sources_used` (docs/14_backend_architecture.md section 10).
+    `currency_context`, `provider_status`, `provider_coverage`,
+    `unavailable_data`, and `data_sources_used`
+    (docs/14_backend_architecture.md section 10).
 
     Consumes `trip_request` and `traveler_profile`. Reaches provider-backed
     data only through ProviderGateway, calling only the OSM PlacesProvider
     methods it actually implements: `search_attractions`,
     `search_restaurants`, `search_accommodation_pois`, `resolve_coordinates`,
     and (as a targeted fallback, see below) `search_must_visit_place`; the
-    WeatherProvider's `get_weather_forecast`; and the HolidayProvider's
-    `get_public_holidays`.
+    WeatherProvider's `get_weather_forecast`; the HolidayProvider's
+    `get_public_holidays`; and the CurrencyProvider's `get_exchange_rate`.
 
     `weather_context` is built from a real WeatherProvider call
     (Open-Meteo) using destination coordinates resolved via
@@ -57,6 +59,19 @@ class DestinationContextService(PlanningStageService):
     successful response. No closure, crowd, opening-hour, event, festival,
     strike, or risk assessment is ever invented, and holiday data is not
     yet used to adjust the itinerary.
+
+    `currency_context` is built from a real CurrencyProvider call
+    (Frankfurter) using `trip_request.budget_currency` as the base currency
+    (defaults to USD) and a destination currency conservatively inferred
+    from the destination (`infer_destination_currency`, no LLM, no fuzzy
+    guess). It only ever converts a single unit of currency; it never
+    calculates or validates total trip cost or budget fit -- that stays
+    not implemented. If the destination currency equals the base currency,
+    this is still built honestly with `exchange_rate=1.0`. If the
+    destination currency can't be inferred, or the provider has no usable
+    rate, this is reported honestly rather than guessed. No trip cost,
+    budget, hotel price, restaurant price, attraction price, fee, tax, or
+    total-cost value is ever invented.
 
     `candidate_pois`, `candidate_restaurants`, and
     `candidate_accommodation_pois` are filled with real OSM POIs when the
@@ -113,6 +128,9 @@ class DestinationContextService(PlanningStageService):
 
         holiday_context = self._build_holiday_context(planning_state, destination_name)
         planning_state.holiday_context = holiday_context
+
+        currency_context = self._build_currency_context(planning_state, destination_name)
+        planning_state.currency_context = currency_context
 
         candidate_pois = (
             [poi.model_dump(mode="json") for poi in attractions_response.data]
@@ -323,6 +341,64 @@ class DestinationContextService(PlanningStageService):
             source=holiday_response.provider_name if provider_succeeded else None,
             data_status=holiday_response.data_status,
             confidence=holiday_response.confidence,
+            assumptions=assumptions,
+            warnings=warnings,
+        )
+
+    def _build_currency_context(
+        self, planning_state: PlanningState, destination_name: str
+    ) -> CurrencyContext:
+        """Plan-level provider-backed currency exchange-rate context for
+        the trip (docs/12_provider_architecture.md section 17).
+
+        Uses `trip_request.budget_currency` as the base currency (defaults
+        to USD) and asks the CurrencyProvider (Frankfurter) for the
+        exchange rate to a destination currency the adapter itself
+        conservatively infers from `destination_name` (no LLM, no fuzzy
+        guess). This only ever converts a single unit of currency; it never
+        calculates or validates total trip cost or budget fit. If the
+        destination currency can't be inferred, or the provider has no
+        usable rate, this is reported honestly via `data_status`/
+        `warnings` rather than guessed. No trip cost, budget, hotel price,
+        restaurant price, attraction price, fee, tax, or total-cost value
+        is ever invented.
+        """
+        base_currency = planning_state.trip_request.budget_currency
+        exchange_rate_response = self.gateway.currency.get_exchange_rate(
+            base_currency, destination_name
+        )
+        self.coverage_service.record_provider_result(
+            planning_state, exchange_rate_response, "currency"
+        )
+
+        rate_data = exchange_rate_response.data
+
+        assumptions = [
+            "Currency context is a provider-backed single-unit exchange rate only; it "
+            "does not calculate or validate total trip cost, budget fit, hotel prices, "
+            "restaurant prices, attraction prices, fees, or tax -- that reasoning is "
+            "not implemented yet."
+        ]
+        warnings: list[str] = []
+        if rate_data is None:
+            warnings.append(
+                exchange_rate_response.message
+                or "No usable exchange-rate data is available for this destination."
+            )
+        elif rate_data.exchange_rate == 1.0 and rate_data.destination_currency == base_currency:
+            assumptions.append(
+                f"The destination currency matches the base currency ({base_currency}), "
+                "so no conversion is needed."
+            )
+
+        return CurrencyContext(
+            base_currency=base_currency,
+            destination_currency=rate_data.destination_currency if rate_data else None,
+            exchange_rate=rate_data.exchange_rate if rate_data else None,
+            rate_date=rate_data.rate_date if rate_data else None,
+            source=exchange_rate_response.provider_name if rate_data else None,
+            data_status=exchange_rate_response.data_status,
+            confidence=exchange_rate_response.confidence,
             assumptions=assumptions,
             warnings=warnings,
         )

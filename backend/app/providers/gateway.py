@@ -15,6 +15,7 @@ from app.providers.base import (
     TransitProvider,
     WeatherProvider,
 )
+from app.providers.currency.frankfurter_adapter import FrankfurterCurrencyAdapter
 from app.providers.holidays.nager_date_adapter import NagerDateHolidaysAdapter
 from app.providers.places.openstreetmap_adapter import OpenStreetMapPlacesAdapter
 from app.providers.weather.open_meteo_adapter import OpenMeteoWeatherAdapter
@@ -29,9 +30,10 @@ class ProviderGateway:
 
     Each provider slot defaults to its interface's base implementation,
     which honestly reports `not_connected` for every method, except
-    `places` (OpenStreetMap-backed), `weather` (Open-Meteo-backed), and
-    `holiday` (Nager.Date-backed), which default to real adapters. Further
-    real adapters can be injected later without changing calling code.
+    `places` (OpenStreetMap-backed), `weather` (Open-Meteo-backed),
+    `holiday` (Nager.Date-backed), and `currency` (Frankfurter-backed),
+    which default to real adapters. Further real adapters can be injected
+    later without changing calling code.
     """
 
     def __init__(
@@ -53,7 +55,7 @@ class ProviderGateway:
         self.flight = flight or FlightProvider()
         self.weather = weather or OpenMeteoWeatherAdapter()
         self.holiday = holiday or NagerDateHolidaysAdapter()
-        self.currency = currency or CurrencyProvider()
+        self.currency = currency or FrankfurterCurrencyAdapter()
         self.ai_reasoning = ai_reasoning or AIReasoningProvider()
 
     @staticmethod
