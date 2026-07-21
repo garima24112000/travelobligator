@@ -154,6 +154,7 @@ export type ExperienceItem = {
   experience_id: string;
   name: string;
   category: string;
+  coordinates: GeoPoint | null;
   start_time: string | null;
   end_time: string | null;
   estimated_duration_minutes: number | null;

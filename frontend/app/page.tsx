@@ -1,6 +1,7 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import type * as Leaflet from "leaflet";
 import {
   ApiRequestError,
   createTrip,
@@ -17,6 +18,7 @@ import type {
   CurrencyContext,
   DailyPlan,
   DecisionSummary,
+  ExperienceItem,
   HolidayContext,
   ImplementationGaps,
   ProviderCoverageData,
@@ -547,6 +549,116 @@ function RouteFeasibilitySection({
 
       <SummaryList title="Assumptions" items={routeFeasibility.assumptions} />
       <SummaryList title="Warnings" items={routeFeasibility.warnings} />
+    </div>
+  );
+}
+
+/**
+ * Small per-day map preview: numbered markers for this day's
+ * coordinate-backed scheduled experiences (in existing itinerary order),
+ * connected by a dotted straight-line polyline. This is not route
+ * feasibility, walking distance, walking time, or route optimization --
+ * see the caption rendered below the map for the exact wording. Leaflet is
+ * loaded via dynamic import inside useEffect (never as a top-level runtime
+ * import) so it never touches `window`/`document` during server rendering.
+ */
+function DayMapPreview({ experiences }: { experiences: ExperienceItem[] }) {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const mapRef = useRef<Leaflet.Map | null>(null);
+
+  const coordinateBackedCount = experiences.filter(
+    (experience) => experience.coordinates !== null,
+  ).length;
+
+  useEffect(() => {
+    if (coordinateBackedCount === 0 || !containerRef.current) {
+      return;
+    }
+
+    const container = containerRef.current;
+    let isCancelled = false;
+
+    void (async () => {
+      const L = await import("leaflet");
+      if (isCancelled) {
+        return;
+      }
+
+      const map = L.map(container);
+      mapRef.current = map;
+
+      L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+        attribution:
+          '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+        maxZoom: 19,
+      }).addTo(map);
+
+      // Marker labels are the full-day itinerary order number (1-based
+      // index into `experiences`), not a renumbering of only the
+      // coordinate-backed ones -- e.g. if experience #2 has no
+      // coordinates but #3 does, #3's marker still says "3".
+      const points = experiences
+        .map((experience, index) => ({ experience, orderNumber: index + 1 }))
+        .filter((item) => item.experience.coordinates !== null);
+
+      const latLngs: [number, number][] = points.map(({ experience }) => [
+        experience.coordinates!.lat,
+        experience.coordinates!.lng,
+      ]);
+
+      for (const { experience, orderNumber } of points) {
+        const icon = L.divIcon({
+          className: "",
+          html: `<div style="display:flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:9999px;border:2px solid #67e8f9;background:#0f172a;color:#a5f3fc;font-size:12px;font-weight:600;">${orderNumber}</div>`,
+          iconSize: [26, 26],
+          iconAnchor: [13, 13],
+        });
+        L.marker([experience.coordinates!.lat, experience.coordinates!.lng], {
+          icon,
+        }).addTo(map);
+      }
+
+      if (latLngs.length > 1) {
+        L.polyline(latLngs, {
+          color: "#67e8f9",
+          weight: 2,
+          dashArray: "6, 6",
+        }).addTo(map);
+      }
+
+      if (latLngs.length === 1) {
+        map.setView(latLngs[0], 14);
+      } else {
+        map.fitBounds(L.latLngBounds(latLngs), { padding: [24, 24] });
+      }
+    })();
+
+    return () => {
+      isCancelled = true;
+      mapRef.current?.remove();
+      mapRef.current = null;
+    };
+  }, [experiences, coordinateBackedCount]);
+
+  if (coordinateBackedCount === 0) {
+    return (
+      <p className="mt-3 text-sm text-slate-400">
+        No coordinate-backed scheduled places are available for this day map.
+      </p>
+    );
+  }
+
+  return (
+    <div className="mt-3">
+      <div
+        ref={containerRef}
+        className="h-[260px] w-full overflow-hidden rounded-lg border border-white/10"
+      />
+      <p className="mt-2 text-[11px] text-slate-500">
+        Map shows provider-backed scheduled place coordinates in itinerary
+        order. Dotted lines are visual straight-line connectors only, not
+        walking routes, travel-time estimates, or route optimization.
+      </p>
     </div>
   );
 }
@@ -1206,6 +1318,7 @@ export default function Home() {
                         ))}
                       </ul>
                     )}
+                    <DayMapPreview experiences={day.experiences} />
                     {day.restaurant_suggestions.length > 0 && (
                       <div className="mt-3">
                         <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">
