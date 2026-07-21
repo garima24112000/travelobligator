@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import date
 from typing import Any
 
@@ -4979,3 +4980,132 @@ def test_implementation_gaps_routes_and_holidays_explanations_distinguish_failur
     # "unavailable", not "not_connected".
     assert "a holidays provider is not connected" not in missing_text
     assert "the holidays provider returned no usable holiday data" in missing_text
+
+
+def test_route_feasibility_context_exists_after_generate(
+    client: TestClient, generated_trip_id: str
+) -> None:
+    response = client.get(f"/trips/{generated_trip_id}/experience-plan")
+    assert response.status_code == 200
+    experience_plan = response.json()["data"]["experience_plan"]
+
+    assert "route_feasibility_context" in experience_plan
+    route_feasibility_context = experience_plan["route_feasibility_context"]
+
+    assert set(route_feasibility_context.keys()) == {
+        "source",
+        "data_status",
+        "confidence",
+        "daily_route_feasibility",
+        "assumptions",
+        "warnings",
+    }
+
+    # No route provider is connected in this deployment, so this must stay
+    # honestly not_connected -- never a fake/estimated route feasibility.
+    assert route_feasibility_context["data_status"] == "not_connected"
+    assert route_feasibility_context["confidence"] == 0.0
+    assert route_feasibility_context["daily_route_feasibility"] == []
+    assert len(route_feasibility_context["assumptions"]) > 0
+    assert len(route_feasibility_context["warnings"]) > 0
+    assert any(
+        "no route provider is connected" in warning.lower()
+        for warning in route_feasibility_context["warnings"]
+    )
+
+    # This never marks the plan ready by itself; the deterministic test
+    # provider still leaves the plan needs_review.
+    validation_response = client.get(f"/trips/{generated_trip_id}/validation-report")
+    assert validation_response.status_code == 200
+    assert (
+        validation_response.json()["data"]["validation_report"]["readiness_status"]
+        == "needs_review"
+    )
+
+
+def test_route_feasibility_context_status_is_not_connected_without_route_provider(
+    client: TestClient, created_trip_id: str
+) -> None:
+    # No RoutesProvider adapter is wired into this deployment at all (the
+    # provider_gateway is untouched by any monkeypatch here), so
+    # route_feasibility_context must honestly reflect that.
+    generate_response = client.post(f"/trips/{created_trip_id}/generate")
+    assert generate_response.status_code == 200
+
+    response = client.get(f"/trips/{created_trip_id}/experience-plan")
+    assert response.status_code == 200
+    route_feasibility_context = response.json()["data"]["experience_plan"][
+        "route_feasibility_context"
+    ]
+    assert route_feasibility_context["data_status"] == "not_connected"
+    assert route_feasibility_context["daily_route_feasibility"] == []
+
+    coverage_response = client.get(f"/trips/{created_trip_id}/provider-coverage")
+    assert coverage_response.status_code == 200
+    assert coverage_response.json()["data"]["provider_coverage"]["routes"] == "not_connected"
+
+
+def test_route_feasibility_daily_route_feasibility_is_empty_regardless_of_other_providers(
+    client: TestClient, created_trip_id: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Even when every other provider (weather/holidays/currency) is
+    # connected, route feasibility must stay empty/not_connected -- it is a
+    # data-model foundation only, with no calculation logic yet.
+    monkeypatch.setattr(provider_gateway, "weather", _ConnectedTestWeatherProvider())
+    monkeypatch.setattr(provider_gateway, "holiday", _ConnectedTestHolidayProvider())
+    monkeypatch.setattr(provider_gateway, "currency", _ConnectedTestCurrencyProvider())
+
+    generate_response = client.post(f"/trips/{created_trip_id}/generate")
+    assert generate_response.status_code == 200
+
+    response = client.get(f"/trips/{created_trip_id}/experience-plan")
+    assert response.status_code == 200
+    route_feasibility_context = response.json()["data"]["experience_plan"][
+        "route_feasibility_context"
+    ]
+    assert route_feasibility_context["data_status"] == "not_connected"
+    assert route_feasibility_context["daily_route_feasibility"] == []
+
+
+def test_route_feasibility_readiness_checklist_stays_missing_data(
+    client: TestClient, generated_trip_id: str
+) -> None:
+    response = client.get(f"/trips/{generated_trip_id}/experience-plan")
+    assert response.status_code == 200
+    readiness_checklist = response.json()["data"]["experience_plan"]["readiness_checklist"]
+    items_by_label = _checklist_items_by_label(readiness_checklist)
+
+    # Adding the route_feasibility_context data model must not flip these
+    # to "checked" or "needs_review" -- no route provider is connected.
+    assert items_by_label["Route times checked"]["status"] == "missing_data"
+    assert items_by_label["Walking feasibility checked"]["status"] == "missing_data"
+
+
+def test_route_feasibility_context_creates_no_fake_values(
+    client: TestClient, generated_trip_id: str
+) -> None:
+    response = client.get(f"/trips/{generated_trip_id}/experience-plan")
+    assert response.status_code == 200
+    experience_plan = response.json()["data"]["experience_plan"]
+    route_feasibility_context = experience_plan["route_feasibility_context"]
+
+    assert route_feasibility_context["daily_route_feasibility"] == []
+
+    # No fake route time, distance, travel duration, walking estimate, or
+    # feasibility score is created anywhere in route_feasibility_context --
+    # since daily_route_feasibility is always empty, no RouteSegment field
+    # ever gets serialized at all. (Scoped to route_feasibility_context
+    # itself, not the whole experience_plan, since DailyPlan already has
+    # its own pre-existing, always-null estimated_travel_time_minutes/
+    # estimated_walking_km fields unrelated to this data model.)
+    serialized = json.dumps(route_feasibility_context).lower()
+    for forbidden_field in (
+        "distance_meters",
+        "duration_minutes",
+        "feasibility_score",
+        "travel_time",
+        "walking_time",
+        "driving_time",
+        "transit_time",
+    ):
+        assert forbidden_field not in serialized

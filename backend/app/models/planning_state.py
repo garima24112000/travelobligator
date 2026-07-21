@@ -324,6 +324,65 @@ class CurrencyContext(BaseModel):
     warnings: list[str] = Field(default_factory=list)
 
 
+class RouteSegment(BaseModel):
+    """One point-to-point route segment between two scheduled experiences,
+    a data-model foundation for a future real RoutesProvider
+    (docs/12_provider_architecture.md section 12). Every field is
+    provider-backed only -- until a routes provider is connected, no
+    distance, duration, or travel mode is ever invented, and no segment is
+    ever created without real provider data.
+    """
+
+    from_place_id: str | None = None
+    from_name: str | None = None
+    to_place_id: str | None = None
+    to_name: str | None = None
+    travel_mode: str | None = None
+    distance_meters: float | None = None
+    duration_minutes: float | None = None
+    source: str | None = None
+    data_status: DataStatus
+    assumptions: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+
+class DailyRouteFeasibility(BaseModel):
+    """Route/walking feasibility for one scheduled day, a data-model
+    foundation for a future real RoutesProvider
+    (docs/12_provider_architecture.md section 12). Empty `segments` and
+    `data_status=not_connected` mean route feasibility for this day has
+    not been checked -- never a straight-line distance, walking time, or
+    feasibility score presented as real route data.
+    """
+
+    day_number: int = Field(gt=0)
+    segments: list[RouteSegment] = Field(default_factory=list)
+    data_status: DataStatus
+    assumptions: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+
+class RouteFeasibilityContext(BaseModel):
+    """Plan-level route/walking feasibility context -- a data-model
+    foundation only, so the app is ready for a real RoutesProvider later
+    (docs/12_provider_architecture.md section 12,
+    docs/14_backend_architecture.md section 13). No RoutesProvider is
+    connected in this deployment, so `daily_route_feasibility` always stays
+    empty: no straight-line distance is ever presented as route distance,
+    no walking time is ever calculated, and no travel mode is ever
+    inferred. This never marks route times or walking feasibility as
+    checked in the readiness checklist, and never affects validation
+    readiness by itself.
+    """
+
+    source: str | None = None
+    data_status: DataStatus
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    daily_route_feasibility: list[DailyRouteFeasibility] = Field(default_factory=list)
+    assumptions: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+
 class TripStrategy(BaseModel):
     strategy_id: str = Field(default_factory=lambda: _new_id("trip_strategy"))
 
@@ -650,6 +709,12 @@ class ExperiencePlan(BaseModel):
     readiness_checklist: ReadinessChecklist = Field(
         default_factory=lambda: ReadinessChecklist(
             summary="Readiness checklist not yet computed."
+        )
+    )
+    route_feasibility_context: RouteFeasibilityContext = Field(
+        default_factory=lambda: RouteFeasibilityContext(
+            data_status=DataStatus.NOT_CONNECTED,
+            assumptions=["Route feasibility context not yet computed."],
         )
     )
 

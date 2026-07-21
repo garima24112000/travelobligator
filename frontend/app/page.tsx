@@ -21,6 +21,7 @@ import type {
   ImplementationGaps,
   ProviderCoverageData,
   ReadinessChecklist,
+  RouteFeasibilityContext,
   StayAreaGuidance,
   TripRequestInput,
   TripSummary,
@@ -49,6 +50,7 @@ type PlanResult = {
   decisionSummary: DecisionSummary;
   implementationGaps: ImplementationGaps;
   readinessChecklist: ReadinessChecklist;
+  routeFeasibilityContext: RouteFeasibilityContext;
   weatherContext: WeatherContext | null;
   holidayContext: HolidayContext | null;
   currencyContext: CurrencyContext | null;
@@ -511,6 +513,44 @@ function CurrencyContextSection({ currency }: { currency: CurrencyContext | null
   );
 }
 
+function RouteFeasibilitySection({
+  routeFeasibility,
+}: {
+  routeFeasibility: RouteFeasibilityContext;
+}) {
+  return (
+    <div className="rounded-2xl border border-white/10 bg-white/5 p-5">
+      <h2 className="text-lg font-semibold">Route feasibility</h2>
+      <p className="mt-1 text-sm text-slate-300">
+        Status: <span className="font-semibold">{routeFeasibility.data_status}</span>
+        {" · "}
+        Confidence: <span className="font-semibold">{routeFeasibility.confidence}</span>
+      </p>
+
+      {routeFeasibility.daily_route_feasibility.length === 0 ? (
+        <p className="mt-2 text-sm text-slate-400">
+          Route feasibility is unavailable because no route provider is connected.
+        </p>
+      ) : (
+        <ul className="mt-3 flex flex-col gap-2">
+          {routeFeasibility.daily_route_feasibility.map((day) => (
+            <li
+              key={day.day_number}
+              className="rounded-lg border border-white/10 bg-slate-900/60 p-3 text-sm"
+            >
+              Day {day.day_number}: {day.segments.length} segment(s) ·{" "}
+              {day.data_status}
+            </li>
+          ))}
+        </ul>
+      )}
+
+      <SummaryList title="Assumptions" items={routeFeasibility.assumptions} />
+      <SummaryList title="Warnings" items={routeFeasibility.warnings} />
+    </div>
+  );
+}
+
 function ValidationSection({ report }: { report: ValidationReport }) {
   const hasNothingToShow =
     report.critical_issues.length === 0 &&
@@ -811,6 +851,7 @@ export default function Home() {
         decisionSummary: experiencePlan.experience_plan.decision_summary,
         implementationGaps: experiencePlan.experience_plan.implementation_gaps,
         readinessChecklist: experiencePlan.experience_plan.readiness_checklist,
+        routeFeasibilityContext: experiencePlan.experience_plan.route_feasibility_context,
         weatherContext: destinationContext.weather_context,
         holidayContext: destinationContext.holiday_context,
         currencyContext: destinationContext.currency_context,
@@ -1120,6 +1161,8 @@ export default function Home() {
             <HolidayContextSection holiday={result.holidayContext} />
 
             <CurrencyContextSection currency={result.currencyContext} />
+
+            <RouteFeasibilitySection routeFeasibility={result.routeFeasibilityContext} />
 
             <div className="rounded-2xl border border-white/10 bg-white/5 p-5">
               <h2 className="text-lg font-semibold">Day-wise experiences</h2>

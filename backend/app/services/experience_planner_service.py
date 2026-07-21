@@ -23,6 +23,7 @@ from app.models.planning_state import (
     ReadinessChecklist,
     ReadinessChecklistItem,
     RestaurantSuggestion,
+    RouteFeasibilityContext,
     StayAreaGuidance,
     TripPace,
 )
@@ -297,6 +298,18 @@ class ExperiencePlannerService(PlanningStageService):
     invented fact, and it never marks the plan ready by itself --
     `ValidationReport.readiness_status` remains the single source of truth
     for overall readiness.
+
+    Finally, the plan gets a plan-level `route_feasibility_context`: a
+    data-model foundation only, so the app is ready for a real
+    RoutesProvider later. No routes provider is connected in this
+    deployment, so `daily_route_feasibility` always stays empty --
+    `data_status` stays `not_connected`, `confidence` stays `0.0`, and no
+    straight-line distance, walking time, transit time, driving time, or
+    feasibility score is ever calculated or presented as real route data.
+    This does not change "Route times checked"/"Walking feasibility
+    checked" in `readiness_checklist`, which already stay `missing_data`
+    from `provider_coverage.routes`, and it never affects validation
+    readiness by itself.
     """
 
     def run(self, planning_state: PlanningState) -> PlanningState:
@@ -397,6 +410,7 @@ class ExperiencePlannerService(PlanningStageService):
         readiness_checklist = _build_readiness_checklist(
             planning_state, candidate_pois, candidate_restaurants, candidate_accommodation_pois
         )
+        route_feasibility_context = _build_route_feasibility_context()
 
         experience_plan = ExperiencePlan(
             daily_plans=daily_plans,
@@ -404,6 +418,7 @@ class ExperiencePlannerService(PlanningStageService):
             decision_summary=decision_summary,
             implementation_gaps=implementation_gaps,
             readiness_checklist=readiness_checklist,
+            route_feasibility_context=route_feasibility_context,
             provider_coverage=planning_state.provider_coverage.model_copy(),
             assumptions=assumptions,
             confidence=0.35 if candidate_pois else 0.0,
@@ -1312,6 +1327,33 @@ def _build_readiness_checklist(
     )
 
     return ReadinessChecklist(summary=summary, items=items)
+
+
+def _build_route_feasibility_context() -> RouteFeasibilityContext:
+    """Plan-level route/walking feasibility context -- a data-model
+    foundation only, so the app is ready for a real RoutesProvider later
+    (docs/12_provider_architecture.md section 12). No routes provider is
+    connected in this deployment, so `daily_route_feasibility` always
+    stays empty: no straight-line distance is ever presented as route
+    distance, no walking time is ever calculated, and no travel mode is
+    ever inferred. This never marks route times or walking feasibility as
+    checked in `readiness_checklist`, and never affects validation
+    readiness by itself.
+    """
+    return RouteFeasibilityContext(
+        source="routes_provider",
+        data_status=DataStatus.NOT_CONNECTED,
+        confidence=0.0,
+        daily_route_feasibility=[],
+        assumptions=[
+            "Route feasibility is a data-model foundation only; no route provider is "
+            "connected yet, so no real route time, walking distance, transit time, "
+            "driving time, or feasibility score has been calculated."
+        ],
+        warnings=[
+            "Route feasibility is not available because no route provider is connected."
+        ],
+    )
 
 
 def _build_experience_item(

@@ -233,6 +233,37 @@ export type ReadinessChecklist = {
   items: ReadinessChecklistItem[];
 };
 
+export type RouteSegment = {
+  from_place_id: string | null;
+  from_name: string | null;
+  to_place_id: string | null;
+  to_name: string | null;
+  travel_mode: string | null;
+  distance_meters: number | null;
+  duration_minutes: number | null;
+  source: string | null;
+  data_status: string;
+  assumptions: string[];
+  warnings: string[];
+};
+
+export type DailyRouteFeasibility = {
+  day_number: number;
+  segments: RouteSegment[];
+  data_status: string;
+  assumptions: string[];
+  warnings: string[];
+};
+
+export type RouteFeasibilityContext = {
+  source: string | null;
+  data_status: string;
+  confidence: number;
+  daily_route_feasibility: DailyRouteFeasibility[];
+  assumptions: string[];
+  warnings: string[];
+};
+
 export type ExperiencePlanData = {
   trip_id: string;
   experience_plan: {
@@ -241,6 +272,7 @@ export type ExperiencePlanData = {
     decision_summary: DecisionSummary;
     implementation_gaps: ImplementationGaps;
     readiness_checklist: ReadinessChecklist;
+    route_feasibility_context: RouteFeasibilityContext;
     assumptions: string[];
     confidence: number;
   };
