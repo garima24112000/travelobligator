@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -12,6 +13,7 @@ from app.providers.base import PlacesProvider
 from app.providers.gateway import provider_gateway
 from app.repositories.planning_state_repository import planning_state_repository
 from app.repositories.trip_repository import trip_repository
+from app.storage.local_json_store import LocalJsonStore
 
 
 class DeterministicTestPlacesProvider(PlacesProvider):
@@ -85,10 +87,20 @@ def _deterministic_places_provider(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
-def _reset_in_memory_repositories() -> None:
-    """Keep the in-memory repositories isolated between test functions."""
-    planning_state_repository._states.clear()
-    trip_repository._trips.clear()
+def _reset_in_memory_repositories(tmp_path: Path) -> None:
+    """Isolate the trip/planning-state repositories between test functions.
+
+    Points both module-level repository singletons at a fresh temporary
+    JSON file (shared between them, matching how they share the real
+    storage file in app.core.config.Settings.local_storage_path) instead of
+    the real local development storage file, so test runs never read or
+    write persistent project data under backend/.data/.
+    """
+    test_store = LocalJsonStore(tmp_path / "test_travelobligator_state.json")
+    trip_repository._store = test_store
+    trip_repository._trips = {}
+    planning_state_repository._store = test_store
+    planning_state_repository._states = {}
     yield
 
 

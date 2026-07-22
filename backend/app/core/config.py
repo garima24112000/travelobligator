@@ -1,6 +1,13 @@
 from functools import lru_cache
+from pathlib import Path
+
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# backend/app/core/config.py -> parents[2] is the backend/ project root, so
+# a relative local_storage_path resolves the same way whether the app is
+# started from backend/ (local dev, Docker WORKDIR) or from the repo root.
+_BACKEND_ROOT = Path(__file__).resolve().parents[2]
 
 
 class Settings(BaseSettings):
@@ -56,11 +63,26 @@ class Settings(BaseSettings):
     use_real_providers: bool = Field(default=True, alias="USE_REAL_PROVIDERS")
     allow_mock_travel_facts: bool = Field(default=False, alias="ALLOW_MOCK_TRAVEL_FACTS")
 
+    local_storage_path: str = Field(
+        default=".data/travelobligator_state.json",
+        alias="LOCAL_STORAGE_PATH",
+    )
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
         extra="ignore",
     )
+
+    def resolved_local_storage_path(self) -> Path:
+        """Local development storage path, not a production database.
+
+        Resolved against the backend project root (not the process's
+        current working directory) so the default value works the same way
+        regardless of where the app was started from.
+        """
+        path = Path(self.local_storage_path)
+        return path if path.is_absolute() else _BACKEND_ROOT / path
 
 
 @lru_cache

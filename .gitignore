@@ -45,6 +45,9 @@ venv/
 .mypy_cache/
 .ruff_cache/
 
+# Local backend persistence (file-backed dev storage, not a database)
+.data/
+
 # Vercel
 .vercel/
 

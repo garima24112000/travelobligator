@@ -539,6 +539,44 @@ Implementation should happen in this order:
 
 ---
 
+## 12a. Local Development Persistence (Interim, Pre-Database)
+
+Before PostgreSQL persistence (see section 11 and step 17 of section 12) is
+implemented, trip and planning-state repositories persist to a local JSON
+file so data survives backend reloads during local development:
+
+```text
+backend/.data/travelobligator_state.json
+```
+
+Key points:
+
+- File-backed only, Python standard library only (`json`, `tempfile`,
+  `os.replace`). No cloud database, no external services, no auth.
+- The file holds two top-level collections, `trips` and `planning_states`,
+  keyed by `trip_id`. Records are the same Pydantic models used everywhere
+  else, serialized with `model_dump(mode="json")` and rehydrated with
+  `model_validate`.
+- Writes are atomic: a temp file is written in the same directory and then
+  swapped into place with `os.replace`, so a crash mid-write cannot corrupt
+  the file. A missing file is treated as empty storage. A file that exists
+  but is not valid JSON raises a clear error instead of being silently
+  replaced -- the persistence layer never fabricates data to paper over a
+  corrupt file.
+- The storage path is configurable via `LOCAL_STORAGE_PATH` (see
+  `app/core/config.py`); the default is safe for local development and
+  resolves relative to the backend project root regardless of the process's
+  working directory.
+- `backend/.data/` is local-only and is `.gitignore`d. It is not part of the
+  product's data model and is not shared between developers or environments.
+- This is **not** production persistence: no multi-worker/multi-process
+  coordination, no migrations, no user accounts, no auth. It exists purely
+  so a single local developer doesn't lose in-progress trips when the
+  backend process restarts. The PostgreSQL plan in section 11 remains the
+  intended production replacement.
+
+---
+
 ## 13. Design Principles
 
 - PlanningState is the source of truth.
