@@ -291,6 +291,119 @@ const CHECKLIST_STATUS_GROUPS: { title: string; status: ChecklistItemStatus }[] 
   { title: "Not implemented", status: "not_implemented" },
 ];
 
+function trustSummaryAnswer(validationStatus: string | null): string {
+  if (validationStatus === "ready") {
+    return "This plan has passed the current validation checks, but you should still confirm real-world details before travel.";
+  }
+  if (validationStatus === "needs_review") {
+    return "Use this as a planning draft, not a final itinerary yet.";
+  }
+  if (validationStatus === "blocked") {
+    return "Do not use this as an itinerary yet because required provider-backed data is missing.";
+  }
+  return "Plan readiness is not available yet.";
+}
+
+function UserTrustSummarySection({
+  validationStatus,
+  checklist,
+  validationReport,
+}: {
+  validationStatus: string | null;
+  checklist: ReadinessChecklist;
+  validationReport: ValidationReport;
+}) {
+  const reliableNow = checklist.items.filter(
+    (item) => item.status === "checked",
+  );
+  const needsReview = checklist.items.filter(
+    (item) => item.status === "needs_review",
+  );
+  const missingOrNotImplemented = checklist.items.filter(
+    (item) =>
+      item.status === "missing_data" || item.status === "not_implemented",
+  );
+
+  return (
+    <div className="rounded-2xl border border-white/10 bg-white/5 p-5">
+      <h2 className="text-lg font-semibold">Can I use this plan?</h2>
+      <p className="mt-2 text-sm text-slate-300">
+        {trustSummaryAnswer(validationStatus)}
+      </p>
+
+      <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
+        <div className="rounded-lg border border-white/10 bg-slate-900/60 p-3">
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-emerald-300/90">
+            Reliable right now
+          </p>
+          {reliableNow.length === 0 ? (
+            <p className="mt-2 text-xs text-slate-400">
+              No checklist items are fully checked yet.
+            </p>
+          ) : (
+            <ul className="mt-2 list-disc pl-4 text-xs text-slate-300">
+              {reliableNow.map((item, index) => (
+                <li key={`${item.label}-${index}`}>{item.label}</li>
+              ))}
+            </ul>
+          )}
+        </div>
+
+        <div className="rounded-lg border border-white/10 bg-slate-900/60 p-3">
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-amber-300/90">
+            Needs review
+          </p>
+          {needsReview.length === 0 ? (
+            <p className="mt-2 text-xs text-slate-400">
+              No checklist items are currently marked as needs review.
+            </p>
+          ) : (
+            <ul className="mt-2 list-disc pl-4 text-xs text-slate-300">
+              {needsReview.map((item, index) => (
+                <li key={`${item.label}-${index}`}>{item.label}</li>
+              ))}
+            </ul>
+          )}
+        </div>
+
+        <div className="rounded-lg border border-white/10 bg-slate-900/60 p-3">
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-red-300/90">
+            Missing or not implemented
+          </p>
+          {missingOrNotImplemented.length === 0 ? (
+            <p className="mt-2 text-xs text-slate-400">
+              No checklist items are currently missing or not implemented.
+            </p>
+          ) : (
+            <ul className="mt-2 list-disc pl-4 text-xs text-slate-300">
+              {missingOrNotImplemented.map((item, index) => (
+                <li key={`${item.label}-${index}`}>{item.label}</li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </div>
+
+      <p className="mt-4 text-xs text-slate-400">
+        Critical issues:{" "}
+        <span className="font-semibold text-slate-200">
+          {validationReport.critical_issues.length}
+        </span>
+        {" · "}
+        Warnings:{" "}
+        <span className="font-semibold text-slate-200">
+          {validationReport.warnings.length}
+        </span>
+      </p>
+
+      <p className="mt-3 text-[11px] text-slate-500">
+        This summary is derived from backend validation and provider
+        coverage. It does not add new travel facts.
+      </p>
+    </div>
+  );
+}
+
 function planStatusMessage(validationStatus: string | null): string {
   if (validationStatus === "blocked") {
     return "This plan is blocked because required provider-backed data is missing. Do not use it as an itinerary yet.";
@@ -1095,6 +1208,58 @@ function ProviderCoverageSection({ coverage }: { coverage: ProviderCoverageData 
   );
 }
 
+function ResultGroupHeader({
+  id,
+  title,
+  description,
+}: {
+  id?: string;
+  title: string;
+  description: string;
+}) {
+  return (
+    <div id={id} className="mt-2 scroll-mt-6 border-b border-white/10 pb-2">
+      <p className="text-xs font-semibold uppercase tracking-[0.2em] text-cyan-300/80">
+        {title}
+      </p>
+      <p className="mt-1 text-xs text-slate-400">{description}</p>
+    </div>
+  );
+}
+
+const RESULT_JUMP_LINKS: { id: string; label: string }[] = [
+  { id: "plan-overview", label: "Plan overview" },
+  { id: "travel-context", label: "Travel context" },
+  { id: "draft-itinerary", label: "Draft itinerary" },
+  { id: "review-required", label: "Review required" },
+  { id: "data-sources", label: "Data sources" },
+];
+
+function ResultJumpLinks() {
+  return (
+    <nav
+      aria-label="Jump to result section"
+      className="rounded-2xl border border-white/10 bg-white/5 p-4"
+    >
+      <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+        Jump to
+      </p>
+      <ul className="mt-2 flex flex-wrap gap-2">
+        {RESULT_JUMP_LINKS.map((link) => (
+          <li key={link.id}>
+            <a
+              href={`#${link.id}`}
+              className="inline-block rounded-full border border-white/10 bg-slate-900/60 px-3 py-1 text-xs text-cyan-200 hover:border-cyan-300/40 hover:text-cyan-100"
+            >
+              {link.label}
+            </a>
+          </li>
+        ))}
+      </ul>
+    </nav>
+  );
+}
+
 export default function Home() {
   const [form, setForm] = useState<TripRequestInput>(DEFAULT_TRIP_REQUEST);
   const [interestsText, setInterestsText] = useState("");
@@ -1445,9 +1610,29 @@ export default function Home() {
               </dl>
             </div>
 
+            <ResultJumpLinks />
+
+            <ResultGroupHeader
+              id="plan-overview"
+              title="Plan overview"
+              description="Start here. This section explains whether the generated plan is usable as a draft and what still needs review."
+            />
+
+            <UserTrustSummarySection
+              validationStatus={result.summary.validation_status}
+              checklist={result.readinessChecklist}
+              validationReport={result.validationReport}
+            />
+
             <PlanStatusSection
               validationStatus={result.summary.validation_status}
               checklist={result.readinessChecklist}
+            />
+
+            <ResultGroupHeader
+              id="travel-context"
+              title="Travel context"
+              description="Provider-backed context that may affect planning, but does not automatically make the itinerary final."
             />
 
             <WeatherContextSection weather={result.weatherContext} />
@@ -1457,6 +1642,12 @@ export default function Home() {
             <CurrencyContextSection currency={result.currencyContext} />
 
             <RouteFeasibilitySection routeFeasibility={result.routeFeasibilityContext} />
+
+            <ResultGroupHeader
+              id="draft-itinerary"
+              title="Draft itinerary"
+              description="Scheduled places, map previews, and nearby open-data suggestions generated from backend-returned data."
+            />
 
             <div className="rounded-2xl border border-white/10 bg-white/5 p-5">
               <h2 className="text-lg font-semibold">Day-wise experiences</h2>
@@ -1563,6 +1754,12 @@ export default function Home() {
 
             <StayAreaGuidanceSection guidance={result.stayAreaGuidance} />
 
+            <ResultGroupHeader
+              id="review-required"
+              title="Why this needs review"
+              description="Decision explanations, implementation gaps, readiness checklist, validation report, and assumptions."
+            />
+
             <DecisionSummarySection summary={result.decisionSummary} />
 
             <ImplementationGapsSection gaps={result.implementationGaps} />
@@ -1576,6 +1773,12 @@ export default function Home() {
               destinationConfidence={result.destinationConfidence}
               experienceAssumptions={result.experienceAssumptions}
               experienceConfidence={result.experienceConfidence}
+            />
+
+            <ResultGroupHeader
+              id="data-sources"
+              title="Data sources and candidates"
+              description="Provider coverage and raw candidate places used to build the draft plan."
             />
 
             <ProviderCoverageSection coverage={result.providerCoverage} />
