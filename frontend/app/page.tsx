@@ -120,6 +120,35 @@ function ValidationIssueList({
   );
 }
 
+function StayAreaAccommodationCard({
+  accommodation,
+}: {
+  accommodation: AccommodationSuggestion;
+}) {
+  return (
+    <li className="rounded-lg border border-white/10 bg-slate-900/60 p-3 text-sm">
+      <p className="font-medium text-slate-100">
+        {accommodation.name}
+        {accommodation.category && (
+          <span className="font-normal text-slate-400">
+            {" "}
+            ({accommodation.category})
+          </span>
+        )}
+      </p>
+      {accommodation.address && (
+        <p className="mt-1 text-xs text-slate-400">{accommodation.address}</p>
+      )}
+      <p className="mt-1 text-[11px] uppercase tracking-wide text-slate-500">
+        {accommodation.source} · {accommodation.data_status}
+      </p>
+      <p className="mt-1 text-xs text-slate-400">
+        {accommodation.why_suggested}
+      </p>
+    </li>
+  );
+}
+
 function StayAreaGuidanceSection({
   guidance,
 }: {
@@ -132,6 +161,11 @@ function StayAreaGuidanceSection({
         Open-data accommodation location candidates only, not bookable
         inventory.
       </p>
+      <p className="mt-1 text-xs text-amber-300/90">
+        Stay-area guidance uses open-data accommodation POI locations and
+        scheduled attraction proximity only. It does not confirm hotel
+        price, availability, rating, safety, or booking suitability.
+      </p>
       <p className="mt-2 text-sm text-slate-300">{guidance.summary}</p>
 
       {guidance.suggested_anchor_accommodation_pois.length === 0 ? (
@@ -142,26 +176,10 @@ function StayAreaGuidanceSection({
         <ul className="mt-3 flex flex-col gap-2">
           {guidance.suggested_anchor_accommodation_pois.map(
             (accommodation, index) => (
-              <li
+              <StayAreaAccommodationCard
                 key={`${accommodation.name}-${index}`}
-                className="rounded-lg border border-white/10 bg-slate-900/60 p-3 text-sm"
-              >
-                <span className="font-medium">{accommodation.name}</span>
-                {accommodation.category && (
-                  <span className="text-slate-400"> ({accommodation.category})</span>
-                )}
-                {accommodation.address && (
-                  <p className="text-xs text-slate-400">
-                    {accommodation.address}
-                  </p>
-                )}
-                <p className="mt-1 text-[11px] uppercase tracking-wide text-slate-500">
-                  {accommodation.source} · {accommodation.data_status}
-                </p>
-                <p className="mt-1 text-xs text-slate-400">
-                  {accommodation.why_suggested}
-                </p>
-              </li>
+                accommodation={accommodation}
+              />
             ),
           )}
         </ul>
