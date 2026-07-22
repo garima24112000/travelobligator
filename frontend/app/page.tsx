@@ -707,6 +707,54 @@ function ExperienceMapLinks({ coordinates }: { coordinates: GeoPoint | null }) {
   );
 }
 
+/**
+ * Compact card for a single scheduled experience. `orderNumber` is the
+ * full-day itinerary position (1-based index into the day's `experiences`
+ * array), matching the numbering used by `DayMapPreview`'s markers -- not a
+ * renumbering of only coordinate-backed items.
+ */
+function ScheduledExperienceCard({
+  experience,
+  orderNumber,
+}: {
+  experience: ExperienceItem;
+  orderNumber: number;
+}) {
+  const hasCoordinates = experience.coordinates !== null;
+
+  return (
+    <li className="rounded-lg border border-white/10 bg-slate-900/60 p-3 text-sm">
+      <div className="flex items-start gap-3">
+        <span className="flex h-6 w-6 flex-none items-center justify-center rounded-full border border-cyan-300/40 bg-slate-950 text-xs font-semibold text-cyan-200">
+          {orderNumber}
+        </span>
+        <div className="min-w-0 flex-1">
+          <p className="font-medium text-slate-100">
+            {experience.name}{" "}
+            <span className="font-normal text-slate-400">
+              ({experience.category})
+            </span>
+          </p>
+          {experience.why_included && (
+            <p className="mt-1 text-xs text-slate-400">
+              {experience.why_included}
+            </p>
+          )}
+          <p className="mt-2 text-[11px] uppercase tracking-wide text-slate-500">
+            {hasCoordinates ? "Coordinates available" : "Coordinates unavailable"}
+          </p>
+          <div className="mt-1">
+            <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+              Open location
+            </p>
+            <ExperienceMapLinks coordinates={experience.coordinates} />
+          </div>
+        </div>
+      </div>
+    </li>
+  );
+}
+
 function ValidationSection({ report }: { report: ValidationReport }) {
   const hasNothingToShow =
     report.critical_issues.length === 0 &&
@@ -1345,34 +1393,23 @@ export default function Home() {
                         No experiences scheduled for this day.
                       </p>
                     ) : (
-                      <ul className="mt-2 flex flex-col gap-2">
-                        {day.experiences.map((experience) => (
-                          <li
-                            key={experience.experience_id}
-                            className="text-sm text-slate-200"
-                          >
-                            <span className="font-medium">
-                              {experience.name}
-                            </span>{" "}
-                            <span className="text-slate-400">
-                              ({experience.category})
-                            </span>
-                            {experience.why_included && (
-                              <p className="text-xs text-slate-400">
-                                {experience.why_included}
-                              </p>
-                            )}
-                            <div className="mt-1">
-                              <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
-                                Open location
-                              </p>
-                              <ExperienceMapLinks
-                                coordinates={experience.coordinates}
-                              />
-                            </div>
-                          </li>
-                        ))}
-                      </ul>
+                      <>
+                        <ul className="mt-2 flex flex-col gap-2">
+                          {day.experiences.map((experience, index) => (
+                            <ScheduledExperienceCard
+                              key={experience.experience_id}
+                              experience={experience}
+                              orderNumber={index + 1}
+                            />
+                          ))}
+                        </ul>
+                        <p className="mt-2 text-[11px] text-slate-500">
+                          Scheduled place cards use backend-returned
+                          provider-backed fields only. They do not include
+                          ratings, prices, opening hours, duration, or route
+                          timing yet.
+                        </p>
+                      </>
                     )}
                     <DayMapPreview experiences={day.experiences} />
                     {day.restaurant_suggestions.length > 0 && (
