@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, status
 
-from app.core.errors import AppError
+from app.core.errors import AppError, trip_not_found_error
 from app.core.response import success_response
 from app.models.common import ReadinessStatus
 from app.models.planning_state import TripRequest
@@ -38,12 +38,7 @@ def create_trip(trip_request: TripRequest) -> ApiResponse[TripResponseData]:
 def get_trip(trip_id: str) -> ApiResponse[TripResponseData]:
     planning_state = planning_state_repository.get_by_trip_id(trip_id)
     if planning_state is None:
-        raise AppError(
-            code=ErrorCode.TRIP_NOT_FOUND,
-            message=f"Trip '{trip_id}' was not found.",
-            status_code=status.HTTP_404_NOT_FOUND,
-            field="trip_id",
-        )
+        raise trip_not_found_error(trip_id)
 
     data = TripResponseData(trip_id=trip_id, planning_state=planning_state)
     return success_response(data)
@@ -66,12 +61,7 @@ def generate_trip_plan(trip_id: str) -> ApiResponse[TripResponseData]:
 def get_destination_context(trip_id: str) -> ApiResponse[DestinationContextResponseData]:
     planning_state = planning_state_repository.get_by_trip_id(trip_id)
     if planning_state is None:
-        raise AppError(
-            code=ErrorCode.TRIP_NOT_FOUND,
-            message=f"Trip '{trip_id}' was not found.",
-            status_code=status.HTTP_404_NOT_FOUND,
-            field="trip_id",
-        )
+        raise trip_not_found_error(trip_id)
 
     if planning_state.destination_context is None:
         raise AppError(
@@ -104,12 +94,7 @@ def get_destination_context(trip_id: str) -> ApiResponse[DestinationContextRespo
 def get_experience_plan(trip_id: str) -> ApiResponse[ExperiencePlanResponseData]:
     planning_state = planning_state_repository.get_by_trip_id(trip_id)
     if planning_state is None:
-        raise AppError(
-            code=ErrorCode.TRIP_NOT_FOUND,
-            message=f"Trip '{trip_id}' was not found.",
-            status_code=status.HTTP_404_NOT_FOUND,
-            field="trip_id",
-        )
+        raise trip_not_found_error(trip_id)
 
     if planning_state.experience_plan is None:
         raise AppError(
@@ -140,12 +125,7 @@ def get_experience_plan(trip_id: str) -> ApiResponse[ExperiencePlanResponseData]
 def get_validation_report(trip_id: str) -> ApiResponse[ValidationReportResponseData]:
     planning_state = planning_state_repository.get_by_trip_id(trip_id)
     if planning_state is None:
-        raise AppError(
-            code=ErrorCode.TRIP_NOT_FOUND,
-            message=f"Trip '{trip_id}' was not found.",
-            status_code=status.HTTP_404_NOT_FOUND,
-            field="trip_id",
-        )
+        raise trip_not_found_error(trip_id)
 
     if planning_state.validation_report is None:
         raise AppError(
@@ -175,12 +155,7 @@ def get_validation_report(trip_id: str) -> ApiResponse[ValidationReportResponseD
 def get_trip_summary(trip_id: str) -> ApiResponse[TripSummaryResponseData]:
     planning_state = planning_state_repository.get_by_trip_id(trip_id)
     if planning_state is None:
-        raise AppError(
-            code=ErrorCode.TRIP_NOT_FOUND,
-            message=f"Trip '{trip_id}' was not found.",
-            status_code=status.HTTP_404_NOT_FOUND,
-            field="trip_id",
-        )
+        raise trip_not_found_error(trip_id)
 
     destination_context = planning_state.destination_context
     experience_plan = planning_state.experience_plan
@@ -245,12 +220,7 @@ def get_trip_summary(trip_id: str) -> ApiResponse[TripSummaryResponseData]:
 def get_provider_coverage(trip_id: str) -> ApiResponse[ProviderCoverageResponseData]:
     planning_state = planning_state_repository.get_by_trip_id(trip_id)
     if planning_state is None:
-        raise AppError(
-            code=ErrorCode.TRIP_NOT_FOUND,
-            message=f"Trip '{trip_id}' was not found.",
-            status_code=status.HTTP_404_NOT_FOUND,
-            field="trip_id",
-        )
+        raise trip_not_found_error(trip_id)
 
     data = ProviderCoverageResponseData(
         trip_id=trip_id,

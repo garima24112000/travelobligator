@@ -5109,3 +5109,59 @@ def test_route_feasibility_context_creates_no_fake_values(
         "transit_time",
     ):
         assert forbidden_field not in serialized
+
+
+_EXPECTED_TRIP_NOT_FOUND_MESSAGE = "Trip 'does-not-exist' was not found."
+
+
+def _assert_trip_not_found_response(response) -> None:  # type: ignore[no-untyped-def]
+    assert response.status_code == 404
+    body = response.json()
+    assert_api_response_shape(body)
+    assert body["success"] is False
+    assert body["data"] is None
+    # Both the top-level message and errors[0].message must have correct,
+    # consistent spacing -- "Trip 'does-not-exist' was not found.", never
+    # "Trip 'does-not-exist'was not found." or "...wasnot found.".
+    assert body["message"] == _EXPECTED_TRIP_NOT_FOUND_MESSAGE
+    assert body["errors"][0]["message"] == _EXPECTED_TRIP_NOT_FOUND_MESSAGE
+    assert body["errors"][0]["code"] == "TRIP_NOT_FOUND"
+    assert body["errors"][0]["field"] == "trip_id"
+
+
+def test_get_trip_not_found_message_has_correct_spacing(client: TestClient) -> None:
+    _assert_trip_not_found_response(client.get("/trips/does-not-exist"))
+
+
+def test_generate_trip_not_found_message_has_correct_spacing(client: TestClient) -> None:
+    _assert_trip_not_found_response(client.post("/trips/does-not-exist/generate"))
+
+
+def test_destination_context_trip_not_found_message_has_correct_spacing(
+    client: TestClient,
+) -> None:
+    _assert_trip_not_found_response(client.get("/trips/does-not-exist/destination-context"))
+
+
+def test_experience_plan_trip_not_found_message_has_correct_spacing(
+    client: TestClient,
+) -> None:
+    _assert_trip_not_found_response(client.get("/trips/does-not-exist/experience-plan"))
+
+
+def test_validation_report_trip_not_found_message_has_correct_spacing(
+    client: TestClient,
+) -> None:
+    _assert_trip_not_found_response(client.get("/trips/does-not-exist/validation-report"))
+
+
+def test_trip_summary_trip_not_found_message_has_correct_spacing(
+    client: TestClient,
+) -> None:
+    _assert_trip_not_found_response(client.get("/trips/does-not-exist/summary"))
+
+
+def test_provider_coverage_trip_not_found_message_has_correct_spacing(
+    client: TestClient,
+) -> None:
+    _assert_trip_not_found_response(client.get("/trips/does-not-exist/provider-coverage"))

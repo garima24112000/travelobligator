@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-from fastapi import status
-
-from app.core.errors import AppError
+from app.core.errors import trip_not_found_error
 from app.models.planning_state import PipelineStatus, PlanningStage, PlanningState, TripRequest
 from app.providers.gateway import provider_gateway
 from app.repositories.planning_state_repository import (
@@ -10,7 +8,6 @@ from app.repositories.planning_state_repository import (
     planning_state_repository,
 )
 from app.repositories.trip_repository import TripRepository, trip_repository
-from app.schemas.errors import ErrorCode
 from app.services.destination_context_service import DestinationContextService
 from app.services.experience_planner_service import ExperiencePlannerService
 from app.services.feedback_service import FeedbackService
@@ -114,12 +111,7 @@ class PlanningOrchestrator:
     def generate_full_plan(self, trip_id: str, force_regenerate: bool = False) -> PlanningState:
         planning_state = self.planning_state_repository.get_by_trip_id(trip_id)
         if planning_state is None:
-            raise AppError(
-                code=ErrorCode.TRIP_NOT_FOUND,
-                message=f"Trip '{trip_id}' was not found.",
-                status_code=status.HTTP_404_NOT_FOUND,
-                field="trip_id",
-            )
+            raise trip_not_found_error(trip_id)
 
         planning_state.set_pipeline_status(PipelineStatus.GENERATING)
         self.planning_state_repository.save(planning_state)
@@ -159,12 +151,7 @@ class PlanningOrchestrator:
     def apply_feedback(self, trip_id: str, feedback_text: str) -> PlanningState:
         planning_state = self.planning_state_repository.get_by_trip_id(trip_id)
         if planning_state is None:
-            raise AppError(
-                code=ErrorCode.TRIP_NOT_FOUND,
-                message=f"Trip '{trip_id}' was not found.",
-                status_code=status.HTTP_404_NOT_FOUND,
-                field="trip_id",
-            )
+            raise trip_not_found_error(trip_id)
 
         planning_state = self.feedback_service.apply_feedback(planning_state, feedback_text)
         self.planning_state_repository.save(planning_state)
