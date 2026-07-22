@@ -13,6 +13,7 @@ import {
   getValidationReport,
 } from "@/lib/api";
 import type {
+  AccommodationSuggestion,
   CandidatePoi,
   ChecklistItemStatus,
   CurrencyContext,
@@ -24,6 +25,7 @@ import type {
   ImplementationGaps,
   ProviderCoverageData,
   ReadinessChecklist,
+  RestaurantSuggestion,
   RouteFeasibilityContext,
   StayAreaGuidance,
   TripRequestInput,
@@ -755,6 +757,64 @@ function ScheduledExperienceCard({
   );
 }
 
+function RestaurantSuggestionCard({
+  restaurant,
+}: {
+  restaurant: RestaurantSuggestion;
+}) {
+  return (
+    <li className="rounded-lg border border-white/10 bg-slate-900/60 p-3 text-sm">
+      <p className="font-medium text-slate-100">
+        {restaurant.name}
+        {restaurant.category && (
+          <span className="font-normal text-slate-400">
+            {" "}
+            ({restaurant.category})
+          </span>
+        )}
+      </p>
+      {restaurant.address && (
+        <p className="mt-1 text-xs text-slate-400">{restaurant.address}</p>
+      )}
+      <p className="mt-1 text-[11px] uppercase tracking-wide text-slate-500">
+        {restaurant.source} · {restaurant.data_status}
+      </p>
+      <p className="mt-1 text-xs text-slate-400">
+        {restaurant.why_suggested}
+      </p>
+    </li>
+  );
+}
+
+function AccommodationSuggestionCard({
+  accommodation,
+}: {
+  accommodation: AccommodationSuggestion;
+}) {
+  return (
+    <li className="rounded-lg border border-white/10 bg-slate-900/60 p-3 text-sm">
+      <p className="font-medium text-slate-100">
+        {accommodation.name}
+        {accommodation.category && (
+          <span className="font-normal text-slate-400">
+            {" "}
+            ({accommodation.category})
+          </span>
+        )}
+      </p>
+      {accommodation.address && (
+        <p className="mt-1 text-xs text-slate-400">{accommodation.address}</p>
+      )}
+      <p className="mt-1 text-[11px] uppercase tracking-wide text-slate-500">
+        {accommodation.source} · {accommodation.data_status}
+      </p>
+      <p className="mt-1 text-xs text-slate-400">
+        {accommodation.why_suggested}
+      </p>
+    </li>
+  );
+}
+
 function ValidationSection({ report }: { report: ValidationReport }) {
   const hasNothingToShow =
     report.critical_issues.length === 0 &&
@@ -1417,33 +1477,18 @@ export default function Home() {
                         <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">
                           Nearby restaurant suggestions
                         </p>
-                        <ul className="mt-1 flex flex-col gap-2">
+                        <p className="mt-1 text-xs text-amber-300/90">
+                          Restaurant suggestions are provider-backed location
+                          candidates only. They are not reservations,
+                          ratings, prices, opening-hours checks, or route
+                          recommendations.
+                        </p>
+                        <ul className="mt-2 flex flex-col gap-2">
                           {day.restaurant_suggestions.map((restaurant, index) => (
-                            <li
+                            <RestaurantSuggestionCard
                               key={`${restaurant.name}-${index}`}
-                              className="text-sm text-slate-200"
-                            >
-                              <span className="font-medium">
-                                {restaurant.name}
-                              </span>
-                              {restaurant.category && (
-                                <span className="text-slate-400">
-                                  {" "}
-                                  ({restaurant.category})
-                                </span>
-                              )}
-                              {restaurant.address && (
-                                <p className="text-xs text-slate-400">
-                                  {restaurant.address}
-                                </p>
-                              )}
-                              <p className="text-[11px] uppercase tracking-wide text-slate-500">
-                                {restaurant.source} · {restaurant.data_status}
-                              </p>
-                              <p className="text-xs text-slate-400">
-                                {restaurant.why_suggested}
-                              </p>
-                            </li>
+                              restaurant={restaurant}
+                            />
                           ))}
                         </ul>
                       </div>
@@ -1457,33 +1502,18 @@ export default function Home() {
                           Open-data location candidates only, not bookable
                           inventory.
                         </p>
-                        <ul className="mt-1 flex flex-col gap-2">
+                        <p className="mt-1 text-xs text-amber-300/90">
+                          Accommodation POI suggestions are open-data
+                          location candidates only. They are not hotel
+                          prices, availability, ratings, booking links, or
+                          final stay recommendations.
+                        </p>
+                        <ul className="mt-2 flex flex-col gap-2">
                           {day.accommodation_suggestions.map((accommodation, index) => (
-                            <li
+                            <AccommodationSuggestionCard
                               key={`${accommodation.name}-${index}`}
-                              className="text-sm text-slate-200"
-                            >
-                              <span className="font-medium">
-                                {accommodation.name}
-                              </span>
-                              {accommodation.category && (
-                                <span className="text-slate-400">
-                                  {" "}
-                                  ({accommodation.category})
-                                </span>
-                              )}
-                              {accommodation.address && (
-                                <p className="text-xs text-slate-400">
-                                  {accommodation.address}
-                                </p>
-                              )}
-                              <p className="text-[11px] uppercase tracking-wide text-slate-500">
-                                {accommodation.source} · {accommodation.data_status}
-                              </p>
-                              <p className="text-xs text-slate-400">
-                                {accommodation.why_suggested}
-                              </p>
-                            </li>
+                              accommodation={accommodation}
+                            />
                           ))}
                         </ul>
                       </div>
