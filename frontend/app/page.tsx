@@ -19,6 +19,7 @@ import type {
   DailyPlan,
   DecisionSummary,
   ExperienceItem,
+  GeoPoint,
   HolidayContext,
   ImplementationGaps,
   ProviderCoverageData,
@@ -663,6 +664,49 @@ function DayMapPreview({ experiences }: { experiences: ExperienceItem[] }) {
   );
 }
 
+/**
+ * Handoff links for a single scheduled experience's provider-backed
+ * coordinates. These open the place location only -- never a route,
+ * walking-directions, travel-time, or booking link. Renders the
+ * unavailable message instead of a link when coordinates are missing,
+ * rather than falling back to a name-only map search.
+ */
+function ExperienceMapLinks({ coordinates }: { coordinates: GeoPoint | null }) {
+  if (!coordinates) {
+    return (
+      <p className="mt-1 text-xs text-slate-500">
+        Map links unavailable because this scheduled place has no
+        provider-backed coordinates.
+      </p>
+    );
+  }
+
+  const { lat, lng } = coordinates;
+  const googleMapsUrl = `https://www.google.com/maps/search/?api=1&query=${lat},${lng}`;
+  const openStreetMapUrl = `https://www.openstreetmap.org/?mlat=${lat}&mlon=${lng}#map=16/${lat}/${lng}`;
+
+  return (
+    <p className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs">
+      <a
+        href={googleMapsUrl}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="text-cyan-300 underline decoration-cyan-300/40 underline-offset-2 hover:text-cyan-200"
+      >
+        Open in Google Maps
+      </a>
+      <a
+        href={openStreetMapUrl}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="text-cyan-300 underline decoration-cyan-300/40 underline-offset-2 hover:text-cyan-200"
+      >
+        Open in OpenStreetMap
+      </a>
+    </p>
+  );
+}
+
 function ValidationSection({ report }: { report: ValidationReport }) {
   const hasNothingToShow =
     report.critical_issues.length === 0 &&
@@ -1278,6 +1322,10 @@ export default function Home() {
 
             <div className="rounded-2xl border border-white/10 bg-white/5 p-5">
               <h2 className="text-lg font-semibold">Day-wise experiences</h2>
+              <p className="mt-1 text-[11px] text-slate-500">
+                Map links open the scheduled place coordinates only. They are
+                not route, travel-time, or booking links.
+              </p>
               {result.dailyPlans.length === 0 && (
                 <p className="mt-2 text-sm text-slate-400">
                   No daily plans returned yet.
@@ -1314,6 +1362,14 @@ export default function Home() {
                                 {experience.why_included}
                               </p>
                             )}
+                            <div className="mt-1">
+                              <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                                Open location
+                              </p>
+                              <ExperienceMapLinks
+                                coordinates={experience.coordinates}
+                              />
+                            </div>
                           </li>
                         ))}
                       </ul>
