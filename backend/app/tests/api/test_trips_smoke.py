@@ -5187,9 +5187,190 @@ def test_submit_feedback_appends_feedback_history(
     assert feedback_event["feedback_event_id"]
     assert feedback_event["created_at"]
     assert feedback_event["handling_status"] == "captured"
-    assert feedback_event["affected_stages"] == []
-    assert feedback_event["interpretation"] is None
     assert feedback_event["regeneration_strategy"] == "explanation_only"
+
+    # "less packed" is a deterministic pace_change keyword.
+    assert feedback_event["feedback_type"] == "pace_change"
+    assert feedback_event["affected_stages"] == ["experience_plan", "validation"]
+
+    interpretation = feedback_event["interpretation"]
+    assert interpretation["method"] == "deterministic_rule_based"
+    assert interpretation["applied_to_plan"] is False
+    assert interpretation["matched_labels"] == ["pace_change"]
+    assert "pace_change" in interpretation["summary"]
+    assert (
+        interpretation["note"]
+        == "This is a preliminary label only. No plan sections were regenerated."
+    )
+
+    # Honest wording only -- never a claim of actual AI interpretation or
+    # applied regeneration.
+    serialized = json.dumps(feedback_event).lower()
+    for forbidden_phrase in (
+        "ai interpreted",
+        "plan updated",
+        "changes applied",
+        "regenerated the plan",
+    ):
+        assert forbidden_phrase not in serialized
+
+
+def test_submit_feedback_interest_change_classification(
+    client: TestClient, generated_trip_id: str
+) -> None:
+    response = client.post(
+        f"/trips/{generated_trip_id}/feedback",
+        json={"feedback_text": "Add more museums"},
+    )
+    assert response.status_code == 200
+    feedback_event = response.json()["data"]["planning_state"]["feedback_history"][0]
+
+    assert feedback_event["feedback_type"] == "interest_change"
+    assert feedback_event["affected_stages"] == [
+        "traveler_profile",
+        "destination_context",
+        "experience_plan",
+        "validation",
+    ]
+    assert feedback_event["interpretation"]["matched_labels"] == ["interest_change"]
+    assert feedback_event["interpretation"]["applied_to_plan"] is False
+
+
+def test_submit_feedback_remove_or_avoid_classification(
+    client: TestClient, generated_trip_id: str
+) -> None:
+    response = client.post(
+        f"/trips/{generated_trip_id}/feedback",
+        json={"feedback_text": "Remove this attraction"},
+    )
+    assert response.status_code == 200
+    feedback_event = response.json()["data"]["planning_state"]["feedback_history"][0]
+
+    assert feedback_event["feedback_type"] == "remove_or_avoid"
+    assert feedback_event["affected_stages"] == [
+        "traveler_profile",
+        "experience_plan",
+        "validation",
+    ]
+    assert feedback_event["interpretation"]["matched_labels"] == ["remove_or_avoid"]
+
+
+def test_submit_feedback_restaurant_preference_classification(
+    client: TestClient, generated_trip_id: str
+) -> None:
+    response = client.post(
+        f"/trips/{generated_trip_id}/feedback",
+        json={"feedback_text": "Find a better restaurant for dinner"},
+    )
+    assert response.status_code == 200
+    feedback_event = response.json()["data"]["planning_state"]["feedback_history"][0]
+
+    assert feedback_event["feedback_type"] == "restaurant_preference"
+    assert feedback_event["affected_stages"] == [
+        "destination_context",
+        "experience_plan",
+        "validation",
+    ]
+    assert feedback_event["interpretation"]["matched_labels"] == [
+        "restaurant_preference"
+    ]
+
+
+def test_submit_feedback_stay_preference_classification(
+    client: TestClient, generated_trip_id: str
+) -> None:
+    response = client.post(
+        f"/trips/{generated_trip_id}/feedback",
+        json={"feedback_text": "Suggest a different hotel area"},
+    )
+    assert response.status_code == 200
+    feedback_event = response.json()["data"]["planning_state"]["feedback_history"][0]
+
+    assert feedback_event["feedback_type"] == "stay_preference"
+    assert feedback_event["affected_stages"] == [
+        "stay_transport",
+        "experience_plan",
+        "validation",
+    ]
+    assert feedback_event["interpretation"]["matched_labels"] == ["stay_preference"]
+
+
+def test_submit_feedback_transport_preference_classification(
+    client: TestClient, generated_trip_id: str
+) -> None:
+    response = client.post(
+        f"/trips/{generated_trip_id}/feedback",
+        json={"feedback_text": "We would rather walk than take a taxi"},
+    )
+    assert response.status_code == 200
+    feedback_event = response.json()["data"]["planning_state"]["feedback_history"][0]
+
+    assert feedback_event["feedback_type"] == "transport_preference"
+    assert feedback_event["affected_stages"] == [
+        "stay_transport",
+        "experience_plan",
+        "validation",
+    ]
+    assert feedback_event["interpretation"]["matched_labels"] == [
+        "transport_preference"
+    ]
+
+
+def test_submit_feedback_unmatched_maps_to_general_feedback(
+    client: TestClient, generated_trip_id: str
+) -> None:
+    response = client.post(
+        f"/trips/{generated_trip_id}/feedback",
+        json={"feedback_text": "This trip looks wonderful overall"},
+    )
+    assert response.status_code == 200
+    feedback_event = response.json()["data"]["planning_state"]["feedback_history"][0]
+
+    assert feedback_event["feedback_type"] == "general_feedback"
+    assert feedback_event["affected_stages"] == []
+
+    interpretation = feedback_event["interpretation"]
+    assert interpretation["matched_labels"] == []
+    assert interpretation["applied_to_plan"] is False
+    assert (
+        "captured but not classified into a specific planning stage yet"
+        in interpretation["summary"]
+    )
+
+
+def test_submit_feedback_multi_category_uses_priority_order_for_primary_type(
+    client: TestClient, generated_trip_id: str
+) -> None:
+    # Matches remove_or_avoid ("remove"), pace_change ("too much"),
+    # transport_preference ("walking"), and interest_change ("museum").
+    # Priority order picks remove_or_avoid as primary.
+    response = client.post(
+        f"/trips/{generated_trip_id}/feedback",
+        json={"feedback_text": "Remove the museum, it's too much walking"},
+    )
+    assert response.status_code == 200
+    feedback_event = response.json()["data"]["planning_state"]["feedback_history"][0]
+
+    assert feedback_event["feedback_type"] == "remove_or_avoid"
+
+    # affected_stages is the union of every matched category's stages,
+    # ordered by PlanningStage enum declaration order.
+    assert feedback_event["affected_stages"] == [
+        "traveler_profile",
+        "destination_context",
+        "stay_transport",
+        "experience_plan",
+        "validation",
+    ]
+
+    # matched_labels lists every matched category, in the same stable
+    # priority order used to pick the primary type.
+    assert feedback_event["interpretation"]["matched_labels"] == [
+        "remove_or_avoid",
+        "pace_change",
+        "transport_preference",
+        "interest_change",
+    ]
 
 
 def test_submit_feedback_trims_outer_whitespace_only(

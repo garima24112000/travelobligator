@@ -1264,7 +1264,8 @@ function FeedbackPanel({
         Feedback history ({feedbackHistory.length})
       </p>
       <p className="mt-1 text-xs text-amber-300/90">
-        These requests are stored but not applied to the plan yet.
+        Interpretation is preliminary and rule-based. These requests are
+        stored but not applied to the plan yet.
       </p>
       {feedbackHistory.length === 0 ? (
         <p className="mt-2 text-sm text-slate-400">
@@ -1282,6 +1283,34 @@ function FeedbackPanel({
                 {event.handling_status} ·{" "}
                 {new Date(event.created_at).toLocaleString()}
               </p>
+              {event.feedback_type && (
+                <p className="mt-1 text-xs text-slate-400">
+                  Feedback type:{" "}
+                  <span className="text-slate-300">{event.feedback_type}</span>
+                </p>
+              )}
+              {event.affected_stages.length > 0 && (
+                <p className="mt-1 text-xs text-slate-400">
+                  Possibly affected stages:{" "}
+                  {event.affected_stages.join(", ")}
+                </p>
+              )}
+              <p className="mt-1 text-xs text-slate-400">
+                Regeneration strategy: {event.regeneration_strategy}
+              </p>
+              {event.interpretation && (
+                <div className="mt-2 rounded-md border border-white/10 bg-slate-950/60 p-2">
+                  <p className="text-[11px] uppercase tracking-wide text-slate-500">
+                    Preliminary interpretation
+                  </p>
+                  <p className="mt-1 text-xs text-slate-300">
+                    {event.interpretation.summary}
+                  </p>
+                  <p className="mt-1 text-xs text-amber-300/90">
+                    {event.interpretation.note}
+                  </p>
+                </div>
+              )}
             </li>
           ))}
         </ul>

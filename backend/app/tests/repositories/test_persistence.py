@@ -4,7 +4,7 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from app.models.planning_state import PlanningState, TripRequest
+from app.models.planning_state import PlanningStage, PlanningState, TripRequest
 from app.repositories.planning_state_repository import PlanningStateRepository
 from app.repositories.trip_repository import TripRepository
 from app.storage.local_json_store import LocalJsonStore
@@ -191,7 +191,22 @@ def test_feedback_history_is_persisted_and_reloadable(client: TestClient) -> Non
 
     assert reloaded_state is not None
     assert len(reloaded_state.feedback_history) == 1
-    assert reloaded_state.feedback_history[0].feedback_text == "Make this less packed"
+
+    reloaded_feedback_event = reloaded_state.feedback_history[0]
+    assert reloaded_feedback_event.feedback_text == "Make this less packed"
+
+    # The deterministic rule-based interpretation (feedback_type,
+    # affected_stages, and the `interpretation` dict) round-trips through
+    # the JSON store instead of being lost or regenerated on reload.
+    assert reloaded_feedback_event.feedback_type == "pace_change"
+    assert reloaded_feedback_event.affected_stages == [
+        PlanningStage.EXPERIENCE_PLAN,
+        PlanningStage.VALIDATION,
+    ]
+    assert reloaded_feedback_event.interpretation is not None
+    assert reloaded_feedback_event.interpretation["method"] == "deterministic_rule_based"
+    assert reloaded_feedback_event.interpretation["applied_to_plan"] is False
+    assert reloaded_feedback_event.interpretation["matched_labels"] == ["pace_change"]
 
 
 def test_get_unknown_trip_id_still_returns_404(client: TestClient) -> None:

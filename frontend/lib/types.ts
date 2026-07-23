@@ -322,12 +322,25 @@ export type ProviderCoverageData = {
   data_sources_used: string[];
 };
 
+// Preliminary, deterministic rule-based classification only -- never an AI
+// interpretation, and never something applied to the plan
+// (backend: FeedbackService._classify).
+export type FeedbackInterpretation = {
+  method: string;
+  applied_to_plan: boolean;
+  summary: string;
+  matched_labels: string[];
+  note: string;
+};
+
 export type FeedbackEvent = {
   feedback_event_id: string;
   feedback_text: string;
+  feedback_type: string | null;
   handling_status: string;
   regeneration_strategy: string;
   affected_stages: string[];
+  interpretation: FeedbackInterpretation | null;
   created_at: string;
 };
 

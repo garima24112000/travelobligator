@@ -789,9 +789,10 @@ class FeedbackEvent(BaseModel):
     affected_stages: list[PlanningStage] = Field(default_factory=list)
     regeneration_strategy: RegenerationStrategy
 
-    # Set by an AIReasoningProvider once feedback interpretation is
-    # connected (docs/13_llm_reasoning_pipeline.md). Stays None until then --
-    # never a guessed interpretation of what the feedback means.
+    # Set by FeedbackService's deterministic rule-based keyword matching
+    # (docs/13_llm_reasoning_pipeline.md) -- a preliminary label only, never
+    # an AI-derived interpretation, and never applied to the plan itself.
+    # Stays None only if classification hasn't run at all.
     interpretation: dict[str, Any] | None = None
     # Lifecycle of this feedback event itself, independent of
     # `regeneration_strategy` (e.g. "captured" now; later values like
