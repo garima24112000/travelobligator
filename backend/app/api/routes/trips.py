@@ -13,7 +13,7 @@ from app.schemas.errors import ErrorCode
 from app.schemas.experience_plan import ExperiencePlanResponseData
 from app.schemas.provider_coverage import ProviderCoverageResponseData
 from app.schemas.trip_summary import TripSummaryResponseData
-from app.schemas.trips import TripResponseData
+from app.schemas.trips import FeedbackRequest, TripResponseData
 from app.schemas.validation_report import ValidationReportResponseData
 from app.services.planning_orchestrator import planning_orchestrator
 
@@ -50,6 +50,20 @@ def get_trip(trip_id: str) -> ApiResponse[TripResponseData]:
 )
 def generate_trip_plan(trip_id: str) -> ApiResponse[TripResponseData]:
     planning_state = planning_orchestrator.generate_full_plan(trip_id)
+    data = TripResponseData(trip_id=trip_id, planning_state=planning_state)
+    return success_response(data)
+
+
+@router.post(
+    "/{trip_id}/feedback",
+    response_model=ApiResponse[TripResponseData],
+)
+def submit_trip_feedback(
+    trip_id: str, feedback_request: FeedbackRequest
+) -> ApiResponse[TripResponseData]:
+    planning_state = planning_orchestrator.apply_feedback(
+        trip_id, feedback_request.feedback_text
+    )
     data = TripResponseData(trip_id=trip_id, planning_state=planning_state)
     return success_response(data)
 

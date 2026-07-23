@@ -4,6 +4,7 @@ import type {
   ExperiencePlanData,
   ProviderCoverageData,
   TripCreateData,
+  TripData,
   TripRequestInput,
   TripSummary,
   ValidationReportData,
@@ -78,4 +79,18 @@ export function getProviderCoverage(
   tripId: string,
 ): Promise<ProviderCoverageData> {
   return request<ProviderCoverageData>(`/trips/${tripId}/provider-coverage`);
+}
+
+export function getTrip(tripId: string): Promise<TripData> {
+  return request<TripData>(`/trips/${tripId}`);
+}
+
+export function submitTripFeedback(
+  tripId: string,
+  feedbackText: string,
+): Promise<TripData> {
+  return request<TripData>(`/trips/${tripId}/feedback`, {
+    method: "POST",
+    body: JSON.stringify({ feedback_text: feedbackText }),
+  });
 }

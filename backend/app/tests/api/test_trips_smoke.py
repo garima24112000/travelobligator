@@ -5165,3 +5165,153 @@ def test_provider_coverage_trip_not_found_message_has_correct_spacing(
     client: TestClient,
 ) -> None:
     _assert_trip_not_found_response(client.get("/trips/does-not-exist/provider-coverage"))
+
+
+def test_submit_feedback_appends_feedback_history(
+    client: TestClient, generated_trip_id: str
+) -> None:
+    response = client.post(
+        f"/trips/{generated_trip_id}/feedback",
+        json={"feedback_text": "Make this less packed"},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert_api_response_shape(body)
+    assert body["success"] is True
+
+    planning_state = body["data"]["planning_state"]
+    assert len(planning_state["feedback_history"]) == 1
+
+    feedback_event = planning_state["feedback_history"][0]
+    assert feedback_event["feedback_text"] == "Make this less packed"
+    assert feedback_event["feedback_event_id"]
+    assert feedback_event["created_at"]
+    assert feedback_event["handling_status"] == "captured"
+    assert feedback_event["affected_stages"] == []
+    assert feedback_event["interpretation"] is None
+    assert feedback_event["regeneration_strategy"] == "explanation_only"
+
+
+def test_submit_feedback_trims_outer_whitespace_only(
+    client: TestClient, generated_trip_id: str
+) -> None:
+    response = client.post(
+        f"/trips/{generated_trip_id}/feedback",
+        json={"feedback_text": "   Make this less packed   "},
+    )
+    assert response.status_code == 200
+    body = response.json()
+
+    feedback_event = body["data"]["planning_state"]["feedback_history"][0]
+    # Only outer whitespace is trimmed; internal spacing is preserved exactly.
+    assert feedback_event["feedback_text"] == "Make this less packed"
+
+
+def test_submit_feedback_appends_multiple_events_in_order(
+    client: TestClient, generated_trip_id: str
+) -> None:
+    first = client.post(
+        f"/trips/{generated_trip_id}/feedback",
+        json={"feedback_text": "Make this less packed"},
+    )
+    assert first.status_code == 200
+
+    second = client.post(
+        f"/trips/{generated_trip_id}/feedback",
+        json={"feedback_text": "Add more food places"},
+    )
+    assert second.status_code == 200
+
+    feedback_history = second.json()["data"]["planning_state"]["feedback_history"]
+    assert [event["feedback_text"] for event in feedback_history] == [
+        "Make this less packed",
+        "Add more food places",
+    ]
+
+
+def test_submit_feedback_unknown_trip_id_returns_404(client: TestClient) -> None:
+    response = client.post(
+        "/trips/does-not-exist/feedback",
+        json={"feedback_text": "Make this less packed"},
+    )
+    _assert_trip_not_found_response(response)
+
+
+def test_submit_feedback_rejects_blank_feedback_text(
+    client: TestClient, generated_trip_id: str
+) -> None:
+    response = client.post(
+        f"/trips/{generated_trip_id}/feedback",
+        json={"feedback_text": "   "},
+    )
+    assert response.status_code == 422
+    body = response.json()
+    assert_api_response_shape(body)
+    assert body["success"] is False
+    assert body["errors"][0]["code"] == "VALIDATION_ERROR"
+
+
+def test_submit_feedback_rejects_empty_feedback_text(
+    client: TestClient, generated_trip_id: str
+) -> None:
+    response = client.post(
+        f"/trips/{generated_trip_id}/feedback",
+        json={"feedback_text": ""},
+    )
+    assert response.status_code == 422
+    body = response.json()
+    assert body["success"] is False
+    assert body["errors"][0]["code"] == "VALIDATION_ERROR"
+
+
+def test_submit_feedback_rejects_missing_feedback_text(
+    client: TestClient, generated_trip_id: str
+) -> None:
+    response = client.post(f"/trips/{generated_trip_id}/feedback", json={})
+    assert response.status_code == 422
+    body = response.json()
+    assert body["success"] is False
+    assert body["errors"][0]["code"] == "VALIDATION_ERROR"
+
+
+def test_submit_feedback_does_not_change_experience_plan_or_validation_or_coverage(
+    client: TestClient, generated_trip_id: str
+) -> None:
+    before = client.get(f"/trips/{generated_trip_id}").json()["data"]["planning_state"]
+
+    response = client.post(
+        f"/trips/{generated_trip_id}/feedback",
+        json={"feedback_text": "Make this less packed"},
+    )
+    assert response.status_code == 200
+    after = response.json()["data"]["planning_state"]
+
+    # Feedback capture only appends feedback_history -- it must not touch
+    # scheduled experiences, validation readiness, route feasibility, or
+    # provider coverage.
+    assert after["experience_plan"] == before["experience_plan"]
+    assert after["validation_report"]["readiness_status"] == (
+        before["validation_report"]["readiness_status"]
+    )
+    assert after["validation_report"]["critical_issues"] == (
+        before["validation_report"]["critical_issues"]
+    )
+    assert after["validation_report"]["warnings"] == before["validation_report"]["warnings"]
+    assert after["provider_coverage"] == before["provider_coverage"]
+
+
+def test_submit_feedback_does_not_add_fake_travel_facts(
+    client: TestClient, generated_trip_id: str
+) -> None:
+    response = client.post(
+        f"/trips/{generated_trip_id}/feedback",
+        json={"feedback_text": "Make this less packed"},
+    )
+    assert response.status_code == 200
+    feedback_event = response.json()["data"]["planning_state"]["feedback_history"][0]
+
+    # No invented travel facts are attached to a captured feedback event --
+    # no price, rating, availability, or booking data of any kind.
+    serialized = json.dumps(feedback_event).lower()
+    for forbidden_field in ("price", "rating", "availability", "booking_url", "hotel"):
+        assert forbidden_field not in serialized

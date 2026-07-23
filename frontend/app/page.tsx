@@ -9,8 +9,10 @@ import {
   getDestinationContext,
   getExperiencePlan,
   getProviderCoverage,
+  getTrip,
   getTripSummary,
   getValidationReport,
+  submitTripFeedback,
 } from "@/lib/api";
 import type {
   AccommodationSuggestion,
@@ -20,6 +22,7 @@ import type {
   DailyPlan,
   DecisionSummary,
   ExperienceItem,
+  FeedbackEvent,
   GeoPoint,
   HolidayContext,
   ImplementationGaps,
@@ -65,6 +68,7 @@ type PlanResult = {
   destinationConfidence: number;
   experienceAssumptions: string[];
   experienceConfidence: number;
+  feedbackHistory: FeedbackEvent[];
 };
 
 function parseCommaList(value: string): string[] {
@@ -1208,6 +1212,84 @@ function ProviderCoverageSection({ coverage }: { coverage: ProviderCoverageData 
   );
 }
 
+function FeedbackPanel({
+  feedbackText,
+  onFeedbackTextChange,
+  onSubmit,
+  isSubmitting,
+  successMessage,
+  errorMessage,
+  feedbackHistory,
+}: {
+  feedbackText: string;
+  onFeedbackTextChange: (value: string) => void;
+  onSubmit: () => void;
+  isSubmitting: boolean;
+  successMessage: string | null;
+  errorMessage: string | null;
+  feedbackHistory: FeedbackEvent[];
+}) {
+  return (
+    <div className="rounded-2xl border border-white/10 bg-white/5 p-5">
+      <h2 className="text-lg font-semibold">Request changes</h2>
+      <p className="mt-1 text-xs text-slate-500">
+        Feedback is captured for now. Plan regeneration will be added later.
+      </p>
+
+      <textarea
+        className="mt-3 w-full rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-sm text-slate-100"
+        rows={3}
+        placeholder="e.g. Make this less packed"
+        value={feedbackText}
+        onChange={(event) => onFeedbackTextChange(event.target.value)}
+      />
+
+      <button
+        type="button"
+        onClick={onSubmit}
+        disabled={isSubmitting}
+        className="mt-3 rounded-lg border border-cyan-300/40 bg-slate-900 px-4 py-2 text-sm font-semibold text-cyan-200 transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+      >
+        {isSubmitting ? "Saving feedback..." : "Submit feedback"}
+      </button>
+
+      {errorMessage && (
+        <p className="mt-3 text-sm text-red-300">{errorMessage}</p>
+      )}
+      {successMessage && !errorMessage && (
+        <p className="mt-3 text-sm text-emerald-300">{successMessage}</p>
+      )}
+
+      <p className="mt-4 text-xs font-semibold uppercase tracking-wide text-slate-500">
+        Feedback history ({feedbackHistory.length})
+      </p>
+      <p className="mt-1 text-xs text-amber-300/90">
+        These requests are stored but not applied to the plan yet.
+      </p>
+      {feedbackHistory.length === 0 ? (
+        <p className="mt-2 text-sm text-slate-400">
+          No feedback captured yet.
+        </p>
+      ) : (
+        <ul className="mt-2 flex flex-col gap-2">
+          {feedbackHistory.map((event) => (
+            <li
+              key={event.feedback_event_id}
+              className="rounded-lg border border-white/10 bg-slate-900/60 p-3 text-sm"
+            >
+              <p className="text-slate-200">{event.feedback_text}</p>
+              <p className="mt-1 text-[11px] uppercase tracking-wide text-slate-500">
+                {event.handling_status} ·{" "}
+                {new Date(event.created_at).toLocaleString()}
+              </p>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 function ResultGroupHeader({
   id,
   title,
@@ -1283,12 +1365,13 @@ async function loadPlanResult(tripId: string): Promise<PlanResult> {
     );
   }
 
-  const [destinationContext, experiencePlan, validationReport, providerCoverage] =
+  const [destinationContext, experiencePlan, validationReport, providerCoverage, trip] =
     await Promise.all([
       getDestinationContext(tripId),
       getExperiencePlan(tripId),
       getValidationReport(tripId),
       getProviderCoverage(tripId),
+      getTrip(tripId),
     ]);
 
   return {
@@ -1313,6 +1396,7 @@ async function loadPlanResult(tripId: string): Promise<PlanResult> {
     destinationConfidence: destinationContext.destination_context.confidence,
     experienceAssumptions: experiencePlan.experience_plan.assumptions,
     experienceConfidence: experiencePlan.experience_plan.confidence,
+    feedbackHistory: trip.planning_state.feedback_history,
   };
 }
 
@@ -1326,11 +1410,67 @@ export default function Home() {
   const [isLoadingExisting, setIsLoadingExisting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<PlanResult | null>(null);
+  const [feedbackText, setFeedbackText] = useState("");
+  const [isSubmittingFeedback, setIsSubmittingFeedback] = useState(false);
+  const [feedbackSuccessMessage, setFeedbackSuccessMessage] = useState<
+    string | null
+  >(null);
+  const [feedbackErrorMessage, setFeedbackErrorMessage] = useState<
+    string | null
+  >(null);
+
+  function resetFeedbackPanelState() {
+    setFeedbackText("");
+    setFeedbackSuccessMessage(null);
+    setFeedbackErrorMessage(null);
+  }
+
+  async function handleSubmitFeedback() {
+    if (!result) return;
+
+    const trimmedFeedback = feedbackText.trim();
+    setFeedbackSuccessMessage(null);
+    setFeedbackErrorMessage(null);
+
+    if (!trimmedFeedback) {
+      setFeedbackErrorMessage("Feedback cannot be blank.");
+      return;
+    }
+
+    setIsSubmittingFeedback(true);
+    try {
+      const tripData = await submitTripFeedback(
+        result.summary.trip_id,
+        trimmedFeedback,
+      );
+      setResult((previous) =>
+        previous
+          ? {
+              ...previous,
+              feedbackHistory: tripData.planning_state.feedback_history,
+            }
+          : previous,
+      );
+      setFeedbackText("");
+      setFeedbackSuccessMessage(
+        "Feedback saved. Regeneration is not implemented yet.",
+      );
+    } catch (err) {
+      setFeedbackErrorMessage(
+        err instanceof ApiRequestError
+          ? err.message
+          : "Something went wrong while saving feedback.",
+      );
+    } finally {
+      setIsSubmittingFeedback(false);
+    }
+  }
 
   async function handlePlanTrip() {
     setIsLoading(true);
     setError(null);
     setResult(null);
+    resetFeedbackPanelState();
 
     try {
       const requestBody: TripRequestInput = {
@@ -1363,6 +1503,7 @@ export default function Home() {
     setIsLoadingExisting(true);
     setError(null);
     setResult(null);
+    resetFeedbackPanelState();
 
     try {
       setResult(await loadPlanResult(tripId));
@@ -1697,6 +1838,16 @@ export default function Home() {
             <PlanStatusSection
               validationStatus={result.summary.validation_status}
               checklist={result.readinessChecklist}
+            />
+
+            <FeedbackPanel
+              feedbackText={feedbackText}
+              onFeedbackTextChange={setFeedbackText}
+              onSubmit={() => void handleSubmitFeedback()}
+              isSubmitting={isSubmittingFeedback}
+              successMessage={feedbackSuccessMessage}
+              errorMessage={feedbackErrorMessage}
+              feedbackHistory={result.feedbackHistory}
             />
 
             <ResultGroupHeader

@@ -321,3 +321,21 @@ export type ProviderCoverageData = {
   unavailable_data: UnavailableDataItem[];
   data_sources_used: string[];
 };
+
+export type FeedbackEvent = {
+  feedback_event_id: string;
+  feedback_text: string;
+  handling_status: string;
+  regeneration_strategy: string;
+  affected_stages: string[];
+  created_at: string;
+};
+
+// Full PlanningState is much larger than this; only feedback_history is
+// declared here since that's the only part of it the frontend reads.
+export type TripData = {
+  trip_id: string;
+  planning_state: {
+    feedback_history: FeedbackEvent[];
+  };
+};

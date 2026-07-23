@@ -152,6 +152,48 @@ def test_generated_planning_state_is_persisted_and_reloadable(client: TestClient
         assert experience.estimated_duration_minutes is None
 
 
+def test_feedback_history_is_persisted_and_reloadable(client: TestClient) -> None:
+    """End-to-end: feedback submitted through the API survives a simulated
+    backend process restart, recoverable by a brand-new repository instance
+    pointed at the same local JSON file.
+    """
+    create_response = client.post(
+        "/trips",
+        json={
+            "destination_scope": "single_city",
+            "primary_destination": "Testville, Testland",
+            "origin_city": "Home City",
+            "start_date": "2026-08-10",
+            "end_date": "2026-08-12",
+            "travelers_count": 2,
+            "travel_group_type": "couple",
+        },
+    )
+    assert create_response.status_code == 201
+    trip_id = create_response.json()["data"]["trip_id"]
+
+    feedback_response = client.post(
+        f"/trips/{trip_id}/feedback",
+        json={"feedback_text": "Make this less packed"},
+    )
+    assert feedback_response.status_code == 200
+
+    # Import here (not at module scope) so we always read the store the
+    # per-test conftest fixture bound the singleton to for *this* test.
+    from app.repositories.planning_state_repository import (
+        planning_state_repository as live_planning_state_repository,
+    )
+
+    fresh_planning_repo = PlanningStateRepository(
+        store=live_planning_state_repository._store
+    )
+    reloaded_state = fresh_planning_repo.get_by_trip_id(trip_id)
+
+    assert reloaded_state is not None
+    assert len(reloaded_state.feedback_history) == 1
+    assert reloaded_state.feedback_history[0].feedback_text == "Make this less packed"
+
+
 def test_get_unknown_trip_id_still_returns_404(client: TestClient) -> None:
     response = client.get("/trips/does-not-exist")
     assert response.status_code == 404

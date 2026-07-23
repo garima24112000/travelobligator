@@ -20,6 +20,8 @@ class FeedbackService:
             feedback_text=feedback_text,
             affected_stages=[],
             regeneration_strategy=RegenerationStrategy.EXPLANATION_ONLY,
+            interpretation=None,
+            handling_status="captured",
             change_summary={},
             follow_up_question=(
                 "Feedback interpretation is not yet connected to an AI reasoning "
