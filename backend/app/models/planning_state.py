@@ -805,6 +805,43 @@ class FeedbackEvent(BaseModel):
     created_at: datetime = Field(default_factory=_utc_now)
 
 
+class PendingFeedbackSummaryItem(BaseModel):
+    """One `feedback_type` group inside `PendingFeedbackSummary.summary_items`
+    (docs/14_backend_architecture.md section 15). `likely_changes` restates
+    the same deterministic, per-type change_preview text FeedbackService
+    already attaches to individual events -- never a new claim, never
+    applied to the plan.
+    """
+
+    feedback_type: str
+    count: int = Field(ge=0)
+    example_feedback: str
+    likely_changes: list[str] = Field(default_factory=list)
+
+
+class PendingFeedbackSummary(BaseModel):
+    """Plan-level, deterministic rollup of `feedback_history`
+    (docs/14_backend_architecture.md section 15). Built purely from
+    already-computed `FeedbackEvent` fields (`feedback_type`,
+    `affected_stages`, `interpretation.change_preview`) by
+    `FeedbackService` -- no AI call, no plan regeneration, no invented
+    travel fact. Lets a caller see all requested changes together without
+    re-deriving them from `feedback_history` itself. `status` stays "none"
+    (the default) until at least one feedback event exists; it is never
+    "applied" -- feedback capture never regenerates any plan section.
+    """
+
+    status: str = "none"
+    total_feedback_items: int = 0
+    feedback_type_counts: dict[str, int] = Field(default_factory=dict)
+    affected_stages: list[PlanningStage] = Field(default_factory=list)
+    requires_regeneration: bool = False
+    latest_feedback_at: datetime | None = None
+    summary_items: list[PendingFeedbackSummaryItem] = Field(default_factory=list)
+    blocked_by: list[str] = Field(default_factory=list)
+    note: str = "No feedback has been captured yet."
+
+
 class UserLock(BaseModel):
     lock_id: str = Field(default_factory=lambda: _new_id("lock"))
 
@@ -863,6 +900,9 @@ class PlanningState(BaseModel):
     validation_cards: list[ValidationCard] = Field(default_factory=list)
 
     feedback_history: list[FeedbackEvent] = Field(default_factory=list)
+    pending_feedback_summary: PendingFeedbackSummary = Field(
+        default_factory=PendingFeedbackSummary
+    )
     user_locks: list[UserLock] = Field(default_factory=list)
     version_history: list[VersionHistoryItem] = Field(default_factory=list)
 

@@ -5593,3 +5593,216 @@ def test_submit_feedback_does_not_add_fake_travel_facts(
     serialized = json.dumps(feedback_event).lower()
     for forbidden_field in ("price", "rating", "availability", "booking_url", "hotel"):
         assert forbidden_field not in serialized
+
+
+def test_new_trip_has_empty_pending_feedback_summary(
+    client: TestClient, created_trip_id: str
+) -> None:
+    response = client.get(f"/trips/{created_trip_id}")
+    assert response.status_code == 200
+    planning_state = response.json()["data"]["planning_state"]
+
+    summary = planning_state["pending_feedback_summary"]
+    assert summary["status"] == "none"
+    assert summary["total_feedback_items"] == 0
+    assert summary["feedback_type_counts"] == {}
+    assert summary["affected_stages"] == []
+    assert summary["requires_regeneration"] is False
+    assert summary["latest_feedback_at"] is None
+    assert summary["summary_items"] == []
+    assert "no feedback has been captured yet" in summary["note"].lower()
+
+
+def test_pending_feedback_summary_after_one_feedback_item(
+    client: TestClient, generated_trip_id: str
+) -> None:
+    response = client.post(
+        f"/trips/{generated_trip_id}/feedback",
+        json={"feedback_text": "Make this less packed"},
+    )
+    assert response.status_code == 200
+    summary = response.json()["data"]["planning_state"]["pending_feedback_summary"]
+
+    assert summary["status"] == "captured_not_applied"
+    assert summary["total_feedback_items"] == 1
+    assert summary["feedback_type_counts"] == {"pace_change": 1}
+    assert summary["affected_stages"] == ["experience_plan", "validation"]
+    assert summary["requires_regeneration"] is True
+    assert summary["latest_feedback_at"] is not None
+    assert len(summary["summary_items"]) == 1
+
+    item = summary["summary_items"][0]
+    assert item["feedback_type"] == "pace_change"
+    assert item["count"] == 1
+    assert item["example_feedback"] == "Make this less packed"
+    assert item["likely_changes"] == [
+        "Adjust daily pacing or number of scheduled experiences.",
+        "Re-run experience planning before changing the itinerary.",
+        "Re-run validation after any future itinerary change.",
+    ]
+
+    assert summary["blocked_by"] == [
+        "Feedback regeneration is not implemented yet.",
+        "No AI interpretation provider is connected.",
+        "No plan sections are modified by the feedback capture endpoint.",
+    ]
+    assert "no plan sections have been regenerated" in summary["note"].lower()
+
+
+def test_pending_feedback_summary_groups_multiple_items_by_type(
+    client: TestClient, generated_trip_id: str
+) -> None:
+    client.post(
+        f"/trips/{generated_trip_id}/feedback",
+        json={"feedback_text": "Make this less packed"},
+    )
+    client.post(
+        f"/trips/{generated_trip_id}/feedback",
+        json={"feedback_text": "This is slower and more relaxed please"},
+    )
+    response = client.post(
+        f"/trips/{generated_trip_id}/feedback",
+        json={"feedback_text": "Add more museums"},
+    )
+    assert response.status_code == 200
+    summary = response.json()["data"]["planning_state"]["pending_feedback_summary"]
+
+    assert summary["total_feedback_items"] == 3
+    assert summary["feedback_type_counts"] == {
+        "pace_change": 2,
+        "interest_change": 1,
+    }
+
+    # summary_items follow the stable feedback-type priority order
+    # (pace_change before interest_change), not insertion order.
+    summary_types = [item["feedback_type"] for item in summary["summary_items"]]
+    assert summary_types == ["pace_change", "interest_change"]
+
+    pace_item = next(
+        item for item in summary["summary_items"] if item["feedback_type"] == "pace_change"
+    )
+    assert pace_item["count"] == 2
+    # example_feedback is drawn from the most recent event of that type.
+    assert pace_item["example_feedback"] == "This is slower and more relaxed please"
+
+    interest_item = next(
+        item
+        for item in summary["summary_items"]
+        if item["feedback_type"] == "interest_change"
+    )
+    assert interest_item["count"] == 1
+    assert interest_item["example_feedback"] == "Add more museums"
+
+
+def test_pending_feedback_summary_affected_stages_are_unioned_and_ordered(
+    client: TestClient, generated_trip_id: str
+) -> None:
+    # "Remove" matches remove_or_avoid (traveler_profile, experience_plan,
+    # validation); "hotel" matches stay_preference (stay_transport,
+    # experience_plan, validation). Union, ordered by PlanningStage
+    # declaration order.
+    client.post(
+        f"/trips/{generated_trip_id}/feedback",
+        json={"feedback_text": "Remove this attraction"},
+    )
+    response = client.post(
+        f"/trips/{generated_trip_id}/feedback",
+        json={"feedback_text": "Suggest a different hotel area"},
+    )
+    assert response.status_code == 200
+    summary = response.json()["data"]["planning_state"]["pending_feedback_summary"]
+
+    assert summary["affected_stages"] == [
+        "traveler_profile",
+        "stay_transport",
+        "experience_plan",
+        "validation",
+    ]
+
+
+def test_pending_feedback_summary_requires_regeneration_true_when_any_item_requires_it(
+    client: TestClient, generated_trip_id: str
+) -> None:
+    response = client.post(
+        f"/trips/{generated_trip_id}/feedback",
+        json={"feedback_text": "This trip looks wonderful overall"},
+    )
+    assert response.status_code == 200
+    summary = response.json()["data"]["planning_state"]["pending_feedback_summary"]
+    # A single unclassified general_feedback item does not require regeneration.
+    assert summary["requires_regeneration"] is False
+
+    response = client.post(
+        f"/trips/{generated_trip_id}/feedback",
+        json={"feedback_text": "Make this less packed"},
+    )
+    assert response.status_code == 200
+    summary = response.json()["data"]["planning_state"]["pending_feedback_summary"]
+    # Once any feedback item requires regeneration, the plan-level summary
+    # reflects that even though general_feedback alone would not.
+    assert summary["requires_regeneration"] is True
+
+
+def test_pending_feedback_summary_unknown_trip_id_returns_404(client: TestClient) -> None:
+    response = client.get("/trips/does-not-exist")
+    assert response.status_code == 404
+    body = response.json()
+    assert body["success"] is False
+    assert body["errors"][0]["code"] == "TRIP_NOT_FOUND"
+
+
+def test_pending_feedback_summary_unaffected_by_blank_feedback_rejection(
+    client: TestClient, generated_trip_id: str
+) -> None:
+    response = client.post(
+        f"/trips/{generated_trip_id}/feedback",
+        json={"feedback_text": "   "},
+    )
+    assert response.status_code == 422
+
+    trip_response = client.get(f"/trips/{generated_trip_id}")
+    summary = trip_response.json()["data"]["planning_state"]["pending_feedback_summary"]
+    assert summary["status"] == "none"
+    assert summary["total_feedback_items"] == 0
+
+
+def test_pending_feedback_summary_does_not_modify_generated_plan_sections(
+    client: TestClient, generated_trip_id: str
+) -> None:
+    before = client.get(f"/trips/{generated_trip_id}").json()["data"]["planning_state"]
+
+    response = client.post(
+        f"/trips/{generated_trip_id}/feedback",
+        json={"feedback_text": "Make this less packed"},
+    )
+    assert response.status_code == 200
+    after = response.json()["data"]["planning_state"]
+
+    # Computing the pending feedback summary must not touch any generated
+    # plan section, validation readiness, provider coverage, or route
+    # feasibility.
+    assert after["experience_plan"] == before["experience_plan"]
+    assert after["destination_context"] == before["destination_context"]
+    assert after["validation_report"]["readiness_status"] == (
+        before["validation_report"]["readiness_status"]
+    )
+    assert after["provider_coverage"] == before["provider_coverage"]
+    assert (
+        after["experience_plan"]["route_feasibility_context"]
+        == before["experience_plan"]["route_feasibility_context"]
+    )
+
+
+def test_pending_feedback_summary_does_not_add_fake_travel_facts(
+    client: TestClient, generated_trip_id: str
+) -> None:
+    response = client.post(
+        f"/trips/{generated_trip_id}/feedback",
+        json={"feedback_text": "Make this less packed"},
+    )
+    assert response.status_code == 200
+    summary = response.json()["data"]["planning_state"]["pending_feedback_summary"]
+
+    serialized = json.dumps(summary).lower()
+    for forbidden_field in ("price", "rating", "availability", "booking_url", "hotel"):
+        assert forbidden_field not in serialized

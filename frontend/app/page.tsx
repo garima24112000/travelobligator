@@ -27,6 +27,7 @@ import type {
   GeoPoint,
   HolidayContext,
   ImplementationGaps,
+  PendingFeedbackSummary,
   ProviderCoverageData,
   ReadinessChecklist,
   RestaurantSuggestion,
@@ -70,6 +71,7 @@ type PlanResult = {
   experienceAssumptions: string[];
   experienceConfidence: number;
   feedbackHistory: FeedbackEvent[];
+  pendingFeedbackSummary: PendingFeedbackSummary;
 };
 
 function parseCommaList(value: string): string[] {
@@ -1299,6 +1301,166 @@ function FeedbackChangePreviewSection({
   );
 }
 
+function pendingSummaryRegenerationLabel(requiresRegeneration: boolean): string {
+  return requiresRegeneration
+    ? "Would require regeneration: Yes"
+    : "Would require regeneration: No";
+}
+
+/**
+ * Plan-level rollup of all captured feedback (Step 125). Purely a readout
+ * of the backend's deterministic `pending_feedback_summary` -- it never
+ * claims anything was applied, updated, or regenerated, since the feedback
+ * capture endpoint never touches any plan section.
+ */
+function PendingRequestedChangesSection({
+  summary,
+}: {
+  summary: PendingFeedbackSummary;
+}) {
+  return (
+    <div className="rounded-2xl border border-white/10 bg-white/5 p-5">
+      <h2 className="text-lg font-semibold">Pending requested changes</h2>
+      <p className="mt-1 text-xs text-amber-300/90">
+        These requests are summarized from captured feedback. They have not
+        been applied to the plan yet.
+      </p>
+
+      <button
+        type="button"
+        disabled
+        title="Feedback-driven regeneration is not implemented yet."
+        className="mt-3 cursor-not-allowed rounded-lg border border-white/10 bg-slate-900 px-4 py-2 text-sm font-semibold text-slate-500 opacity-50"
+      >
+        Regenerate with feedback
+      </button>
+      <p className="mt-2 text-xs text-slate-500">
+        Feedback-driven regeneration is not implemented yet. Your feedback
+        is stored and summarized, but the current plan has not changed.
+      </p>
+
+      {summary.total_feedback_items === 0 ? (
+        <p className="mt-3 text-sm text-slate-400">
+          No requested changes captured yet.
+        </p>
+      ) : (
+        <>
+          <dl className="mt-3 grid grid-cols-2 gap-3 text-sm sm:grid-cols-4">
+            <div className="rounded-lg border border-white/10 bg-slate-900/60 p-3">
+              <dt className="text-[11px] uppercase tracking-wide text-slate-500">
+                Status
+              </dt>
+              <dd className="mt-1 font-semibold text-slate-100">
+                {summary.status === "captured_not_applied"
+                  ? "Captured, not applied"
+                  : summary.status}
+              </dd>
+            </div>
+            <div className="rounded-lg border border-white/10 bg-slate-900/60 p-3">
+              <dt className="text-[11px] uppercase tracking-wide text-slate-500">
+                Total requests
+              </dt>
+              <dd className="mt-1 font-semibold text-slate-100">
+                {summary.total_feedback_items}
+              </dd>
+            </div>
+            <div className="rounded-lg border border-white/10 bg-slate-900/60 p-3">
+              <dt className="text-[11px] uppercase tracking-wide text-slate-500">
+                Regeneration
+              </dt>
+              <dd className="mt-1 font-semibold text-slate-100">
+                {summary.requires_regeneration ? "Yes" : "No"}
+              </dd>
+            </div>
+            <div className="rounded-lg border border-white/10 bg-slate-900/60 p-3">
+              <dt className="text-[11px] uppercase tracking-wide text-slate-500">
+                Latest request
+              </dt>
+              <dd className="mt-1 font-semibold text-slate-100">
+                {summary.latest_feedback_at
+                  ? new Date(summary.latest_feedback_at).toLocaleString()
+                  : "N/A"}
+              </dd>
+            </div>
+          </dl>
+
+          <p className="mt-3 text-xs text-slate-400">
+            {pendingSummaryRegenerationLabel(summary.requires_regeneration)}
+          </p>
+
+          {summary.affected_stages.length > 0 && (
+            <div className="mt-3">
+              <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                Affected stages
+              </p>
+              <p className="mt-1 text-sm text-slate-300">
+                {summary.affected_stages.join(", ")}
+              </p>
+            </div>
+          )}
+
+          {summary.summary_items.length > 0 && (
+            <div className="mt-4">
+              <p className="text-sm font-semibold text-slate-200">
+                Requests by type
+              </p>
+              <ul className="mt-2 flex flex-col gap-2">
+                {summary.summary_items.map((item) => (
+                  <li
+                    key={item.feedback_type}
+                    className="rounded-lg border border-white/10 bg-slate-900/60 p-3 text-sm"
+                  >
+                    <p className="flex items-center justify-between gap-2">
+                      <span className="font-semibold text-slate-200">
+                        {item.feedback_type}
+                      </span>
+                      <span className="text-[11px] uppercase tracking-wide text-slate-400">
+                        Count: {item.count}
+                      </span>
+                    </p>
+                    <p className="mt-1 text-xs text-slate-400">
+                      Example: {item.example_feedback}
+                    </p>
+                    {item.likely_changes.length > 0 && (
+                      <div className="mt-2">
+                        <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                          Likely future changes
+                        </p>
+                        <ul className="mt-1 list-disc pl-4 text-xs text-slate-300">
+                          {item.likely_changes.map((change, index) => (
+                            <li key={`${item.feedback_type}-change-${index}`}>
+                              {change}
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {summary.blocked_by.length > 0 && (
+            <div className="mt-4">
+              <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                Blocked by
+              </p>
+              <ul className="mt-1 list-disc pl-4 text-xs text-slate-400">
+                {summary.blocked_by.map((reason, index) => (
+                  <li key={`blocked-by-${index}`}>{reason}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          <p className="mt-3 text-xs text-slate-400">{summary.note}</p>
+        </>
+      )}
+    </div>
+  );
+}
+
 function FeedbackPanel({
   feedbackText,
   onFeedbackTextChange,
@@ -1518,6 +1680,7 @@ async function loadPlanResult(tripId: string): Promise<PlanResult> {
     experienceAssumptions: experiencePlan.experience_plan.assumptions,
     experienceConfidence: experiencePlan.experience_plan.confidence,
     feedbackHistory: trip.planning_state.feedback_history,
+    pendingFeedbackSummary: trip.planning_state.pending_feedback_summary,
   };
 }
 
@@ -1569,6 +1732,8 @@ export default function Home() {
           ? {
               ...previous,
               feedbackHistory: tripData.planning_state.feedback_history,
+              pendingFeedbackSummary:
+                tripData.planning_state.pending_feedback_summary,
             }
           : previous,
       );
@@ -1969,6 +2134,10 @@ export default function Home() {
               successMessage={feedbackSuccessMessage}
               errorMessage={feedbackErrorMessage}
               feedbackHistory={result.feedbackHistory}
+            />
+
+            <PendingRequestedChangesSection
+              summary={result.pendingFeedbackSummary}
             />
 
             <ResultGroupHeader

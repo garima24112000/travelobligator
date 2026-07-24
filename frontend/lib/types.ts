@@ -356,11 +356,40 @@ export type FeedbackEvent = {
   created_at: string;
 };
 
-// Full PlanningState is much larger than this; only feedback_history is
-// declared here since that's the only part of it the frontend reads.
+// One feedback_type group inside PendingFeedbackSummary.summary_items
+// (backend: PendingFeedbackSummaryItem). `likely_changes` restates the same
+// deterministic per-type text already shown on individual feedback events --
+// never a new claim, never something applied to the plan.
+export type PendingFeedbackSummaryItem = {
+  feedback_type: string;
+  count: number;
+  example_feedback: string;
+  likely_changes: string[];
+};
+
+// Plan-level, deterministic rollup of feedback_history (backend:
+// PendingFeedbackSummary / FeedbackService._compute_pending_feedback_summary).
+// Purely a restatement of already-captured feedback -- never applied to the
+// plan, never a claim of regeneration.
+export type PendingFeedbackSummary = {
+  status: string;
+  total_feedback_items: number;
+  feedback_type_counts: Record<string, number>;
+  affected_stages: string[];
+  requires_regeneration: boolean;
+  latest_feedback_at: string | null;
+  summary_items: PendingFeedbackSummaryItem[];
+  blocked_by: string[];
+  note: string;
+};
+
+// Full PlanningState is much larger than this; only feedback_history and
+// pending_feedback_summary are declared here since that's the only part of
+// it the frontend reads.
 export type TripData = {
   trip_id: string;
   planning_state: {
     feedback_history: FeedbackEvent[];
+    pending_feedback_summary: PendingFeedbackSummary;
   };
 };

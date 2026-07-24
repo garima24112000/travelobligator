@@ -235,6 +235,57 @@ def test_feedback_history_is_persisted_and_reloadable(client: TestClient) -> Non
     ]
 
 
+def test_pending_feedback_summary_is_persisted_and_reloadable(client: TestClient) -> None:
+    """End-to-end: the plan-level pending feedback summary (Step 124)
+    survives a simulated backend process restart, recoverable by a
+    brand-new repository instance pointed at the same local JSON file.
+    """
+    create_response = client.post(
+        "/trips",
+        json={
+            "destination_scope": "single_city",
+            "primary_destination": "Testville, Testland",
+            "origin_city": "Home City",
+            "start_date": "2026-08-10",
+            "end_date": "2026-08-12",
+            "travelers_count": 2,
+            "travel_group_type": "couple",
+        },
+    )
+    assert create_response.status_code == 201
+    trip_id = create_response.json()["data"]["trip_id"]
+
+    feedback_response = client.post(
+        f"/trips/{trip_id}/feedback",
+        json={"feedback_text": "Make this less packed"},
+    )
+    assert feedback_response.status_code == 200
+
+    from app.repositories.planning_state_repository import (
+        planning_state_repository as live_planning_state_repository,
+    )
+
+    fresh_planning_repo = PlanningStateRepository(
+        store=live_planning_state_repository._store
+    )
+    reloaded_state = fresh_planning_repo.get_by_trip_id(trip_id)
+
+    assert reloaded_state is not None
+    summary = reloaded_state.pending_feedback_summary
+    assert summary.status == "captured_not_applied"
+    assert summary.total_feedback_items == 1
+    assert summary.feedback_type_counts == {"pace_change": 1}
+    assert summary.affected_stages == [
+        PlanningStage.EXPERIENCE_PLAN,
+        PlanningStage.VALIDATION,
+    ]
+    assert summary.requires_regeneration is True
+    assert summary.latest_feedback_at is not None
+    assert len(summary.summary_items) == 1
+    assert summary.summary_items[0].feedback_type == "pace_change"
+    assert summary.summary_items[0].example_feedback == "Make this less packed"
+
+
 def test_get_unknown_trip_id_still_returns_404(client: TestClient) -> None:
     response = client.get("/trips/does-not-exist")
     assert response.status_code == 404

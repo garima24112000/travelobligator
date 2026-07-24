@@ -1,7 +1,13 @@
 from __future__ import annotations
 
 from app.models.common import RegenerationStrategy
-from app.models.planning_state import FeedbackEvent, PlanningStage, PlanningState
+from app.models.planning_state import (
+    FeedbackEvent,
+    PendingFeedbackSummary,
+    PendingFeedbackSummaryItem,
+    PlanningStage,
+    PlanningState,
+)
 
 # Stage order used to build `affected_stages`, matching PlanningStage's
 # declaration order (docs/09_planning_state.md). PlanningStage.FEEDBACK and
@@ -220,8 +226,81 @@ class FeedbackService:
         )
 
         planning_state.feedback_history.append(feedback_event)
+        planning_state.pending_feedback_summary = self._compute_pending_feedback_summary(
+            planning_state.feedback_history
+        )
         planning_state.touch()
         return planning_state
+
+    @staticmethod
+    def _compute_pending_feedback_summary(
+        feedback_history: list[FeedbackEvent],
+    ) -> PendingFeedbackSummary:
+        """Deterministic rollup of `feedback_history`, recomputed from
+        scratch on every feedback submission -- purely a restatement of
+        already-computed `FeedbackEvent` fields. No AI call, no plan
+        regeneration, no invented travel fact.
+        """
+        if not feedback_history:
+            return PendingFeedbackSummary()
+
+        feedback_type_counts: dict[str, int] = {}
+        latest_event_by_type: dict[str, FeedbackEvent] = {}
+        stage_set: set[PlanningStage] = set()
+        requires_regeneration = False
+        latest_feedback_at = feedback_history[0].created_at
+
+        for event in feedback_history:
+            feedback_type = event.feedback_type or "general_feedback"
+            feedback_type_counts[feedback_type] = (
+                feedback_type_counts.get(feedback_type, 0) + 1
+            )
+            stage_set.update(event.affected_stages)
+
+            existing_latest = latest_event_by_type.get(feedback_type)
+            if existing_latest is None or event.created_at >= existing_latest.created_at:
+                latest_event_by_type[feedback_type] = event
+
+            if event.created_at > latest_feedback_at:
+                latest_feedback_at = event.created_at
+
+            change_preview = (event.interpretation or {}).get("change_preview") or {}
+            if change_preview.get("would_require_regeneration") is True:
+                requires_regeneration = True
+
+        affected_stages = [stage for stage in _STAGE_ORDER if stage in stage_set]
+
+        ordered_type_counts = {
+            candidate: feedback_type_counts[candidate]
+            for candidate in _PRIMARY_TYPE_PRIORITY
+            if candidate in feedback_type_counts
+        }
+
+        summary_items = [
+            PendingFeedbackSummaryItem(
+                feedback_type=candidate,
+                count=feedback_type_counts[candidate],
+                example_feedback=latest_event_by_type[candidate].feedback_text,
+                likely_changes=list(_LIKELY_CHANGES_BY_TYPE.get(candidate, ())),
+            )
+            for candidate in _PRIMARY_TYPE_PRIORITY
+            if candidate in feedback_type_counts
+        ]
+
+        return PendingFeedbackSummary(
+            status="captured_not_applied",
+            total_feedback_items=len(feedback_history),
+            feedback_type_counts=ordered_type_counts,
+            affected_stages=affected_stages,
+            requires_regeneration=requires_regeneration,
+            latest_feedback_at=latest_feedback_at,
+            summary_items=summary_items,
+            blocked_by=list(_BLOCKED_BY),
+            note=(
+                "Feedback has been captured and interpreted, but no plan "
+                "sections have been regenerated."
+            ),
+        )
 
     @staticmethod
     def _classify(feedback_text: str) -> tuple[str, list[PlanningStage], list[str]]:
