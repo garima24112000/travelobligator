@@ -208,6 +208,32 @@ def test_feedback_history_is_persisted_and_reloadable(client: TestClient) -> Non
     assert reloaded_feedback_event.interpretation["applied_to_plan"] is False
     assert reloaded_feedback_event.interpretation["matched_labels"] == ["pace_change"]
 
+    # The change_preview foundation (Step 121) also round-trips through the
+    # JSON store instead of being lost or silently regenerated on reload.
+    change_preview = reloaded_feedback_event.interpretation["change_preview"]
+    assert change_preview["preview_status"] == "not_applied"
+    assert change_preview["would_require_regeneration"] is True
+    assert change_preview["likely_changes"] == [
+        "Adjust daily pacing or number of scheduled experiences.",
+        "Re-run experience planning before changing the itinerary.",
+        "Re-run validation after any future itinerary change.",
+    ]
+    assert change_preview["unchanged_sections"] == [
+        "traveler_profile",
+        "destination_context",
+        "trip_strategy",
+        "stay_transport",
+        "experience_plan",
+        "validation_report",
+        "provider_coverage",
+        "route_feasibility_context",
+    ]
+    assert change_preview["blocked_by"] == [
+        "Feedback regeneration is not implemented yet.",
+        "No AI interpretation provider is connected.",
+        "No plan sections are modified by the feedback capture endpoint.",
+    ]
+
 
 def test_get_unknown_trip_id_still_returns_404(client: TestClient) -> None:
     response = client.get("/trips/does-not-exist")

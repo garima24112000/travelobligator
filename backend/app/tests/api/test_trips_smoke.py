@@ -5203,6 +5203,32 @@ def test_submit_feedback_appends_feedback_history(
         == "This is a preliminary label only. No plan sections were regenerated."
     )
 
+    # change_preview foundation: a deterministic, honest preview of what a
+    # future regeneration step would likely need to change -- never applied.
+    change_preview = interpretation["change_preview"]
+    assert change_preview["preview_status"] == "not_applied"
+    assert change_preview["would_require_regeneration"] is True
+    assert change_preview["likely_changes"] == [
+        "Adjust daily pacing or number of scheduled experiences.",
+        "Re-run experience planning before changing the itinerary.",
+        "Re-run validation after any future itinerary change.",
+    ]
+    assert change_preview["unchanged_sections"] == [
+        "traveler_profile",
+        "destination_context",
+        "trip_strategy",
+        "stay_transport",
+        "experience_plan",
+        "validation_report",
+        "provider_coverage",
+        "route_feasibility_context",
+    ]
+    assert change_preview["blocked_by"] == [
+        "Feedback regeneration is not implemented yet.",
+        "No AI interpretation provider is connected.",
+        "No plan sections are modified by the feedback capture endpoint.",
+    ]
+
     # Honest wording only -- never a claim of actual AI interpretation or
     # applied regeneration.
     serialized = json.dumps(feedback_event).lower()
@@ -5235,6 +5261,15 @@ def test_submit_feedback_interest_change_classification(
     assert feedback_event["interpretation"]["matched_labels"] == ["interest_change"]
     assert feedback_event["interpretation"]["applied_to_plan"] is False
 
+    change_preview = feedback_event["interpretation"]["change_preview"]
+    assert change_preview["would_require_regeneration"] is True
+    assert change_preview["likely_changes"] == [
+        "Update traveler interests.",
+        "Re-check destination candidate places against the updated interests.",
+        "Re-run experience planning before changing the itinerary.",
+        "Re-run validation after any future itinerary change.",
+    ]
+
 
 def test_submit_feedback_remove_or_avoid_classification(
     client: TestClient, generated_trip_id: str
@@ -5253,6 +5288,14 @@ def test_submit_feedback_remove_or_avoid_classification(
         "validation",
     ]
     assert feedback_event["interpretation"]["matched_labels"] == ["remove_or_avoid"]
+
+    change_preview = feedback_event["interpretation"]["change_preview"]
+    assert change_preview["would_require_regeneration"] is True
+    assert change_preview["likely_changes"] == [
+        "Record the requested removal or avoidance preference.",
+        "Re-run experience planning before removing or replacing scheduled places.",
+        "Re-run validation after any future itinerary change.",
+    ]
 
 
 def test_submit_feedback_restaurant_preference_classification(
@@ -5275,6 +5318,14 @@ def test_submit_feedback_restaurant_preference_classification(
         "restaurant_preference"
     ]
 
+    change_preview = feedback_event["interpretation"]["change_preview"]
+    assert change_preview["would_require_regeneration"] is True
+    assert change_preview["likely_changes"] == [
+        "Update restaurant preference handling.",
+        "Re-check restaurant candidates if provider data is available.",
+        "Re-run experience planning before changing restaurant suggestions.",
+    ]
+
 
 def test_submit_feedback_stay_preference_classification(
     client: TestClient, generated_trip_id: str
@@ -5293,6 +5344,14 @@ def test_submit_feedback_stay_preference_classification(
         "validation",
     ]
     assert feedback_event["interpretation"]["matched_labels"] == ["stay_preference"]
+
+    change_preview = feedback_event["interpretation"]["change_preview"]
+    assert change_preview["would_require_regeneration"] is True
+    assert change_preview["likely_changes"] == [
+        "Update stay-area or accommodation preference handling.",
+        "Re-check stay-area guidance and accommodation POI candidates.",
+        "Re-run stay/transport reasoning before changing stay guidance.",
+    ]
 
 
 def test_submit_feedback_transport_preference_classification(
@@ -5315,6 +5374,19 @@ def test_submit_feedback_transport_preference_classification(
         "transport_preference"
     ]
 
+    change_preview = feedback_event["interpretation"]["change_preview"]
+    assert change_preview["would_require_regeneration"] is True
+    assert change_preview["likely_changes"] == [
+        "Update transport preference handling.",
+        "Re-check stay/transport reasoning.",
+        "Connect a real route provider before validating route time or walking feasibility.",
+    ]
+    # Must be explicit that no route provider is connected yet -- never a
+    # claim that route/walking feasibility can already be validated.
+    assert any(
+        "route provider" in change for change in change_preview["likely_changes"]
+    )
+
 
 def test_submit_feedback_unmatched_maps_to_general_feedback(
     client: TestClient, generated_trip_id: str
@@ -5336,6 +5408,31 @@ def test_submit_feedback_unmatched_maps_to_general_feedback(
         "captured but not classified into a specific planning stage yet"
         in interpretation["summary"]
     )
+
+    # general_feedback must not pretend to know exactly what would change --
+    # it only points to manual review, and honestly reports it would not (by
+    # itself) require regeneration.
+    change_preview = interpretation["change_preview"]
+    assert change_preview["preview_status"] == "not_applied"
+    assert change_preview["would_require_regeneration"] is False
+    assert change_preview["likely_changes"] == [
+        "Review this feedback manually before deciding which planning stages to rerun."
+    ]
+    assert change_preview["unchanged_sections"] == [
+        "traveler_profile",
+        "destination_context",
+        "trip_strategy",
+        "stay_transport",
+        "experience_plan",
+        "validation_report",
+        "provider_coverage",
+        "route_feasibility_context",
+    ]
+    assert change_preview["blocked_by"] == [
+        "Feedback regeneration is not implemented yet.",
+        "No AI interpretation provider is connected.",
+        "No plan sections are modified by the feedback capture endpoint.",
+    ]
 
 
 def test_submit_feedback_multi_category_uses_priority_order_for_primary_type(

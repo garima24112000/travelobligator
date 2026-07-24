@@ -322,6 +322,17 @@ export type ProviderCoverageData = {
   data_sources_used: string[];
 };
 
+// Deterministic, honest preview of what a future regeneration step would
+// likely need to change -- never something this endpoint applies itself
+// (backend: FeedbackService.apply_feedback / _LIKELY_CHANGES_BY_TYPE).
+export type FeedbackChangePreview = {
+  preview_status: string;
+  would_require_regeneration: boolean | null;
+  likely_changes: string[];
+  unchanged_sections: string[];
+  blocked_by: string[];
+};
+
 // Preliminary, deterministic rule-based classification only -- never an AI
 // interpretation, and never something applied to the plan
 // (backend: FeedbackService._classify).
@@ -331,6 +342,7 @@ export type FeedbackInterpretation = {
   summary: string;
   matched_labels: string[];
   note: string;
+  change_preview?: FeedbackChangePreview;
 };
 
 export type FeedbackEvent = {

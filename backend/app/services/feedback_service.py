@@ -104,6 +104,67 @@ _INTERPRETATION_NOTE = (
     "This is a preliminary label only. No plan sections were regenerated."
 )
 
+# Deterministic, honest "what would likely need to change" preview per
+# feedback_type -- describes future regeneration work, never something this
+# endpoint performs itself. No plan section is touched by building this.
+_LIKELY_CHANGES_BY_TYPE: dict[str, tuple[str, ...]] = {
+    "pace_change": (
+        "Adjust daily pacing or number of scheduled experiences.",
+        "Re-run experience planning before changing the itinerary.",
+        "Re-run validation after any future itinerary change.",
+    ),
+    "interest_change": (
+        "Update traveler interests.",
+        "Re-check destination candidate places against the updated interests.",
+        "Re-run experience planning before changing the itinerary.",
+        "Re-run validation after any future itinerary change.",
+    ),
+    "remove_or_avoid": (
+        "Record the requested removal or avoidance preference.",
+        "Re-run experience planning before removing or replacing scheduled places.",
+        "Re-run validation after any future itinerary change.",
+    ),
+    "restaurant_preference": (
+        "Update restaurant preference handling.",
+        "Re-check restaurant candidates if provider data is available.",
+        "Re-run experience planning before changing restaurant suggestions.",
+    ),
+    "stay_preference": (
+        "Update stay-area or accommodation preference handling.",
+        "Re-check stay-area guidance and accommodation POI candidates.",
+        "Re-run stay/transport reasoning before changing stay guidance.",
+    ),
+    "transport_preference": (
+        "Update transport preference handling.",
+        "Re-check stay/transport reasoning.",
+        "Connect a real route provider before validating route time or walking feasibility.",
+    ),
+    "general_feedback": (
+        "Review this feedback manually before deciding which planning stages to rerun.",
+    ),
+}
+
+# Honestly lists every plan section the feedback capture endpoint leaves
+# untouched, regardless of feedback_type.
+_UNCHANGED_SECTIONS: tuple[str, ...] = (
+    "traveler_profile",
+    "destination_context",
+    "trip_strategy",
+    "stay_transport",
+    "experience_plan",
+    "validation_report",
+    "provider_coverage",
+    "route_feasibility_context",
+)
+
+# Honest blockers preventing this preview from ever becoming a real
+# regeneration today.
+_BLOCKED_BY: tuple[str, ...] = (
+    "Feedback regeneration is not implemented yet.",
+    "No AI interpretation provider is connected.",
+    "No plan sections are modified by the feedback capture endpoint.",
+)
+
 
 class FeedbackService:
     """Owns `feedback_history`, the affected-stages decision, the
@@ -128,6 +189,14 @@ class FeedbackService:
             else f"Feedback text matched deterministic rule-based keywords for '{feedback_type}'."
         )
 
+        change_preview = {
+            "preview_status": "not_applied",
+            "would_require_regeneration": feedback_type != "general_feedback",
+            "likely_changes": list(_LIKELY_CHANGES_BY_TYPE.get(feedback_type, ())),
+            "unchanged_sections": list(_UNCHANGED_SECTIONS),
+            "blocked_by": list(_BLOCKED_BY),
+        }
+
         feedback_event = FeedbackEvent(
             feedback_text=feedback_text,
             feedback_type=feedback_type,
@@ -139,6 +208,7 @@ class FeedbackService:
                 "summary": summary,
                 "matched_labels": matched_labels,
                 "note": _INTERPRETATION_NOTE,
+                "change_preview": change_preview,
             },
             handling_status="captured",
             change_summary={},

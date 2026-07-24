@@ -22,6 +22,7 @@ import type {
   DailyPlan,
   DecisionSummary,
   ExperienceItem,
+  FeedbackChangePreview,
   FeedbackEvent,
   GeoPoint,
   HolidayContext,
@@ -1212,6 +1213,92 @@ function ProviderCoverageSection({ coverage }: { coverage: ProviderCoverageData 
   );
 }
 
+function changePreviewRegenerationLabel(
+  wouldRequireRegeneration: boolean | null,
+): string {
+  if (wouldRequireRegeneration === true) return "Would require regeneration";
+  if (wouldRequireRegeneration === false) {
+    return "Would not require regeneration (manual review only)";
+  }
+  return "Regeneration requirement unknown";
+}
+
+/**
+ * Compact, honest preview of what a future regeneration step would likely
+ * need to change (Step 122). Purely a readout of the backend's deterministic
+ * `interpretation.change_preview` -- it never claims anything was applied,
+ * updated, or regenerated, since the feedback capture endpoint never
+ * touches any plan section.
+ */
+function FeedbackChangePreviewSection({
+  changePreview,
+}: {
+  changePreview: FeedbackChangePreview;
+}) {
+  return (
+    <div className="mt-2 rounded-md border border-white/10 bg-slate-950/60 p-2">
+      <p className="text-[11px] uppercase tracking-wide text-slate-500">
+        Change preview
+      </p>
+      <p className="mt-1 text-xs text-amber-300/90">
+        This is a preview only. No plan sections have been changed.
+      </p>
+      <p className="mt-1 text-xs text-slate-400">
+        Preview status:{" "}
+        <span className="text-slate-300">
+          {changePreview.preview_status === "not_applied"
+            ? "Not applied"
+            : changePreview.preview_status}
+        </span>
+      </p>
+      <p className="mt-1 text-xs text-slate-400">
+        {changePreviewRegenerationLabel(
+          changePreview.would_require_regeneration,
+        )}
+      </p>
+
+      {changePreview.likely_changes.length > 0 && (
+        <div className="mt-2">
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+            Likely future changes
+          </p>
+          <ul className="mt-1 list-disc pl-4 text-xs text-slate-300">
+            {changePreview.likely_changes.map((change, index) => (
+              <li key={`likely-change-${index}`}>{change}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {changePreview.unchanged_sections.length > 0 && (
+        <div className="mt-2">
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+            Unchanged sections
+          </p>
+          <ul className="mt-1 list-disc pl-4 text-xs text-slate-400">
+            {changePreview.unchanged_sections.map((section, index) => (
+              <li key={`unchanged-section-${index}`}>{section}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {changePreview.blocked_by.length > 0 && (
+        <div className="mt-2">
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+            Blocked by
+          </p>
+          <ul className="mt-1 list-disc pl-4 text-xs text-slate-400">
+            {changePreview.blocked_by.map((reason, index) => (
+              <li key={`blocked-by-${index}`}>{reason}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function FeedbackPanel({
   feedbackText,
   onFeedbackTextChange,
@@ -1309,6 +1396,11 @@ function FeedbackPanel({
                   <p className="mt-1 text-xs text-amber-300/90">
                     {event.interpretation.note}
                   </p>
+                  {event.interpretation.change_preview && (
+                    <FeedbackChangePreviewSection
+                      changePreview={event.interpretation.change_preview}
+                    />
+                  )}
                 </div>
               )}
             </li>
