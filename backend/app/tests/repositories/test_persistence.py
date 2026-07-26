@@ -343,6 +343,111 @@ def test_user_lock_is_persisted_and_reloadable(client: TestClient) -> None:
     assert reloaded_lock.removed_at is not None
 
 
+def test_version_history_is_persisted_and_reloadable(client: TestClient) -> None:
+    """End-to-end: the initial "v1" version item (Step 131) recorded by
+    generating a trip survives a simulated backend process restart,
+    recoverable by a brand-new repository instance pointed at the same
+    local JSON file.
+    """
+    create_response = client.post(
+        "/trips",
+        json={
+            "destination_scope": "single_city",
+            "primary_destination": "Testville, Testland",
+            "origin_city": "Home City",
+            "start_date": "2026-08-10",
+            "end_date": "2026-08-12",
+            "travelers_count": 2,
+            "travel_group_type": "couple",
+        },
+    )
+    assert create_response.status_code == 201
+    trip_id = create_response.json()["data"]["trip_id"]
+
+    generate_response = client.post(f"/trips/{trip_id}/generate")
+    assert generate_response.status_code == 200
+
+    from app.repositories.planning_state_repository import (
+        planning_state_repository as live_planning_state_repository,
+    )
+
+    fresh_planning_repo = PlanningStateRepository(
+        store=live_planning_state_repository._store
+    )
+    reloaded_state = fresh_planning_repo.get_by_trip_id(trip_id)
+
+    assert reloaded_state is not None
+    assert len(reloaded_state.version_history) == 1
+
+    reloaded_version = reloaded_state.version_history[0]
+    assert reloaded_version.version_label == "v1"
+    assert reloaded_version.created_by == "system_generation"
+    assert reloaded_version.feedback_event_id is None
+    assert reloaded_version.preserved_sections == []
+    assert set(reloaded_version.changed_sections) == {
+        "traveler_profile",
+        "destination_context",
+        "trip_strategy",
+        "stay_transport",
+        "experience_plan",
+        "validation_report",
+        "provider_coverage",
+    }
+    assert reloaded_state.metadata.current_version == "v1"
+
+
+def test_plan_diff_preview_is_persisted_and_reloadable(client: TestClient) -> None:
+    """End-to-end: the plan diff preview (Step 132) recomputed after
+    generating a trip and submitting feedback survives a simulated backend
+    process restart, recoverable by a brand-new repository instance pointed
+    at the same local JSON file.
+    """
+    create_response = client.post(
+        "/trips",
+        json={
+            "destination_scope": "single_city",
+            "primary_destination": "Testville, Testland",
+            "origin_city": "Home City",
+            "start_date": "2026-08-10",
+            "end_date": "2026-08-12",
+            "travelers_count": 2,
+            "travel_group_type": "couple",
+        },
+    )
+    assert create_response.status_code == 201
+    trip_id = create_response.json()["data"]["trip_id"]
+
+    generate_response = client.post(f"/trips/{trip_id}/generate")
+    assert generate_response.status_code == 200
+
+    feedback_response = client.post(
+        f"/trips/{trip_id}/feedback",
+        json={"feedback_text": "Make this less packed"},
+    )
+    assert feedback_response.status_code == 200
+
+    from app.repositories.planning_state_repository import (
+        planning_state_repository as live_planning_state_repository,
+    )
+
+    fresh_planning_repo = PlanningStateRepository(
+        store=live_planning_state_repository._store
+    )
+    reloaded_state = fresh_planning_repo.get_by_trip_id(trip_id)
+
+    assert reloaded_state is not None
+    preview = reloaded_state.plan_diff_preview
+    assert preview.preview_status == "ready_for_future_regeneration_preview"
+    assert preview.from_version == "v1"
+    assert preview.would_create_version == "v2"
+    assert preview.pending_feedback_count == 1
+    assert preview.triggered_by_feedback_event_ids == [
+        reloaded_state.feedback_history[0].feedback_event_id
+    ]
+    assert preview.regeneration_available is False
+    assert preview.to_version is None
+
+
 def test_get_unknown_trip_id_still_returns_404(client: TestClient) -> None:
     response = client.get("/trips/does-not-exist")
     assert response.status_code == 404

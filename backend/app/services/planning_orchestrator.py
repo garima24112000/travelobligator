@@ -11,6 +11,7 @@ from app.repositories.trip_repository import TripRepository, trip_repository
 from app.services.destination_context_service import DestinationContextService
 from app.services.experience_planner_service import ExperiencePlannerService
 from app.services.feedback_service import FeedbackService
+from app.services.plan_diff_preview_service import PlanDiffPreviewService
 from app.services.plan_validator_service import PlanValidatorService
 from app.services.stay_transport_service import StayTransportService
 from app.services.traveler_profile_service import TravelerProfileService
@@ -44,6 +45,7 @@ class PlanningOrchestrator:
         plan_validator_service: PlanValidatorService | None = None,
         feedback_service: FeedbackService | None = None,
         versioning_service: VersioningService | None = None,
+        plan_diff_preview_service: PlanDiffPreviewService | None = None,
         planning_state_repo: PlanningStateRepository | None = None,
         trip_repo: TripRepository | None = None,
     ) -> None:
@@ -59,6 +61,7 @@ class PlanningOrchestrator:
         self.plan_validator_service = plan_validator_service or PlanValidatorService()
         self.feedback_service = feedback_service or FeedbackService()
         self.versioning_service = versioning_service or VersioningService()
+        self.plan_diff_preview_service = plan_diff_preview_service or PlanDiffPreviewService()
         self.planning_state_repository = planning_state_repo or planning_state_repository
         self.trip_repository = trip_repo or trip_repository
 
@@ -128,23 +131,15 @@ class PlanningOrchestrator:
             planning_state = run_stage(planning_state)
             self.planning_state_repository.save(planning_state)
 
-        if not planning_state.version_history:
-            changed_sections = [
-                section
-                for section in (
-                    "traveler_profile",
-                    "destination_context",
-                    "trip_strategy",
-                    "stay_transport",
-                    "experience_plan",
-                    "validation_report",
-                )
-                if getattr(planning_state, section) is not None
-            ]
-            planning_state = self.versioning_service.create_initial_version(
-                planning_state, changed_sections=changed_sections
-            )
-            self.planning_state_repository.save(planning_state)
+        # Idempotent: records the "v1" version item only the first time a
+        # trip is generated. Calling generate again for the same trip does
+        # not append a duplicate v1 entry (see VersioningService.create_initial_version).
+        planning_state = self.versioning_service.create_initial_version(planning_state)
+        # Recomputed from scratch every time (Step 132) so it always
+        # reflects the just-recorded version_history alongside any existing
+        # feedback_history/user_locks.
+        planning_state = self.plan_diff_preview_service.recompute(planning_state)
+        self.planning_state_repository.save(planning_state)
 
         return planning_state
 
@@ -154,6 +149,9 @@ class PlanningOrchestrator:
             raise trip_not_found_error(trip_id)
 
         planning_state = self.feedback_service.apply_feedback(planning_state, feedback_text)
+        # Recomputed from scratch every time (Step 132) so it always
+        # reflects the just-appended feedback_history.
+        planning_state = self.plan_diff_preview_service.recompute(planning_state)
         self.planning_state_repository.save(planning_state)
         return planning_state
 

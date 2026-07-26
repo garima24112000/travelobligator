@@ -30,6 +30,7 @@ import type {
   HolidayContext,
   ImplementationGaps,
   PendingFeedbackSummary,
+  PlanDiffPreview,
   ProviderCoverageData,
   ReadinessChecklist,
   RestaurantSuggestion,
@@ -39,6 +40,7 @@ import type {
   TripSummary,
   UserLock,
   ValidationReport,
+  VersionHistoryItem,
   WeatherContext,
 } from "@/lib/types";
 
@@ -76,6 +78,8 @@ type PlanResult = {
   feedbackHistory: FeedbackEvent[];
   pendingFeedbackSummary: PendingFeedbackSummary;
   userLocks: UserLock[];
+  versionHistory: VersionHistoryItem[];
+  planDiffPreview: PlanDiffPreview;
 };
 
 function parseCommaList(value: string): string[] {
@@ -876,7 +880,7 @@ function ScheduledExperienceCard({
   orderNumber: number;
   tripId: string;
   activeLock: UserLock | null;
-  onLockChange: (userLocks: UserLock[]) => void;
+  onLockChange: (userLocks: UserLock[], planDiffPreview: PlanDiffPreview) => void;
 }) {
   const hasCoordinates = experience.coordinates !== null;
   const [isSubmittingLock, setIsSubmittingLock] = useState(false);
@@ -898,7 +902,10 @@ function ScheduledExperienceCard({
         experience.experience_id,
         "user_requested_keep",
       );
-      onLockChange(tripData.planning_state.user_locks);
+      onLockChange(
+        tripData.planning_state.user_locks,
+        tripData.planning_state.plan_diff_preview,
+      );
       setLockSuccessMessage(
         "Place marked to keep. Regeneration is not implemented yet.",
       );
@@ -920,7 +927,10 @@ function ScheduledExperienceCard({
     setLockErrorMessage(null);
     try {
       const tripData = await deleteTripLock(tripId, activeLock.lock_id);
-      onLockChange(tripData.planning_state.user_locks);
+      onLockChange(
+        tripData.planning_state.user_locks,
+        tripData.planning_state.plan_diff_preview,
+      );
       setLockSuccessMessage("Keep marker removed.");
     } catch (err) {
       setLockErrorMessage(
@@ -1568,6 +1578,227 @@ function PendingRequestedChangesSection({
   );
 }
 
+/**
+ * Plan-level readout of `PlanningState.version_history` (Step 133). Purely
+ * a restatement of backend bookkeeping about which pipeline sections were
+ * produced/changed for each recorded version -- never a snapshot of their
+ * travel-fact content, and never itself a claim that regeneration ran.
+ */
+function VersionHistorySection({
+  versionHistory,
+}: {
+  versionHistory: VersionHistoryItem[];
+}) {
+  return (
+    <div className="rounded-2xl border border-white/10 bg-white/5 p-5">
+      <h2 className="text-lg font-semibold">Version history</h2>
+      <p className="mt-1 text-xs text-amber-300/90">
+        Version history records backend bookkeeping only. It does not add
+        travel facts.
+      </p>
+
+      {versionHistory.length === 0 ? (
+        <p className="mt-3 text-sm text-slate-400">
+          No generated plan version has been recorded yet.
+        </p>
+      ) : (
+        <ul className="mt-3 flex flex-col gap-2">
+          {versionHistory.map((version) => (
+            <li
+              key={version.version_id}
+              className="rounded-lg border border-white/10 bg-slate-900/60 p-3 text-sm"
+            >
+              <p className="flex items-center justify-between gap-2">
+                <span className="font-semibold text-slate-200">
+                  {version.version_label}
+                </span>
+                <span className="text-[11px] uppercase tracking-wide text-slate-400">
+                  {version.created_by}
+                </span>
+              </p>
+              <p className="mt-1 text-[11px] text-slate-500">
+                Recorded: {new Date(version.created_at).toLocaleString()}
+              </p>
+              {version.summary && (
+                <p className="mt-2 text-xs text-slate-300">
+                  {version.summary}
+                </p>
+              )}
+              {version.changed_sections.length > 0 && (
+                <p className="mt-2 text-xs text-slate-400">
+                  Changed sections: {version.changed_sections.join(", ")}
+                </p>
+              )}
+              {version.preserved_sections.length > 0 && (
+                <p className="mt-1 text-xs text-slate-400">
+                  Preserved sections: {version.preserved_sections.join(", ")}
+                </p>
+              )}
+              {version.feedback_event_id && (
+                <p className="mt-1 text-xs text-slate-400">
+                  Triggered by feedback event: {version.feedback_event_id}
+                </p>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+function planDiffPreviewStatusLabel(previewStatus: string): string {
+  if (previewStatus === "ready_for_future_regeneration_preview") {
+    return "Ready for future regeneration preview";
+  }
+  if (previewStatus === "not_available") {
+    return "Diff preview is not available yet.";
+  }
+  return previewStatus;
+}
+
+function formatNullableVersionLabel(version: string | null): string {
+  return version ?? "None yet";
+}
+
+/**
+ * Plan-level readout of `PlanningState.plan_diff_preview` (Step 133). Purely
+ * a restatement of the backend's deterministic, from-scratch-recomputed
+ * preview of what a *future* regeneration would compare/change -- never
+ * something this section applies itself. `regeneration_available` always
+ * renders as "No" and `to_version` always renders as "None yet" today,
+ * since real regeneration/diffing is not implemented.
+ */
+function PlanDiffPreviewSection({ preview }: { preview: PlanDiffPreview }) {
+  return (
+    <div className="rounded-2xl border border-white/10 bg-white/5 p-5">
+      <h2 className="text-lg font-semibold">Plan diff preview</h2>
+      <p className="mt-1 text-xs text-amber-300/90">
+        This is a preview only. No new version or plan diff has been
+        generated yet.
+      </p>
+
+      <dl className="mt-3 grid grid-cols-2 gap-3 text-sm sm:grid-cols-4">
+        <div className="rounded-lg border border-white/10 bg-slate-900/60 p-3">
+          <dt className="text-[11px] uppercase tracking-wide text-slate-500">
+            Status
+          </dt>
+          <dd className="mt-1 font-semibold text-slate-100">
+            {planDiffPreviewStatusLabel(preview.preview_status)}
+          </dd>
+        </div>
+        <div className="rounded-lg border border-white/10 bg-slate-900/60 p-3">
+          <dt className="text-[11px] uppercase tracking-wide text-slate-500">
+            From version
+          </dt>
+          <dd className="mt-1 font-semibold text-slate-100">
+            {formatNullableVersionLabel(preview.from_version)}
+          </dd>
+        </div>
+        <div className="rounded-lg border border-white/10 bg-slate-900/60 p-3">
+          <dt className="text-[11px] uppercase tracking-wide text-slate-500">
+            To version
+          </dt>
+          <dd className="mt-1 font-semibold text-slate-100">
+            {formatNullableVersionLabel(preview.to_version)}
+          </dd>
+        </div>
+        <div className="rounded-lg border border-white/10 bg-slate-900/60 p-3">
+          <dt className="text-[11px] uppercase tracking-wide text-slate-500">
+            Regeneration available
+          </dt>
+          <dd className="mt-1 font-semibold text-slate-100">
+            {preview.regeneration_available ? "Yes" : "No"}
+          </dd>
+        </div>
+        <div className="rounded-lg border border-white/10 bg-slate-900/60 p-3">
+          <dt className="text-[11px] uppercase tracking-wide text-slate-500">
+            Pending feedback count
+          </dt>
+          <dd className="mt-1 font-semibold text-slate-100">
+            {preview.pending_feedback_count}
+          </dd>
+        </div>
+        <div className="rounded-lg border border-white/10 bg-slate-900/60 p-3">
+          <dt className="text-[11px] uppercase tracking-wide text-slate-500">
+            Active lock count
+          </dt>
+          <dd className="mt-1 font-semibold text-slate-100">
+            {preview.active_lock_count}
+          </dd>
+        </div>
+        {preview.would_create_version && (
+          <div className="rounded-lg border border-white/10 bg-slate-900/60 p-3">
+            <dt className="text-[11px] uppercase tracking-wide text-slate-500">
+              Would create version
+            </dt>
+            <dd className="mt-1 font-semibold text-slate-100">
+              {preview.would_create_version}
+            </dd>
+          </div>
+        )}
+      </dl>
+
+      {preview.would_consider_sections.length > 0 && (
+        <div className="mt-3">
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+            Would consider sections
+          </p>
+          <p className="mt-1 text-sm text-slate-300">
+            {preview.would_consider_sections.join(", ")}
+          </p>
+        </div>
+      )}
+
+      {preview.would_preserve_locked_items.length > 0 && (
+        <div className="mt-3">
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+            Would preserve locked items
+          </p>
+          <ul className="mt-2 flex flex-col gap-2">
+            {preview.would_preserve_locked_items.map((item, index) => (
+              <li
+                key={`${item.locked_item_type}-${item.locked_item_id}-${index}`}
+                className="rounded-lg border border-white/10 bg-slate-900/60 p-3 text-xs text-slate-300"
+              >
+                Type: {item.locked_item_type} · ID: {item.locked_item_id}
+                {" · "}
+                Reason: {item.reason}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {preview.triggered_by_feedback_event_ids.length > 0 && (
+        <div className="mt-3">
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+            Triggered by feedback events
+          </p>
+          <p className="mt-1 text-xs text-slate-400">
+            {preview.triggered_by_feedback_event_ids.join(", ")}
+          </p>
+        </div>
+      )}
+
+      {preview.blocked_by.length > 0 && (
+        <div className="mt-3">
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+            Blocked by
+          </p>
+          <ul className="mt-1 list-disc pl-4 text-xs text-slate-400">
+            {preview.blocked_by.map((reason, index) => (
+              <li key={`plan-diff-blocked-by-${index}`}>{reason}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      <p className="mt-3 text-xs text-slate-400">{preview.note}</p>
+    </div>
+  );
+}
+
 function FeedbackPanel({
   feedbackText,
   onFeedbackTextChange,
@@ -1789,6 +2020,8 @@ async function loadPlanResult(tripId: string): Promise<PlanResult> {
     feedbackHistory: trip.planning_state.feedback_history,
     pendingFeedbackSummary: trip.planning_state.pending_feedback_summary,
     userLocks: trip.planning_state.user_locks,
+    versionHistory: trip.planning_state.version_history,
+    planDiffPreview: trip.planning_state.plan_diff_preview,
   };
 }
 
@@ -1862,7 +2095,7 @@ function LockedItemsSummarySection({
   tripId: string;
   userLocks: UserLock[];
   dailyPlans: DailyPlan[];
-  onLockChange: (userLocks: UserLock[]) => void;
+  onLockChange: (userLocks: UserLock[], planDiffPreview: PlanDiffPreview) => void;
 }) {
   const [actionState, setActionState] = useState<
     Record<string, LockActionState>
@@ -1881,7 +2114,10 @@ function LockedItemsSummarySection({
     }));
     try {
       const tripData = await deleteTripLock(tripId, lockId);
-      onLockChange(tripData.planning_state.user_locks);
+      onLockChange(
+        tripData.planning_state.user_locks,
+        tripData.planning_state.plan_diff_preview,
+      );
       setActionState((previous) => ({
         ...previous,
         [lockId]: {
@@ -2027,6 +2263,7 @@ export default function Home() {
               feedbackHistory: tripData.planning_state.feedback_history,
               pendingFeedbackSummary:
                 tripData.planning_state.pending_feedback_summary,
+              planDiffPreview: tripData.planning_state.plan_diff_preview,
             }
           : previous,
       );
@@ -2433,6 +2670,10 @@ export default function Home() {
               summary={result.pendingFeedbackSummary}
             />
 
+            <VersionHistorySection versionHistory={result.versionHistory} />
+
+            <PlanDiffPreviewSection preview={result.planDiffPreview} />
+
             <ResultGroupHeader
               id="travel-context"
               title="Travel context"
@@ -2457,9 +2698,9 @@ export default function Home() {
               tripId={result.summary.trip_id}
               userLocks={result.userLocks}
               dailyPlans={result.dailyPlans}
-              onLockChange={(userLocks) =>
+              onLockChange={(userLocks, planDiffPreview) =>
                 setResult((previous) =>
-                  previous ? { ...previous, userLocks } : previous,
+                  previous ? { ...previous, userLocks, planDiffPreview } : previous,
                 )
               }
             />
@@ -2505,10 +2746,10 @@ export default function Home() {
                                 result.userLocks,
                                 experience.experience_id,
                               )}
-                              onLockChange={(userLocks) =>
+                              onLockChange={(userLocks, planDiffPreview) =>
                                 setResult((previous) =>
                                   previous
-                                    ? { ...previous, userLocks }
+                                    ? { ...previous, userLocks, planDiffPreview }
                                     : previous,
                                 )
                               }

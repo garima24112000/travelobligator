@@ -397,14 +397,63 @@ export type UserLock = {
   removed_at: string | null;
 };
 
+// One recorded plan version (backend: app.models.planning_state.
+// VersionHistoryItem). Purely bookkeeping about which pipeline sections
+// were produced/changed -- never a snapshot of their travel-fact content,
+// and never itself a claim that a new version was created from feedback.
+export type VersionHistoryItem = {
+  version_id: string;
+  version_label: string;
+  created_by: string;
+  summary: string | null;
+  changed_sections: string[];
+  preserved_sections: string[];
+  feedback_event_id: string | null;
+  created_at: string;
+};
+
+// A safe, minimal representation of one active UserLock inside
+// PlanDiffPreview.would_preserve_locked_items -- only the fields already on
+// UserLock itself, never a snapshot of the locked item's actual travel data
+// (backend: app.models.planning_state.PreservedLockedItem).
+export type PreservedLockedItem = {
+  locked_item_type: string;
+  locked_item_id: string;
+  reason: string;
+};
+
+// Deterministic, honest preview of what a *future* regeneration would
+// compare/change (backend: app.models.planning_state.PlanDiffPreview /
+// app.services.plan_diff_preview_service.PlanDiffPreviewService). Recomputed
+// from scratch on the backend from version_history/feedback_history/
+// user_locks -- never something this endpoint applies itself, never a claim
+// that a new version or diff was actually generated.
+export type PlanDiffPreview = {
+  preview_status: string;
+  from_version: string | null;
+  to_version: string | null;
+  regeneration_available: boolean;
+  would_create_version: string | null;
+  triggered_by_feedback_event_ids: string[];
+  pending_feedback_count: number;
+  active_lock_count: number;
+  would_consider_sections: string[];
+  would_preserve_locked_items: PreservedLockedItem[];
+  blocked_by: string[];
+  note: string;
+};
+
 // Full PlanningState is much larger than this; only feedback_history,
-// pending_feedback_summary, and user_locks are declared here since that's
-// the only part of it the frontend reads.
+// pending_feedback_summary, user_locks, version_history, and
+// plan_diff_preview are declared here since that's the only part of it the
+// frontend reads.
 export type TripData = {
   trip_id: string;
   planning_state: {
     feedback_history: FeedbackEvent[];
     pending_feedback_summary: PendingFeedbackSummary;
     user_locks: UserLock[];
+    version_history: VersionHistoryItem[];
+    plan_diff_preview: PlanDiffPreview;
   };
 };

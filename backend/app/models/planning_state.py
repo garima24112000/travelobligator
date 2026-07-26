@@ -868,6 +868,50 @@ class VersionHistoryItem(BaseModel):
     created_at: datetime = Field(default_factory=_utc_now)
 
 
+class PreservedLockedItem(BaseModel):
+    """A safe, minimal representation of one active `UserLock` inside
+    `PlanDiffPreview.would_preserve_locked_items` -- only the fields already
+    on `UserLock` itself, never a snapshot of the locked item's actual
+    travel data (name, coordinates, price, etc.).
+    """
+
+    locked_item_type: str
+    locked_item_id: str
+    reason: str
+
+
+class PlanDiffPreview(BaseModel):
+    """Deterministic, honest preview of what a *future* regeneration would
+    compare/change (Step 132, docs/14_backend_architecture.md section 18).
+    Recomputed from scratch by `PlanDiffPreviewService` from
+    `version_history`/`feedback_history`/`user_locks` whenever one of those
+    changes -- never incrementally patched, never touched by an AI call,
+    and never something that itself regenerates the plan, creates a new
+    plan version, or claims feedback has been applied.
+    """
+
+    preview_status: str = "not_available"
+    from_version: str | None = None
+    to_version: str | None = None
+    regeneration_available: bool = False
+    would_create_version: str | None = None
+    triggered_by_feedback_event_ids: list[str] = Field(default_factory=list)
+    pending_feedback_count: int = 0
+    active_lock_count: int = 0
+    would_consider_sections: list[PlanningStage] = Field(default_factory=list)
+    would_preserve_locked_items: list[PreservedLockedItem] = Field(default_factory=list)
+    blocked_by: list[str] = Field(
+        default_factory=lambda: [
+            "Feedback-driven regeneration is not implemented yet.",
+            "No AI planning/diff provider is connected.",
+            "No new plan version has been generated.",
+        ]
+    )
+    note: str = (
+        "No plan diff is available yet because no plan has been generated for this trip."
+    )
+
+
 class PlanningMetadata(BaseModel):
     current_version: str = "v1"
     pipeline_status: PipelineStatus = PipelineStatus.DRAFT
@@ -905,6 +949,7 @@ class PlanningState(BaseModel):
     )
     user_locks: list[UserLock] = Field(default_factory=list)
     version_history: list[VersionHistoryItem] = Field(default_factory=list)
+    plan_diff_preview: PlanDiffPreview = Field(default_factory=PlanDiffPreview)
 
     provider_status: dict[str, ProviderStatusEntry] = Field(default_factory=dict)
     provider_coverage: ProviderCoverage = Field(default_factory=ProviderCoverage)

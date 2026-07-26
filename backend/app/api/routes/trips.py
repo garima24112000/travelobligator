@@ -15,6 +15,7 @@ from app.schemas.provider_coverage import ProviderCoverageResponseData
 from app.schemas.trip_summary import TripSummaryResponseData
 from app.schemas.trips import FeedbackRequest, LockRequest, TripResponseData
 from app.schemas.validation_report import ValidationReportResponseData
+from app.services.plan_diff_preview_service import plan_diff_preview_service
 from app.services.planning_orchestrator import planning_orchestrator
 from app.services.user_lock_service import user_lock_service
 
@@ -85,6 +86,9 @@ def create_trip_lock(trip_id: str, lock_request: LockRequest) -> ApiResponse[Tri
         locked_item_id=lock_request.locked_item_id,
         reason=lock_request.reason,
     )
+    # Recomputed from scratch every time (Step 132) so it always reflects
+    # the just-added lock.
+    planning_state = plan_diff_preview_service.recompute(planning_state)
     planning_state_repository.save(planning_state)
 
     data = TripResponseData(trip_id=trip_id, planning_state=planning_state)
@@ -104,6 +108,9 @@ def delete_trip_lock(trip_id: str, lock_id: str) -> ApiResponse[TripResponseData
         raise lock_not_found_error(trip_id, lock_id)
 
     planning_state = user_lock_service.remove_lock(planning_state, lock_id)
+    # Recomputed from scratch every time (Step 132) so it always reflects
+    # the just-removed lock.
+    planning_state = plan_diff_preview_service.recompute(planning_state)
     planning_state_repository.save(planning_state)
 
     data = TripResponseData(trip_id=trip_id, planning_state=planning_state)
