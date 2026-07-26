@@ -383,13 +383,28 @@ export type PendingFeedbackSummary = {
   note: string;
 };
 
-// Full PlanningState is much larger than this; only feedback_history and
-// pending_feedback_summary are declared here since that's the only part of
-// it the frontend reads.
+// A single "keep this place" instruction stored for a possible future
+// regeneration (backend: app.models.planning_state.UserLock). Creating or
+// removing a lock never changes the current plan itself -- see
+// app.tests.api.test_trip_locks.test_locking_does_not_modify_generated_plan_sections.
+export type UserLock = {
+  lock_id: string;
+  locked_item_type: string;
+  locked_item_id: string;
+  reason: string;
+  is_active: boolean;
+  created_at: string;
+  removed_at: string | null;
+};
+
+// Full PlanningState is much larger than this; only feedback_history,
+// pending_feedback_summary, and user_locks are declared here since that's
+// the only part of it the frontend reads.
 export type TripData = {
   trip_id: string;
   planning_state: {
     feedback_history: FeedbackEvent[];
     pending_feedback_summary: PendingFeedbackSummary;
+    user_locks: UserLock[];
   };
 };

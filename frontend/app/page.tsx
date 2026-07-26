@@ -5,6 +5,8 @@ import type * as Leaflet from "leaflet";
 import {
   ApiRequestError,
   createTrip,
+  createTripLock,
+  deleteTripLock,
   generatePlan,
   getDestinationContext,
   getExperiencePlan,
@@ -35,6 +37,7 @@ import type {
   StayAreaGuidance,
   TripRequestInput,
   TripSummary,
+  UserLock,
   ValidationReport,
   WeatherContext,
 } from "@/lib/types";
@@ -72,6 +75,7 @@ type PlanResult = {
   experienceConfidence: number;
   feedbackHistory: FeedbackEvent[];
   pendingFeedbackSummary: PendingFeedbackSummary;
+  userLocks: UserLock[];
 };
 
 function parseCommaList(value: string): string[] {
@@ -852,15 +856,82 @@ function ExperienceMapLinks({ coordinates }: { coordinates: GeoPoint | null }) {
  * full-day itinerary position (1-based index into the day's `experiences`
  * array), matching the numbering used by `DayMapPreview`'s markers -- not a
  * renumbering of only coordinate-backed items.
+ *
+ * `activeLock` and `onLockChange` (Step 128) let this card create/remove its
+ * own UserLock directly against POST/DELETE /trips/{trip_id}/locks. This
+ * only ever stores or clears a future-regeneration instruction -- it never
+ * changes itinerary ordering, scheduled experiences, validation readiness,
+ * provider coverage, or route feasibility, and never claims the plan was
+ * regenerated (see app.tests.api.test_trip_locks.
+ * test_locking_does_not_modify_generated_plan_sections).
  */
 function ScheduledExperienceCard({
   experience,
   orderNumber,
+  tripId,
+  activeLock,
+  onLockChange,
 }: {
   experience: ExperienceItem;
   orderNumber: number;
+  tripId: string;
+  activeLock: UserLock | null;
+  onLockChange: (userLocks: UserLock[]) => void;
 }) {
   const hasCoordinates = experience.coordinates !== null;
+  const [isSubmittingLock, setIsSubmittingLock] = useState(false);
+  const [lockSuccessMessage, setLockSuccessMessage] = useState<string | null>(
+    null,
+  );
+  const [lockErrorMessage, setLockErrorMessage] = useState<string | null>(
+    null,
+  );
+
+  async function handleKeepThisPlace() {
+    setIsSubmittingLock(true);
+    setLockSuccessMessage(null);
+    setLockErrorMessage(null);
+    try {
+      const tripData = await createTripLock(
+        tripId,
+        "experience",
+        experience.experience_id,
+        "user_requested_keep",
+      );
+      onLockChange(tripData.planning_state.user_locks);
+      setLockSuccessMessage(
+        "Place marked to keep. Regeneration is not implemented yet.",
+      );
+    } catch (err) {
+      setLockErrorMessage(
+        err instanceof ApiRequestError
+          ? err.message
+          : "Something went wrong while saving the keep marker.",
+      );
+    } finally {
+      setIsSubmittingLock(false);
+    }
+  }
+
+  async function handleRemoveKeep() {
+    if (!activeLock) return;
+    setIsSubmittingLock(true);
+    setLockSuccessMessage(null);
+    setLockErrorMessage(null);
+    try {
+      const tripData = await deleteTripLock(tripId, activeLock.lock_id);
+      onLockChange(tripData.planning_state.user_locks);
+      setLockSuccessMessage("Keep marker removed.");
+    } catch (err) {
+      setLockErrorMessage(
+        err instanceof ApiRequestError
+          ? err.message
+          : "Something went wrong while removing the keep marker.",
+      );
+    } finally {
+      setIsSubmittingLock(false);
+    }
+  }
 
   return (
     <li className="rounded-lg border border-white/10 bg-slate-900/60 p-3 text-sm">
@@ -889,6 +960,42 @@ function ScheduledExperienceCard({
             </p>
             <ExperienceMapLinks coordinates={experience.coordinates} />
           </div>
+
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            {activeLock ? (
+              <>
+                <span className="rounded-full border border-emerald-300/40 bg-slate-950 px-3 py-1 text-xs font-semibold text-emerald-200">
+                  Kept for future regeneration
+                </span>
+                <button
+                  type="button"
+                  onClick={() => void handleRemoveKeep()}
+                  disabled={isSubmittingLock}
+                  className="rounded-full border border-white/10 bg-slate-900 px-3 py-1 text-xs font-semibold text-slate-300 transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {isSubmittingLock ? "Removing..." : "Remove keep"}
+                </button>
+              </>
+            ) : (
+              <button
+                type="button"
+                onClick={() => void handleKeepThisPlace()}
+                disabled={isSubmittingLock}
+                className="rounded-full border border-cyan-300/40 bg-slate-900 px-3 py-1 text-xs font-semibold text-cyan-200 transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {isSubmittingLock ? "Saving..." : "Keep this place"}
+              </button>
+            )}
+          </div>
+
+          {lockErrorMessage && (
+            <p className="mt-1 text-xs text-red-300">{lockErrorMessage}</p>
+          )}
+          {lockSuccessMessage && !lockErrorMessage && (
+            <p className="mt-1 text-xs text-emerald-300">
+              {lockSuccessMessage}
+            </p>
+          )}
         </div>
       </div>
     </li>
@@ -1681,7 +1788,193 @@ async function loadPlanResult(tripId: string): Promise<PlanResult> {
     experienceConfidence: experiencePlan.experience_plan.confidence,
     feedbackHistory: trip.planning_state.feedback_history,
     pendingFeedbackSummary: trip.planning_state.pending_feedback_summary,
+    userLocks: trip.planning_state.user_locks,
   };
+}
+
+/**
+ * Finds the currently active "experience" lock for a given experience_id,
+ * if one exists. A locked experience can only ever have one active lock at
+ * a time (the backend's add_lock is a no-op against an existing active
+ * lock), so this returns at most one match.
+ */
+function findActiveLockForExperience(
+  userLocks: UserLock[],
+  experienceId: string,
+): UserLock | null {
+  return (
+    userLocks.find(
+      (lock) =>
+        lock.is_active &&
+        lock.locked_item_type === "experience" &&
+        lock.locked_item_id === experienceId,
+    ) ?? null
+  );
+}
+
+/** All currently active (not removed) locks, in stored order. */
+function activeUserLocks(userLocks: UserLock[]): UserLock[] {
+  return userLocks.filter((lock) => lock.is_active);
+}
+
+/**
+ * Looks up a scheduled experience by ID across every day of the current
+ * `dailyPlans`, purely so the locked-items summary can show a human-readable
+ * name instead of a bare ID. Returns null (rather than a fabricated name) if
+ * the experience isn't found in the current plan.
+ */
+function findExperienceById(
+  dailyPlans: DailyPlan[],
+  experienceId: string,
+): ExperienceItem | null {
+  for (const day of dailyPlans) {
+    const match = day.experiences.find(
+      (experience) => experience.experience_id === experienceId,
+    );
+    if (match) return match;
+  }
+  return null;
+}
+
+type LockActionState = {
+  isSubmitting: boolean;
+  successMessage: string | null;
+  errorMessage: string | null;
+};
+
+/**
+ * Plan-level summary of active "keep this place" markers (Step 129). Purely
+ * a readout of `PlanningState.user_locks` plus a Remove keep action that
+ * reuses the same `deleteTripLock` call as `ScheduledExperienceCard`.
+ * Removing a lock here updates the same `result.userLocks` state the cards
+ * read from (via `onLockChange`), so both this summary and the matching
+ * card stay in sync automatically. Like the per-card actions, this never
+ * regenerates or claims to change the itinerary, validation readiness,
+ * provider coverage, or route feasibility -- it only stores/clears a
+ * future-regeneration instruction.
+ */
+function LockedItemsSummarySection({
+  tripId,
+  userLocks,
+  dailyPlans,
+  onLockChange,
+}: {
+  tripId: string;
+  userLocks: UserLock[];
+  dailyPlans: DailyPlan[];
+  onLockChange: (userLocks: UserLock[]) => void;
+}) {
+  const [actionState, setActionState] = useState<
+    Record<string, LockActionState>
+  >({});
+
+  const locks = activeUserLocks(userLocks);
+
+  async function handleRemoveKeep(lockId: string) {
+    setActionState((previous) => ({
+      ...previous,
+      [lockId]: {
+        isSubmitting: true,
+        successMessage: null,
+        errorMessage: null,
+      },
+    }));
+    try {
+      const tripData = await deleteTripLock(tripId, lockId);
+      onLockChange(tripData.planning_state.user_locks);
+      setActionState((previous) => ({
+        ...previous,
+        [lockId]: {
+          isSubmitting: false,
+          successMessage: "Keep marker removed.",
+          errorMessage: null,
+        },
+      }));
+    } catch (err) {
+      setActionState((previous) => ({
+        ...previous,
+        [lockId]: {
+          isSubmitting: false,
+          successMessage: null,
+          errorMessage:
+            err instanceof ApiRequestError
+              ? err.message
+              : "Something went wrong while removing the keep marker.",
+        },
+      }));
+    }
+  }
+
+  return (
+    <div className="rounded-2xl border border-white/10 bg-white/5 p-5">
+      <h2 className="text-lg font-semibold">Kept for future regeneration</h2>
+      <p className="mt-1 text-xs text-amber-300/90">
+        These keep markers are stored for future regeneration. They do not
+        change the current plan yet.
+      </p>
+
+      {locks.length === 0 ? (
+        <p className="mt-3 text-sm text-slate-400">
+          No places marked to keep yet.
+        </p>
+      ) : (
+        <ul className="mt-3 flex flex-col gap-2">
+          {locks.map((lock) => {
+            const matchedExperience =
+              lock.locked_item_type === "experience"
+                ? findExperienceById(dailyPlans, lock.locked_item_id)
+                : null;
+            const state = actionState[lock.lock_id];
+
+            return (
+              <li
+                key={lock.lock_id}
+                className="rounded-lg border border-white/10 bg-slate-900/60 p-3 text-sm"
+              >
+                <p className="font-medium text-slate-100">
+                  {matchedExperience
+                    ? matchedExperience.name
+                    : "Matching scheduled experience not found in the current plan."}
+                </p>
+                <p className="mt-1 text-xs text-slate-400">
+                  Type: {lock.locked_item_type} · ID: {lock.locked_item_id}
+                </p>
+                <p className="mt-1 text-xs text-slate-400">
+                  Reason: {lock.reason}
+                </p>
+                <p className="mt-1 text-[11px] uppercase tracking-wide text-emerald-300/90">
+                  Status: active
+                </p>
+                <p className="mt-1 text-xs text-slate-400">
+                  Created: {new Date(lock.created_at).toLocaleString()}
+                </p>
+
+                <button
+                  type="button"
+                  onClick={() => void handleRemoveKeep(lock.lock_id)}
+                  disabled={state?.isSubmitting}
+                  className="mt-2 rounded-full border border-white/10 bg-slate-900 px-3 py-1 text-xs font-semibold text-slate-300 transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {state?.isSubmitting ? "Removing..." : "Remove keep"}
+                </button>
+
+                {state?.errorMessage && (
+                  <p className="mt-2 text-xs text-red-300">
+                    {state.errorMessage}
+                  </p>
+                )}
+                {state?.successMessage && !state.errorMessage && (
+                  <p className="mt-2 text-xs text-emerald-300">
+                    {state.successMessage}
+                  </p>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </div>
+  );
 }
 
 export default function Home() {
@@ -2160,11 +2453,26 @@ export default function Home() {
               description="Scheduled places, map previews, and nearby open-data suggestions generated from backend-returned data."
             />
 
+            <LockedItemsSummarySection
+              tripId={result.summary.trip_id}
+              userLocks={result.userLocks}
+              dailyPlans={result.dailyPlans}
+              onLockChange={(userLocks) =>
+                setResult((previous) =>
+                  previous ? { ...previous, userLocks } : previous,
+                )
+              }
+            />
+
             <div className="rounded-2xl border border-white/10 bg-white/5 p-5">
               <h2 className="text-lg font-semibold">Day-wise experiences</h2>
               <p className="mt-1 text-[11px] text-slate-500">
                 Map links open the scheduled place coordinates only. They are
                 not route, travel-time, or booking links.
+              </p>
+              <p className="mt-1 text-[11px] text-amber-300/90">
+                Keep markers are stored for future regeneration. They do not
+                change the current plan.
               </p>
               {result.dailyPlans.length === 0 && (
                 <p className="mt-2 text-sm text-slate-400">
@@ -2192,6 +2500,18 @@ export default function Home() {
                               key={experience.experience_id}
                               experience={experience}
                               orderNumber={index + 1}
+                              tripId={result.summary.trip_id}
+                              activeLock={findActiveLockForExperience(
+                                result.userLocks,
+                                experience.experience_id,
+                              )}
+                              onLockChange={(userLocks) =>
+                                setResult((previous) =>
+                                  previous
+                                    ? { ...previous, userLocks }
+                                    : previous,
+                                )
+                              }
                             />
                           ))}
                         </ul>

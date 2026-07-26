@@ -94,3 +94,28 @@ export function submitTripFeedback(
     body: JSON.stringify({ feedback_text: feedbackText }),
   });
 }
+
+export function createTripLock(
+  tripId: string,
+  lockedItemType: string,
+  lockedItemId: string,
+  reason?: string,
+): Promise<TripData> {
+  return request<TripData>(`/trips/${tripId}/locks`, {
+    method: "POST",
+    body: JSON.stringify({
+      locked_item_type: lockedItemType,
+      locked_item_id: lockedItemId,
+      ...(reason !== undefined ? { reason } : {}),
+    }),
+  });
+}
+
+export function deleteTripLock(
+  tripId: string,
+  lockId: string,
+): Promise<TripData> {
+  return request<TripData>(`/trips/${tripId}/locks/${lockId}`, {
+    method: "DELETE",
+  });
+}

@@ -19,8 +19,14 @@ class UserLockService:
         planning_state: PlanningState,
         locked_item_type: str,
         locked_item_id: str,
-        reason: str = "user_approved",
+        reason: str = "user_requested_keep",
     ) -> PlanningState:
+        existing_active_lock = self.find_active_lock(
+            planning_state, locked_item_type, locked_item_id
+        )
+        if existing_active_lock is not None:
+            return planning_state
+
         planning_state.user_locks.append(
             UserLock(
                 locked_item_type=locked_item_type,
@@ -39,6 +45,24 @@ class UserLockService:
                 break
         planning_state.touch()
         return planning_state
+
+    def find_lock(self, planning_state: PlanningState, lock_id: str) -> UserLock | None:
+        for lock in planning_state.user_locks:
+            if lock.lock_id == lock_id:
+                return lock
+        return None
+
+    def find_active_lock(
+        self, planning_state: PlanningState, locked_item_type: str, locked_item_id: str
+    ) -> UserLock | None:
+        for lock in planning_state.user_locks:
+            if (
+                lock.is_active
+                and lock.locked_item_type == locked_item_type
+                and lock.locked_item_id == locked_item_id
+            ):
+                return lock
+        return None
 
     def is_locked(self, planning_state: PlanningState, locked_item_id: str) -> bool:
         return any(

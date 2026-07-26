@@ -34,3 +34,13 @@ def trip_not_found_error(trip_id: str) -> AppError:
         status_code=status.HTTP_404_NOT_FOUND,
         field="trip_id",
     )
+
+
+def lock_not_found_error(trip_id: str, lock_id: str) -> AppError:
+    """Build the standard 404 error for an unknown lock_id on a known trip."""
+    return AppError(
+        code=ErrorCode.LOCK_NOT_FOUND,
+        message=f"Lock '{lock_id}' was not found for trip '{trip_id}'.",
+        status_code=status.HTTP_404_NOT_FOUND,
+        field="lock_id",
+    )

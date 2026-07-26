@@ -286,6 +286,63 @@ def test_pending_feedback_summary_is_persisted_and_reloadable(client: TestClient
     assert summary.summary_items[0].example_feedback == "Make this less packed"
 
 
+def test_user_lock_is_persisted_and_reloadable(client: TestClient) -> None:
+    """End-to-end: a user lock created through the API survives a simulated
+    backend process restart, recoverable by a brand-new repository instance
+    pointed at the same local JSON file.
+    """
+    create_response = client.post(
+        "/trips",
+        json={
+            "destination_scope": "single_city",
+            "primary_destination": "Testville, Testland",
+            "origin_city": "Home City",
+            "start_date": "2026-08-10",
+            "end_date": "2026-08-12",
+            "travelers_count": 2,
+            "travel_group_type": "couple",
+        },
+    )
+    assert create_response.status_code == 201
+    trip_id = create_response.json()["data"]["trip_id"]
+
+    lock_response = client.post(
+        f"/trips/{trip_id}/locks",
+        json={
+            "locked_item_type": "experience",
+            "locked_item_id": "experience_test_1",
+            "reason": "user_requested_keep",
+        },
+    )
+    assert lock_response.status_code == 201
+    lock_id = lock_response.json()["data"]["planning_state"]["user_locks"][0]["lock_id"]
+
+    delete_response = client.delete(f"/trips/{trip_id}/locks/{lock_id}")
+    assert delete_response.status_code == 200
+
+    from app.repositories.planning_state_repository import (
+        planning_state_repository as live_planning_state_repository,
+    )
+
+    fresh_planning_repo = PlanningStateRepository(
+        store=live_planning_state_repository._store
+    )
+    reloaded_state = fresh_planning_repo.get_by_trip_id(trip_id)
+
+    assert reloaded_state is not None
+    assert len(reloaded_state.user_locks) == 1
+
+    reloaded_lock = reloaded_state.user_locks[0]
+    assert reloaded_lock.lock_id == lock_id
+    assert reloaded_lock.locked_item_type == "experience"
+    assert reloaded_lock.locked_item_id == "experience_test_1"
+    assert reloaded_lock.reason == "user_requested_keep"
+    # The lock's deactivation (via DELETE) round-trips through the JSON
+    # store instead of being lost or reset on reload.
+    assert reloaded_lock.is_active is False
+    assert reloaded_lock.removed_at is not None
+
+
 def test_get_unknown_trip_id_still_returns_404(client: TestClient) -> None:
     response = client.get("/trips/does-not-exist")
     assert response.status_code == 404

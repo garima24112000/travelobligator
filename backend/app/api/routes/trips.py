@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, status
 
-from app.core.errors import AppError, trip_not_found_error
+from app.core.errors import AppError, lock_not_found_error, trip_not_found_error
 from app.core.response import success_response
 from app.models.common import ReadinessStatus
 from app.models.planning_state import TripRequest
@@ -13,9 +13,10 @@ from app.schemas.errors import ErrorCode
 from app.schemas.experience_plan import ExperiencePlanResponseData
 from app.schemas.provider_coverage import ProviderCoverageResponseData
 from app.schemas.trip_summary import TripSummaryResponseData
-from app.schemas.trips import FeedbackRequest, TripResponseData
+from app.schemas.trips import FeedbackRequest, LockRequest, TripResponseData
 from app.schemas.validation_report import ValidationReportResponseData
 from app.services.planning_orchestrator import planning_orchestrator
+from app.services.user_lock_service import user_lock_service
 
 router = APIRouter(prefix="/trips", tags=["trips"])
 
@@ -64,6 +65,47 @@ def submit_trip_feedback(
     planning_state = planning_orchestrator.apply_feedback(
         trip_id, feedback_request.feedback_text
     )
+    data = TripResponseData(trip_id=trip_id, planning_state=planning_state)
+    return success_response(data)
+
+
+@router.post(
+    "/{trip_id}/locks",
+    response_model=ApiResponse[TripResponseData],
+    status_code=status.HTTP_201_CREATED,
+)
+def create_trip_lock(trip_id: str, lock_request: LockRequest) -> ApiResponse[TripResponseData]:
+    planning_state = planning_state_repository.get_by_trip_id(trip_id)
+    if planning_state is None:
+        raise trip_not_found_error(trip_id)
+
+    planning_state = user_lock_service.add_lock(
+        planning_state,
+        locked_item_type=lock_request.locked_item_type,
+        locked_item_id=lock_request.locked_item_id,
+        reason=lock_request.reason,
+    )
+    planning_state_repository.save(planning_state)
+
+    data = TripResponseData(trip_id=trip_id, planning_state=planning_state)
+    return success_response(data)
+
+
+@router.delete(
+    "/{trip_id}/locks/{lock_id}",
+    response_model=ApiResponse[TripResponseData],
+)
+def delete_trip_lock(trip_id: str, lock_id: str) -> ApiResponse[TripResponseData]:
+    planning_state = planning_state_repository.get_by_trip_id(trip_id)
+    if planning_state is None:
+        raise trip_not_found_error(trip_id)
+
+    if user_lock_service.find_lock(planning_state, lock_id) is None:
+        raise lock_not_found_error(trip_id, lock_id)
+
+    planning_state = user_lock_service.remove_lock(planning_state, lock_id)
+    planning_state_repository.save(planning_state)
+
     data = TripResponseData(trip_id=trip_id, planning_state=planning_state)
     return success_response(data)
 
