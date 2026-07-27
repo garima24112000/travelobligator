@@ -2,7 +2,12 @@ from __future__ import annotations
 
 from fastapi import APIRouter, status
 
-from app.core.errors import AppError, lock_not_found_error, trip_not_found_error
+from app.core.errors import (
+    AppError,
+    lock_not_found_error,
+    regeneration_not_available_error,
+    trip_not_found_error,
+)
 from app.core.response import success_response
 from app.models.common import ReadinessStatus
 from app.models.planning_state import TripRequest
@@ -70,6 +75,29 @@ def submit_trip_feedback(
     )
     data = TripResponseData(trip_id=trip_id, planning_state=planning_state)
     return success_response(data)
+
+
+@router.post(
+    "/{trip_id}/regenerate",
+    response_model=ApiResponse[None],
+)
+def regenerate_trip_plan(trip_id: str) -> ApiResponse[None]:
+    """Hard-refusal endpoint (Step 138). Feedback-driven regeneration has no
+    real engine connected yet, so this always refuses instead of silently
+    doing nothing or pretending to succeed. Deliberately read-only: it
+    never calls `POST /generate`, never reruns any planning stage, never
+    creates a new plan version, and never touches `experience_plan`,
+    `destination_context`, `validation_report`, `provider_coverage`,
+    `route_feasibility_context`, `feedback_history`,
+    `pending_feedback_summary`, `user_locks`, `version_history`,
+    `plan_diff_preview`, or `regeneration_readiness` -- it doesn't even
+    save the (untouched) PlanningState back to the repository.
+    """
+    planning_state = planning_state_repository.get_by_trip_id(trip_id)
+    if planning_state is None:
+        raise trip_not_found_error(trip_id)
+
+    raise regeneration_not_available_error()
 
 
 @router.post(

@@ -44,3 +44,24 @@ def lock_not_found_error(trip_id: str, lock_id: str) -> AppError:
         status_code=status.HTTP_404_NOT_FOUND,
         field="lock_id",
     )
+
+
+def regeneration_not_available_error() -> AppError:
+    """Build the standard hard-refusal error for `POST /trips/{trip_id}/regenerate`.
+
+    Feedback-driven regeneration has no real engine connected yet, so this
+    endpoint always refuses rather than silently doing nothing or
+    pretending to succeed. The code/message/status are identical on every
+    call, for every trip, so callers can rely on this being stable rather
+    than trip-specific.
+    """
+    return AppError(
+        code=ErrorCode.REGENERATION_NOT_AVAILABLE,
+        message=(
+            "Feedback-driven regeneration is not available yet. The "
+            "regeneration engine has not been implemented, so no plan "
+            "changes were made."
+        ),
+        status_code=status.HTTP_409_CONFLICT,
+        field="regeneration",
+    )
