@@ -570,6 +570,13 @@ Use it only when:
 - core traveler profile changes
 - previous state is no longer valid
 
+Current implementation status: regeneration is not implemented yet. Only
+`explanation_only` classification exists today (deterministic, rule-based
+feedback capture). `POST /trips/{trip_id}/regenerate` is a hard-refusal
+endpoint: it always responds `409 REGENERATION_NOT_AVAILABLE`, records one
+blocked attempt in `regeneration_attempts`, and creates no new plan
+version.
+
 ---
 
 ## 17. Validation Before Presentation

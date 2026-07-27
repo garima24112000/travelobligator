@@ -64,6 +64,26 @@ The MVP includes:
 - provider coverage transparency
 - unavailable data labeling
 
+### Current Regeneration Status
+
+Feedback-based partial regeneration is the target design above, but
+regeneration is not implemented yet. Today the backend can capture
+feedback, summarize it, and explain why regeneration is blocked, but it
+does not run a regeneration engine:
+
+- `POST /trips/{trip_id}/feedback` captures feedback and a preliminary
+  interpretation; it does not change the itinerary.
+- `GET /trips/{trip_id}/regeneration-readiness` explains what regeneration
+  would need and why it can't run yet.
+- `POST /trips/{trip_id}/regenerate` is a hard-refusal endpoint — it
+  always returns `409 REGENERATION_NOT_AVAILABLE` and makes no plan
+  changes.
+- `GET /trips/{trip_id}/regeneration-attempts` returns an audit trail of
+  blocked attempts only.
+
+No new plan version is created and no itinerary content is changed by any
+of the endpoints above.
+
 ---
 
 ## What Makes TravelObligator Different

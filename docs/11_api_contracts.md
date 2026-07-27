@@ -937,3 +937,127 @@ The frontend should implement:
 * provider coverage labels
 * feedback controls
 * version history panel
+
+---
+
+## 27. Regeneration Safety Endpoints
+
+Regeneration is not implemented yet. These three endpoints exist so the
+frontend can honestly show why, without pretending a regeneration engine is
+connected. None of them run the planning pipeline, and none of them create
+a new plan version.
+
+### GET `/trips/{trip_id}/regeneration-readiness`
+
+Purpose: explains whether feedback-driven regeneration could run right
+now, and what it would need.
+
+Mutation behavior: none. This is a pure read of `regeneration_readiness`,
+which is recomputed from scratch on the write paths that can affect it
+(trip creation, `POST /generate`, `POST /feedback`, lock create, lock
+remove) — never by this endpoint itself.
+
+Response data:
+
+```json
+{
+  "trip_id": "trip_001",
+  "regeneration_readiness": {
+    "status": "blocked",
+    "can_regenerate": false,
+    "current_version": "v1",
+    "would_create_version": "v2",
+    "pending_feedback_count": 1,
+    "active_lock_count": 0,
+    "required_inputs": ["generated_plan", "pending_feedback", "regeneration_engine"],
+    "available_inputs": ["generated_plan", "version_history", "pending_feedback", "plan_diff_preview"],
+    "missing_capabilities": ["regeneration_engine"],
+    "blocked_by": ["Feedback exists, but the regeneration engine is not implemented yet."],
+    "next_step": "Implement the regeneration engine before applying feedback."
+  }
+}
+```
+
+`status` is always `"blocked"` and `can_regenerate` is always `false`
+today. `would_create_version` is a hint only (what a version would be
+labeled if regeneration existed) — it is never created.
+
+### POST `/trips/{trip_id}/regenerate`
+
+**POST /regenerate is a hard-refusal endpoint.** It never runs the
+planning pipeline, never calls `POST /generate` internally, never calls an
+AI or provider, and never creates a new plan version.
+
+Response behavior:
+
+* Unknown `trip_id` → `404 TRIP_NOT_FOUND`, same shape as every other
+  endpoint. Nothing is recorded for a trip that does not exist.
+* Existing `trip_id` → always `409 Conflict` with error code
+  `REGENERATION_NOT_AVAILABLE` and this exact message:
+
+  ```text
+  Feedback-driven regeneration is not available yet. The regeneration
+  engine has not been implemented, so no plan changes were made.
+  ```
+
+Mutation behavior: the only state change is appending one
+`RegenerationAttempt` to `regeneration_attempts` (plus the resulting
+`metadata.updated_at` bump). No itinerary content is changed. This call
+never touches `experience_plan`, `destination_context`,
+`validation_report`, `provider_coverage`, `route_feasibility_context`,
+`feedback_history`, `pending_feedback_summary`, `user_locks`,
+`version_history`, `plan_diff_preview`, or `regeneration_readiness`. It is
+safe to call repeatedly.
+
+Error response shape (same envelope as every other error):
+
+```json
+{
+  "success": false,
+  "data": null,
+  "message": "Feedback-driven regeneration is not available yet. The regeneration engine has not been implemented, so no plan changes were made.",
+  "errors": [
+    {
+      "code": "REGENERATION_NOT_AVAILABLE",
+      "field": "regeneration",
+      "message": "Feedback-driven regeneration is not available yet. The regeneration engine has not been implemented, so no plan changes were made."
+    }
+  ],
+  "metadata": {}
+}
+```
+
+### GET `/trips/{trip_id}/regeneration-attempts`
+
+Purpose: returns the audit trail of every `POST /regenerate` call made
+for a trip. The audit trail records blocked attempts only — it is never
+evidence that regeneration ran.
+
+Mutation behavior: none. Pure read of `regeneration_attempts`, returned in
+stored (request) order.
+
+Response data:
+
+```json
+{
+  "trip_id": "trip_001",
+  "regeneration_attempts": [
+    {
+      "attempt_id": "regen_attempt_9f1c2a...",
+      "status": "blocked",
+      "requested_at": "2026-07-27T21:32:46Z",
+      "current_version": "v1",
+      "would_create_version": "v2",
+      "pending_feedback_count": 1,
+      "active_lock_count": 0,
+      "reason_code": "REGENERATION_NOT_AVAILABLE",
+      "message": "Feedback-driven regeneration is not available yet. The regeneration engine has not been implemented, so no plan changes were made."
+    }
+  ]
+}
+```
+
+Each attempt record contains only these nine fields. It never contains a
+place name, coordinate, route, price, rating, or opening-hours value, and
+it never claims feedback was applied, a diff was generated, or that any
+locked item will definitely survive a future regeneration.

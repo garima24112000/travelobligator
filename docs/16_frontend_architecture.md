@@ -1231,6 +1231,7 @@ The frontend should follow these rendering rules:
 - Show locked items clearly.
 - Show version changes clearly.
 - Do not imply restricted providers were searched unless provider coverage says they were connected.
+- Do not imply feedback-driven regeneration is available; regeneration is not implemented yet.
 
 ---
 
@@ -1246,4 +1247,75 @@ The frontend architecture should follow these principles:
 - Validation should be visible before the user trusts the plan.
 - Feedback should update only affected sections where possible.
 - Locked items should feel protected.
+
+---
+
+## 38. Regeneration Safety UI
+
+Regeneration is not implemented yet, so this UI exists to explain the
+current state honestly, not to offer a working "regenerate" action.
+
+### Regeneration Readiness Display
+
+Component:
+
+```text
+RegenerationReadinessSection
+```
+
+Reads `regeneration_readiness` via `GET /trips/{trip_id}/regeneration-readiness`
+(fetched once inside `loadPlanResult`, alongside the rest of the plan) and
+displays: status, `can_regenerate` (always rendered "No" today), current
+version, would-create version, pending feedback count, active lock count,
+required/available inputs, missing capabilities, blocked-by reasons, and
+next step. Because `can_regenerate` is always `false`, no clickable
+"Regenerate" action is ever rendered — only a disabled
+"Regeneration unavailable" placeholder.
+
+### Check Backend Refusal Button
+
+A separate, explicitly-safe control inside the same section. Its label and
+helper copy never imply regeneration will run:
+
+```text
+Button: "Check backend refusal"
+Helper: "This only checks the backend refusal path. It will not
+         regenerate or change the plan."
+Loading: "Checking refusal..."
+```
+
+On click it calls `requestRegeneration(trip_id)`
+(`POST /trips/{trip_id}/regenerate`). The backend always refuses today, so
+the expected outcome is a caught `ApiRequestError` whose message is shown
+verbatim. If the call unexpectedly resolves instead of throwing, the UI
+shows a warning ("Unexpected success from regeneration endpoint. Please
+verify backend behavior before trusting this.") rather than treating it as
+a good outcome — it never claims regeneration happened.
+
+### Regeneration Attempt Audit Display
+
+Component:
+
+```text
+RegenerationAttemptAuditSection
+```
+
+Reads `regeneration_attempts` and renders each attempt's status,
+requested-at time, current/would-create version, pending feedback count,
+active lock count, reason code, and message. Helper copy: "This is an
+audit trail of blocked regeneration requests. It does not contain
+itinerary content and does not mean regeneration ran."
+
+### State Refresh Rule After a Refusal Check
+
+After the "Check backend refusal" call settles (success or failure), the
+frontend calls `GET /trips/{trip_id}/regeneration-attempts` once and
+updates **only** `result.regenerationAttempts`. This is the only frontend
+state allowed to change as a result of clicking the button:
+
+* `loadPlanResult` is not called.
+* No other plan data is refreshed or refetched.
+* `feedback_history`, `pending_feedback_summary`, `user_locks`,
+  `version_history`, `plan_diff_preview`, `regeneration_readiness`, and
+  every itinerary field stay exactly as they were before the click.
 - The user should always know what the system knows, what it assumes, and what it could not verify.

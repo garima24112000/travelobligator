@@ -531,6 +531,9 @@ Do not implement yet:
 - SIM card recommendations
 - emergency healthcare logic
 - full multi-city optimization
+- an actual feedback-driven regeneration engine (readiness gate, hard
+  refusal endpoint, and attempt audit trail exist; regeneration itself
+  does not run yet)
 
 ---
 

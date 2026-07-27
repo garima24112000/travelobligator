@@ -301,7 +301,7 @@ Validator warned that Day 2 had high walking.
 
 Tradeoff
 
-The updated plan includes fewer indoor cultural attractions.
+A future change summary could say fewer indoor cultural attractions were selected after a real regeneration engine exists.
 
 Confidence
 
@@ -407,5 +407,5 @@ The Feedback Pipeline should follow these principles:
 - Ask follow-up questions when feedback is ambiguous.
 - Treat feedback as a structured planning update.
 - Maintain version history.
-- Validate the updated plan before presenting it.
+- In a future regeneration engine, validate changed planning output before presenting it.
 - Never silently remove must-visit items.

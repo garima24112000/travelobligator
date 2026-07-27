@@ -279,6 +279,13 @@ Produces:
 
 The Feedback Pipeline should update only affected sections whenever possible.
 
+Current implementation status: regeneration is not implemented yet.
+Feedback capture, the pending feedback summary, the plan diff preview, and
+the regeneration readiness gate exist. `POST /trips/{trip_id}/regenerate`
+is a hard-refusal endpoint that records a blocked attempt and makes no
+plan changes. See `docs/14_backend_architecture.md` section 34
+("Regeneration Safety Lifecycle") for the exact state-mutation contract.
+
 ---
 
 ## 4. Provider Architecture

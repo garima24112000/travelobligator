@@ -1141,4 +1141,64 @@ The backend architecture should follow these principles:
 - Validation should happen before final presentation.
 - Feedback should rerun only affected stages where possible.
 - Repositories store data; they do not make planning decisions.
+
+---
+
+## 34. Regeneration Safety Lifecycle
+
+Regeneration is not implemented yet. The backend still gives the user an
+honest, staged view of what feedback-driven regeneration would need and
+why it cannot run today. Each stage below is owned by its own service and
+none of them call an LLM or a provider.
+
+1. **Feedback capture** — `FeedbackService.apply_feedback` appends one
+   `FeedbackEvent` to `feedback_history` using deterministic rule-based
+   keyword classification. This never regenerates any plan section; it
+   only records the feedback and a preliminary, honest interpretation.
+2. **Pending summary** — `FeedbackService` also recomputes
+   `pending_feedback_summary` from `feedback_history` on every submission,
+   purely as a rollup of what has been captured so far.
+3. **Plan diff preview** — `PlanDiffPreviewService.recompute` rebuilds
+   `plan_diff_preview` from scratch from `version_history`,
+   `feedback_history`, and `user_locks`. It is preview-only: it never
+   claims a diff was generated, and it never runs regeneration.
+4. **Readiness gate** — `RegenerationReadinessService.recompute` rebuilds
+   `regeneration_readiness` from the same three inputs and explains why
+   regeneration is blocked (`status` is always `"blocked"`,
+   `can_regenerate` is always `false`).
+5. **Hard-refusal endpoint** — `POST /trips/{trip_id}/regenerate` is a
+   hard-refusal endpoint. For an existing trip it always responds
+   `409 REGENERATION_NOT_AVAILABLE`. No new plan version is created, no
+   itinerary content is changed, and no planning stage is rerun.
+6. **Audit trail** — `RegenerationAttemptService.record_blocked_attempt`
+   appends one `RegenerationAttempt` to `regeneration_attempts` each time
+   `POST /regenerate` is called for an existing trip. The audit trail
+   records blocked attempts only; `GET /trips/{trip_id}/regeneration-attempts`
+   returns it read-only, in stored order.
+
+State `POST /regenerate` is allowed to change:
+
+```text
+regeneration_attempts   (one RegenerationAttempt appended)
+metadata.updated_at     (bumped as a side effect of the append)
+```
+
+State `POST /regenerate` must never change:
+
+```text
+experience_plan
+destination_context
+validation_report (readiness_status or any other field)
+provider_coverage
+route_feasibility_context
+feedback_history
+pending_feedback_summary
+user_locks
+version_history
+plan_diff_preview
+regeneration_readiness
+```
+
+Until a real regeneration engine is connected, `POST /trips/{trip_id}/generate`
+remains the only endpoint that produces or changes a full plan.
 - API routes coordinate requests; they do not contain planning logic.
