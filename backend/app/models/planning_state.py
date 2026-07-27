@@ -946,6 +946,30 @@ class RegenerationReadiness(BaseModel):
     next_step: str = "Generate the initial plan first."
 
 
+class RegenerationAttempt(BaseModel):
+    """One audit record of a blocked `POST /trips/{trip_id}/regenerate`
+    call (Step 142, docs/14_backend_architecture.md section 19). Recorded
+    purely as bookkeeping proving an attempt was requested and refused --
+    it is never a snapshot of plan content (no place, coordinate, route,
+    price, rating, or opening-hours field), never a claim that regeneration
+    ran, a diff was generated, or a new plan version was created.
+    """
+
+    attempt_id: str = Field(default_factory=lambda: _new_id("regen_attempt"))
+    status: str = "blocked"
+    requested_at: datetime = Field(default_factory=_utc_now)
+    current_version: str | None = None
+    would_create_version: str | None = None
+    pending_feedback_count: int = 0
+    active_lock_count: int = 0
+    reason_code: str = "REGENERATION_NOT_AVAILABLE"
+    message: str = (
+        "Feedback-driven regeneration is not available yet. The "
+        "regeneration engine has not been implemented, so no plan "
+        "changes were made."
+    )
+
+
 class PlanningMetadata(BaseModel):
     current_version: str = "v1"
     pipeline_status: PipelineStatus = PipelineStatus.DRAFT
@@ -987,6 +1011,7 @@ class PlanningState(BaseModel):
     regeneration_readiness: RegenerationReadiness = Field(
         default_factory=RegenerationReadiness
     )
+    regeneration_attempts: list[RegenerationAttempt] = Field(default_factory=list)
 
     provider_status: dict[str, ProviderStatusEntry] = Field(default_factory=dict)
     provider_coverage: ProviderCoverage = Field(default_factory=ProviderCoverage)

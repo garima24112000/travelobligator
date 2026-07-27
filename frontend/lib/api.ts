@@ -3,6 +3,7 @@ import type {
   DestinationContextData,
   ExperiencePlanData,
   ProviderCoverageData,
+  RegenerationAttemptsData,
   RegenerationReadinessData,
   TripCreateData,
   TripData,
@@ -137,4 +138,12 @@ export function getRegenerationReadiness(
 // the thrown message, not the resolved value.
 export function requestRegeneration(tripId: string): Promise<unknown> {
   return request(`/trips/${tripId}/regenerate`, { method: "POST" });
+}
+
+export function getRegenerationAttempts(
+  tripId: string,
+): Promise<RegenerationAttemptsData> {
+  return request<RegenerationAttemptsData>(
+    `/trips/${tripId}/regeneration-attempts`,
+  );
 }

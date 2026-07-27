@@ -11,6 +11,7 @@ import {
   getDestinationContext,
   getExperiencePlan,
   getProviderCoverage,
+  getRegenerationAttempts,
   getRegenerationReadiness,
   getTrip,
   getTripSummary,
@@ -35,6 +36,7 @@ import type {
   PlanDiffPreview,
   ProviderCoverageData,
   ReadinessChecklist,
+  RegenerationAttempt,
   RegenerationReadiness,
   RestaurantSuggestion,
   RouteFeasibilityContext,
@@ -84,6 +86,7 @@ type PlanResult = {
   versionHistory: VersionHistoryItem[];
   planDiffPreview: PlanDiffPreview;
   regenerationReadiness: RegenerationReadiness;
+  regenerationAttempts: RegenerationAttempt[];
 };
 
 function parseCommaList(value: string): string[] {
@@ -1817,19 +1820,26 @@ function PlanDiffPreviewSection({ preview }: { preview: PlanDiffPreview }) {
  * regeneration engine is connected, and no clickable regenerate action is
  * ever rendered here, only a disabled placeholder button when blocked.
  *
- * The "Check backend refusal" control (Step 140) is a separate, explicitly
- * safe test action: it calls `POST /trips/{trip_id}/regenerate` -- which
- * the backend always refuses with 409 REGENERATION_NOT_AVAILABLE today --
- * purely to surface that refusal message locally. It never updates
- * `result`, never reloads plan data, and never calls `loadPlanResult`, so
- * no displayed plan field changes as a result of clicking it.
+ * The "Check backend refusal" control (Step 140, extended in Step 143) is a
+ * separate, explicitly safe test action: it calls
+ * `POST /trips/{trip_id}/regenerate` -- which the backend always refuses
+ * with 409 REGENERATION_NOT_AVAILABLE today -- purely to surface that
+ * refusal message locally. After the call settles it also refetches
+ * `GET /trips/{trip_id}/regeneration-attempts` and reports the result via
+ * `onRegenerationAttemptsChange`, which the caller uses to update *only*
+ * `result.regenerationAttempts`. It never updates any other `result`
+ * field, never reloads the rest of the plan, and never calls
+ * `loadPlanResult`, so no other displayed plan field changes as a result
+ * of clicking it.
  */
 function RegenerationReadinessSection({
   tripId,
   readiness,
+  onRegenerationAttemptsChange,
 }: {
   tripId: string;
   readiness: RegenerationReadiness;
+  onRegenerationAttemptsChange: (attempts: RegenerationAttempt[]) => void;
 }) {
   const [isCheckingRefusal, setIsCheckingRefusal] = useState(false);
   const [refusalMessage, setRefusalMessage] = useState<string | null>(null);
@@ -1857,6 +1867,16 @@ function RegenerationReadinessSection({
       );
       setRefusalMessageIsWarning(false);
     } finally {
+      // Refresh only the regeneration attempt audit list -- whether the
+      // call above threw (expected) or unexpectedly resolved. Never touch
+      // any other plan field, and never call loadPlanResult.
+      try {
+        const attemptsData = await getRegenerationAttempts(tripId);
+        onRegenerationAttemptsChange(attemptsData.regeneration_attempts);
+      } catch {
+        // If refreshing the audit list itself fails, leave the previously
+        // displayed attempts as-is instead of clearing them.
+      }
       setIsCheckingRefusal(false);
     }
   }
@@ -2011,6 +2031,71 @@ function RegenerationReadinessSection({
           </p>
         )}
       </div>
+    </div>
+  );
+}
+
+/**
+ * Plan-level readout of `PlanningState.regeneration_attempts` (Step 143).
+ * Purely a restatement of the backend's audit trail of blocked
+ * `POST /trips/{trip_id}/regenerate` calls -- never itinerary content, and
+ * never a claim that regeneration ran, a diff was generated, or a new plan
+ * version was created. Only ever refreshed via the "Check backend refusal"
+ * control in `RegenerationReadinessSection`, which updates
+ * `result.regenerationAttempts` directly and never calls `loadPlanResult`.
+ */
+function RegenerationAttemptAuditSection({
+  attempts,
+}: {
+  attempts: RegenerationAttempt[];
+}) {
+  return (
+    <div className="rounded-2xl border border-white/10 bg-white/5 p-5">
+      <h2 className="text-lg font-semibold">Regeneration attempt audit</h2>
+      <p className="mt-1 text-xs text-amber-300/90">
+        This is an audit trail of blocked regeneration requests. It does
+        not contain itinerary content and does not mean regeneration ran.
+      </p>
+
+      {attempts.length === 0 ? (
+        <p className="mt-3 text-sm text-slate-400">
+          No regeneration attempts recorded yet.
+        </p>
+      ) : (
+        <ul className="mt-3 flex flex-col gap-2">
+          {attempts.map((attempt) => (
+            <li
+              key={attempt.attempt_id}
+              className="rounded-lg border border-white/10 bg-slate-900/60 p-3 text-sm"
+            >
+              <p className="flex items-center justify-between gap-2">
+                <span className="font-semibold text-slate-200">
+                  {attempt.status}
+                </span>
+                <span className="text-[11px] uppercase tracking-wide text-slate-400">
+                  {new Date(attempt.requested_at).toLocaleString()}
+                </span>
+              </p>
+              <p className="mt-1 text-xs text-slate-400">
+                Current version:{" "}
+                {formatNullableVersionLabel(attempt.current_version)}
+                {" · "}
+                Would create version:{" "}
+                {formatNullableVersionLabel(attempt.would_create_version)}
+              </p>
+              <p className="mt-1 text-xs text-slate-400">
+                Pending feedback: {attempt.pending_feedback_count}
+                {" · "}
+                Active locks: {attempt.active_lock_count}
+              </p>
+              <p className="mt-1 text-[11px] uppercase tracking-wide text-slate-500">
+                {attempt.reason_code}
+              </p>
+              <p className="mt-1 text-xs text-slate-300">{attempt.message}</p>
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }
@@ -2209,6 +2294,7 @@ async function loadPlanResult(tripId: string): Promise<PlanResult> {
     providerCoverage,
     trip,
     regenerationReadiness,
+    regenerationAttempts,
   ] = await Promise.all([
     getDestinationContext(tripId),
     getExperiencePlan(tripId),
@@ -2216,6 +2302,7 @@ async function loadPlanResult(tripId: string): Promise<PlanResult> {
     getProviderCoverage(tripId),
     getTrip(tripId),
     getRegenerationReadiness(tripId),
+    getRegenerationAttempts(tripId),
   ]);
 
   return {
@@ -2246,6 +2333,7 @@ async function loadPlanResult(tripId: string): Promise<PlanResult> {
     versionHistory: trip.planning_state.version_history,
     planDiffPreview: trip.planning_state.plan_diff_preview,
     regenerationReadiness: regenerationReadiness.regeneration_readiness,
+    regenerationAttempts: regenerationAttempts.regeneration_attempts,
   };
 }
 
@@ -2908,6 +2996,15 @@ export default function Home() {
             <RegenerationReadinessSection
               tripId={result.summary.trip_id}
               readiness={result.regenerationReadiness}
+              onRegenerationAttemptsChange={(regenerationAttempts) =>
+                setResult((previous) =>
+                  previous ? { ...previous, regenerationAttempts } : previous,
+                )
+              }
+            />
+
+            <RegenerationAttemptAuditSection
+              attempts={result.regenerationAttempts}
             />
 
             <ResultGroupHeader

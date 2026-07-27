@@ -469,10 +469,33 @@ export type RegenerationReadinessData = {
   regeneration_readiness: RegenerationReadiness;
 };
 
+// One audit record of a blocked `POST /trips/{trip_id}/regenerate` call
+// (backend: app.models.planning_state.RegenerationAttempt /
+// app.services.regeneration_attempt_service.RegenerationAttemptService).
+// Purely bookkeeping proving an attempt was requested and refused -- never
+// itinerary content, and never a claim that regeneration ran, a diff was
+// generated, or a new plan version was created.
+export type RegenerationAttempt = {
+  attempt_id: string;
+  status: string;
+  requested_at: string;
+  current_version: string | null;
+  would_create_version: string | null;
+  pending_feedback_count: number;
+  active_lock_count: number;
+  reason_code: string;
+  message: string;
+};
+
+export type RegenerationAttemptsData = {
+  trip_id: string;
+  regeneration_attempts: RegenerationAttempt[];
+};
+
 // Full PlanningState is much larger than this; only feedback_history,
 // pending_feedback_summary, user_locks, version_history, plan_diff_preview,
-// and regeneration_readiness are declared here since that's the only part
-// of it the frontend reads.
+// regeneration_readiness, and regeneration_attempts are declared here since
+// that's the only part of it the frontend reads.
 export type TripData = {
   trip_id: string;
   planning_state: {
@@ -482,5 +505,6 @@ export type TripData = {
     version_history: VersionHistoryItem[];
     plan_diff_preview: PlanDiffPreview;
     regeneration_readiness: RegenerationReadiness;
+    regeneration_attempts: RegenerationAttempt[];
   };
 };

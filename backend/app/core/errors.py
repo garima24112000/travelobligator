@@ -46,6 +46,16 @@ def lock_not_found_error(trip_id: str, lock_id: str) -> AppError:
     )
 
 
+# Shared with app.models.planning_state.RegenerationAttempt's default
+# `message` and app.services.regeneration_attempt_service so the audit trail
+# can never drift from the error response it's recording.
+REGENERATION_NOT_AVAILABLE_MESSAGE = (
+    "Feedback-driven regeneration is not available yet. The "
+    "regeneration engine has not been implemented, so no plan "
+    "changes were made."
+)
+
+
 def regeneration_not_available_error() -> AppError:
     """Build the standard hard-refusal error for `POST /trips/{trip_id}/regenerate`.
 
@@ -57,11 +67,7 @@ def regeneration_not_available_error() -> AppError:
     """
     return AppError(
         code=ErrorCode.REGENERATION_NOT_AVAILABLE,
-        message=(
-            "Feedback-driven regeneration is not available yet. The "
-            "regeneration engine has not been implemented, so no plan "
-            "changes were made."
-        ),
+        message=REGENERATION_NOT_AVAILABLE_MESSAGE,
         status_code=status.HTTP_409_CONFLICT,
         field="regeneration",
     )

@@ -17,12 +17,14 @@ from app.schemas.destination_context import DestinationContextResponseData
 from app.schemas.errors import ErrorCode
 from app.schemas.experience_plan import ExperiencePlanResponseData
 from app.schemas.provider_coverage import ProviderCoverageResponseData
+from app.schemas.regeneration_attempts import RegenerationAttemptsResponseData
 from app.schemas.regeneration_readiness import RegenerationReadinessResponseData
 from app.schemas.trip_summary import TripSummaryResponseData
 from app.schemas.trips import FeedbackRequest, LockRequest, TripResponseData
 from app.schemas.validation_report import ValidationReportResponseData
 from app.services.plan_diff_preview_service import plan_diff_preview_service
 from app.services.planning_orchestrator import planning_orchestrator
+from app.services.regeneration_attempt_service import regeneration_attempt_service
 from app.services.regeneration_readiness_service import regeneration_readiness_service
 from app.services.user_lock_service import user_lock_service
 
@@ -82,20 +84,24 @@ def submit_trip_feedback(
     response_model=ApiResponse[None],
 )
 def regenerate_trip_plan(trip_id: str) -> ApiResponse[None]:
-    """Hard-refusal endpoint (Step 138). Feedback-driven regeneration has no
+    """Hard-refusal endpoint (Step 138), now also recording a minimal audit
+    trail of the attempt (Step 142). Feedback-driven regeneration has no
     real engine connected yet, so this always refuses instead of silently
-    doing nothing or pretending to succeed. Deliberately read-only: it
-    never calls `POST /generate`, never reruns any planning stage, never
-    creates a new plan version, and never touches `experience_plan`,
-    `destination_context`, `validation_report`, `provider_coverage`,
-    `route_feasibility_context`, `feedback_history`,
-    `pending_feedback_summary`, `user_locks`, `version_history`,
-    `plan_diff_preview`, or `regeneration_readiness` -- it doesn't even
-    save the (untouched) PlanningState back to the repository.
+    doing nothing or pretending to succeed. The *only* state mutation is
+    appending one `RegenerationAttempt` to `regeneration_attempts` (plus
+    the `metadata.updated_at` bump that comes with it) -- this never calls
+    `POST /generate`, never reruns any planning stage, never creates a new
+    plan version, and never touches `experience_plan`, `destination_context`,
+    `validation_report`, `provider_coverage`, `route_feasibility_context`,
+    `feedback_history`, `pending_feedback_summary`, `user_locks`,
+    `version_history`, `plan_diff_preview`, or `regeneration_readiness`.
     """
     planning_state = planning_state_repository.get_by_trip_id(trip_id)
     if planning_state is None:
         raise trip_not_found_error(trip_id)
+
+    planning_state = regeneration_attempt_service.record_blocked_attempt(planning_state)
+    planning_state_repository.save(planning_state)
 
     raise regeneration_not_available_error()
 
@@ -349,5 +355,26 @@ def get_regeneration_readiness(trip_id: str) -> ApiResponse[RegenerationReadines
     data = RegenerationReadinessResponseData(
         trip_id=trip_id,
         regeneration_readiness=planning_state.regeneration_readiness,
+    )
+    return success_response(data)
+
+
+@router.get(
+    "/{trip_id}/regeneration-attempts",
+    response_model=ApiResponse[RegenerationAttemptsResponseData],
+)
+def get_regeneration_attempts(trip_id: str) -> ApiResponse[RegenerationAttemptsResponseData]:
+    """Read-only audit trail of blocked `POST /trips/{trip_id}/regenerate`
+    attempts (Step 142). Returns whatever has already been recorded, in
+    stored order -- this endpoint never recomputes, mutates, or
+    regenerates anything itself.
+    """
+    planning_state = planning_state_repository.get_by_trip_id(trip_id)
+    if planning_state is None:
+        raise trip_not_found_error(trip_id)
+
+    data = RegenerationAttemptsResponseData(
+        trip_id=trip_id,
+        regeneration_attempts=planning_state.regeneration_attempts,
     )
     return success_response(data)

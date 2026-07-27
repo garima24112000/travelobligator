@@ -497,6 +497,70 @@ def test_regeneration_readiness_is_persisted_and_reloadable(client: TestClient) 
     assert readiness.missing_capabilities == ["regeneration_engine"]
 
 
+def test_regeneration_attempts_are_persisted_and_reloadable(client: TestClient) -> None:
+    """End-to-end: the regeneration attempt audit trail (Step 142) recorded
+    by calling POST /regenerate survives a simulated backend process
+    restart, recoverable by a brand-new repository instance pointed at the
+    same local JSON file.
+    """
+    create_response = client.post(
+        "/trips",
+        json={
+            "destination_scope": "single_city",
+            "primary_destination": "Testville, Testland",
+            "origin_city": "Home City",
+            "start_date": "2026-08-10",
+            "end_date": "2026-08-12",
+            "travelers_count": 2,
+            "travel_group_type": "couple",
+        },
+    )
+    assert create_response.status_code == 201
+    trip_id = create_response.json()["data"]["trip_id"]
+
+    generate_response = client.post(f"/trips/{trip_id}/generate")
+    assert generate_response.status_code == 200
+
+    feedback_response = client.post(
+        f"/trips/{trip_id}/feedback",
+        json={"feedback_text": "Make this less packed"},
+    )
+    assert feedback_response.status_code == 200
+
+    regenerate_response = client.post(f"/trips/{trip_id}/regenerate")
+    assert regenerate_response.status_code == 409
+
+    from app.repositories.planning_state_repository import (
+        planning_state_repository as live_planning_state_repository,
+    )
+
+    fresh_planning_repo = PlanningStateRepository(
+        store=live_planning_state_repository._store
+    )
+    reloaded_state = fresh_planning_repo.get_by_trip_id(trip_id)
+
+    assert reloaded_state is not None
+    assert len(reloaded_state.regeneration_attempts) == 1
+
+    attempt = reloaded_state.regeneration_attempts[0]
+    assert attempt.status == "blocked"
+    assert attempt.current_version == "v1"
+    assert attempt.would_create_version == "v2"
+    assert attempt.pending_feedback_count == 1
+    assert attempt.active_lock_count == 0
+    assert attempt.reason_code == "REGENERATION_NOT_AVAILABLE"
+    assert attempt.message == (
+        "Feedback-driven regeneration is not available yet. The "
+        "regeneration engine has not been implemented, so no plan "
+        "changes were made."
+    )
+
+    # Everything else this step must not touch also round-trips unchanged.
+    assert len(reloaded_state.version_history) == 1
+    assert reloaded_state.metadata.current_version == "v1"
+    assert len(reloaded_state.feedback_history) == 1
+
+
 def test_get_unknown_trip_id_still_returns_404(client: TestClient) -> None:
     response = client.get("/trips/does-not-exist")
     assert response.status_code == 404
