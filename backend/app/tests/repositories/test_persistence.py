@@ -448,6 +448,55 @@ def test_plan_diff_preview_is_persisted_and_reloadable(client: TestClient) -> No
     assert preview.to_version is None
 
 
+def test_regeneration_readiness_is_persisted_and_reloadable(client: TestClient) -> None:
+    """End-to-end: the regeneration readiness gate (Step 135) recomputed
+    after generating a trip and submitting feedback survives a simulated
+    backend process restart, recoverable by a brand-new repository
+    instance pointed at the same local JSON file.
+    """
+    create_response = client.post(
+        "/trips",
+        json={
+            "destination_scope": "single_city",
+            "primary_destination": "Testville, Testland",
+            "origin_city": "Home City",
+            "start_date": "2026-08-10",
+            "end_date": "2026-08-12",
+            "travelers_count": 2,
+            "travel_group_type": "couple",
+        },
+    )
+    assert create_response.status_code == 201
+    trip_id = create_response.json()["data"]["trip_id"]
+
+    generate_response = client.post(f"/trips/{trip_id}/generate")
+    assert generate_response.status_code == 200
+
+    feedback_response = client.post(
+        f"/trips/{trip_id}/feedback",
+        json={"feedback_text": "Make this less packed"},
+    )
+    assert feedback_response.status_code == 200
+
+    from app.repositories.planning_state_repository import (
+        planning_state_repository as live_planning_state_repository,
+    )
+
+    fresh_planning_repo = PlanningStateRepository(
+        store=live_planning_state_repository._store
+    )
+    reloaded_state = fresh_planning_repo.get_by_trip_id(trip_id)
+
+    assert reloaded_state is not None
+    readiness = reloaded_state.regeneration_readiness
+    assert readiness.status == "blocked"
+    assert readiness.can_regenerate is False
+    assert readiness.current_version == "v1"
+    assert readiness.would_create_version == "v2"
+    assert readiness.pending_feedback_count == 1
+    assert readiness.missing_capabilities == ["regeneration_engine"]
+
+
 def test_get_unknown_trip_id_still_returns_404(client: TestClient) -> None:
     response = client.get("/trips/does-not-exist")
     assert response.status_code == 404

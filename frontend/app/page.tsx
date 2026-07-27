@@ -11,6 +11,7 @@ import {
   getDestinationContext,
   getExperiencePlan,
   getProviderCoverage,
+  getRegenerationReadiness,
   getTrip,
   getTripSummary,
   getValidationReport,
@@ -33,6 +34,7 @@ import type {
   PlanDiffPreview,
   ProviderCoverageData,
   ReadinessChecklist,
+  RegenerationReadiness,
   RestaurantSuggestion,
   RouteFeasibilityContext,
   StayAreaGuidance,
@@ -80,6 +82,7 @@ type PlanResult = {
   userLocks: UserLock[];
   versionHistory: VersionHistoryItem[];
   planDiffPreview: PlanDiffPreview;
+  regenerationReadiness: RegenerationReadiness;
 };
 
 function parseCommaList(value: string): string[] {
@@ -880,7 +883,11 @@ function ScheduledExperienceCard({
   orderNumber: number;
   tripId: string;
   activeLock: UserLock | null;
-  onLockChange: (userLocks: UserLock[], planDiffPreview: PlanDiffPreview) => void;
+  onLockChange: (
+    userLocks: UserLock[],
+    planDiffPreview: PlanDiffPreview,
+    regenerationReadiness: RegenerationReadiness,
+  ) => void;
 }) {
   const hasCoordinates = experience.coordinates !== null;
   const [isSubmittingLock, setIsSubmittingLock] = useState(false);
@@ -905,6 +912,7 @@ function ScheduledExperienceCard({
       onLockChange(
         tripData.planning_state.user_locks,
         tripData.planning_state.plan_diff_preview,
+        tripData.planning_state.regeneration_readiness,
       );
       setLockSuccessMessage(
         "Place marked to keep. Regeneration is not implemented yet.",
@@ -930,6 +938,7 @@ function ScheduledExperienceCard({
       onLockChange(
         tripData.planning_state.user_locks,
         tripData.planning_state.plan_diff_preview,
+        tripData.planning_state.regeneration_readiness,
       );
       setLockSuccessMessage("Keep marker removed.");
     } catch (err) {
@@ -1799,6 +1808,149 @@ function PlanDiffPreviewSection({ preview }: { preview: PlanDiffPreview }) {
   );
 }
 
+/**
+ * Plan-level readout of `PlanningState.regeneration_readiness` (Step 136).
+ * Purely a restatement of the backend's deterministic, from-scratch-
+ * recomputed readiness gate -- never something this section applies
+ * itself. `can_regenerate` always renders as "No" today since no real
+ * regeneration engine is connected, and no clickable regenerate action is
+ * ever rendered here, only a disabled placeholder button when blocked.
+ */
+function RegenerationReadinessSection({
+  readiness,
+}: {
+  readiness: RegenerationReadiness;
+}) {
+  return (
+    <div className="rounded-2xl border border-white/10 bg-white/5 p-5">
+      <h2 className="text-lg font-semibold">Regeneration readiness</h2>
+      <p className="mt-1 text-xs text-amber-300/90">
+        This gate only explains whether feedback-driven regeneration can
+        run. It does not regenerate or change the plan.
+      </p>
+
+      <dl className="mt-3 grid grid-cols-2 gap-3 text-sm sm:grid-cols-4">
+        <div className="rounded-lg border border-white/10 bg-slate-900/60 p-3">
+          <dt className="text-[11px] uppercase tracking-wide text-slate-500">
+            Status
+          </dt>
+          <dd className="mt-1 font-semibold text-slate-100">
+            {readiness.status}
+          </dd>
+        </div>
+        <div className="rounded-lg border border-white/10 bg-slate-900/60 p-3">
+          <dt className="text-[11px] uppercase tracking-wide text-slate-500">
+            Can regenerate
+          </dt>
+          <dd className="mt-1 font-semibold text-slate-100">
+            {readiness.can_regenerate ? "Yes" : "No"}
+          </dd>
+        </div>
+        <div className="rounded-lg border border-white/10 bg-slate-900/60 p-3">
+          <dt className="text-[11px] uppercase tracking-wide text-slate-500">
+            Current version
+          </dt>
+          <dd className="mt-1 font-semibold text-slate-100">
+            {formatNullableVersionLabel(readiness.current_version)}
+          </dd>
+        </div>
+        <div className="rounded-lg border border-white/10 bg-slate-900/60 p-3">
+          <dt className="text-[11px] uppercase tracking-wide text-slate-500">
+            Would create version
+          </dt>
+          <dd className="mt-1 font-semibold text-slate-100">
+            {formatNullableVersionLabel(readiness.would_create_version)}
+          </dd>
+        </div>
+        <div className="rounded-lg border border-white/10 bg-slate-900/60 p-3">
+          <dt className="text-[11px] uppercase tracking-wide text-slate-500">
+            Pending feedback count
+          </dt>
+          <dd className="mt-1 font-semibold text-slate-100">
+            {readiness.pending_feedback_count}
+          </dd>
+        </div>
+        <div className="rounded-lg border border-white/10 bg-slate-900/60 p-3">
+          <dt className="text-[11px] uppercase tracking-wide text-slate-500">
+            Active lock count
+          </dt>
+          <dd className="mt-1 font-semibold text-slate-100">
+            {readiness.active_lock_count}
+          </dd>
+        </div>
+      </dl>
+
+      {readiness.required_inputs.length > 0 && (
+        <div className="mt-3">
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+            Required inputs
+          </p>
+          <p className="mt-1 text-sm text-slate-300">
+            {readiness.required_inputs.join(", ")}
+          </p>
+        </div>
+      )}
+
+      {readiness.available_inputs.length > 0 && (
+        <div className="mt-3">
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+            Available inputs
+          </p>
+          <p className="mt-1 text-sm text-slate-300">
+            {readiness.available_inputs.join(", ")}
+          </p>
+        </div>
+      )}
+
+      {readiness.missing_capabilities.length > 0 && (
+        <div className="mt-3">
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+            Missing capabilities
+          </p>
+          <p className="mt-1 text-sm text-slate-300">
+            {readiness.missing_capabilities.join(", ")}
+          </p>
+        </div>
+      )}
+
+      {readiness.blocked_by.length > 0 && (
+        <div className="mt-3">
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+            Blocked by
+          </p>
+          <ul className="mt-1 list-disc pl-4 text-xs text-slate-400">
+            {readiness.blocked_by.map((reason, index) => (
+              <li key={`regeneration-readiness-blocked-by-${index}`}>
+                {reason}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      <p className="mt-3 text-xs text-slate-400">
+        Next step: {readiness.next_step}
+      </p>
+
+      {readiness.status === "blocked" && (
+        <div className="mt-4">
+          <button
+            type="button"
+            disabled
+            title="The regeneration engine is not implemented yet."
+            className="cursor-not-allowed rounded-lg border border-white/10 bg-slate-900 px-4 py-2 text-sm font-semibold text-slate-500 opacity-50"
+          >
+            Regeneration unavailable
+          </button>
+          <p className="mt-2 text-xs text-slate-500">
+            The regeneration engine is not implemented yet.
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function FeedbackPanel({
   feedbackText,
   onFeedbackTextChange,
@@ -1986,14 +2138,21 @@ async function loadPlanResult(tripId: string): Promise<PlanResult> {
     );
   }
 
-  const [destinationContext, experiencePlan, validationReport, providerCoverage, trip] =
-    await Promise.all([
-      getDestinationContext(tripId),
-      getExperiencePlan(tripId),
-      getValidationReport(tripId),
-      getProviderCoverage(tripId),
-      getTrip(tripId),
-    ]);
+  const [
+    destinationContext,
+    experiencePlan,
+    validationReport,
+    providerCoverage,
+    trip,
+    regenerationReadiness,
+  ] = await Promise.all([
+    getDestinationContext(tripId),
+    getExperiencePlan(tripId),
+    getValidationReport(tripId),
+    getProviderCoverage(tripId),
+    getTrip(tripId),
+    getRegenerationReadiness(tripId),
+  ]);
 
   return {
     summary,
@@ -2022,6 +2181,7 @@ async function loadPlanResult(tripId: string): Promise<PlanResult> {
     userLocks: trip.planning_state.user_locks,
     versionHistory: trip.planning_state.version_history,
     planDiffPreview: trip.planning_state.plan_diff_preview,
+    regenerationReadiness: regenerationReadiness.regeneration_readiness,
   };
 }
 
@@ -2095,7 +2255,11 @@ function LockedItemsSummarySection({
   tripId: string;
   userLocks: UserLock[];
   dailyPlans: DailyPlan[];
-  onLockChange: (userLocks: UserLock[], planDiffPreview: PlanDiffPreview) => void;
+  onLockChange: (
+    userLocks: UserLock[],
+    planDiffPreview: PlanDiffPreview,
+    regenerationReadiness: RegenerationReadiness,
+  ) => void;
 }) {
   const [actionState, setActionState] = useState<
     Record<string, LockActionState>
@@ -2117,6 +2281,7 @@ function LockedItemsSummarySection({
       onLockChange(
         tripData.planning_state.user_locks,
         tripData.planning_state.plan_diff_preview,
+        tripData.planning_state.regeneration_readiness,
       );
       setActionState((previous) => ({
         ...previous,
@@ -2264,6 +2429,8 @@ export default function Home() {
               pendingFeedbackSummary:
                 tripData.planning_state.pending_feedback_summary,
               planDiffPreview: tripData.planning_state.plan_diff_preview,
+              regenerationReadiness:
+                tripData.planning_state.regeneration_readiness,
             }
           : previous,
       );
@@ -2674,6 +2841,8 @@ export default function Home() {
 
             <PlanDiffPreviewSection preview={result.planDiffPreview} />
 
+            <RegenerationReadinessSection readiness={result.regenerationReadiness} />
+
             <ResultGroupHeader
               id="travel-context"
               title="Travel context"
@@ -2698,9 +2867,11 @@ export default function Home() {
               tripId={result.summary.trip_id}
               userLocks={result.userLocks}
               dailyPlans={result.dailyPlans}
-              onLockChange={(userLocks, planDiffPreview) =>
+              onLockChange={(userLocks, planDiffPreview, regenerationReadiness) =>
                 setResult((previous) =>
-                  previous ? { ...previous, userLocks, planDiffPreview } : previous,
+                  previous
+                    ? { ...previous, userLocks, planDiffPreview, regenerationReadiness }
+                    : previous,
                 )
               }
             />
@@ -2746,10 +2917,19 @@ export default function Home() {
                                 result.userLocks,
                                 experience.experience_id,
                               )}
-                              onLockChange={(userLocks, planDiffPreview) =>
+                              onLockChange={(
+                                userLocks,
+                                planDiffPreview,
+                                regenerationReadiness,
+                              ) =>
                                 setResult((previous) =>
                                   previous
-                                    ? { ...previous, userLocks, planDiffPreview }
+                                    ? {
+                                        ...previous,
+                                        userLocks,
+                                        planDiffPreview,
+                                        regenerationReadiness,
+                                      }
                                     : previous,
                                 )
                               }

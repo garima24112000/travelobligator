@@ -12,11 +12,13 @@ from app.schemas.destination_context import DestinationContextResponseData
 from app.schemas.errors import ErrorCode
 from app.schemas.experience_plan import ExperiencePlanResponseData
 from app.schemas.provider_coverage import ProviderCoverageResponseData
+from app.schemas.regeneration_readiness import RegenerationReadinessResponseData
 from app.schemas.trip_summary import TripSummaryResponseData
 from app.schemas.trips import FeedbackRequest, LockRequest, TripResponseData
 from app.schemas.validation_report import ValidationReportResponseData
 from app.services.plan_diff_preview_service import plan_diff_preview_service
 from app.services.planning_orchestrator import planning_orchestrator
+from app.services.regeneration_readiness_service import regeneration_readiness_service
 from app.services.user_lock_service import user_lock_service
 
 router = APIRouter(prefix="/trips", tags=["trips"])
@@ -89,6 +91,9 @@ def create_trip_lock(trip_id: str, lock_request: LockRequest) -> ApiResponse[Tri
     # Recomputed from scratch every time (Step 132) so it always reflects
     # the just-added lock.
     planning_state = plan_diff_preview_service.recompute(planning_state)
+    # Recomputed from scratch every time (Step 135) so it always reflects
+    # the just-added lock.
+    planning_state = regeneration_readiness_service.recompute(planning_state)
     planning_state_repository.save(planning_state)
 
     data = TripResponseData(trip_id=trip_id, planning_state=planning_state)
@@ -111,6 +116,9 @@ def delete_trip_lock(trip_id: str, lock_id: str) -> ApiResponse[TripResponseData
     # Recomputed from scratch every time (Step 132) so it always reflects
     # the just-removed lock.
     planning_state = plan_diff_preview_service.recompute(planning_state)
+    # Recomputed from scratch every time (Step 135) so it always reflects
+    # the just-removed lock.
+    planning_state = regeneration_readiness_service.recompute(planning_state)
     planning_state_repository.save(planning_state)
 
     data = TripResponseData(trip_id=trip_id, planning_state=planning_state)
@@ -291,5 +299,27 @@ def get_provider_coverage(trip_id: str) -> ApiResponse[ProviderCoverageResponseD
         provider_status=planning_state.provider_status,
         unavailable_data=planning_state.unavailable_data,
         data_sources_used=planning_state.data_sources_used,
+    )
+    return success_response(data)
+
+
+@router.get(
+    "/{trip_id}/regeneration-readiness",
+    response_model=ApiResponse[RegenerationReadinessResponseData],
+)
+def get_regeneration_readiness(trip_id: str) -> ApiResponse[RegenerationReadinessResponseData]:
+    """Read-only gate explaining whether feedback-driven regeneration can
+    run right now (Step 135). Always reflects the value already recomputed
+    on the write paths (create/generate/feedback/lock create/lock remove)
+    -- this endpoint never recomputes, mutates, or regenerates anything
+    itself.
+    """
+    planning_state = planning_state_repository.get_by_trip_id(trip_id)
+    if planning_state is None:
+        raise trip_not_found_error(trip_id)
+
+    data = RegenerationReadinessResponseData(
+        trip_id=trip_id,
+        regeneration_readiness=planning_state.regeneration_readiness,
     )
     return success_response(data)

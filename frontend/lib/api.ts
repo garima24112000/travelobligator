@@ -3,6 +3,7 @@ import type {
   DestinationContextData,
   ExperiencePlanData,
   ProviderCoverageData,
+  RegenerationReadinessData,
   TripCreateData,
   TripData,
   TripRequestInput,
@@ -118,4 +119,12 @@ export function deleteTripLock(
   return request<TripData>(`/trips/${tripId}/locks/${lockId}`, {
     method: "DELETE",
   });
+}
+
+export function getRegenerationReadiness(
+  tripId: string,
+): Promise<RegenerationReadinessData> {
+  return request<RegenerationReadinessData>(
+    `/trips/${tripId}/regeneration-readiness`,
+  );
 }

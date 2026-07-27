@@ -443,10 +443,36 @@ export type PlanDiffPreview = {
   note: string;
 };
 
+// Deterministic, honest gate explaining whether feedback-driven
+// regeneration can run right now (backend: app.models.planning_state.
+// RegenerationReadiness / app.services.regeneration_readiness_service.
+// RegenerationReadinessService). `status` stays "blocked" and
+// `can_regenerate` stays false today because no real regeneration engine
+// is connected -- this is a readout only, never something applied by the
+// frontend, and never a claim that regeneration ran or a plan changed.
+export type RegenerationReadiness = {
+  status: string;
+  can_regenerate: boolean;
+  current_version: string | null;
+  would_create_version: string | null;
+  pending_feedback_count: number;
+  active_lock_count: number;
+  required_inputs: string[];
+  available_inputs: string[];
+  missing_capabilities: string[];
+  blocked_by: string[];
+  next_step: string;
+};
+
+export type RegenerationReadinessData = {
+  trip_id: string;
+  regeneration_readiness: RegenerationReadiness;
+};
+
 // Full PlanningState is much larger than this; only feedback_history,
-// pending_feedback_summary, user_locks, version_history, and
-// plan_diff_preview are declared here since that's the only part of it the
-// frontend reads.
+// pending_feedback_summary, user_locks, version_history, plan_diff_preview,
+// and regeneration_readiness are declared here since that's the only part
+// of it the frontend reads.
 export type TripData = {
   trip_id: string;
   planning_state: {
@@ -455,5 +481,6 @@ export type TripData = {
     user_locks: UserLock[];
     version_history: VersionHistoryItem[];
     plan_diff_preview: PlanDiffPreview;
+    regeneration_readiness: RegenerationReadiness;
   };
 };

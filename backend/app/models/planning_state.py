@@ -912,6 +912,40 @@ class PlanDiffPreview(BaseModel):
     )
 
 
+class RegenerationReadiness(BaseModel):
+    """Deterministic, honest gate explaining whether feedback-driven
+    regeneration can run right now (Step 135). Recomputed from scratch by
+    `RegenerationReadinessService` from `version_history`, `feedback_history`,
+    and `user_locks` -- never incrementally patched. `status` stays
+    "blocked" and `can_regenerate` stays False today because no real
+    regeneration engine is connected; this model never regenerates the
+    plan, never creates a new plan version, never calls an AI/provider, and
+    never claims a change was applied or a locked item is guaranteed
+    preserved.
+    """
+
+    status: str = "blocked"
+    can_regenerate: bool = False
+    current_version: str | None = None
+    would_create_version: str | None = None
+    pending_feedback_count: int = 0
+    active_lock_count: int = 0
+    required_inputs: list[str] = Field(
+        default_factory=lambda: ["generated_plan", "pending_feedback", "regeneration_engine"]
+    )
+    available_inputs: list[str] = Field(default_factory=list)
+    missing_capabilities: list[str] = Field(
+        default_factory=lambda: ["generated_plan", "regeneration_engine"]
+    )
+    blocked_by: list[str] = Field(
+        default_factory=lambda: [
+            "No plan has been generated for this trip yet.",
+            "Regeneration engine is not implemented yet.",
+        ]
+    )
+    next_step: str = "Generate the initial plan first."
+
+
 class PlanningMetadata(BaseModel):
     current_version: str = "v1"
     pipeline_status: PipelineStatus = PipelineStatus.DRAFT
@@ -950,6 +984,9 @@ class PlanningState(BaseModel):
     user_locks: list[UserLock] = Field(default_factory=list)
     version_history: list[VersionHistoryItem] = Field(default_factory=list)
     plan_diff_preview: PlanDiffPreview = Field(default_factory=PlanDiffPreview)
+    regeneration_readiness: RegenerationReadiness = Field(
+        default_factory=RegenerationReadiness
+    )
 
     provider_status: dict[str, ProviderStatusEntry] = Field(default_factory=dict)
     provider_coverage: ProviderCoverage = Field(default_factory=ProviderCoverage)

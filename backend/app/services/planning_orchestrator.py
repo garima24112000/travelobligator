@@ -13,6 +13,7 @@ from app.services.experience_planner_service import ExperiencePlannerService
 from app.services.feedback_service import FeedbackService
 from app.services.plan_diff_preview_service import PlanDiffPreviewService
 from app.services.plan_validator_service import PlanValidatorService
+from app.services.regeneration_readiness_service import RegenerationReadinessService
 from app.services.stay_transport_service import StayTransportService
 from app.services.traveler_profile_service import TravelerProfileService
 from app.services.trip_strategy_service import TripStrategyService
@@ -46,6 +47,7 @@ class PlanningOrchestrator:
         feedback_service: FeedbackService | None = None,
         versioning_service: VersioningService | None = None,
         plan_diff_preview_service: PlanDiffPreviewService | None = None,
+        regeneration_readiness_service: RegenerationReadinessService | None = None,
         planning_state_repo: PlanningStateRepository | None = None,
         trip_repo: TripRepository | None = None,
     ) -> None:
@@ -62,6 +64,9 @@ class PlanningOrchestrator:
         self.feedback_service = feedback_service or FeedbackService()
         self.versioning_service = versioning_service or VersioningService()
         self.plan_diff_preview_service = plan_diff_preview_service or PlanDiffPreviewService()
+        self.regeneration_readiness_service = (
+            regeneration_readiness_service or RegenerationReadinessService()
+        )
         self.planning_state_repository = planning_state_repo or planning_state_repository
         self.trip_repository = trip_repo or trip_repository
 
@@ -70,6 +75,9 @@ class PlanningOrchestrator:
         planning_state.set_active_stage(PlanningStage.CREATE_TRIP)
         planning_state.set_pipeline_status(PipelineStatus.DRAFT)
         planning_state.provider_coverage = provider_gateway.default_provider_coverage()
+        # Recomputed from scratch every time (Step 135); on a brand-new trip
+        # this just confirms the "blocked, no generated plan yet" gate.
+        planning_state = self.regeneration_readiness_service.recompute(planning_state)
 
         self.trip_repository.create(planning_state.trip_id)
         self.planning_state_repository.save(planning_state)
@@ -139,6 +147,9 @@ class PlanningOrchestrator:
         # reflects the just-recorded version_history alongside any existing
         # feedback_history/user_locks.
         planning_state = self.plan_diff_preview_service.recompute(planning_state)
+        # Recomputed from scratch every time (Step 135) so it always
+        # reflects the just-recorded version_history.
+        planning_state = self.regeneration_readiness_service.recompute(planning_state)
         self.planning_state_repository.save(planning_state)
 
         return planning_state
@@ -152,6 +163,9 @@ class PlanningOrchestrator:
         # Recomputed from scratch every time (Step 132) so it always
         # reflects the just-appended feedback_history.
         planning_state = self.plan_diff_preview_service.recompute(planning_state)
+        # Recomputed from scratch every time (Step 135) so it always
+        # reflects the just-appended feedback_history.
+        planning_state = self.regeneration_readiness_service.recompute(planning_state)
         self.planning_state_repository.save(planning_state)
         return planning_state
 
