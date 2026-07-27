@@ -15,6 +15,7 @@ import {
   getTrip,
   getTripSummary,
   getValidationReport,
+  requestRegeneration,
   submitTripFeedback,
 } from "@/lib/api";
 import type {
@@ -1815,12 +1816,51 @@ function PlanDiffPreviewSection({ preview }: { preview: PlanDiffPreview }) {
  * itself. `can_regenerate` always renders as "No" today since no real
  * regeneration engine is connected, and no clickable regenerate action is
  * ever rendered here, only a disabled placeholder button when blocked.
+ *
+ * The "Check backend refusal" control (Step 140) is a separate, explicitly
+ * safe test action: it calls `POST /trips/{trip_id}/regenerate` -- which
+ * the backend always refuses with 409 REGENERATION_NOT_AVAILABLE today --
+ * purely to surface that refusal message locally. It never updates
+ * `result`, never reloads plan data, and never calls `loadPlanResult`, so
+ * no displayed plan field changes as a result of clicking it.
  */
 function RegenerationReadinessSection({
+  tripId,
   readiness,
 }: {
+  tripId: string;
   readiness: RegenerationReadiness;
 }) {
+  const [isCheckingRefusal, setIsCheckingRefusal] = useState(false);
+  const [refusalMessage, setRefusalMessage] = useState<string | null>(null);
+  const [refusalMessageIsWarning, setRefusalMessageIsWarning] =
+    useState(false);
+
+  async function handleCheckBackendRefusal() {
+    setIsCheckingRefusal(true);
+    setRefusalMessage(null);
+    setRefusalMessageIsWarning(false);
+    try {
+      await requestRegeneration(tripId);
+      // The backend is expected to always throw (409 REGENERATION_NOT_AVAILABLE).
+      // Reaching here means it unexpectedly returned success -- flag it as a
+      // warning rather than silently treating it as a good outcome.
+      setRefusalMessage(
+        "Unexpected success from regeneration endpoint. Please verify backend behavior before trusting this.",
+      );
+      setRefusalMessageIsWarning(true);
+    } catch (err) {
+      setRefusalMessage(
+        err instanceof ApiRequestError
+          ? err.message
+          : "Something went wrong while checking the backend refusal path.",
+      );
+      setRefusalMessageIsWarning(false);
+    } finally {
+      setIsCheckingRefusal(false);
+    }
+  }
+
   return (
     <div className="rounded-2xl border border-white/10 bg-white/5 p-5">
       <h2 className="text-lg font-semibold">Regeneration readiness</h2>
@@ -1947,6 +1987,30 @@ function RegenerationReadinessSection({
           </p>
         </div>
       )}
+
+      <div className="mt-4 border-t border-white/10 pt-4">
+        <p className="text-xs text-slate-500">
+          This only checks the backend refusal path. It will not
+          regenerate or change the plan.
+        </p>
+        <button
+          type="button"
+          onClick={() => void handleCheckBackendRefusal()}
+          disabled={isCheckingRefusal}
+          className="mt-2 rounded-lg border border-white/10 bg-slate-900 px-4 py-2 text-sm font-semibold text-slate-300 transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {isCheckingRefusal ? "Checking refusal..." : "Check backend refusal"}
+        </button>
+        {refusalMessage && (
+          <p
+            className={`mt-2 text-xs ${
+              refusalMessageIsWarning ? "text-amber-300" : "text-red-300"
+            }`}
+          >
+            {refusalMessage}
+          </p>
+        )}
+      </div>
     </div>
   );
 }
@@ -2841,7 +2905,10 @@ export default function Home() {
 
             <PlanDiffPreviewSection preview={result.planDiffPreview} />
 
-            <RegenerationReadinessSection readiness={result.regenerationReadiness} />
+            <RegenerationReadinessSection
+              tripId={result.summary.trip_id}
+              readiness={result.regenerationReadiness}
+            />
 
             <ResultGroupHeader
               id="travel-context"

@@ -128,3 +128,13 @@ export function getRegenerationReadiness(
     `/trips/${tripId}/regeneration-readiness`,
   );
 }
+
+// Calls the backend's hard-refusal endpoint (backend:
+// app.api.routes.trips.regenerate_trip_plan). The backend always responds
+// with 409 REGENERATION_NOT_AVAILABLE today, so this reuses request()'s
+// existing ApiRequestError-on-failure behavior rather than treating any
+// response as a success -- callers should expect this to throw and read
+// the thrown message, not the resolved value.
+export function requestRegeneration(tripId: string): Promise<unknown> {
+  return request(`/trips/${tripId}/regenerate`, { method: "POST" });
+}
