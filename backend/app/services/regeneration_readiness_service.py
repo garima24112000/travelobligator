@@ -22,7 +22,7 @@ class RegenerationReadinessService:
     because no real regeneration engine is connected yet. This never
     regenerates the plan, never creates a new plan version, never calls an
     AI/provider, and never claims a change was applied or that a locked
-    item is guaranteed preserved.
+    item will definitely be preserved.
     """
 
     def recompute(self, planning_state: PlanningState) -> PlanningState:

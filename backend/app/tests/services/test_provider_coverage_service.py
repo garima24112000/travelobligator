@@ -111,3 +111,142 @@ def test_distinct_providers_for_same_field_keep_distinct_keys() -> None:
         planning_state.provider_status["accommodation_provider:accommodations"].status
         == ProviderStatus.NOT_CONNECTED
     )
+
+
+# ---------------------------------------------------------------------------
+# Step 152: data_sources_used consistency
+# ---------------------------------------------------------------------------
+
+
+def _custom_response(
+    provider_name: str,
+    provider_type: ProviderType,
+    status: ProviderStatus,
+    data_status: DataStatus,
+) -> ProviderResponse[None]:
+    return ProviderResponse[None](
+        provider_name=provider_name,
+        provider_type=provider_type,
+        status=status,
+        data_status=data_status,
+        data=None,
+        confidence=0.6,
+        message="test",
+    )
+
+
+def test_success_live_entry_adds_provider_name_to_data_sources_used() -> None:
+    service = ProviderCoverageService()
+    planning_state = _planning_state()
+
+    service.record_provider_result(
+        planning_state, _response(ProviderStatus.SUCCESS, DataStatus.LIVE), "places"
+    )
+
+    assert planning_state.data_sources_used == ["openstreetmap_places"]
+
+
+def test_duplicate_provider_name_appears_once() -> None:
+    service = ProviderCoverageService()
+    planning_state = _planning_state()
+
+    service.record_provider_result(
+        planning_state, _response(ProviderStatus.SUCCESS, DataStatus.LIVE), "places"
+    )
+    service.record_provider_result(
+        planning_state, _response(ProviderStatus.SUCCESS, DataStatus.LIVE), "restaurants"
+    )
+    service.record_provider_result(
+        planning_state,
+        _response(ProviderStatus.FALLBACK_USED, DataStatus.FALLBACK_USED, fallback_used=True),
+        "accommodations",
+    )
+
+    assert planning_state.data_sources_used == ["openstreetmap_places"]
+
+
+def test_not_connected_provider_is_excluded_from_data_sources_used() -> None:
+    service = ProviderCoverageService()
+    planning_state = _planning_state()
+
+    service.record_provider_result(
+        planning_state,
+        _custom_response(
+            "accommodation_provider",
+            ProviderType.ACCOMMODATION,
+            ProviderStatus.NOT_CONNECTED,
+            DataStatus.NOT_CONNECTED,
+        ),
+        "accommodations",
+    )
+
+    assert planning_state.data_sources_used == []
+
+
+def test_failed_and_unavailable_providers_are_excluded_from_data_sources_used() -> None:
+    service = ProviderCoverageService()
+    planning_state = _planning_state()
+
+    service.record_provider_result(
+        planning_state,
+        _custom_response(
+            "routes_provider", ProviderType.ROUTES, ProviderStatus.FAILED, DataStatus.FAILED
+        ),
+        "routes",
+    )
+    service.record_provider_result(
+        planning_state,
+        _custom_response(
+            "flaky_weather_provider",
+            ProviderType.WEATHER,
+            ProviderStatus.UNAVAILABLE,
+            DataStatus.UNAVAILABLE,
+        ),
+        "weather",
+    )
+
+    assert planning_state.data_sources_used == []
+
+
+def test_existing_explicit_data_sources_used_are_preserved_and_merged() -> None:
+    service = ProviderCoverageService()
+    planning_state = _planning_state()
+    planning_state.data_sources_used = ["manually_recorded_source"]
+
+    service.record_provider_result(
+        planning_state, _response(ProviderStatus.SUCCESS, DataStatus.LIVE), "places"
+    )
+
+    assert planning_state.data_sources_used == [
+        "manually_recorded_source",
+        "openstreetmap_places",
+    ]
+
+
+def test_data_sources_used_order_is_deterministic_and_matches_call_order() -> None:
+    service = ProviderCoverageService()
+    planning_state = _planning_state()
+
+    service.record_provider_result(
+        planning_state,
+        _custom_response(
+            "open_meteo", ProviderType.WEATHER, ProviderStatus.SUCCESS, DataStatus.LIVE
+        ),
+        "weather",
+    )
+    service.record_provider_result(
+        planning_state,
+        _custom_response(
+            "nager_date", ProviderType.HOLIDAY, ProviderStatus.SUCCESS, DataStatus.LIVE
+        ),
+        "holidays",
+    )
+    service.record_provider_result(
+        planning_state,
+        _custom_response(
+            "frankfurter", ProviderType.CURRENCY, ProviderStatus.SUCCESS, DataStatus.LIVE
+        ),
+        "currency",
+    )
+
+    assert planning_state.data_sources_used == ["open_meteo", "nager_date", "frankfurter"]

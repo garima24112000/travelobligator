@@ -14,8 +14,8 @@ class RegenerationAttemptService:
     touches any other section of `PlanningState` (no plan content, no
     version, no feedback, no locks, no readiness). It never regenerates the
     plan, never creates a new plan version, and never claims a change was
-    applied, a diff was generated, or a locked item is guaranteed
-    preserved.
+    applied, that a real diff exists, or that a locked item will
+    definitely be preserved.
     """
 
     def record_blocked_attempt(self, planning_state: PlanningState) -> PlanningState:

@@ -920,8 +920,8 @@ class RegenerationReadiness(BaseModel):
     "blocked" and `can_regenerate` stays False today because no real
     regeneration engine is connected; this model never regenerates the
     plan, never creates a new plan version, never calls an AI/provider, and
-    never claims a change was applied or a locked item is guaranteed
-    preserved.
+    never claims a change was applied or that a locked item will
+    definitely be preserved.
     """
 
     status: str = "blocked"

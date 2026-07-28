@@ -401,6 +401,93 @@ def test_provider_status_keeps_separate_entries_per_field_for_same_provider(
     assert provider_status["accommodation_provider:accommodations"]["status"] == "not_connected"
 
 
+_USABLE_PROVIDER_STATUSES = {"success", "partial", "fallback_used"}
+_USABLE_DATA_STATUSES = {
+    "live",
+    "cached",
+    "fallback_used",
+    "scheduled",
+    "estimated",
+    "user_provided",
+    "ai_inferred",
+}
+
+
+def test_data_sources_used_matches_usable_provider_status_entries_for_lisbon_trip(
+    client: TestClient,
+) -> None:
+    """Step 152: `data_sources_used` must honestly reflect real
+    `provider_status` entries that actually returned usable data --
+    including real open-data/provider-backed sources like
+    openstreetmap_places, open_meteo, nager_date, and frankfurter when
+    present -- and must never include a not_connected/failed/unavailable
+    provider. The exact set of returned sources isn't asserted (weather/
+    holiday/currency depend on live network access and destination
+    resolution), only that every listed source is backed by a real usable
+    provider_status entry.
+    """
+    create_response = client.post(
+        "/trips",
+        json={
+            "destination_scope": "single_city",
+            "primary_destination": "Lisbon, Portugal",
+            "origin_city": "New York",
+            "start_date": "2026-08-10",
+            "end_date": "2026-08-12",
+            "travelers_count": 2,
+            "travel_group_type": "couple",
+            "pace": "balanced",
+        },
+    )
+    assert create_response.status_code == 201
+    trip_id = create_response.json()["data"]["trip_id"]
+
+    generate_response = client.post(f"/trips/{trip_id}/generate")
+    assert generate_response.status_code == 200
+
+    response = client.get(f"/trips/{trip_id}/provider-coverage")
+    assert response.status_code == 200
+    body = response.json()
+    assert_api_response_shape(body)
+    data = body["data"]
+
+    provider_status = data["provider_status"]
+    data_sources_used = data["data_sources_used"]
+
+    usable_provider_names = {
+        entry["provider_name"]
+        for entry in provider_status.values()
+        if entry["status"] in _USABLE_PROVIDER_STATUSES
+        and entry["data_status"] in _USABLE_DATA_STATUSES
+    }
+    not_connected_provider_names = {
+        entry["provider_name"]
+        for entry in provider_status.values()
+        if entry["status"] == "not_connected"
+    }
+
+    # Every returned data source corresponds to a real usable provider_status
+    # entry -- never invented, never a not_connected/failed/unavailable one.
+    for source in data_sources_used:
+        assert source in usable_provider_names
+    assert not (set(data_sources_used) & not_connected_provider_names)
+    assert "routes_provider" not in data_sources_used
+    assert "accommodation_provider" not in data_sources_used
+
+    # De-duplicated.
+    assert len(data_sources_used) == len(set(data_sources_used))
+
+    # The test-double places provider (conftest.py) always succeeds, so this
+    # is the one source that reliably appears regardless of live network
+    # availability.
+    assert "openstreetmap_places" in data_sources_used
+
+    # Reading the endpoint again must return the exact same list -- this
+    # endpoint is a pure read, never mutating state on repeat calls.
+    second_response = client.get(f"/trips/{trip_id}/provider-coverage")
+    assert second_response.json()["data"]["data_sources_used"] == data_sources_used
+
+
 class _NoCandidatesTestPlacesProvider(PlacesProvider):
     """Test-only double that reports no usable places, for the still-blocked case."""
 

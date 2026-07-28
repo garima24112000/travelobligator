@@ -823,6 +823,13 @@ Reading this endpoint also does not make an unavailable field usable; a
 field marked `unavailable`/`not_connected` stays that way until a real
 provider is connected.
 
+`data_sources_used` lists provider names that returned usable data; a
+provider is included only when its `provider_status` entry has both a
+usable call status (`success`/`partial`/`fallback_used`) and a usable data
+status (e.g. `live`/`cached`/`fallback_used`) — `not_connected`, `failed`,
+and `unavailable` providers are excluded (Step 152:
+`ProviderCoverageService.record_provider_result`).
+
 The frontend transparency panel (docs/16_frontend_architecture.md section
 28) may display, directly from this response and without adding any new
 field:

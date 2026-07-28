@@ -21,6 +21,22 @@ _DOWNGRADE_COVERAGE_STATUSES = {"failed", "not_connected", "unavailable"}
 _OPEN_DATA_PLACES_PROVIDER = "openstreetmap_places"
 _OPEN_DATA_ACCOMMODATION_STATUSES = {"success", "partial", "fallback_used"}
 
+# A provider only counts as a "data source used" when both its call status
+# and its data status indicate real, usable data actually came back --
+# never for not_connected/failed/unavailable/not_requested/retrying results
+# (Step 152). This keeps `data_sources_used` honest instead of listing a
+# provider that was merely attempted or that returned nothing usable.
+_USABLE_PROVIDER_STATUSES = {"success", "partial", "fallback_used"}
+_USABLE_DATA_STATUSES = {
+    "live",
+    "cached",
+    "fallback_used",
+    "scheduled",
+    "estimated",
+    "user_provided",
+    "ai_inferred",
+}
+
 
 class ProviderCoverageService:
     """Owns `provider_coverage` bookkeeping (docs/14_backend_architecture.md
@@ -95,6 +111,18 @@ class ProviderCoverageService:
                 )
             )
             existing_keys.add(key)
+
+        # Deterministic, deduplicated, append-only: never clears or reorders
+        # pre-existing entries (so any already-recorded data source is
+        # preserved), and a provider that already appears (e.g.
+        # openstreetmap_places called again for a different coverage_field)
+        # is never listed twice.
+        if (
+            response.status.value in _USABLE_PROVIDER_STATUSES
+            and response.data_status.value in _USABLE_DATA_STATUSES
+            and response.provider_name not in planning_state.data_sources_used
+        ):
+            planning_state.data_sources_used.append(response.provider_name)
 
         planning_state.touch()
         return planning_state

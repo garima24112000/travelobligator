@@ -152,6 +152,48 @@ def test_generated_planning_state_is_persisted_and_reloadable(client: TestClient
         assert experience.estimated_duration_minutes is None
 
 
+def test_data_sources_used_is_persisted_and_reloadable(client: TestClient) -> None:
+    """Step 152: `data_sources_used` (derived incrementally by
+    ProviderCoverageService.record_provider_result as each stage runs)
+    survives a simulated backend process restart, the same as every other
+    PlanningState field.
+    """
+    create_response = client.post(
+        "/trips",
+        json={
+            "destination_scope": "single_city",
+            "primary_destination": "Testville, Testland",
+            "origin_city": "Home City",
+            "start_date": "2026-08-10",
+            "end_date": "2026-08-12",
+            "travelers_count": 2,
+            "travel_group_type": "couple",
+        },
+    )
+    assert create_response.status_code == 201
+    trip_id = create_response.json()["data"]["trip_id"]
+
+    generate_response = client.post(f"/trips/{trip_id}/generate")
+    assert generate_response.status_code == 200
+    data_sources_used_before_reload = generate_response.json()["data"]["planning_state"][
+        "data_sources_used"
+    ]
+    # The test-double places provider (conftest.py) always succeeds, so this
+    # reliably appears regardless of live network availability for the
+    # other (weather/holiday/currency) providers.
+    assert "openstreetmap_places" in data_sources_used_before_reload
+
+    from app.repositories.planning_state_repository import (
+        planning_state_repository as live_planning_state_repository,
+    )
+
+    fresh_planning_repo = PlanningStateRepository(store=live_planning_state_repository._store)
+    reloaded_state = fresh_planning_repo.get_by_trip_id(trip_id)
+
+    assert reloaded_state is not None
+    assert reloaded_state.data_sources_used == data_sources_used_before_reload
+
+
 def test_feedback_history_is_persisted_and_reloadable(client: TestClient) -> None:
     """End-to-end: feedback submitted through the API survives a simulated
     backend process restart, recoverable by a brand-new repository instance
