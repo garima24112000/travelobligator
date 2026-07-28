@@ -311,6 +311,19 @@ ApprovedPlacesProviderAdapter
 - Do not invent opening hours.
 - Do not invent review counts.
 - OpenStreetMap can provide real POIs, but ratings and review counts should be unavailable unless returned by a legitimate source.
+- Provider-backed POIs must be geographically contained to the resolved
+  destination (inside its geocoder-returned bounding box, or a
+  conservative radius around the resolved point when no bounding box
+  exists). A real, named place is still discarded if it falls outside
+  that containment (Step 155C, fixing a bug where an unresolved/
+  under-specified destination string silently anchored every subsequent
+  POI search to an unrelated place in a different country).
+- Broad token fallback is not allowed: if the full destination string
+  can't be confidently geocoded, do not retry with a shorter or looser
+  fragment of it (e.g. retrying "New York" with just "New").
+- If containment can't be verified for a candidate result, it must be
+  marked unavailable rather than used -- never presented as
+  provider-backed for a destination it isn't actually located in.
 - If provider metadata is missing, return unavailable fields explicitly.
 
 ---

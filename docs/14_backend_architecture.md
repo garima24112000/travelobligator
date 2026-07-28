@@ -830,6 +830,20 @@ Responsibilities:
 
 The service layer should not directly construct uncontrolled prompts.
 
+`backend/app/models/ai_reasoning.py` contains future AI reasoning
+contracts (`AIReasoningRequest`, `AIReasoningResult`, and the task-specific
+result models, docs/13_llm_reasoning_pipeline.md section 26). These models
+prepare for LangGraph/LangSmith integration but do not activate either
+yet -- no LLM provider, LangGraph, or LangSmith dependency is wired up as
+of this step.
+
+`backend/app/services/ai_reasoning_contract_builder.py` contains
+`AIReasoningContractBuilder` (docs/13_llm_reasoning_pipeline.md section 27),
+which prepares typed `AIReasoningRequest` inputs for a future
+`AIReasoningProvider`/LangGraph node from existing `PlanningState` data.
+It is still pre-LLM and behavior-neutral -- it does not call a provider or
+LLM, and nothing in the app currently calls it.
+
 ---
 
 ## 26. Suggested Backend Folder Structure
@@ -867,6 +881,7 @@ backend/
       cards.py
       providers.py
       common.py
+      ai_reasoning.py
     services/
       planning_orchestrator.py
       traveler_profile_service.py
@@ -879,6 +894,7 @@ backend/
       user_lock_service.py
       versioning_service.py
       provider_coverage_service.py
+      ai_reasoning_contract_builder.py
     providers/
       gateway.py
       base.py

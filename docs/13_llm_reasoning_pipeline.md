@@ -753,3 +753,55 @@ The LLM reasoning pipeline should follow these principles:
 - AI should respect user locks.
 - AI should reduce confidence when data is missing.
 - AI should support explainability, not replace provider data.
+
+---
+
+## 26. AI Reasoning Contract Models (Step 155A)
+
+`backend/app/models/ai_reasoning.py` defines the AI reasoning contract as
+Pydantic models. This is a contract only:
+
+- No LLM provider is connected yet.
+- No LangGraph or LangSmith dependency has been added yet.
+- Nothing in the app currently constructs or consumes these models.
+
+Once a real AI reasoning provider is connected, its output must validate
+through `AIReasoningResult` (or one of the task-specific result models)
+before it can be accepted. The models enforce the rules already described
+above in code:
+
+- AI reasoning may explain and interpret existing PlanningState data, but
+  must never create a travel fact -- `summary`/`reasoning` are rejected if
+  they contain an obviously fabricated claim (rating, price, opening
+  hours, booking/reservation link, route time, safety score, currency
+  amount, or superlative marketing language).
+- Every `EvidenceRef` must point back at a section/field that already
+  exists in PlanningState; it can never introduce new data on its own.
+- Missing provider fields must stay represented as
+  `UnavailableConstraint` entries, not silently dropped or guessed at.
+- A `completed` result requires real evidence and a passed guardrail
+  check; a `rejected` result requires an explicit reason; a
+  `not_connected` result always carries zero confidence.
+
+---
+
+## 27. AI Reasoning Contract Builder (Step 155B)
+
+`backend/app/services/ai_reasoning_contract_builder.py` defines
+`AIReasoningContractBuilder`, which converts existing `PlanningState`
+metadata into `AIReasoningRequest` inputs. It does not call an LLM.
+
+- It passes section/field references (`EvidenceRef`) and missing-data
+  constraints (`UnavailableConstraint`) built from data that already
+  exists on `PlanningState` -- never a full, unrestricted `PlanningState`
+  dump and never a serialized prompt.
+- `unavailable_constraints_from_state` merges `PlanningState.
+  unavailable_data` and every `provider_status` entry's
+  `unavailable_fields` into one deterministic, deduplicated list.
+- `evidence_refs_for_task` only adds a reference when the underlying
+  section/field is actually populated -- it never claims data is
+  available when it isn't.
+- `build_request` only assembles these into an `AIReasoningRequest`; it
+  never reads/writes a provider, never mutates `PlanningState`, and relies
+  on `AIReasoningRequest`'s own validation (e.g. non-empty
+  `input_sections`) rather than duplicating those checks.

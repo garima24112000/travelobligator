@@ -41,6 +41,9 @@ class _FakeClient:
         self._get_responses = list(get_responses) if get_responses is not None else None
         self.post_call_count = 0
         self.get_call_count = 0
+        # Every `q` param sent to Nominatim, in call order -- lets tests
+        # prove no query is ever retried with a truncated/looser string.
+        self.get_queries: list[str] = []
 
     def __enter__(self) -> "_FakeClient":
         return self
@@ -49,6 +52,7 @@ class _FakeClient:
         return False
 
     def get(self, url: str, params: dict[str, Any] | None = None) -> _FakeResponse:
+        self.get_queries.append((params or {}).get("q"))
         if self._get_responses is not None:
             response = self._get_responses[self.get_call_count]
             self.get_call_count += 1
@@ -62,8 +66,22 @@ class _FakeClient:
         return response
 
 
-def _geocode_ok() -> _FakeResponse:
-    return _FakeResponse(json_data=[{"lat": "34.0522", "lon": "-118.2437"}])
+def _geocode_ok(query: str = "Los Angeles") -> _FakeResponse:
+    # `display_name` deliberately echoes `query` so `_is_plausible_geocode_match`
+    # accepts it regardless of which destination string a given test uses.
+    # `boundingbox` is a generous box (comfortably covering every fixed
+    # coordinate used by `_element`/`_nominatim_result` below) so existing
+    # containment-agnostic tests keep passing once containment is enforced.
+    return _FakeResponse(
+        json_data=[
+            {
+                "lat": "34.0522",
+                "lon": "-118.2437",
+                "display_name": f"{query}, California, United States",
+                "boundingbox": ["33.5", "34.5", "-118.8", "-117.5"],
+            }
+        ]
+    )
 
 
 def _element(
@@ -243,7 +261,7 @@ def test_both_primary_and_fallback_failing_stays_honest(
     # than silently downgrading to a partial/empty success.
     _install_fake_client(
         monkeypatch,
-        geocode_response=_geocode_ok(),
+        geocode_response=_geocode_ok("Nowhere Land"),
         post_responses=[
             _FakeResponse(should_fail=True),  # primary
             _FakeResponse(should_fail=True),  # fallback tag 1
@@ -365,7 +383,7 @@ def test_all_fallback_tag_queries_returning_nothing_usable_stays_honest(
     primary_elements = [_element(1, None, tourism="attraction")]  # unnamed only
     _install_fake_client(
         monkeypatch,
-        geocode_response=_geocode_ok(),
+        geocode_response=_geocode_ok("Nowhere Land"),
         post_responses=[
             _FakeResponse(json_data={"elements": primary_elements}),
             _FakeResponse(json_data={"elements": []}),
@@ -579,7 +597,7 @@ def test_both_primary_and_fallback_accommodation_failing_stays_honest(
 ) -> None:
     _install_fake_client(
         monkeypatch,
-        geocode_response=_geocode_ok(),
+        geocode_response=_geocode_ok("Nowhere Land"),
         post_responses=[
             _FakeResponse(should_fail=True),
             _FakeResponse(should_fail=True),
@@ -601,7 +619,10 @@ def test_search_must_visit_place_returns_named_result_with_coordinates(
 ) -> None:
     fake_client = _install_fake_client_for_get(
         monkeypatch,
-        get_responses=[_FakeResponse(json_data=[_nominatim_result("Griffith Observatory")])],
+        get_responses=[
+            _geocode_ok("Los Angeles"),  # destination resolution
+            _FakeResponse(json_data=[_nominatim_result("Griffith Observatory")]),  # must-visit lookup
+        ],
     )
 
     adapter = OpenStreetMapPlacesAdapter()
@@ -621,14 +642,18 @@ def test_search_must_visit_place_returns_named_result_with_coordinates(
     assert place.source == "openstreetmap_places"
 
     # The query combines the must-visit term with the destination, never an
-    # unconstrained global search.
-    assert fake_client.get_call_count == 1
+    # unconstrained global search. Two GET calls: resolving the destination,
+    # then the targeted must-visit lookup.
+    assert fake_client.get_call_count == 2
 
 
 def test_search_must_visit_place_no_results_does_not_invent_a_place(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _install_fake_client_for_get(monkeypatch, get_responses=[_FakeResponse(json_data=[])])
+    _install_fake_client_for_get(
+        monkeypatch,
+        get_responses=[_geocode_ok("Los Angeles"), _FakeResponse(json_data=[])],
+    )
 
     adapter = OpenStreetMapPlacesAdapter()
     response = adapter.search_must_visit_place("Nonexistent Landmark", "Los Angeles")
@@ -645,7 +670,10 @@ def test_search_must_visit_place_missing_coordinates_does_not_invent_a_place(
     result = _nominatim_result("Some Place")
     result["lat"] = None
     result["lon"] = None
-    _install_fake_client_for_get(monkeypatch, get_responses=[_FakeResponse(json_data=[result])])
+    _install_fake_client_for_get(
+        monkeypatch,
+        get_responses=[_geocode_ok("Los Angeles"), _FakeResponse(json_data=[result])],
+    )
 
     adapter = OpenStreetMapPlacesAdapter()
     response = adapter.search_must_visit_place("Some Place", "Los Angeles")
@@ -658,7 +686,8 @@ def test_search_must_visit_place_request_failure_stays_honest(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _install_fake_client_for_get(
-        monkeypatch, get_responses=[_FakeResponse(should_fail=True)]
+        monkeypatch,
+        get_responses=[_geocode_ok("Los Angeles"), _FakeResponse(should_fail=True)],
     )
 
     adapter = OpenStreetMapPlacesAdapter()
@@ -675,7 +704,10 @@ def test_search_must_visit_place_result_has_no_fake_rating_price_review_or_hours
 ) -> None:
     _install_fake_client_for_get(
         monkeypatch,
-        get_responses=[_FakeResponse(json_data=[_nominatim_result("Griffith Observatory")])],
+        get_responses=[
+            _geocode_ok("Los Angeles"),
+            _FakeResponse(json_data=[_nominatim_result("Griffith Observatory")]),
+        ],
     )
 
     adapter = OpenStreetMapPlacesAdapter()
@@ -739,3 +771,208 @@ def test_resolve_coordinates_returns_none_on_request_failure(
     point = adapter.resolve_coordinates("Nowhere")
 
     assert point is None
+
+
+# ---------------------------------------------------------------------------
+# Step 155C: destination grounding and provider containment
+# ---------------------------------------------------------------------------
+
+
+def _nyc_geocode_response() -> _FakeResponse:
+    return _FakeResponse(
+        json_data=[
+            {
+                "lat": "40.7128",
+                "lon": "-74.0060",
+                "display_name": "New York, United States",
+                "boundingbox": ["40.4961", "40.9153", "-74.2557", "-73.7002"],
+            }
+        ]
+    )
+
+
+def test_is_plausible_geocode_match_requires_shared_significant_word() -> None:
+    assert (
+        openstreetmap_adapter._is_plausible_geocode_match(
+            "New York", "New York, United States"
+        )
+        is True
+    )
+    # The exact failure mode from the reported bug: a degenerate query
+    # resolving to a completely unrelated place must be rejected.
+    assert (
+        openstreetmap_adapter._is_plausible_geocode_match(
+            "New York", "Rheydt, Mönchengladbach, North Rhine-Westphalia, Germany"
+        )
+        is False
+    )
+
+
+def test_is_plausible_geocode_match_rejects_when_query_has_no_significant_tokens() -> None:
+    # "NY" has no token >= 3 characters, so there is nothing conservative
+    # left to verify -- this must not be trusted by default.
+    assert openstreetmap_adapter._is_plausible_geocode_match("NY", "NY, United States") is False
+
+
+def test_parse_bounding_box_parses_valid_values() -> None:
+    box = openstreetmap_adapter._parse_bounding_box(["1.0", "2.0", "3.0", "4.0"])
+    assert box == (1.0, 2.0, 3.0, 4.0)
+
+
+def test_parse_bounding_box_returns_none_for_malformed_input() -> None:
+    assert openstreetmap_adapter._parse_bounding_box(None) is None
+    assert openstreetmap_adapter._parse_bounding_box(["only", "two"]) is None
+    assert openstreetmap_adapter._parse_bounding_box(["a", "b", "c", "d"]) is None
+
+
+def test_implausible_geocode_match_is_rejected_and_no_overpass_query_is_made(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Root cause fix: a Nominatim top result whose display_name shares no
+    significant word with the query (e.g. a query for "New York" resolving
+    to a German town) must be rejected -- the field is reported
+    unavailable and no Overpass query is ever anchored to the wrong point.
+    """
+    fake_client = _install_fake_client(
+        monkeypatch,
+        geocode_response=_FakeResponse(
+            json_data=[
+                {
+                    "lat": "51.1805",
+                    "lon": "6.4428",
+                    "display_name": "Rheydt, Mönchengladbach, North Rhine-Westphalia, Germany",
+                    "boundingbox": ["51.1", "51.2", "6.4", "6.5"],
+                }
+            ]
+        ),
+        post_responses=[],
+    )
+
+    adapter = OpenStreetMapPlacesAdapter()
+    response = adapter.search_attractions("New York")
+
+    assert response.status == ProviderStatus.UNAVAILABLE
+    assert response.data_status == DataStatus.UNAVAILABLE
+    assert response.data is None
+    assert "attractions" in response.unavailable_fields
+    # No Overpass query was ever made against the wrongly-resolved point.
+    assert fake_client.post_call_count == 0
+
+
+def test_geocode_never_retries_with_a_truncated_query(monkeypatch: pytest.MonkeyPatch) -> None:
+    """If resolving the full destination string fails, the adapter must
+    never retry with a shorter/looser fragment (e.g. "New" instead of "New
+    York") -- there is no such fallback path at all.
+    """
+    fake_client = _install_fake_client(
+        monkeypatch,
+        geocode_response=_FakeResponse(json_data=[]),  # Nominatim finds nothing
+        post_responses=[],
+    )
+
+    adapter = OpenStreetMapPlacesAdapter()
+    response = adapter.search_attractions("New York")
+
+    assert response.status == ProviderStatus.UNAVAILABLE
+    assert fake_client.post_call_count == 0
+    # Exactly one geocoding request was made, and it used the full,
+    # untruncated destination string -- never "New" or any other fragment.
+    assert fake_client.get_queries == ["New York"]
+
+
+def test_attraction_results_outside_bounding_box_are_filtered_out(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Even a real, named Overpass result is discarded if its coordinates
+    fall outside the resolved destination's bounding box.
+    """
+    elements = [
+        _element(1, "Empire State Building", lat=40.7484, lon=-73.9857, tourism="attraction"),
+        _element(2, "Rathaus Rheydt", lat=51.1743, lon=6.4453, tourism="attraction"),
+    ]
+    fake_client = _install_fake_client(
+        monkeypatch,
+        geocode_response=_nyc_geocode_response(),
+        post_responses=[_FakeResponse(json_data={"elements": elements})],
+    )
+
+    adapter = OpenStreetMapPlacesAdapter()
+    response = adapter.search_attractions("New York")
+
+    names = {place.name for place in response.data}
+    assert names == {"Empire State Building"}
+    assert "Rathaus Rheydt" not in names
+    assert fake_client.post_call_count == 1
+
+
+def test_all_results_outside_bounding_box_reports_unavailable_not_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If every returned POI falls outside the resolved destination, the
+    field must honestly report unavailable -- never "success" just because
+    *a* provider response came back.
+    """
+    elements = [
+        _element(1, "Rathaus Rheydt", lat=51.1743, lon=6.4453, tourism="attraction"),
+        _element(2, "Balderich", lat=51.18, lon=6.44, historic="yes"),
+    ]
+    fake_client = _install_fake_client(
+        monkeypatch,
+        geocode_response=_nyc_geocode_response(),
+        post_responses=[
+            _FakeResponse(json_data={"elements": elements}),  # primary: all outside bbox
+            _FakeResponse(json_data={"elements": []}),  # fallback tag 1
+            _FakeResponse(json_data={"elements": []}),  # fallback tag 2
+            _FakeResponse(json_data={"elements": []}),  # fallback tag 3
+            _FakeResponse(json_data={"elements": []}),  # fallback tag 4
+        ],
+    )
+
+    adapter = OpenStreetMapPlacesAdapter()
+    response = adapter.search_attractions("New York")
+
+    assert response.status == ProviderStatus.UNAVAILABLE
+    assert response.data_status == DataStatus.UNAVAILABLE
+    assert response.data is None
+    assert fake_client.post_call_count == 5
+
+
+def test_must_visit_place_outside_destination_bounding_box_is_rejected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Requirement 6: a must-visit lookup result is only accepted if it
+    falls inside the resolved destination -- an out-of-area match (even a
+    real, named one) must be reported unavailable, never silently accepted
+    or substituted with something else.
+    """
+    bad_result = _nominatim_result("Rathaus Rheydt", lat="51.1743", lon="6.4453")
+    fake_client = _install_fake_client_for_get(
+        monkeypatch,
+        get_responses=[_nyc_geocode_response(), _FakeResponse(json_data=[bad_result])],
+    )
+
+    adapter = OpenStreetMapPlacesAdapter()
+    response = adapter.search_must_visit_place("Empire State Building", "New York")
+
+    assert response.status == ProviderStatus.UNAVAILABLE
+    assert response.data_status == DataStatus.UNAVAILABLE
+    assert response.data is None
+    assert "must_visit_place" in response.unavailable_fields
+    assert fake_client.get_call_count == 2
+
+
+def test_must_visit_place_reports_unavailable_when_destination_cannot_be_resolved(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_client = _install_fake_client_for_get(
+        monkeypatch, get_responses=[_FakeResponse(json_data=[])]
+    )
+
+    adapter = OpenStreetMapPlacesAdapter()
+    response = adapter.search_must_visit_place("Empire State Building", "New")
+
+    assert response.status == ProviderStatus.UNAVAILABLE
+    assert response.data is None
+    # The must-visit-specific lookup is never attempted once the
+    # destination itself can't be resolved.
+    assert fake_client.get_call_count == 1

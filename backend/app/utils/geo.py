@@ -30,3 +30,17 @@ def haversine_distance_km(origin: GeoPoint | None, destination: GeoPoint | None)
     c = 2 * math.asin(math.sqrt(a))
 
     return EARTH_RADIUS_KM * c
+
+
+def point_in_bounding_box(
+    point: GeoPoint, bounding_box: tuple[float, float, float, float]
+) -> bool:
+    """True if `point` falls inside `bounding_box` (`south, north, west,
+    east` -- matching Nominatim's `boundingbox` field order).
+
+    Used to verify a candidate place is actually located within a resolved
+    destination area, rather than trusted purely because it fell inside a
+    raw provider search radius (docs/12_provider_architecture.md).
+    """
+    south, north, west, east = bounding_box
+    return south <= point.lat <= north and west <= point.lng <= east
