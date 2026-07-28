@@ -35,6 +35,7 @@ import type {
   PendingFeedbackSummary,
   PlanDiffPreview,
   ProviderCoverageData,
+  ProviderStatusEntry,
   ReadinessChecklist,
   RegenerationAttempt,
   RegenerationReadiness,
@@ -1248,22 +1249,201 @@ function PlanningAssumptionsSection({
   );
 }
 
+// Fixed display groups for `ProviderStatusEntry.provider_type` (backend:
+// app.models.providers.ProviderType). Every real provider_type value maps
+// to one of these; anything unrecognized falls into "Other" rather than
+// being dropped or misgrouped.
+const PROVIDER_GROUP_ORDER = [
+  "Places",
+  "Weather",
+  "Holidays",
+  "Currency",
+  "Routes",
+  "Accommodation",
+  "Other",
+] as const;
+
+type ProviderGroupLabel = (typeof PROVIDER_GROUP_ORDER)[number];
+
+function providerTypeLabel(providerType: string): ProviderGroupLabel {
+  switch (providerType) {
+    case "places":
+      return "Places";
+    case "weather":
+      return "Weather";
+    case "holiday":
+      return "Holidays";
+    case "currency":
+      return "Currency";
+    case "routes":
+    case "transit":
+      return "Routes";
+    case "accommodation":
+      return "Accommodation";
+    default:
+      return "Other";
+  }
+}
+
+type ProviderStatusEntryWithKey = { statusKey: string; entry: ProviderStatusEntry };
+
+function groupProviderStatusByType(
+  providerStatus: Record<string, ProviderStatusEntry>,
+): Record<ProviderGroupLabel, ProviderStatusEntryWithKey[]> {
+  const grouped = Object.fromEntries(
+    PROVIDER_GROUP_ORDER.map((label) => [label, [] as ProviderStatusEntryWithKey[]]),
+  ) as Record<ProviderGroupLabel, ProviderStatusEntryWithKey[]>;
+
+  for (const [statusKey, entry] of Object.entries(providerStatus)) {
+    grouped[providerTypeLabel(entry.provider_type)].push({ statusKey, entry });
+  }
+
+  return grouped;
+}
+
+function dataStatusLabel(dataStatus: string): string {
+  switch (dataStatus) {
+    case "live":
+      return "Live";
+    case "cached":
+      return "Cached";
+    case "fallback_used":
+      return "Fallback used";
+    case "estimated":
+      return "Estimated";
+    case "scheduled":
+      return "Scheduled";
+    case "user_provided":
+      return "User provided";
+    case "ai_inferred":
+      return "AI inferred";
+    case "unavailable":
+      return "Unavailable";
+    case "failed":
+      return "Failed";
+    case "not_connected":
+      return "Not connected";
+    default:
+      return dataStatus;
+  }
+}
+
+function ProviderStatusEntryCard({
+  statusKey,
+  entry,
+}: {
+  statusKey: string;
+  entry: ProviderStatusEntry;
+}) {
+  return (
+    <li className="rounded-lg border border-white/10 bg-slate-900/60 p-3 text-sm">
+      <p className="font-mono text-[11px] text-slate-500">{statusKey}</p>
+      <p className="mt-1 font-medium text-slate-100">{entry.provider_name}</p>
+      <p className="mt-1 text-xs text-slate-400">
+        Status: <span className="text-slate-300">{entry.status}</span>
+        {" · "}
+        Data status:{" "}
+        <span className="text-slate-300">{dataStatusLabel(entry.data_status)}</span>
+      </p>
+      {entry.unavailable_fields.length > 0 ? (
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {entry.unavailable_fields.map((field) => (
+            <span
+              key={field}
+              className="rounded-full border border-amber-300/40 bg-slate-950 px-2 py-0.5 text-[11px] text-amber-200"
+            >
+              {field}
+            </span>
+          ))}
+        </div>
+      ) : (
+        <p className="mt-2 text-xs text-slate-500">
+          No unavailable fields reported.
+        </p>
+      )}
+    </li>
+  );
+}
+
+function ProviderStatusGroup({
+  title,
+  entries,
+}: {
+  title: ProviderGroupLabel;
+  entries: ProviderStatusEntryWithKey[];
+}) {
+  if (entries.length === 0) return null;
+
+  return (
+    <div className="mt-3">
+      <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+        {title}
+      </p>
+      <ul className="mt-2 flex flex-col gap-2">
+        {entries.map(({ statusKey, entry }) => (
+          <ProviderStatusEntryCard key={statusKey} statusKey={statusKey} entry={entry} />
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+/**
+ * Provider transparency panel (Step 149, docs/16_frontend_architecture.md
+ * section 28). Renders only backend-returned `ProviderCoverageData` fields
+ * -- it never invents a rating, price, availability, opening hour, route
+ * time, or booking link, and never implies a restricted/paid provider
+ * (Booking.com, Airbnb, Expedia, Vrbo, Tripadvisor, Google Flights) is
+ * connected beyond what `provider_coverage`/`provider_status` actually say.
+ */
 function ProviderCoverageSection({ coverage }: { coverage: ProviderCoverageData }) {
   const coverageEntries = Object.entries(coverage.provider_coverage).filter(
     ([, value]) => value !== null,
   );
   const statusEntries = Object.entries(coverage.provider_status);
+  const groupedStatus = groupProviderStatusByType(coverage.provider_status);
 
   return (
     <div className="rounded-2xl border border-white/10 bg-white/5 p-5">
       <h2 className="text-lg font-semibold">Provider coverage</h2>
 
+      <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-3">
+        <div className="rounded-lg border border-white/10 bg-slate-900/60 p-3 text-sm">
+          <p className="text-[11px] uppercase tracking-wide text-slate-500">
+            Data sources used
+          </p>
+          <p className="mt-1 text-base font-semibold text-slate-100">
+            {coverage.data_sources_used.length}
+          </p>
+        </div>
+        <div className="rounded-lg border border-white/10 bg-slate-900/60 p-3 text-sm">
+          <p className="text-[11px] uppercase tracking-wide text-slate-500">
+            Provider statuses
+          </p>
+          <p className="mt-1 text-base font-semibold text-slate-100">
+            {statusEntries.length}
+          </p>
+        </div>
+        <div className="rounded-lg border border-white/10 bg-slate-900/60 p-3 text-sm">
+          <p className="text-[11px] uppercase tracking-wide text-slate-500">
+            Unavailable data items
+          </p>
+          <p className="mt-1 text-base font-semibold text-slate-100">
+            {coverage.unavailable_data.length}
+          </p>
+        </div>
+      </div>
+      <p className="mt-3 text-xs text-amber-300/90">
+        Unavailable data is shown instead of being guessed. The frontend
+        does not invent missing provider facts.
+      </p>
+
       {coverageEntries.length === 0 ? (
-        <p className="mt-2 text-sm text-slate-400">
+        <p className="mt-4 text-sm text-slate-400">
           No provider coverage information returned.
         </p>
       ) : (
-        <dl className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
+        <dl className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-2">
           {coverageEntries.map(([key, value]) => (
             <div
               key={key}
@@ -1278,34 +1458,43 @@ function ProviderCoverageSection({ coverage }: { coverage: ProviderCoverageData 
         </dl>
       )}
 
-      {statusEntries.length > 0 && (
+      {statusEntries.length === 0 ? (
+        <p className="mt-4 text-sm text-slate-400">
+          No provider status information returned.
+        </p>
+      ) : (
         <div className="mt-4">
           <p className="text-sm font-semibold text-slate-200">
-            Provider status
+            Provider status by type
           </p>
-          <ul className="mt-2 flex flex-col gap-2">
-            {statusEntries.map(([key, entry]) => (
-              <li
-                key={key}
-                className="rounded-lg border border-white/10 bg-slate-900/60 p-3 text-sm"
-              >
-                <p className="font-mono text-xs text-slate-300">{key}</p>
-                <p className="mt-1 text-[11px] uppercase tracking-wide text-slate-500">
-                  {entry.provider_name} · {entry.provider_type}
-                </p>
-                <p className="mt-1 text-slate-200">
-                  {entry.status} · {entry.data_status}
-                </p>
-                {entry.unavailable_fields.length > 0 && (
-                  <p className="mt-1 text-xs text-slate-400">
-                    Unavailable: {entry.unavailable_fields.join(", ")}
-                  </p>
-                )}
-              </li>
-            ))}
-          </ul>
+          {PROVIDER_GROUP_ORDER.map((label) => (
+            <ProviderStatusGroup
+              key={label}
+              title={label}
+              entries={groupedStatus[label]}
+            />
+          ))}
         </div>
       )}
+
+      <div className="mt-4 rounded-lg border border-white/10 bg-slate-950/60 p-3">
+        <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+          What this means
+        </p>
+        <ul className="mt-2 list-disc pl-4 text-xs text-slate-300">
+          <li>Provider-backed or open-data-backed fields can be shown.</li>
+          <li>Missing fields stay unavailable.</li>
+          <li>
+            OpenStreetMap places do not provide ratings, prices, reviews,
+            opening hours, or booking availability unless those fields are
+            explicitly returned by the backend.
+          </li>
+          <li>
+            Route timing is unavailable unless a route provider is
+            connected.
+          </li>
+        </ul>
+      </div>
 
       {coverage.unavailable_data.length > 0 && (
         <div className="mt-4">
@@ -1318,10 +1507,19 @@ function ProviderCoverageSection({ coverage }: { coverage: ProviderCoverageData 
                 key={`${item.field}-${index}`}
                 className="rounded-lg border border-white/10 bg-slate-900/60 p-3 text-sm"
               >
+                <p className="text-[11px] uppercase tracking-wide text-slate-500">
+                  Field
+                </p>
                 <p className="text-slate-200">{item.field}</p>
-                <p className="mt-1 text-xs text-slate-400">{item.reason}</p>
-                <p className="mt-1 text-[11px] uppercase tracking-wide text-slate-500">
-                  {item.data_status}
+                <p className="mt-2 text-[11px] uppercase tracking-wide text-slate-500">
+                  Reason
+                </p>
+                <p className="text-xs text-slate-400">{item.reason}</p>
+                <p className="mt-2 text-[11px] uppercase tracking-wide text-slate-500">
+                  Status
+                </p>
+                <p className="text-xs text-slate-300">
+                  {dataStatusLabel(item.data_status)}
                 </p>
               </li>
             ))}
