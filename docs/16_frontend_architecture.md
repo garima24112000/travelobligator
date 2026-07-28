@@ -1013,6 +1013,14 @@ Each provider status card shows:
 - `unavailable_fields` as a list of short labels, or the text
   "No unavailable fields reported." when the list is empty
 
+The frontend may show a friendly display label for a known raw
+`provider_name` (e.g. `openstreetmap_places` → "OpenStreetMap /
+Overpass"), in the provider status cards and the "Data sources used" list,
+but must always keep the raw `provider_name`/provider status key visible
+alongside it, and must never infer or imply provider connectivity from the
+label itself — only `provider_status`/`provider_coverage` say that. An
+unrecognized `provider_name` displays as-is.
+
 ### 28.3 Unavailable Data Cards
 
 Each entry in `unavailable_data` is rendered as its own card with three

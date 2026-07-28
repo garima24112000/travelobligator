@@ -1328,6 +1328,25 @@ function dataStatusLabel(dataStatus: string): string {
   }
 }
 
+// Human-readable labels for known raw backend `provider_name` values
+// (Step 154). Purely cosmetic -- the raw provider_name is always shown
+// alongside the friendly label, never replaced or hidden, and this mapping
+// never implies a provider is connected beyond what provider_status/
+// provider_coverage already say. Unknown provider names fall back to the
+// raw providerName unchanged.
+const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
+  openstreetmap_places: "OpenStreetMap / Overpass",
+  open_meteo: "Open-Meteo",
+  nager_date: "Nager.Date",
+  frankfurter: "Frankfurter",
+  routes_provider: "Routes provider",
+  accommodation_provider: "Accommodation provider",
+};
+
+function providerDisplayName(providerName: string): string {
+  return PROVIDER_DISPLAY_NAMES[providerName] ?? providerName;
+}
+
 function ProviderStatusEntryCard({
   statusKey,
   entry,
@@ -1338,7 +1357,12 @@ function ProviderStatusEntryCard({
   return (
     <li className="rounded-lg border border-white/10 bg-slate-900/60 p-3 text-sm">
       <p className="font-mono text-[11px] text-slate-500">{statusKey}</p>
-      <p className="mt-1 font-medium text-slate-100">{entry.provider_name}</p>
+      <p className="mt-1 font-medium text-slate-100">
+        {providerDisplayName(entry.provider_name)}
+      </p>
+      <p className="mt-0.5 font-mono text-[11px] text-slate-500">
+        {entry.provider_name}
+      </p>
       <p className="mt-1 text-xs text-slate-400">
         Status: <span className="text-slate-300">{entry.status}</span>
         {" · "}
@@ -1534,7 +1558,12 @@ function ProviderCoverageSection({ coverage }: { coverage: ProviderCoverageData 
           </p>
           <ul className="mt-2 list-disc pl-5 text-sm text-slate-300">
             {coverage.data_sources_used.map((source) => (
-              <li key={source}>{source}</li>
+              <li key={source}>
+                {providerDisplayName(source)}{" "}
+                <span className="font-mono text-xs text-slate-500">
+                  ({source})
+                </span>
+              </li>
             ))}
           </ul>
         </div>
