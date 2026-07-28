@@ -535,6 +535,10 @@ Do not implement yet:
   refusal endpoint, and attempt audit trail exist; regeneration itself
   does not run yet)
 
+Manual QA: before working on regeneration, run through
+`docs/17_regeneration_manual_qa.md` to verify the current hard-refusal
+safety contract still holds.
+
 ---
 
 ## 16. Immediate Next Tasks

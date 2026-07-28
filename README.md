@@ -84,6 +84,10 @@ does not run a regeneration engine:
 No new plan version is created and no itinerary content is changed by any
 of the endpoints above.
 
+Before touching regeneration code, run through
+`docs/17_regeneration_manual_qa.md` to verify this safety contract still
+holds.
+
 ---
 
 ## What Makes TravelObligator Different
@@ -198,6 +202,7 @@ docs/13_llm_reasoning_pipeline.md
 docs/14_backend_architecture.md
 docs/15_database_schema.md
 docs/16_frontend_architecture.md
+docs/17_regeneration_manual_qa.md
 docs/99_product_principles.md
 ```
 
