@@ -780,8 +780,7 @@ The frontend should not display direct safety scores.
 Avoid labels like:
 
 ```text
-Safe area
-Unsafe area
+Area risk label
 Safety score: 94
 ```
 
@@ -929,6 +928,8 @@ Component:
 ProviderTransparencyPanel
 ```
 
+(implemented today as `ProviderCoverageSection` in `frontend/app/page.tsx`)
+
 Uses:
 
 ```text
@@ -964,6 +965,88 @@ Not connected:
 ```
 
 This section helps the user understand what the system actually knows.
+
+### 28.1 Summary Counts
+
+At the top of the panel, show three counts computed from the already-loaded
+`ProviderCoverageData` response — no extra API call:
+
+- data sources used (`data_sources_used.length`)
+- provider statuses (`Object.keys(provider_status).length`)
+- unavailable data items (`unavailable_data.length`)
+
+Alongside the counts, show this note:
+
+```text
+Unavailable data is shown instead of being guessed. The frontend does not
+invent missing provider facts.
+```
+
+### 28.2 Provider Status Grouping
+
+`provider_status` is a map keyed by provider (and sometimes provider +
+coverage field). Group entries by `provider_type` into fixed sections, in
+this order:
+
+```text
+Places
+Weather
+Holidays
+Currency
+Routes
+Accommodation
+Other
+```
+
+`routes` and `transit` provider types both group under "Routes". Any
+`provider_type` value that isn't one of `places`, `weather`, `holiday`,
+`currency`, `routes`, `transit`, or `accommodation` falls under "Other"
+rather than being hidden or misclassified. A group with no entries is not
+shown.
+
+Each provider status card shows:
+
+- the provider status key (the map key, e.g. `openstreetmap_places:restaurants`)
+- `provider_name`
+- `status`
+- `data_status`
+- `unavailable_fields` as a list of short labels, or the text
+  "No unavailable fields reported." when the list is empty
+
+### 28.3 Unavailable Data Cards
+
+Each entry in `unavailable_data` is rendered as its own card with three
+labeled fields:
+
+- Field — `field`
+- Reason — `reason`
+- Status — `data_status`
+
+### 28.4 "What This Means" Explanation
+
+The panel includes a short, fixed explanation block (not derived from
+provider data, so it never varies per trip):
+
+```text
+Provider-backed or open-data-backed fields can be shown.
+Missing fields stay unavailable.
+OpenStreetMap places do not provide ratings, prices, reviews, opening
+hours, or booking availability unless those fields are explicitly
+returned by the backend.
+Route timing is unavailable unless a route provider is connected.
+```
+
+### 28.5 Rendering Rule
+
+The panel renders only fields already present on the backend-returned
+`ProviderCoverageData` response (`provider_coverage`, `provider_status`,
+`unavailable_data`, `data_sources_used`). It never fabricates a rating,
+price, availability, opening hour, route time, review count, or booking
+link, and it never implies a restricted or paid provider (Booking.com,
+Airbnb, Expedia, Vrbo, Tripadvisor, Google Flights) is connected beyond
+what `provider_coverage`/`provider_status` actually say. Provider coverage
+being shown does not mean the plan is final — see the validation and
+readiness sections for that.
 
 ---
 

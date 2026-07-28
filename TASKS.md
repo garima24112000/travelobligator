@@ -511,6 +511,14 @@ Unsafe AI output should be rejected.
 - [ ] Provider coverage mismatch
 - [ ] Blocked itinerary
 
+### Manual QA
+
+The provider transparency UI (grouped provider status, unavailable data
+cards, summary counts, and the "What this means" explanation) should be
+checked by hand after any change to a provider adapter or to
+`ProviderCoverageService`, since those changes can shift what
+`provider_status`/`unavailable_data` actually contain.
+
 ---
 
 ## 15. Not In MVP

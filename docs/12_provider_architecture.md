@@ -149,6 +149,15 @@ If fallback is used:
 }
 ```
 
+Provider adapters must set `unavailable_fields` and `data_status`
+explicitly and accurately, not leave them empty/default when data is
+actually missing. The frontend's provider transparency panel
+(docs/16_frontend_architecture.md section 28) now surfaces these values
+directly to the user, grouped by `provider_type` — an adapter that omits
+an unavailable field or reports an inaccurate `data_status` will show up
+as a false transparency claim on screen, not just an internal bookkeeping
+gap.
+
 ---
 
 ## 6. Provider Status Values

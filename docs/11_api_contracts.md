@@ -814,6 +814,27 @@ Response data:
 
 This endpoint is useful for frontend transparency panels.
 
+This endpoint is informational only. It does not run any provider call
+itself, does not change `experience_plan`, `validation_report`, or
+`regeneration_readiness`, and does not prove that a restricted or paid
+provider (Booking.com, Airbnb, Expedia, Vrbo, Tripadvisor, Google Flights)
+is connected — only `provider_coverage`/`provider_status` say that.
+Reading this endpoint also does not make an unavailable field usable; a
+field marked `unavailable`/`not_connected` stays that way until a real
+provider is connected.
+
+The frontend transparency panel (docs/16_frontend_architecture.md section
+28) may display, directly from this response and without adding any new
+field:
+
+- `provider_coverage` summary values, one per tracked coverage area
+- `provider_status` entries grouped by `provider_type` (Places, Weather,
+  Holidays, Currency, Routes, Accommodation, Other)
+- `unavailable_data` entries with their `field`, `reason`, and
+  `data_status`
+- `data_sources_used` exactly as returned, with no reordering or filtering
+  that would misrepresent what was actually used
+
 ---
 
 ## 23. Frontend Page Usage

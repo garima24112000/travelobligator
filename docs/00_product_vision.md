@@ -62,6 +62,6 @@ The MVP will not fully support:
 - full multi-city optimization
 - advanced weather-aware rerouting
 - direct safety scoring for places, neighborhoods, accommodations, routes, or attractions
-- guaranteed accommodation availability, final price, cancellation terms, or booking completion
+- confirmed accommodation availability, final price, cancellation terms, or booking completion
 
 These can be documented as future engines.

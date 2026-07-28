@@ -140,6 +140,9 @@ If data is unavailable, the system should say it is unavailable.
 Unavailable data is acceptable.  
 Fake data is not.
 
+Provider transparency is visible in the frontend through grouped provider
+status, unavailable data, and data-source summaries.
+
 ---
 
 ## Data Sources

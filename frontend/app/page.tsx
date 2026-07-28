@@ -435,7 +435,7 @@ function planStatusMessage(validationStatus: string | null): string {
     return "This plan has passed the current validation checks.";
   }
   if (validationStatus === "needs_review") {
-    return "This plan is provider-backed but not travel-ready yet. Use it as a planning draft, not a final itinerary.";
+    return "This plan is provider-backed but still needs review. Use it as a planning draft, not a final itinerary.";
   }
   return "Plan status is not yet available.";
 }
