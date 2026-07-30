@@ -805,3 +805,167 @@ metadata into `AIReasoningRequest` inputs. It does not call an LLM.
   never reads/writes a provider, never mutates `PlanningState`, and relies
   on `AIReasoningRequest`'s own validation (e.g. non-empty
   `input_sections`) rather than duplicating those checks.
+
+---
+
+## 28. AI Candidate Proposal Contract Models (Step 157A)
+
+`backend/app/models/ai_candidate_proposal.py` defines the AI-assisted
+candidate discovery contract described in
+`itinerary-generator-build-spec.md` Stage 5 (LLM Candidate Proposal), as
+Pydantic models. This is a contract only:
+
+- No LLM provider is connected yet.
+- No LangGraph or LangSmith dependency has been added yet.
+- Nothing in the app currently constructs or consumes these models, and
+  nothing is wired into the generation pipeline.
+
+The build spec's core principle applies directly here: **an AI candidate
+proposal is not a fact.** `AICandidateProposal` may only carry a candidate
+name, type, suggested area, and a one-line rationale (`why_consider`) --
+it deliberately has no coordinate, provider-source, rating, price,
+opening-hours, booking/availability, or route/timing field, so it can
+never be mistaken for a grounded, schedulable place. Every proposal also
+carries `verification_requirements` (e.g.
+`must_ground_by_name_and_location`, `must_reject_if_not_found`) spelling
+out what Stage 6 (Grounding & Verification) must still do before the idea
+can be scheduled.
+
+Key validation rules enforced in code:
+
+- `candidate_name`, `suggested_area`, `why_consider`, and every entry of
+  `fit_with_user_preferences` are rejected if they contain an obviously
+  fabricated claim (rating, price, opening hours, route time, booking URL,
+  review count, ticket price, availability, safety score, or superlative/
+  marketing language implying a verified fact).
+- `verification_requirements` must not be empty -- a proposal with no
+  grounding requirement is invalid by construction.
+- `AICandidateProposalResult.status="completed"` requires at least one
+  proposal and a passed guardrail check; `"rejected"` requires a failed
+  guardrail check with an explicit reason; `"not_connected"` and
+  `"skipped"` always carry an empty proposal list, and `"not_connected"`
+  always carries zero confidence.
+- `AICandidateProposalBatch` requires `result.task` to match
+  `request.task` when a result is present.
+
+Once a real AI candidate proposal provider is connected, its output must
+validate through `AICandidateProposalResult` before it can be accepted,
+and every resulting `AICandidateProposal` must still pass through Stage 6
+grounding/verification against provider/open data before it can appear in
+`candidate_pool.grounded` or be scheduled.
+
+---
+
+## 29. AI Candidate Proposal Provider Boundary (Step 157B)
+
+`backend/app/providers/ai_candidate_proposal/` adds the provider boundary
+for the Step 157A contract models, following the same
+provider-boundary pattern used everywhere else in the app: planning
+services never call an LLM directly, only through a typed provider
+interface (docs/14_backend_architecture.md sections 18 and 25). Still no
+LLM, LangGraph, or LangSmith dependency is wired up.
+
+- `AICandidateProposalProvider` (`base.py`) is an `abc.ABC` with one
+  abstract method, `propose(request: AICandidateProposalRequest) ->
+  AICandidateProposalResult`. Every future adapter (LLM-backed or
+  otherwise) must implement this method explicitly -- there is no default
+  implementation to silently fall back on.
+- `NotConnectedAICandidateProposalProvider` (`not_connected_adapter.py`)
+  is the default adapter. `propose` never calls a network service and
+  never inspects `request` beyond `request.task` (which it preserves on
+  the response); it always returns an honest
+  `AICandidateProposalResult` with `status=not_connected`, an empty
+  `proposals` list, `confidence=0.0`, and a `guardrail_report` explaining
+  that no AI candidate proposal provider is connected yet.
+- This is still not wired into `PlanningOrchestrator` or any stage
+  service. Nothing in the generation pipeline constructs or calls
+  `AICandidateProposalProvider` yet -- Stage 5 (LLM Candidate Proposal)
+  remains unimplemented at runtime, and `destination_context.
+  candidate_pool.llm_proposed` is not populated by this step.
+
+---
+
+## 30. Candidate Grounding Contract Models (Step 158A)
+
+`backend/app/models/candidate_grounding.py` defines the contract for build
+spec Stage 6, "Grounding & Verification (the trust firewall)" -- the step
+that decides whether a Step 157A `AICandidateProposal` is real. This is a
+contract only:
+
+- No LLM, provider call, LangGraph, or LangSmith dependency is wired up
+  yet.
+- Nothing in this module calls a network service, and nothing mutates
+  `PlanningState`.
+- Nothing elsewhere in the app currently constructs or consumes these
+  models, and none of it is wired into `PlanningOrchestrator`,
+  scheduling, validation, or regeneration.
+
+**Raw AI proposals are not facts.** An `AICandidateProposal` is only a
+name and a one-line rationale (Step 157A) -- it carries no coordinate, no
+provider source, no confirmed category. `candidate_grounding.py` defines
+what happens next: every proposal must be independently matched against
+real provider/open-data evidence before it can be treated as a real
+place.
+
+- `CandidateGroundingEvidence` is the real provider/open-data fact that
+  grounds one proposal -- `coordinates` and `data_status` are required,
+  typed, provider-backed fields, never something free text can assert on
+  its own.
+- `GroundedCandidate` pairs a proposal with its `CandidateGroundingEvidence`
+  and a `confidence_tier`/`confidence`. It is schedulable **only** because
+  its coordinates come from real evidence, not from the AI's own wording
+  -- unlike `AICandidateProposal`, it is allowed to carry a coordinate for
+  exactly that reason. Being grounded is not the same as being scheduled;
+  future scheduling/quality-scoring stages (7-8) still decide that.
+- `RejectedCandidateProposal` records a proposal that could not be
+  grounded, with a `CandidateGroundingRejectReason` and a plain-language
+  `message` -- deliberately carrying no coordinate or provider field, so a
+  rejected idea never looks like a real place. This is meant to later feed
+  the frontend's "what the AI suggested but we didn't use" trust UI (build
+  spec Stage 11), the same way `candidate_pool.rejected` does in the
+  build spec's `PlanningState` sketch.
+- `CandidateGroundingResult.status` follows the same
+  `not_connected`/`skipped`/`completed`/`rejected` shape as the other
+  contract results, plus `partial` for the common real-world case where
+  some proposals ground and others don't: `partial` requires at least one
+  `GroundedCandidate` *and* at least one `RejectedCandidateProposal`.
+- `CandidateGroundingBatch` keeps a result honestly tied to the request it
+  was run against: every `proposal_id` in `grounded_candidates`/
+  `rejected_proposals` must trace back to a proposal actually in
+  `request.proposals`, no `proposal_id` may appear in both lists or be
+  duplicated within either list, and a `completed`/`partial` result must
+  account for every request proposal -- nothing can be silently dropped.
+
+This is still not wired into runtime. Once a real grounding step is
+connected, its output must validate through `CandidateGroundingResult`
+before any `GroundedCandidate` can be considered for future scheduling.
+
+---
+
+## 31. CandidateGroundingService NotConnected Skeleton (Step 158B)
+
+`backend/app/services/candidate_grounding_service.py` defines
+`CandidateGroundingService`, the service boundary for the Step 158A
+contract models. This step adds the boundary only -- it does not
+implement real grounding:
+
+- `CandidateGroundingService.ground(request: CandidateGroundingRequest) ->
+  CandidateGroundingResult` always returns a
+  `status=not_connected` result -- empty `grounded_candidates`, empty
+  `rejected_proposals`, `confidence=0.0`, and a `guardrail_report`
+  explaining that no candidate grounding service is connected yet.
+- It does not inspect `request.proposals` and does not attempt any name,
+  location, or category matching. Passing proposals in the request has no
+  effect on the output.
+- No provider or open-data lookup is performed. No LLM, LangGraph, or
+  LangSmith dependency is wired up.
+- No `GroundedCandidate` can be produced by this step -- there is no
+  matching logic to produce one from.
+- This is still not wired into `PlanningOrchestrator`, scheduling,
+  validation, or regeneration. Nothing in the generation pipeline
+  constructs or calls `CandidateGroundingService` yet -- Stage 6
+  (Grounding & Verification) remains unimplemented at runtime.
+
+This service exists only so a future pipeline has a safe, honest boundary
+to call before real grounding logic (fuzzy-match against provider data,
+confidence tiering, ambiguity handling) is implemented.

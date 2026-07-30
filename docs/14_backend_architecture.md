@@ -856,6 +856,45 @@ which prepares typed `AIReasoningRequest` inputs for a future
 It is still pre-LLM and behavior-neutral -- it does not call a provider or
 LLM, and nothing in the app currently calls it.
 
+`backend/app/models/ai_candidate_proposal.py` contains contract-only
+models for a future AI-assisted candidate discovery layer (Step 157A,
+docs/13_llm_reasoning_pipeline.md section 28,
+itinerary-generator-build-spec.md Stage 5). They do not call an LLM yet,
+and they do not create schedulable candidates -- every `AICandidateProposal`
+still requires independent grounding/verification against provider/open
+data (build spec Stage 6) before it can be scheduled.
+
+`backend/app/providers/ai_candidate_proposal/` contains the provider
+boundary for those contract models (Step 157B,
+docs/13_llm_reasoning_pipeline.md section 29): an `abc.ABC` interface,
+`AICandidateProposalProvider`, with one abstract method (`propose`), and a
+default `NotConnectedAICandidateProposalProvider` adapter that always
+returns an honest `not_connected` result -- empty proposals, zero
+confidence, and a failed guardrail report. There is no real LLM behavior
+yet, and this provider is not wired into `PlanningOrchestrator` or any
+stage service.
+
+`backend/app/models/candidate_grounding.py` contains contract-only models
+for the candidate grounding/verification step that would sit between AI
+candidate proposals and future scheduling (Step 158A,
+docs/13_llm_reasoning_pipeline.md section 30, build spec Stage 6). They
+are contract-only and do not call a provider or LLM yet, and nothing
+mutates `PlanningState`. `GroundedCandidate` prepares the bridge from an
+`AICandidateProposal` to a future scheduling-eligible candidate -- it may
+carry a coordinate only because it comes from `CandidateGroundingEvidence`
+(a real provider/open-data fact), never from the AI proposal's own
+wording -- and `RejectedCandidateProposal` prepares the bridge to a future
+"what the AI suggested but we didn't use" trust UI.
+
+`backend/app/services/candidate_grounding_service.py` contains
+`CandidateGroundingService`, a NotConnected skeleton for the Stage 6
+grounding step (Step 158B, docs/13_llm_reasoning_pipeline.md section 31).
+Its one method, `ground`, always returns a `not_connected`
+`CandidateGroundingResult` -- no real grounding behavior exists yet: it
+never inspects the request's proposals, never calls a provider, and never
+produces a `GroundedCandidate` or `RejectedCandidateProposal`. It is not
+wired into `PlanningOrchestrator`.
+
 `backend/app/services/candidate_quality_service.py` contains
 `CandidateQualityService` (Step 156A, docs/18_candidate_quality.md), a
 deterministic pre-ranking layer that sits between provider-backed
