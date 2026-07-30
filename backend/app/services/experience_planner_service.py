@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import timedelta
 from typing import Any
 
+from app.models.candidate_quality import CandidateQualityScore, CandidateQualityTier
 from app.models.common import (
     ChecklistItemStatus,
     ClaimSource,
@@ -163,6 +164,129 @@ _IMPLEMENTATION_GAPS_WHY_NEEDS_REVIEW = [
 ]
 
 
+# Step 156C/156E (docs/18_candidate_quality.md): deterministic pre-ranking
+# support for consuming `PlanningState.candidate_quality_report` when
+# scheduling attractions and suggesting nearby restaurants/accommodation
+# POIs. This only ever reorders or drops candidates using their own
+# already-computed `quality_tier`/`total_score` -- never invents a place,
+# never mutates `candidate_quality_report`, and falls back to pre-156C
+# behavior whenever no report (or no matching score) is available.
+_QUALITY_TIER_RANK: dict[CandidateQualityTier, int] = {
+    CandidateQualityTier.PRIMARY_ANCHOR: 4,
+    CandidateQualityTier.GOOD_CANDIDATE: 3,
+    CandidateQualityTier.SECONDARY_CANDIDATE: 2,
+    CandidateQualityTier.LOW_PRIORITY: 1,
+    CandidateQualityTier.REJECTED: 0,
+}
+# Trust-over-fullness (Step 156E, itinerary-generator-build-spec.md Stage
+# 8): only these tiers are eligible for attraction scheduling. `rejected`
+# and `low_priority` candidates are both excluded entirely -- never used
+# as filler to pad out a lighter-than-usual day.
+_ELIGIBLE_SCHEDULING_TIERS = {
+    CandidateQualityTier.PRIMARY_ANCHOR,
+    CandidateQualityTier.GOOD_CANDIDATE,
+    CandidateQualityTier.SECONDARY_CANDIDATE,
+}
+_LOW_PRIORITY_OR_REJECTED_EXCLUDED_WARNING = (
+    "Some low-priority or rejected candidate attractions were not scheduled. "
+    "This day may be lighter because not enough stronger provider-backed "
+    "candidates were available."
+)
+# Straight-line distances within this tolerance are treated as "similar"
+# for restaurant/accommodation suggestion ordering, letting candidate
+# quality break the tie -- never a walking/route feasibility claim, just a
+# conservative widening of what counts as "the same distance".
+_PROXIMITY_SIMILARITY_KM = 0.1
+
+
+def _quality_rank_and_score(score: CandidateQualityScore | None) -> tuple[int, float]:
+    """Neutral defaults (mid-rank, zero score) when no quality score is
+    known for a candidate -- e.g. `candidate_quality_report` is `None`, or a
+    length mismatch between the report and the current candidate list --
+    so quality-aware ordering degrades to a harmless no-op instead of
+    crashing or silently excluding the candidate.
+    """
+    if score is None:
+        return (2, 0.0)
+    return (_QUALITY_TIER_RANK.get(score.quality_tier, 2), score.total_score)
+
+
+def _build_quality_lookup(
+    candidates: list[dict[str, Any]], scores: list[CandidateQualityScore] | None
+) -> dict[int, CandidateQualityScore]:
+    """Maps each candidate dict's object identity to its
+    `CandidateQualityScore`, relying on `CandidateQualityService.build_report`
+    scoring every candidate in a `destination_context` candidate list
+    exactly once, in the same order (Step 156A/156B). Returns an empty
+    lookup (never raises, never guesses) if `scores` is missing or its
+    length doesn't match `candidates` -- every call site below treats a
+    missing lookup entry as "unknown quality" and falls back to legacy
+    behavior for that candidate.
+    """
+    if not scores or len(candidates) != len(scores):
+        return {}
+    return {id(candidate): score for candidate, score in zip(candidates, scores)}
+
+
+def _select_candidates_by_quality(
+    candidate_pois: list[dict[str, Any]],
+    quality_lookup: dict[int, CandidateQualityScore],
+) -> list[dict[str, Any]]:
+    """Deterministic pre-ranking filter/reorder over `candidate_pois` using
+    `CandidateQualityService`'s existing scores (Step 156C/156E). Never
+    invents, drops, or reorders a candidate based on anything but its own
+    already-computed `quality_tier`/`total_score`.
+
+    If `quality_lookup` is empty (no `candidate_quality_report`, or it
+    doesn't correspond to this candidate list), returns `candidate_pois`
+    unchanged so scheduling falls back to pre-156C behavior exactly.
+
+    Trust-over-fullness (Step 156E, itinerary-generator-build-spec.md
+    Stage 8): `rejected` candidates (e.g. missing coordinates, insufficient
+    provider confidence) and `low_priority` candidates (e.g. generic
+    historic districts, administrative/infrastructure objects) are both
+    excluded from scheduling entirely -- neither is ever used, even as
+    filler, to fill out a day. Only `primary_anchor`/`good_candidate`/
+    `secondary_candidate` candidates are eligible. If there are not enough
+    eligible candidates to fill every requested day/pace slot, the
+    resulting schedule is deliberately left lighter rather than padded with
+    weak candidates -- a grounded must-visit (which `CandidateQualityService`
+    never demotes to `low_priority`/`rejected` outside a severe issue) is
+    unaffected by this exclusion. The remaining eligible candidates are
+    stable-sorted by quality tier/score, highest first, preserving relative
+    order for ties.
+    """
+    if not quality_lookup:
+        return candidate_pois
+
+    eligible = [
+        poi
+        for poi in candidate_pois
+        if quality_lookup.get(id(poi)) is None
+        or quality_lookup[id(poi)].quality_tier in _ELIGIBLE_SCHEDULING_TIERS
+    ]
+    return sorted(
+        eligible,
+        key=lambda poi: _quality_rank_and_score(quality_lookup.get(id(poi))),
+        reverse=True,
+    )
+
+
+def _distance_bucket(distance_km: float) -> float:
+    """Rounds a straight-line distance to the nearest
+    `_PROXIMITY_SIMILARITY_KM` so "similar" distances sort as tied,
+    letting candidate quality break the tie (Step 156C).
+    """
+    return round(distance_km / _PROXIMITY_SIMILARITY_KM) * _PROXIMITY_SIMILARITY_KM
+
+
+def _distance_and_quality_sort_key(
+    distance_km: float, score: CandidateQualityScore | None
+) -> tuple[float, int, float]:
+    rank, total_score = _quality_rank_and_score(score)
+    return (_distance_bucket(distance_km), -rank, -total_score)
+
+
 class ExperiencePlannerService(PlanningStageService):
     """Owns `experience_plan`, `experience_cards`, and itinerary decision
     cards (docs/14_backend_architecture.md section 13).
@@ -310,6 +434,27 @@ class ExperiencePlannerService(PlanningStageService):
     checked" in `readiness_checklist`, which already stay `missing_data`
     from `provider_coverage.routes`, and it never affects validation
     readiness by itself.
+
+    Step 156C/156E (docs/18_candidate_quality.md): before the must-visit/
+    interest/provider-order tiering above runs, candidates are additionally
+    filtered/reordered using `PlanningState.candidate_quality_report` when
+    it is present. Trust-over-fullness (Step 156E,
+    itinerary-generator-build-spec.md Stage 8): `rejected` candidates
+    (missing coordinates, insufficient provider confidence, etc.) and
+    `low_priority` candidates (generic historic districts, administrative/
+    infrastructure objects, etc.) are both excluded from scheduling
+    entirely -- neither is ever used as filler. If there are not enough
+    `primary_anchor`/`good_candidate`/`secondary_candidate` candidates to
+    fill every day/pace slot, the day is deliberately left lighter instead,
+    with an honest warning explaining why. The remaining eligible
+    candidates are stable-sorted by quality tier/score. This never invents
+    a place and never mutates `candidate_quality_report`; if no report is
+    present, scheduling falls back to the exact pre-156C behavior. The same
+    quality-aware tie-break (distance first, quality when distance is
+    similar) is applied to nearby restaurant/accommodation-POI suggestions
+    and to plan-level stay-area guidance below -- those keep excluding only
+    `rejected` candidates, never `low_priority` ones, since low-priority
+    location candidates are still safe to show as nearby-only suggestions.
     """
 
     def run(self, planning_state: PlanningState) -> PlanningState:
@@ -326,6 +471,18 @@ class ExperiencePlannerService(PlanningStageService):
             else []
         )
 
+        quality_report = planning_state.candidate_quality_report
+        attraction_quality_lookup = _build_quality_lookup(
+            candidate_pois, quality_report.attraction_scores if quality_report else None
+        )
+        restaurant_quality_lookup = _build_quality_lookup(
+            candidate_restaurants, quality_report.restaurant_scores if quality_report else None
+        )
+        accommodation_quality_lookup = _build_quality_lookup(
+            candidate_accommodation_pois,
+            quality_report.accommodation_poi_scores if quality_report else None,
+        )
+
         traveler_profile = planning_state.traveler_profile
         trip_request = planning_state.trip_request
         pace = traveler_profile.pace if traveler_profile else trip_request.pace
@@ -339,8 +496,17 @@ class ExperiencePlannerService(PlanningStageService):
 
         num_days = (trip_request.end_date - trip_request.start_date).days + 1
 
+        scheduling_candidate_pois = _select_candidates_by_quality(
+            candidate_pois, attraction_quality_lookup
+        )
+        # Trust-over-fullness (Step 156E): candidates excluded here are
+        # low_priority/rejected by candidate quality, never a missing
+        # provider result -- used below to explain a lighter-than-usual day
+        # honestly instead of silently under-filling it.
+        quality_excluded_count = len(candidate_pois) - len(scheduling_candidate_pois)
+
         ordered_pois, must_visit_ids, interest_ids = _order_candidates(
-            candidate_pois, must_visit_terms, interest_terms
+            scheduling_candidate_pois, must_visit_terms, interest_terms
         )
 
         day_groups = _group_candidates_into_days(ordered_pois, num_days, max_per_day)
@@ -361,16 +527,18 @@ class ExperiencePlannerService(PlanningStageService):
                     warnings.append(
                         "No remaining candidate attractions were available for this day."
                     )
+                if quality_excluded_count > 0 and len(day_pois) < max_per_day:
+                    warnings.append(_LOW_PRIORITY_OR_REJECTED_EXCLUDED_WARNING)
 
             experiences = [
                 _build_experience_item(poi, must_visit_ids, interest_ids) for poi in day_pois
             ]
 
             restaurant_suggestions = _suggest_nearby_restaurants(
-                experiences, candidate_restaurants, warnings
+                experiences, candidate_restaurants, warnings, restaurant_quality_lookup
             )
             accommodation_suggestions = _suggest_nearby_accommodations(
-                experiences, candidate_accommodation_pois, warnings
+                experiences, candidate_accommodation_pois, warnings, accommodation_quality_lookup
             )
 
             daily_plans.append(
@@ -401,7 +569,7 @@ class ExperiencePlannerService(PlanningStageService):
             )
 
         stay_area_guidance = _build_stay_area_guidance(
-            daily_plans, candidate_accommodation_pois
+            daily_plans, candidate_accommodation_pois, accommodation_quality_lookup
         )
         decision_summary = _build_decision_summary(
             candidate_pois, candidate_restaurants, candidate_accommodation_pois, daily_plans
@@ -620,6 +788,7 @@ def _suggest_nearby_restaurants(
     experiences: list[ExperienceItem],
     candidate_restaurants: list[dict[str, Any]],
     warnings: list[str],
+    quality_lookup: dict[int, CandidateQualityScore] | None = None,
 ) -> list[RestaurantSuggestion]:
     """Suggest up to `_MAX_RESTAURANT_SUGGESTIONS_PER_DAY` restaurants near
     this day's scheduled experiences.
@@ -632,6 +801,14 @@ def _suggest_nearby_restaurants(
     route claim. If no restaurant candidates exist, no scheduled experience
     has coordinates, or no restaurant candidate has coordinates, suggestions
     stay empty and an honest warning is appended instead of guessing.
+
+    Step 156C: `rejected`-quality candidates (per `quality_lookup`) are
+    excluded from consideration, and when two candidates sit at a similar
+    distance from the anchor, the higher-quality one is preferred -- this
+    never treats a restaurant as a confirmed pick or adds a rating/price/
+    reservation/opening-hour claim. If `quality_lookup` is empty
+    (e.g. no `candidate_quality_report`), ordering falls back to plain
+    nearest-distance exactly as before.
     """
     if not candidate_restaurants:
         warnings.append(_NO_RESTAURANT_CANDIDATES_WARNING)
@@ -644,8 +821,12 @@ def _suggest_nearby_restaurants(
         warnings.append(_NO_DAY_ANCHOR_WARNING)
         return []
 
+    quality_lookup = quality_lookup or {}
     with_coords: list[tuple[dict[str, Any], GeoPoint]] = []
     for restaurant in candidate_restaurants:
+        score = quality_lookup.get(id(restaurant))
+        if score is not None and score.quality_tier == CandidateQualityTier.REJECTED:
+            continue
         point = _poi_coordinates(restaurant)
         if point is not None:
             with_coords.append((restaurant, point))
@@ -654,7 +835,14 @@ def _suggest_nearby_restaurants(
         warnings.append(_NO_COORDINATE_BACKED_RESTAURANTS_WARNING)
         return []
 
-    with_coords.sort(key=lambda item: haversine_distance_km(anchor_point, item[1]))
+    if quality_lookup:
+        with_coords.sort(
+            key=lambda item: _distance_and_quality_sort_key(
+                haversine_distance_km(anchor_point, item[1]), quality_lookup.get(id(item[0]))
+            )
+        )
+    else:
+        with_coords.sort(key=lambda item: haversine_distance_km(anchor_point, item[1]))
     nearest = with_coords[:_MAX_RESTAURANT_SUGGESTIONS_PER_DAY]
     return [_build_restaurant_suggestion(restaurant) for restaurant, _ in nearest]
 
@@ -677,6 +865,7 @@ def _suggest_nearby_accommodations(
     experiences: list[ExperienceItem],
     candidate_accommodation_pois: list[dict[str, Any]],
     warnings: list[str],
+    quality_lookup: dict[int, CandidateQualityScore] | None = None,
 ) -> list[AccommodationSuggestion]:
     """Suggest up to `_MAX_ACCOMMODATION_SUGGESTIONS_PER_DAY` accommodation
     POIs near this day's scheduled experiences.
@@ -690,6 +879,13 @@ def _suggest_nearby_accommodations(
     candidates exist, no scheduled experience has coordinates, or no
     accommodation candidate has coordinates, suggestions stay empty and an
     honest warning is appended instead of guessing.
+
+    Step 156C: `rejected`-quality candidates (per `quality_lookup`) are
+    excluded from consideration, and when two candidates sit at a similar
+    distance from the anchor, the higher-quality one is preferred -- these
+    remain open-data location candidates only, never bookable inventory. If
+    `quality_lookup` is empty (e.g. no `candidate_quality_report`), ordering
+    falls back to plain nearest-distance exactly as before.
     """
     if not candidate_accommodation_pois:
         warnings.append(_NO_ACCOMMODATION_CANDIDATES_WARNING)
@@ -702,8 +898,12 @@ def _suggest_nearby_accommodations(
         warnings.append(_NO_DAY_ANCHOR_FOR_ACCOMMODATION_WARNING)
         return []
 
+    quality_lookup = quality_lookup or {}
     with_coords: list[tuple[dict[str, Any], GeoPoint]] = []
     for accommodation in candidate_accommodation_pois:
+        score = quality_lookup.get(id(accommodation))
+        if score is not None and score.quality_tier == CandidateQualityTier.REJECTED:
+            continue
         point = _poi_coordinates(accommodation)
         if point is not None:
             with_coords.append((accommodation, point))
@@ -712,7 +912,14 @@ def _suggest_nearby_accommodations(
         warnings.append(_NO_COORDINATE_BACKED_ACCOMMODATIONS_WARNING)
         return []
 
-    with_coords.sort(key=lambda item: haversine_distance_km(anchor_point, item[1]))
+    if quality_lookup:
+        with_coords.sort(
+            key=lambda item: _distance_and_quality_sort_key(
+                haversine_distance_km(anchor_point, item[1]), quality_lookup.get(id(item[0]))
+            )
+        )
+    else:
+        with_coords.sort(key=lambda item: haversine_distance_km(anchor_point, item[1]))
     nearest = with_coords[:_MAX_ACCOMMODATION_SUGGESTIONS_PER_DAY]
     return [_build_accommodation_suggestion(accommodation) for accommodation, _ in nearest]
 
@@ -736,6 +943,7 @@ def _build_accommodation_suggestion(
 def _build_stay_area_guidance(
     daily_plans: list[DailyPlan],
     candidate_accommodation_pois: list[dict[str, Any]],
+    quality_lookup: dict[int, CandidateQualityScore] | None = None,
 ) -> StayAreaGuidance:
     """Plan-level (not day-level) stay-area guidance: up to
     `_MAX_STAY_GUIDANCE_ANCHORS` accommodation POI candidates ranked by
@@ -749,7 +957,14 @@ def _build_stay_area_guidance(
     scheduled experience has coordinates, or no accommodation candidate has
     coordinates, suggestions stay empty and an honest warning is returned
     instead of guessing.
+
+    Step 156C: `rejected`-quality candidates (per `quality_lookup`) are
+    excluded from consideration, and when two candidates sit at a similar
+    average distance, the higher-quality one is preferred. If
+    `quality_lookup` is empty (e.g. no `candidate_quality_report`), ranking
+    falls back to plain average-distance exactly as before.
     """
+    quality_lookup = quality_lookup or {}
     if not candidate_accommodation_pois:
         return StayAreaGuidance(
             summary=(
@@ -780,6 +995,9 @@ def _build_stay_area_guidance(
 
     scored: list[tuple[float, dict[str, Any]]] = []
     for accommodation in candidate_accommodation_pois:
+        score = quality_lookup.get(id(accommodation))
+        if score is not None and score.quality_tier == CandidateQualityTier.REJECTED:
+            continue
         point = _poi_coordinates(accommodation)
         if point is None:
             continue
@@ -797,7 +1015,14 @@ def _build_stay_area_guidance(
             warnings=[_NO_COORDINATE_BACKED_STAY_GUIDANCE_ACCOMMODATIONS_WARNING],
         )
 
-    scored.sort(key=lambda item: item[0])
+    if quality_lookup:
+        scored.sort(
+            key=lambda item: _distance_and_quality_sort_key(
+                item[0], quality_lookup.get(id(item[1]))
+            )
+        )
+    else:
+        scored.sort(key=lambda item: item[0])
     nearest = scored[:_MAX_STAY_GUIDANCE_ANCHORS]
     suggestions = [
         _build_accommodation_suggestion(accommodation, why=_STAY_GUIDANCE_SUGGESTION_WHY)

@@ -13,6 +13,7 @@ from app.models.common import ReadinessStatus
 from app.models.planning_state import TripRequest
 from app.repositories.planning_state_repository import planning_state_repository
 from app.schemas.api_responses import ApiResponse
+from app.schemas.candidate_quality import CandidateQualityResponseData
 from app.schemas.destination_context import DestinationContextResponseData
 from app.schemas.errors import ErrorCode
 from app.schemas.experience_plan import ExperiencePlanResponseData
@@ -188,6 +189,29 @@ def get_destination_context(trip_id: str) -> ApiResponse[DestinationContextRespo
         provider_coverage=planning_state.provider_coverage,
         unavailable_data=planning_state.unavailable_data,
         data_sources_used=planning_state.data_sources_used,
+    )
+    return success_response(data)
+
+
+@router.get(
+    "/{trip_id}/candidate-quality",
+    response_model=ApiResponse[CandidateQualityResponseData],
+)
+def get_candidate_quality(trip_id: str) -> ApiResponse[CandidateQualityResponseData]:
+    """Read-only deterministic pre-ranking metadata (Step 156A/156B,
+    docs/18_candidate_quality.md). Always reflects whatever
+    `candidate_quality_report` already holds -- recomputed on the
+    destination-context write path only, never by this endpoint. If a
+    destination context has not been generated yet, `candidate_quality_report`
+    is honestly `null` rather than fabricated.
+    """
+    planning_state = planning_state_repository.get_by_trip_id(trip_id)
+    if planning_state is None:
+        raise trip_not_found_error(trip_id)
+
+    data = CandidateQualityResponseData(
+        trip_id=trip_id,
+        candidate_quality_report=planning_state.candidate_quality_report,
     )
     return success_response(data)
 

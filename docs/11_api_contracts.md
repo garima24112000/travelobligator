@@ -1089,3 +1089,68 @@ Each attempt record contains only these nine fields. It never contains a
 place name, coordinate, route, price, rating, or opening-hours value, and
 it never claims feedback was applied, a diff was generated, or that any
 locked item will definitely survive a future regeneration.
+
+---
+
+## 28. Candidate Quality Endpoint
+
+### GET `/trips/{trip_id}/candidate-quality`
+
+Purpose: returns the deterministic candidate quality report (Step 156A/
+156B, docs/18_candidate_quality.md) computed from
+`destination_context`'s existing `candidate_pois`/`candidate_restaurants`/
+`candidate_accommodation_pois`. This is metadata/pre-ranking only — it
+does not select, reorder, or alter `experience_plan` scheduling in this
+step.
+
+Mutation behavior: none. `candidate_quality_report` is recomputed only on
+the destination-context write path (trip generation, or any future
+regeneration that reruns that stage) — never by this endpoint itself.
+
+If `destination_context` has not been generated yet for this trip,
+`candidate_quality_report` is honestly `null` rather than fabricated.
+
+Response data:
+
+```json
+{
+  "trip_id": "trip_001",
+  "candidate_quality_report": {
+    "destination_name": "New York",
+    "generated_at": "2026-07-29T18:00:00Z",
+    "attraction_scores": [
+      {
+        "candidate_id": "way/123456",
+        "candidate_name": "Empire State Building",
+        "use_case": "attraction",
+        "quality_tier": "primary_anchor",
+        "total_score": 0.76,
+        "score_components": {"category_signal": 0.9, "provider_confidence": 0.5},
+        "positive_signals": ["Matches a must-visit request, which overrides weak-category signals."],
+        "negative_signals": [],
+        "reject_reasons": [],
+        "source": "openstreetmap_places",
+        "data_status": "live",
+        "confidence": 0.5
+      }
+    ],
+    "restaurant_scores": [],
+    "accommodation_poi_scores": [],
+    "summary": {
+      "primary_anchor": 1,
+      "good_candidate": 0,
+      "secondary_candidate": 0,
+      "low_priority": 0,
+      "rejected": 0,
+      "attraction_total": 1,
+      "restaurant_total": 0,
+      "accommodation_poi_total": 0
+    }
+  }
+}
+```
+
+No score entry ever contains a price, rating, opening-hours, route-time,
+review-count, booking-link, or safety-score field. A high `quality_tier`
+is a pre-ranking signal only, never a claim of final quality, availability,
+or bookability.

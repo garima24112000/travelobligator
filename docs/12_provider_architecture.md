@@ -893,3 +893,21 @@ The provider architecture should follow these principles:
 - Open data should be treated as real but limited data.
 - Restricted providers should not be implied as searched unless connected.
 - The system should never use mock, scraped, or AI-invented factual travel data in MVP or production outputs.
+
+---
+
+## 24. Candidate Quality (Step 156A)
+
+Open-data POIs from a `PlacesProvider` (e.g. OpenStreetMap) are real, but
+not every real POI is a useful itinerary anchor: districts, minor
+memorials, schools, reservoirs, administrative/local objects, and generic
+historic districts are common examples of real, provider-backed places
+that still make weak itinerary anchors.
+
+`backend/app/services/candidate_quality_service.py`
+(`CandidateQualityService`, docs/18_candidate_quality.md) adds a
+deterministic candidate quality scoring layer that may demote weak
+categories before planning/scheduling uses them. It only classifies
+candidates already present in `DestinationContext`; it never calls a
+provider, never invents a place, and never attaches a price, rating,
+opening hour, route time, review count, booking link, or safety score.

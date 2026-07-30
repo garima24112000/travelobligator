@@ -540,6 +540,18 @@ needs_review
 blocked
 ```
 
+As of Step 156G (docs/18_candidate_quality.md section 9), `PlanValidatorService`
+surfaces unscheduled must-visits honestly: it compares `trip_request.must_visit`
+(or `traveler_profile.must_visit`) against the names of experiences actually
+present in `experience_plan.daily_plans`, not just against
+`destination_context.candidate_pois`. This catches both a must-visit that
+was never grounded to a real candidate at all, and a grounded must-visit
+candidate that trust-over-fullness scheduling (Step 156E) excluded for a
+severe candidate-quality reason (missing coordinates, insufficient
+provider confidence). Any unmatched must-visits produce a single
+`category="must_visit"` warning naming them, never a substituted/invented
+attraction, and never a `ready` readiness status by itself.
+
 ---
 
 ## 15. FeedbackService
@@ -843,6 +855,43 @@ which prepares typed `AIReasoningRequest` inputs for a future
 `AIReasoningProvider`/LangGraph node from existing `PlanningState` data.
 It is still pre-LLM and behavior-neutral -- it does not call a provider or
 LLM, and nothing in the app currently calls it.
+
+`backend/app/services/candidate_quality_service.py` contains
+`CandidateQualityService` (Step 156A, docs/18_candidate_quality.md), a
+deterministic pre-ranking layer that sits between provider-backed
+candidate collection (`DestinationContextService`) and future
+scheduling/ranking work. It scores and classifies existing
+`candidate_pois`/`candidate_restaurants`/`candidate_accommodation_pois`
+entries by category/name/address keyword heuristics, provider confidence,
+and coordinate presence only. It does not call an LLM, LangGraph,
+LangSmith, or any provider; it does not create a new place, restaurant, or
+accommodation; and it does not mutate `PlanningState` -- `build_report`
+only reads it. A high `CandidateQualityTier` is a pre-ranking signal only,
+never a claim of final quality, availability, or bookability.
+
+As of Step 156B, `PlanningOrchestrator.run_destination_context_stage`
+calls `CandidateQualityService.build_report` immediately after
+`DestinationContextService.run` and stores the result on
+`planning_state.candidate_quality_report`, exposed read-only via
+`GET /trips/{trip_id}/candidate-quality` (docs/11_api_contracts.md section
+28). This happens between destination-context generation and any future
+scheduling improvement.
+
+As of Step 156C, `ExperiencePlannerService` uses `candidate_quality_report`
+as deterministic pre-ranking metadata before scheduling: it reads the
+report (never mutating it) to exclude `rejected` candidates and prefer
+higher-quality candidates when scheduling attractions and suggesting
+nearby restaurants/accommodation POIs. See docs/18_candidate_quality.md
+section 7 for the full scheduling behavior. If no report is available,
+scheduling falls back to the exact pre-156C behavior.
+
+As of Step 156E, `ExperiencePlannerService` follows trust-over-fullness
+scheduling (itinerary-generator-build-spec.md Stage 8): it does not fill
+days with `low_priority` candidates by default. Only `primary_anchor`/
+`good_candidate`/`secondary_candidate` attractions are eligible for
+scheduling; if there aren't enough of them to fill every day/pace slot,
+the day is left lighter instead, with an honest per-day warning explaining
+why. See docs/18_candidate_quality.md section 8 for the full behavior.
 
 ---
 

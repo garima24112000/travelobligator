@@ -814,8 +814,8 @@ def test_validation_report_warns_about_unmatched_must_visit(
     # is not mentioned since it was found.
     assert "Space Needle" in must_visit_warning["message"]
     assert "Old Town Hall" not in must_visit_warning["message"]
-    assert "not scheduled" in must_visit_warning["message"]
-    assert "not found in provider-backed attraction candidates" in must_visit_warning["message"]
+    assert "not grounded/scheduled" in must_visit_warning["message"]
+    assert "not replaced with unrelated attractions" in must_visit_warning["message"]
 
 
 def test_validation_report_no_must_visit_warning_when_all_matched(
@@ -1201,13 +1201,11 @@ def test_experience_plan_handles_missing_coordinates_without_crashing(
     scheduled_names = [experience["name"] for experience in experiences]
 
     # Start and Near are geographically ordered; the coordinate-less
-    # candidate is kept in its stable/provider-order position at the end
+    # candidate is excluded entirely (Step 156C: missing coordinates is a
+    # severe candidate-quality reject reason, so it is never scheduled)
     # instead of crashing planning or being guessed at geographically.
-    assert scheduled_names == ["Start Point", "Near Point", "No Coordinates Point"]
-
-    by_name = {experience["name"]: experience for experience in experiences}
-    # No coordinates are invented for the candidate that never had any.
-    assert by_name["No Coordinates Point"]["coordinates"] is None
+    assert scheduled_names == ["Start Point", "Near Point"]
+    assert "No Coordinates Point" not in scheduled_names
 
 
 class _GeoOrderingPriorityTestPlacesProvider(PlacesProvider):
@@ -1818,12 +1816,11 @@ def test_experience_plan_day_grouping_handles_missing_coordinates_without_crashi
     scheduled_names = [experience["name"] for experience in experiences]
 
     # A and C are geographically grouped/ordered; the coordinate-less
-    # candidate is kept in its stable/provider-order position at the end
+    # candidate is excluded entirely (Step 156C: missing coordinates is a
+    # severe candidate-quality reject reason, so it is never scheduled)
     # instead of crashing grouping or being guessed at geographically.
-    assert scheduled_names == ["Point A", "Point C", "Point B (no coords)"]
-
-    by_name = {experience["name"]: experience for experience in experiences}
-    assert by_name["Point B (no coords)"]["coordinates"] is None
+    assert scheduled_names == ["Point A", "Point C"]
+    assert "Point B (no coords)" not in scheduled_names
 
 
 class _MustVisitLookupTestPlacesProvider(PlacesProvider):
@@ -2050,7 +2047,8 @@ def test_failed_targeted_lookup_keeps_unmatched_must_visit_warning(
     ]
     assert len(must_visit_warnings) == 1
     assert "Hidden Cave" in must_visit_warnings[0]["message"]
-    assert "not found in provider-backed attraction candidates" in must_visit_warnings[0]["message"]
+    assert "not grounded/scheduled" in must_visit_warnings[0]["message"]
+    assert "not replaced with unrelated attractions" in must_visit_warnings[0]["message"]
 
 
 class _RestaurantSuggestionTestPlacesProvider(PlacesProvider):
@@ -2337,10 +2335,12 @@ def test_restaurant_suggestions_missing_restaurant_coordinates_do_not_crash(
 
 
 class _NoExperienceCoordinatesTestPlacesProvider(PlacesProvider):
-    """Test-only double where the only scheduled attraction has no
-    coordinates but a restaurant candidate does, used to prove a missing
-    day anchor never crashes suggestion and restaurant_suggestions stay
-    empty with an honest warning instead of guessing at a day anchor.
+    """Test-only double where the only candidate attraction has no
+    coordinates (so it is excluded from scheduling by Step 156C's
+    candidate-quality filtering) but a restaurant candidate does, used to
+    prove a missing day anchor never crashes suggestion and
+    restaurant_suggestions stay empty with an honest warning instead of
+    guessing at a day anchor.
     """
 
     provider_name = "openstreetmap_places"
@@ -2418,11 +2418,12 @@ def test_restaurant_suggestions_missing_experience_coordinates_do_not_crash(
     assert response.status_code == 200
     day_plan = response.json()["data"]["experience_plan"]["daily_plans"][0]
 
-    # The attraction is still scheduled with no invented coordinates...
-    assert len(day_plan["experiences"]) == 1
-    assert day_plan["experiences"][0]["name"] == "No Coordinates Attraction"
+    # The only candidate attraction has no coordinates, so it is excluded
+    # entirely (Step 156C: missing coordinates is a severe candidate-quality
+    # reject reason) rather than scheduled with invented coordinates.
+    assert day_plan["experiences"] == []
 
-    # ...but with no coordinate-backed day anchor, no restaurant suggestion
+    # ...and with no coordinate-backed day anchor, no restaurant suggestion
     # can be made, and this is stated honestly rather than guessed at.
     assert day_plan["restaurant_suggestions"] == []
     assert any(
@@ -2728,11 +2729,12 @@ def test_accommodation_suggestions_missing_accommodation_coordinates_do_not_cras
 
 
 class _NoExperienceCoordinatesForAccommodationTestPlacesProvider(PlacesProvider):
-    """Test-only double where the only scheduled attraction has no
-    coordinates but an accommodation POI candidate does, used to prove a
-    missing day anchor never crashes accommodation suggestion and
-    accommodation_suggestions stay empty with an honest warning instead of
-    guessing at a day anchor.
+    """Test-only double where the only candidate attraction has no
+    coordinates (so it is excluded from scheduling by Step 156C's
+    candidate-quality filtering) but an accommodation POI candidate does,
+    used to prove a missing day anchor never crashes accommodation
+    suggestion and accommodation_suggestions stay empty with an honest
+    warning instead of guessing at a day anchor.
     """
 
     provider_name = "openstreetmap_places"
@@ -2813,11 +2815,12 @@ def test_accommodation_suggestions_missing_experience_coordinates_do_not_crash(
     assert response.status_code == 200
     day_plan = response.json()["data"]["experience_plan"]["daily_plans"][0]
 
-    # The attraction is still scheduled with no invented coordinates...
-    assert len(day_plan["experiences"]) == 1
-    assert day_plan["experiences"][0]["name"] == "No Coordinates Attraction"
+    # The only candidate attraction has no coordinates, so it is excluded
+    # entirely (Step 156C: missing coordinates is a severe candidate-quality
+    # reject reason) rather than scheduled with invented coordinates.
+    assert day_plan["experiences"] == []
 
-    # ...but with no coordinate-backed day anchor, no accommodation
+    # ...and with no coordinate-backed day anchor, no accommodation
     # suggestion can be made, and this is stated honestly rather than
     # guessed at.
     assert day_plan["accommodation_suggestions"] == []

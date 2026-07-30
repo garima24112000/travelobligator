@@ -603,6 +603,68 @@ def test_regeneration_attempts_are_persisted_and_reloadable(client: TestClient) 
     assert len(reloaded_state.feedback_history) == 1
 
 
+def test_candidate_quality_report_is_persisted_and_reloadable(client: TestClient) -> None:
+    """End-to-end: the deterministic candidate quality report (Step 156A/
+    156B, docs/18_candidate_quality.md) computed after destination context
+    generation survives a simulated backend process restart, recoverable by
+    a brand-new repository instance pointed at the same local JSON file.
+    """
+    create_response = client.post(
+        "/trips",
+        json={
+            "destination_scope": "single_city",
+            "primary_destination": "Testville, Testland",
+            "origin_city": "Home City",
+            "start_date": "2026-08-10",
+            "end_date": "2026-08-12",
+            "travelers_count": 2,
+            "travel_group_type": "couple",
+        },
+    )
+    assert create_response.status_code == 201
+    trip_id = create_response.json()["data"]["trip_id"]
+
+    generate_response = client.post(f"/trips/{trip_id}/generate")
+    assert generate_response.status_code == 200
+    report_before_reload = generate_response.json()["data"]["planning_state"][
+        "candidate_quality_report"
+    ]
+    assert report_before_reload is not None
+
+    from app.repositories.planning_state_repository import (
+        planning_state_repository as live_planning_state_repository,
+    )
+
+    fresh_planning_repo = PlanningStateRepository(store=live_planning_state_repository._store)
+    reloaded_state = fresh_planning_repo.get_by_trip_id(trip_id)
+
+    assert reloaded_state is not None
+    assert reloaded_state.candidate_quality_report is not None
+    reloaded_report = reloaded_state.candidate_quality_report.model_dump(mode="json")
+    assert reloaded_report == report_before_reload
+
+
+def test_older_persisted_planning_state_without_candidate_quality_report_still_loads(
+    tmp_path: Path,
+) -> None:
+    """A `PlanningState` record persisted before Step 156A/156B existed (no
+    `candidate_quality_report` key at all) must still load, with the new
+    field honestly defaulting to `None` rather than raising or fabricating
+    a report.
+    """
+    store = LocalJsonStore(tmp_path / "state.json")
+    planning_state = PlanningState(trip_request=_trip_request())
+    record = planning_state.model_dump(mode="json")
+    del record["candidate_quality_report"]
+    store.write_collection("planning_states", {planning_state.trip_id: record})
+
+    repo = PlanningStateRepository(store=store)
+    reloaded = repo.get_by_trip_id(planning_state.trip_id)
+
+    assert reloaded is not None
+    assert reloaded.candidate_quality_report is None
+
+
 def test_get_unknown_trip_id_still_returns_404(client: TestClient) -> None:
     response = client.get("/trips/does-not-exist")
     assert response.status_code == 404

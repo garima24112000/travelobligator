@@ -9,7 +9,6 @@ from app.models.planning_state import (
     ValidationReport,
 )
 from app.services.base import PlanningStageService
-from app.services.experience_planner_service import _matches_must_visit
 from app.utils.geo import haversine_distance_km
 
 _GEOGRAPHIC_SPREAD_WARNING_THRESHOLD_KM = 8.0
@@ -34,10 +33,17 @@ class PlanValidatorService(PlanningStageService):
       warning names them explicitly so the report never implies they were
       checked. This never blocks the plan by itself; constraints only add a
       warning, not a critical issue.
-    * If a must-visit request does not match any provider-backed
-      `candidate_pois` by name, a warning names it explicitly instead of
-      silently dropping it or inventing a place to satisfy it. This never
-      blocks the plan by itself; it only adds a warning.
+    * If a must-visit request does not match any *scheduled* experience by
+      name (case-insensitive containment, Step 156G), a warning names it
+      explicitly instead of silently dropping it or inventing/substituting
+      an unrelated place to satisfy it. Matching against scheduled
+      experiences (not just `destination_context.candidate_pois`) catches
+      both a must-visit that was never grounded to a real provider-backed
+      candidate at all, and a grounded must-visit candidate that
+      `CandidateQualityService`/`ExperiencePlannerService` excluded from
+      scheduling for a severe reason (missing coordinates, insufficient
+      provider confidence). This never blocks the plan by itself; it only
+      adds a warning.
     * If the trip request or traveler profile captured a budget (`budget_min`
       and/or `budget_max`), a warning names the captured range and says
       budget/cost validation is not implemented yet, so the plan never
@@ -213,15 +219,26 @@ class PlanValidatorService(PlanningStageService):
             if planning_state.traveler_profile
             else planning_state.trip_request.must_visit
         )
-        candidate_pois = (
-            planning_state.destination_context.candidate_pois
-            if planning_state.destination_context
+        # Step 156G: match against what was actually *scheduled*, not just
+        # what exists somewhere in destination_context.candidate_pois. A
+        # must-visit can be a real, grounded provider-backed candidate and
+        # still end up excluded from scheduling for a severe candidate-
+        # quality reason (missing coordinates, insufficient provider
+        # confidence, Step 156C/156E) -- that case must still surface an
+        # honest warning, not be silently treated as "found."
+        scheduled_names_lower = (
+            [
+                experience.name.lower()
+                for day_plan in planning_state.experience_plan.daily_plans
+                for experience in day_plan.experiences
+            ]
+            if planning_state.experience_plan
             else []
         )
         unmatched_must_visit = [
             term
             for term in must_visit_terms
-            if not any(_matches_must_visit(poi, [term.lower()]) for poi in candidate_pois)
+            if not any(term.lower() in name for name in scheduled_names_lower)
         ]
 
         if unmatched_must_visit:
@@ -231,9 +248,9 @@ class PlanValidatorService(PlanningStageService):
                     severity=ValidationSeverity.WARNING,
                     category="must_visit",
                     message=(
-                        f"The following must-visit request(s) were not scheduled because "
-                        f"they were not found in provider-backed attraction candidates: "
-                        f"{unmatched_list}."
+                        f"The following must-visit place(s) were requested but were not "
+                        f"grounded/scheduled for this destination: {unmatched_list}. "
+                        f"They were not replaced with unrelated attractions."
                     ),
                     affected_section="experience_plan",
                     suggested_fix=(

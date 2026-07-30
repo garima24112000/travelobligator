@@ -8,6 +8,7 @@ from app.repositories.planning_state_repository import (
     planning_state_repository,
 )
 from app.repositories.trip_repository import TripRepository, trip_repository
+from app.services.candidate_quality_service import CandidateQualityService
 from app.services.destination_context_service import DestinationContextService
 from app.services.experience_planner_service import ExperiencePlannerService
 from app.services.feedback_service import FeedbackService
@@ -40,6 +41,7 @@ class PlanningOrchestrator:
         self,
         traveler_profile_service: TravelerProfileService | None = None,
         destination_context_service: DestinationContextService | None = None,
+        candidate_quality_service: CandidateQualityService | None = None,
         trip_strategy_service: TripStrategyService | None = None,
         stay_transport_service: StayTransportService | None = None,
         experience_planner_service: ExperiencePlannerService | None = None,
@@ -55,6 +57,7 @@ class PlanningOrchestrator:
         self.destination_context_service = (
             destination_context_service or DestinationContextService()
         )
+        self.candidate_quality_service = candidate_quality_service or CandidateQualityService()
         self.trip_strategy_service = trip_strategy_service or TripStrategyService()
         self.stay_transport_service = stay_transport_service or StayTransportService()
         self.experience_planner_service = (
@@ -90,6 +93,16 @@ class PlanningOrchestrator:
 
     def run_destination_context_stage(self, planning_state: PlanningState) -> PlanningState:
         planning_state = self.destination_context_service.run(planning_state)
+        # Deterministic pre-ranking metadata only (Step 156A/156B,
+        # docs/18_candidate_quality.md) -- scores destination_context's
+        # existing candidates; never a provider/AI/LLM/LangGraph/LangSmith
+        # call, never mutates
+        # candidate_pois/candidate_restaurants/candidate_accommodation_pois.
+        # ExperiencePlannerService later consumes this report (when present)
+        # for quality-aware, trust-over-fullness scheduling (Step 156C/156E).
+        planning_state.candidate_quality_report = self.candidate_quality_service.build_report(
+            planning_state
+        )
         planning_state.set_pipeline_status(PipelineStatus.DESTINATION_CONTEXT_CREATED)
         return planning_state
 

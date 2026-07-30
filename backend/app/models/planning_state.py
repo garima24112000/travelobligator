@@ -7,6 +7,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from app.models.candidate_quality import CandidateQualityReport
 from app.models.common import (
     AccommodationType,
     ChecklistItemStatus,
@@ -996,6 +997,12 @@ class PlanningState(BaseModel):
     stay_transport: StayTransportDecision | None = None
     experience_plan: ExperiencePlan | None = None
     validation_report: ValidationReport | None = None
+    # Deterministic pre-ranking metadata only (Step 156A/156B,
+    # docs/18_candidate_quality.md) -- computed from destination_context's
+    # existing candidates by CandidateQualityService, never a provider or
+    # AI/LLM call, and never consumed by experience_plan scheduling yet.
+    # Stays None until a destination context has been generated.
+    candidate_quality_report: CandidateQualityReport | None = None
 
     decision_cards: list[DecisionCard] = Field(default_factory=list)
     experience_cards: list[ExperienceCard] = Field(default_factory=list)
