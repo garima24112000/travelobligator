@@ -1016,3 +1016,60 @@ This is still not wired into `PlanningOrchestrator`, scheduling,
 validation, or regeneration. Nothing in the generation pipeline constructs
 or calls `CandidateGroundingService` yet -- callers must supply
 `provider_candidates` themselves; this step does not fetch them.
+
+---
+
+## 33. CandidateGroundingRequestBuilder (Step 159B)
+
+`backend/app/services/candidate_grounding_request_builder.py` defines
+`CandidateGroundingRequestBuilder`, which answers the "callers must supply
+`provider_candidates` themselves" gap left by Step 159A: it converts
+provider/open-data candidates that already exist in
+`PlanningState.destination_context` into `ProviderCandidateForGrounding`
+entries, then assembles a `CandidateGroundingRequest` from them plus
+caller-supplied `AICandidateProposal` objects.
+
+- `build_request(planning_state, proposals) -> CandidateGroundingRequest`
+  reads `planning_state.trip_id`, `planning_state.trip_request.
+  primary_destination`, and `planning_state.destination_context.
+  candidate_pois` / `candidate_restaurants` / `candidate_accommodation_pois`
+  -- nothing else. It performs **no provider/open-data lookup and no LLM
+  call** of its own; every `ProviderCandidateForGrounding` it produces
+  traces back to a candidate dict already stored on `PlanningState`.
+- A source candidate is converted only if it already has a non-blank name
+  and usable coordinates; candidates missing either are skipped, never
+  invented. `category` falls back to the source collection's default
+  (`attraction`/`restaurant`/`accommodation`) only when the candidate has
+  no existing category value.
+- `provider_name` and `provider_place_id` prefer the candidate's own
+  existing provider/source/id fields. When those are absent, the builder
+  falls back to internal references only: `provider_name` becomes the
+  literal label `"destination_context"`, and `provider_place_id` becomes a
+  deterministic string like `"destination_context.candidate_pois[0]"`.
+  Both are references to an existing `PlanningState` record's position,
+  **not a claim that a new provider was searched or a new place ID was
+  issued**.
+- `data_status` and `confidence` prefer the candidate's own existing
+  values. If a candidate dict has no explicit `data_status` (real
+  candidates produced by `DestinationContextService` always do, since
+  `NormalizedPlace.data_status` is required), the builder falls back to
+  `DataStatus.UNAVAILABLE` rather than assuming `live` freshness it cannot
+  confirm. If `confidence` is missing, it falls back to a deterministic
+  `0.5` -- documented as a builder default for existing provider/open-data
+  candidates, never a factual quality claim about the place itself.
+- Candidates are deduplicated deterministically by (normalized
+  `provider_name`, `provider_place_id`, normalized `name`, `coordinates`),
+  preserving first-occurrence order. `provider_candidate_summary` counts
+  only the candidates actually included, by source collection
+  (`attraction`/`restaurant`/`accommodation`).
+- `unavailable_data` on the request carries over the `field` names from
+  `planning_state.unavailable_data`, deduplicated; it stays empty if none
+  exist. `proposals` are included exactly as passed in, unchanged.
+- The builder never calls `CandidateGroundingService.ground`, never
+  creates a `GroundedCandidate` or `RejectedCandidateProposal`, and never
+  mutates `PlanningState` -- it only reads it and returns a new request
+  object.
+
+This is still not wired into `PlanningOrchestrator`, scheduling,
+validation, or regeneration. Nothing in the generation pipeline calls
+`CandidateGroundingRequestBuilder` yet.

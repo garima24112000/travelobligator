@@ -903,6 +903,22 @@ candidate matches it; zero or multiple matches produce a
 and no orchestration wiring -- it is not wired into `PlanningOrchestrator`,
 scheduling, validation, or regeneration.
 
+`backend/app/services/candidate_grounding_request_builder.py` contains
+`CandidateGroundingRequestBuilder` (Step 159B,
+docs/13_llm_reasoning_pipeline.md section 33), which bridges existing
+`PlanningState.destination_context` candidates (`candidate_pois`,
+`candidate_restaurants`, `candidate_accommodation_pois`) into
+`ProviderCandidateForGrounding` entries and assembles a
+`CandidateGroundingRequest` from them plus caller-supplied
+`AICandidateProposal` objects. It performs no provider calls and no LLM
+calls -- every candidate it produces already existed on `PlanningState`;
+when no explicit provider/place-id field is available it falls back to
+internal references (`"destination_context"` / `"destination_context.
+candidate_pois[0]"`) that point back at the existing record, never a new
+provider claim. It never calls `CandidateGroundingService.ground`, never
+mutates `PlanningState`, and is not wired into `PlanningOrchestrator` or
+any orchestration path yet.
+
 `backend/app/services/candidate_quality_service.py` contains
 `CandidateQualityService` (Step 156A, docs/18_candidate_quality.md), a
 deterministic pre-ranking layer that sits between provider-backed
