@@ -1128,3 +1128,53 @@ orchestration wiring.
 This is still not wired into `PlanningOrchestrator`, scheduling,
 validation, or regeneration. Nothing in the generation pipeline calls
 `AICandidateProposalRequestBuilder` yet.
+
+---
+
+## 35. AI Candidate Discovery Dry-Run Service (Step 160B)
+
+`backend/app/services/ai_candidate_discovery_service.py` defines
+`AICandidateDiscoveryService`, which composes the four safe pieces built in
+Steps 157B/159A/159B/160A into one deterministic dry-run call of the
+future candidate-discovery flow (itinerary-generator-build-spec.md Stages
+5-6):
+
+```text
+AICandidateProposalRequestBuilder -> proposal provider
+  -> CandidateGroundingRequestBuilder -> CandidateGroundingService
+```
+
+`dry_run(planning_state, task, max_candidates) ->
+AICandidateDiscoveryDryRunResult` runs exactly those four steps in order
+and returns all four intermediate objects (`proposal_request`,
+`proposal_result`, `grounding_request`, `grounding_result`) bundled
+together, each still validating through its own existing contract model.
+
+- The default `proposal_provider` is `NotConnectedAICandidateProposalProvider`
+  (Step 157B) -- it never calls a network service and always returns an
+  honest `not_connected` result with an empty `proposals` list. Because
+  `CandidateGroundingService.ground` returns `skipped` whenever `proposals`
+  is empty (Step 159A), the **default** `dry_run` call therefore always
+  produces `proposal_result.status=not_connected`,
+  `proposal_result.proposals=[]`, `grounding_request.proposals=[]`, and
+  `grounding_result.status=skipped` with no grounded or rejected
+  candidates -- even when `planning_state.destination_context` has real
+  provider candidates. This module never fabricates a fallback proposal or
+  grounded candidate to compensate for the provider not being connected.
+- `grounding_request.provider_candidates` is still built from
+  `planning_state.destination_context` regardless of whether any proposals
+  exist, since `CandidateGroundingRequestBuilder` (Step 159B) reads that
+  independently of `proposals`.
+- Every dependency (`proposal_request_builder`, `proposal_provider`,
+  `grounding_request_builder`, `grounding_service`) can be injected via the
+  constructor. Tests can supply a deterministic fake
+  `AICandidateProposalProvider` to exercise the full composition path end
+  to end (e.g. a fake proposal that exactly matches a supplied provider
+  candidate produces a `completed` `grounding_result`, and one that
+  doesn't produces a `rejected` `grounding_result`) -- this proves the
+  wiring works without adding any real LLM/provider call to the runtime
+  default.
+- `dry_run` never mutates `planning_state`, never persists anything, and
+  never schedules anything. It is not called by `PlanningOrchestrator`,
+  and it does not affect scheduling, validation, regeneration, or the
+  frontend.

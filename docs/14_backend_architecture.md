@@ -934,6 +934,20 @@ happens here -- it never calls `AICandidateProposalProvider`,
 never mutates `PlanningState`, and is not wired into
 `PlanningOrchestrator` yet.
 
+`backend/app/services/ai_candidate_discovery_service.py` contains
+`AICandidateDiscoveryService` (Step 160B, docs/13_llm_reasoning_pipeline.md
+section 35), a dry-run composition service only: `dry_run` chains
+`AICandidateProposalRequestBuilder` -> a proposal provider ->
+`CandidateGroundingRequestBuilder` -> `CandidateGroundingService` and
+returns all four intermediate objects together as
+`AICandidateDiscoveryDryRunResult`. Its default proposal provider is the
+Step 157B `NotConnectedAICandidateProposalProvider`, so by default it makes
+no real LLM call, no provider call, and produces no proposals and no
+grounded candidates; every dependency is constructor-injectable so tests
+can prove the composition path with a deterministic fake provider without
+adding a real one. It never mutates `PlanningState`, never persists
+anything, and is not wired into `PlanningOrchestrator` yet.
+
 `backend/app/services/candidate_quality_service.py` contains
 `CandidateQualityService` (Step 156A, docs/18_candidate_quality.md), a
 deterministic pre-ranking layer that sits between provider-backed
