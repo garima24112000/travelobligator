@@ -1073,3 +1073,58 @@ caller-supplied `AICandidateProposal` objects.
 This is still not wired into `PlanningOrchestrator`, scheduling,
 validation, or regeneration. Nothing in the generation pipeline calls
 `CandidateGroundingRequestBuilder` yet.
+
+---
+
+## 34. AICandidateProposalRequestBuilder (Step 160A)
+
+`backend/app/services/ai_candidate_proposal_request_builder.py` defines
+`AICandidateProposalRequestBuilder`, which prepares the future LLM
+candidate proposal input package (Step 157A's `AICandidateProposalRequest`,
+itinerary-generator-build-spec.md Stage 5) from existing `PlanningState`
+data. This is still pre-LLM: it performs no LLM call, no provider call, no
+proposal generation, no grounding, no scheduling, no validation, and no
+orchestration wiring.
+
+- `build_request(planning_state, task, max_candidates) ->
+  AICandidateProposalRequest` reads only safe, already-existing
+  `PlanningState` fields: trip metadata (`trip_id`, `trip_request.
+  primary_destination`, an inclusive `trip_duration_days` calculated the
+  same way `TripStrategyService`/`ExperiencePlannerService` already do --
+  `(end_date - start_date).days + 1`, floored at 1), explicit user
+  preference fields, provider candidate counts, and unavailable-data field
+  names.
+- `interests`/`must_visit`/`constraints` are read only from fields the
+  user (or a prior deterministic stage) already populated on
+  `trip_request` and, if it exists, `traveler_profile` -- concatenated
+  (`trip_request` first, then `traveler_profile`) and deduplicated while
+  preserving first-occurrence order. Nothing is inferred, and no default
+  interest/must-visit/constraint (e.g. "museums", "food") is ever added
+  when the field is genuinely empty.
+- `provider_candidate_summary` is built entirely from
+  `destination_context` candidate **counts** -- `len(candidate_pois)`,
+  `len(candidate_restaurants)`, `len(candidate_accommodation_pois)` --
+  never candidate names or raw place data, matching
+  `AICandidateProposalRequest`'s own contract (section 28): the LLM is
+  told what's already covered, not fed raw provider data to restate. If
+  `destination_context` doesn't exist yet, every count is honestly `0`
+  rather than omitted.
+- `unavailable_data` carries over `field` names from `planning_state.
+  unavailable_data`, then every `provider_status` entry's
+  `unavailable_fields`, deduplicated while preserving first-occurrence
+  order -- the same field-name-only shape `CandidateGroundingRequestBuilder`
+  already uses (section 33), extended to also read `provider_status` since
+  that data is just as easy to read here.
+- `max_candidates` is passed straight through to `AICandidateProposalRequest`,
+  which enforces its own `1..25` bound -- the builder does not duplicate
+  that validation.
+- The builder never calls `CandidateGroundingRequestBuilder`'s
+  candidate-conversion logic (it builds its own local counts instead),
+  never calls `CandidateGroundingService`, never calls
+  `AICandidateProposalProvider`/`NotConnectedAICandidateProposalProvider`,
+  never creates an `AICandidateProposal`, `GroundedCandidate`, or
+  `RejectedCandidateProposal`, and never mutates `PlanningState`.
+
+This is still not wired into `PlanningOrchestrator`, scheduling,
+validation, or regeneration. Nothing in the generation pipeline calls
+`AICandidateProposalRequestBuilder` yet.

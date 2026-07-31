@@ -919,6 +919,21 @@ provider claim. It never calls `CandidateGroundingService.ground`, never
 mutates `PlanningState`, and is not wired into `PlanningOrchestrator` or
 any orchestration path yet.
 
+`backend/app/services/ai_candidate_proposal_request_builder.py` contains
+`AICandidateProposalRequestBuilder` (Step 160A,
+docs/13_llm_reasoning_pipeline.md section 34), which prepares the input
+for the future AI candidate proposal provider (Step 157B's
+`AICandidateProposalProvider`): it builds an `AICandidateProposalRequest`
+from existing `PlanningState` trip metadata, explicit
+`trip_request`/`traveler_profile` preference fields, `destination_context`
+candidate counts only (never candidate names), and unavailable-data field
+names from `unavailable_data`/`provider_status`. No LLM call, no provider
+call, no proposal generation, no grounding, and no orchestration wiring
+happens here -- it never calls `AICandidateProposalProvider`,
+`NotConnectedAICandidateProposalProvider`, or `CandidateGroundingService`,
+never mutates `PlanningState`, and is not wired into
+`PlanningOrchestrator` yet.
+
 `backend/app/services/candidate_quality_service.py` contains
 `CandidateQualityService` (Step 156A, docs/18_candidate_quality.md), a
 deterministic pre-ranking layer that sits between provider-backed
