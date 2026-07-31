@@ -125,6 +125,11 @@ def test_generate_trip_plan(client: TestClient, created_trip_id: str) -> None:
     # conservative scheduling step schedules them and the plan is no longer blocked;
     # it is still not "ready" because route/timing feasibility is not implemented.
     assert planning_state["validation_report"]["readiness_status"] == "needs_review"
+    # Step 160C storage fields: not runtime-populated yet -- nothing in
+    # PlanningOrchestrator or any stage service constructs an
+    # AICandidateProposalBatch or CandidateGroundingBatch during generation.
+    assert planning_state["ai_candidate_proposal_batch"] is None
+    assert planning_state["candidate_grounding_batch"] is None
 
 
 def test_destination_context_after_generate(

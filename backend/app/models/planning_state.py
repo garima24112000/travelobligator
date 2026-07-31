@@ -7,6 +7,8 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from app.models.ai_candidate_proposal import AICandidateProposalBatch
+from app.models.candidate_grounding import CandidateGroundingBatch
 from app.models.candidate_quality import CandidateQualityReport
 from app.models.common import (
     AccommodationType,
@@ -1003,6 +1005,16 @@ class PlanningState(BaseModel):
     # AI/LLM call, and never consumed by experience_plan scheduling yet.
     # Stays None until a destination context has been generated.
     candidate_quality_report: CandidateQualityReport | None = None
+    # Validated artifact storage only (Step 160C, docs/13_llm_reasoning_
+    # pipeline.md section 36, docs/14_backend_architecture.md section 25)
+    # for the future AI candidate proposal / grounding flow (Steps
+    # 157A-160B). Each field only ever holds a request paired with its
+    # already-validated result -- never a raw prompt, raw/unvalidated LLM
+    # text, or unvalidated provider response. Stays None: nothing in
+    # runtime (PlanningOrchestrator, any stage service, or
+    # AICandidateDiscoveryService) populates these yet.
+    ai_candidate_proposal_batch: AICandidateProposalBatch | None = None
+    candidate_grounding_batch: CandidateGroundingBatch | None = None
 
     decision_cards: list[DecisionCard] = Field(default_factory=list)
     experience_cards: list[ExperienceCard] = Field(default_factory=list)

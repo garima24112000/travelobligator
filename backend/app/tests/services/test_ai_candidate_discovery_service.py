@@ -509,3 +509,60 @@ def test_dry_run_result_dump_has_no_forbidden_factual_keys() -> None:
     _collect_keys(dumped, all_keys)
     overlap = all_keys & _FORBIDDEN_MODEL_FIELD_NAMES
     assert overlap == set(), f"Dry-run result dump has forbidden key(s): {overlap}"
+
+
+# ---------------------------------------------------------------------------
+# Step 160C: AICandidateDiscoveryService is still not called by
+# PlanningOrchestrator or any API route, and no scheduling/validation/
+# regeneration module imports it.
+# ---------------------------------------------------------------------------
+
+
+def _imported_module_names(module: object) -> list[str]:
+    source = inspect.getsource(module)  # type: ignore[arg-type]
+    tree = ast.parse(source)
+
+    imported_names: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported_names.extend(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            imported_names.append(node.module)
+            imported_names.extend(alias.name for alias in node.names)
+    return imported_names
+
+
+def test_planning_orchestrator_does_not_import_discovery_service() -> None:
+    import app.services.planning_orchestrator as orchestrator_module
+
+    imported_names = _imported_module_names(orchestrator_module)
+
+    assert not any("ai_candidate_discovery_service" in name for name in imported_names)
+    assert not any(name == "AICandidateDiscoveryService" for name in imported_names)
+
+
+def test_api_routes_do_not_import_discovery_service() -> None:
+    import app.api.routes.trips as trips_routes_module
+
+    imported_names = _imported_module_names(trips_routes_module)
+    assert not any("ai_candidate_discovery_service" in name for name in imported_names)
+    assert not any(name == "AICandidateDiscoveryService" for name in imported_names)
+
+
+def test_scheduling_validation_and_regeneration_modules_do_not_import_discovery_service() -> None:
+    import app.services.experience_planner_service as experience_planner_module
+    import app.services.feedback_service as feedback_service_module
+    import app.services.plan_validator_service as plan_validator_module
+    import app.services.regeneration_readiness_service as regeneration_readiness_module
+    import app.services.versioning_service as versioning_module
+
+    for module in (
+        experience_planner_module,
+        plan_validator_module,
+        versioning_module,
+        regeneration_readiness_module,
+        feedback_service_module,
+    ):
+        imported_names = _imported_module_names(module)
+        assert not any("ai_candidate_discovery_service" in name for name in imported_names)
+        assert not any(name == "AICandidateDiscoveryService" for name in imported_names)

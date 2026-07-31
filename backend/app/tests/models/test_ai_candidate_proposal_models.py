@@ -15,6 +15,7 @@ from app.models.ai_candidate_proposal import (
     AICandidateType,
     AICandidateVerificationRequirement,
 )
+from app.models.planning_state import PlanningState, TravelGroupType, TripRequest
 
 _FORBIDDEN_MODEL_FIELD_NAMES = {
     "rating",
@@ -86,6 +87,18 @@ def _valid_request(**overrides: object) -> AICandidateProposalRequest:
     }
     fields.update(overrides)
     return AICandidateProposalRequest(**fields)
+
+
+def _trip_request(**overrides: object) -> TripRequest:
+    fields: dict[str, object] = {
+        "primary_destination": "Lisbon, Portugal",
+        "start_date": "2026-08-10",
+        "end_date": "2026-08-12",
+        "travelers_count": 2,
+        "travel_group_type": TravelGroupType.COUPLE,
+    }
+    fields.update(overrides)
+    return TripRequest(**fields)
 
 
 # ---------------------------------------------------------------------------
@@ -421,3 +434,33 @@ def test_module_has_no_disallowed_imports() -> None:
         lowered = name.lower()
         for disallowed in disallowed_substrings:
             assert disallowed not in lowered, f"Disallowed import found: {name}"
+
+
+# ---------------------------------------------------------------------------
+# 16. PlanningState.ai_candidate_proposal_batch storage field (Step 160C).
+# ---------------------------------------------------------------------------
+
+
+def test_planning_state_defaults_ai_candidate_proposal_batch_to_none() -> None:
+    planning_state = PlanningState(trip_request=_trip_request())
+    assert planning_state.ai_candidate_proposal_batch is None
+
+
+def test_planning_state_accepts_valid_ai_candidate_proposal_batch() -> None:
+    batch = AICandidateProposalBatch(
+        request=_valid_request(),
+        result=AICandidateProposalResult(
+            task=AICandidateProposalTask.DESTINATION_CANDIDATE_DISCOVERY,
+            status=AICandidateProposalStatus.NOT_CONNECTED,
+            proposals=[],
+            guardrail_report=_guardrail(False, ["No AI candidate proposal provider is connected yet."]),
+            confidence=0.0,
+        ),
+    )
+    planning_state = PlanningState(
+        trip_request=_trip_request(), ai_candidate_proposal_batch=batch
+    )
+    assert planning_state.ai_candidate_proposal_batch is not None
+    assert planning_state.ai_candidate_proposal_batch.result.status == (
+        AICandidateProposalStatus.NOT_CONNECTED
+    )

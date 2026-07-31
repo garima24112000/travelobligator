@@ -948,6 +948,20 @@ can prove the composition path with a deterministic fake provider without
 adding a real one. It never mutates `PlanningState`, never persists
 anything, and is not wired into `PlanningOrchestrator` yet.
 
+`backend/app/models/planning_state.py` now also carries two optional
+storage fields for the candidate-discovery flow above (Step 160C,
+docs/13_llm_reasoning_pipeline.md section 36):
+`ai_candidate_proposal_batch: AICandidateProposalBatch | None = None` and
+`candidate_grounding_batch: CandidateGroundingBatch | None = None`. Both
+reuse existing, already-validated batch models -- no new validation rule,
+no raw prompt text, and no unvalidated provider response can be stored
+there. Both default to `None` and are not runtime-populated by anything
+yet: `PlanningOrchestrator` is unchanged by this step, so
+`generate_full_plan` still leaves both fields `None` on every generated
+`PlanningState`. This only prepares the storage shape for a future
+shadow-mode integration; it does not wire `AICandidateDiscoveryService`
+into generation.
+
 `backend/app/services/candidate_quality_service.py` contains
 `CandidateQualityService` (Step 156A, docs/18_candidate_quality.md), a
 deterministic pre-ranking layer that sits between provider-backed

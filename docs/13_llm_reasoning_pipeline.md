@@ -1178,3 +1178,43 @@ together, each still validating through its own existing contract model.
   never schedules anything. It is not called by `PlanningOrchestrator`,
   and it does not affect scheduling, validation, regeneration, or the
   frontend.
+
+---
+
+## 36. PlanningState Storage Fields for AI Candidate Discovery (Step 160C)
+
+`backend/app/models/planning_state.py` now defines two optional storage
+fields on `PlanningState` that give a future runtime/shadow-mode
+integration a validated place to persist what Steps 157A-160B's
+candidate-discovery flow produced:
+
+```python
+ai_candidate_proposal_batch: AICandidateProposalBatch | None = None
+candidate_grounding_batch: CandidateGroundingBatch | None = None
+```
+
+This is storage-contract only:
+
+- Both fields reuse the existing, already-validated batch models
+  (`AICandidateProposalBatch` from Step 157A, `CandidateGroundingBatch`
+  from Step 158A) -- no new model, no new validation rule, and no field
+  that could hold raw prompt text, raw/unvalidated LLM output, or an
+  unvalidated provider response. Each batch still enforces its own
+  existing invariants (e.g. a `completed`/`partial`
+  `CandidateGroundingResult` must account for every proposal in its
+  paired request) exactly as it did before this step.
+- Both fields default to `None` and every existing `PlanningState`
+  construction, API response, and persistence round-trip continues to
+  work unchanged -- a `PlanningState` built before this step (or missing
+  these keys entirely in an older persisted JSON record) still loads
+  correctly, with both fields honestly defaulting to `None` rather than
+  fabricating a batch.
+- **Nothing populates these fields yet.** `PlanningOrchestrator`, every
+  stage service, and `AICandidateDiscoveryService` (Step 160B) are
+  unchanged by this step -- `generate_full_plan` still leaves both fields
+  `None` on every generated `PlanningState`, exactly as before. This
+  prepares the storage shape for a future shadow-mode integration (running
+  `AICandidateDiscoveryService.dry_run` alongside generation and recording
+  its result here for inspection, without it affecting the plan) -- it
+  does not itself wire that integration in, and it does not affect
+  scheduling, validation, or regeneration.

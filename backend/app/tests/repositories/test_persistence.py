@@ -4,6 +4,21 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
+from app.models.ai_candidate_proposal import (
+    AICandidateProposalBatch,
+    AICandidateProposalGuardrailReport,
+    AICandidateProposalRequest,
+    AICandidateProposalResult,
+    AICandidateProposalStatus,
+    AICandidateProposalTask,
+)
+from app.models.candidate_grounding import (
+    CandidateGroundingBatch,
+    CandidateGroundingGuardrailReport,
+    CandidateGroundingRequest,
+    CandidateGroundingResult,
+    CandidateGroundingStatus,
+)
 from app.models.planning_state import PlanningStage, PlanningState, TripRequest
 from app.repositories.planning_state_repository import PlanningStateRepository
 from app.repositories.trip_repository import TripRepository
@@ -663,6 +678,109 @@ def test_older_persisted_planning_state_without_candidate_quality_report_still_l
 
     assert reloaded is not None
     assert reloaded.candidate_quality_report is None
+
+
+def test_ai_candidate_discovery_batches_persist_and_reload_when_populated(
+    tmp_path: Path,
+) -> None:
+    """Step 160C: `ai_candidate_proposal_batch`/`candidate_grounding_batch`
+    are storage-only fields -- nothing in runtime populates them yet, but
+    when a caller sets them directly (e.g. a future shadow-mode caller),
+    both round-trip through the JSON store like every other PlanningState
+    field, recoverable by a brand-new repository instance.
+    """
+    store = LocalJsonStore(tmp_path / "state.json")
+    repo = PlanningStateRepository(store=store)
+    planning_state = PlanningState(trip_request=_trip_request())
+
+    proposal_request = AICandidateProposalRequest(
+        task=AICandidateProposalTask.DESTINATION_CANDIDATE_DISCOVERY,
+        trip_id=planning_state.trip_id,
+        destination_name="Testville, Testland",
+        trip_duration_days=3,
+    )
+    proposal_result = AICandidateProposalResult(
+        task=AICandidateProposalTask.DESTINATION_CANDIDATE_DISCOVERY,
+        status=AICandidateProposalStatus.NOT_CONNECTED,
+        proposals=[],
+        guardrail_report=AICandidateProposalGuardrailReport(
+            passed=False, blocked_reasons=["No AI candidate proposal provider is connected yet."]
+        ),
+        confidence=0.0,
+    )
+    planning_state.ai_candidate_proposal_batch = AICandidateProposalBatch(
+        request=proposal_request, result=proposal_result
+    )
+
+    grounding_request = CandidateGroundingRequest(
+        trip_id=planning_state.trip_id, destination_name="Testville, Testland"
+    )
+    grounding_result = CandidateGroundingResult(
+        status=CandidateGroundingStatus.SKIPPED,
+        guardrail_report=CandidateGroundingGuardrailReport(
+            passed=False,
+            blocked_reasons=["No AI candidate proposals were provided for grounding."],
+        ),
+        confidence=0.0,
+    )
+    planning_state.candidate_grounding_batch = CandidateGroundingBatch(
+        request=grounding_request, result=grounding_result
+    )
+
+    repo.save(planning_state)
+
+    fresh_repo = PlanningStateRepository(store=store)
+    reloaded = fresh_repo.get_by_trip_id(planning_state.trip_id)
+
+    assert reloaded is not None
+    assert reloaded.ai_candidate_proposal_batch is not None
+    assert reloaded.ai_candidate_proposal_batch.result is not None
+    assert reloaded.ai_candidate_proposal_batch.result.status == (
+        AICandidateProposalStatus.NOT_CONNECTED
+    )
+    assert reloaded.candidate_grounding_batch is not None
+    assert reloaded.candidate_grounding_batch.result is not None
+    assert reloaded.candidate_grounding_batch.result.status == CandidateGroundingStatus.SKIPPED
+
+
+def test_ai_candidate_discovery_batches_default_to_none_when_absent(tmp_path: Path) -> None:
+    """Step 160C: the common case -- nothing sets these fields, so they
+    round-trip as `None` rather than being fabricated on reload.
+    """
+    store = LocalJsonStore(tmp_path / "state.json")
+    repo = PlanningStateRepository(store=store)
+    planning_state = PlanningState(trip_request=_trip_request())
+    repo.save(planning_state)
+
+    fresh_repo = PlanningStateRepository(store=store)
+    reloaded = fresh_repo.get_by_trip_id(planning_state.trip_id)
+
+    assert reloaded is not None
+    assert reloaded.ai_candidate_proposal_batch is None
+    assert reloaded.candidate_grounding_batch is None
+
+
+def test_older_persisted_planning_state_without_ai_candidate_discovery_batches_still_loads(
+    tmp_path: Path,
+) -> None:
+    """A `PlanningState` record persisted before Step 160C existed (no
+    `ai_candidate_proposal_batch`/`candidate_grounding_batch` keys at all)
+    must still load, with both new fields honestly defaulting to `None`
+    rather than raising or fabricating a batch.
+    """
+    store = LocalJsonStore(tmp_path / "state.json")
+    planning_state = PlanningState(trip_request=_trip_request())
+    record = planning_state.model_dump(mode="json")
+    del record["ai_candidate_proposal_batch"]
+    del record["candidate_grounding_batch"]
+    store.write_collection("planning_states", {planning_state.trip_id: record})
+
+    repo = PlanningStateRepository(store=store)
+    reloaded = repo.get_by_trip_id(planning_state.trip_id)
+
+    assert reloaded is not None
+    assert reloaded.ai_candidate_proposal_batch is None
+    assert reloaded.candidate_grounding_batch is None
 
 
 def test_get_unknown_trip_id_still_returns_404(client: TestClient) -> None:

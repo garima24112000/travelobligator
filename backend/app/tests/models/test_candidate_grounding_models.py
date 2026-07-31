@@ -5,6 +5,12 @@ from pydantic import ValidationError
 
 from app.models.ai_candidate_proposal import (
     AICandidateProposal,
+    AICandidateProposalBatch,
+    AICandidateProposalGuardrailReport,
+    AICandidateProposalRequest,
+    AICandidateProposalResult,
+    AICandidateProposalStatus,
+    AICandidateProposalTask,
     AICandidateType,
     AICandidateVerificationRequirement,
 )
@@ -23,6 +29,7 @@ from app.models.candidate_grounding import (
     RejectedCandidateProposal,
 )
 from app.models.common import DataStatus, GeoPoint
+from app.models.planning_state import PlanningState, TravelGroupType, TripRequest
 
 _FORBIDDEN_MODEL_FIELD_NAMES = {
     "price",
@@ -133,6 +140,18 @@ def _request(**overrides: object) -> CandidateGroundingRequest:
     }
     fields.update(overrides)
     return CandidateGroundingRequest(**fields)
+
+
+def _trip_request(**overrides: object) -> TripRequest:
+    fields: dict[str, object] = {
+        "primary_destination": "Lisbon, Portugal",
+        "start_date": "2026-08-10",
+        "end_date": "2026-08-12",
+        "travelers_count": 2,
+        "travel_group_type": TravelGroupType.COUPLE,
+    }
+    fields.update(overrides)
+    return TripRequest(**fields)
 
 
 def _provider_candidate(**overrides: object) -> ProviderCandidateForGrounding:
@@ -762,3 +781,124 @@ def test_module_has_no_disallowed_imports() -> None:
         lowered = name.lower()
         for disallowed in disallowed_substrings:
             assert disallowed not in lowered, f"Disallowed import found: {name}"
+
+
+# ---------------------------------------------------------------------------
+# Step 160C: PlanningState.candidate_grounding_batch /
+# .ai_candidate_proposal_batch storage fields.
+# ---------------------------------------------------------------------------
+
+
+def _not_connected_proposal_batch() -> AICandidateProposalBatch:
+    proposal_request = AICandidateProposalRequest(
+        task=AICandidateProposalTask.DESTINATION_CANDIDATE_DISCOVERY,
+        trip_id="trip_001",
+        destination_name="Lisbon",
+        trip_duration_days=4,
+    )
+    proposal_result = AICandidateProposalResult(
+        task=AICandidateProposalTask.DESTINATION_CANDIDATE_DISCOVERY,
+        status=AICandidateProposalStatus.NOT_CONNECTED,
+        proposals=[],
+        guardrail_report=AICandidateProposalGuardrailReport(
+            passed=False, blocked_reasons=["No AI candidate proposal provider is connected yet."]
+        ),
+        confidence=0.0,
+    )
+    return AICandidateProposalBatch(request=proposal_request, result=proposal_result)
+
+
+def _completed_grounding_batch() -> CandidateGroundingBatch:
+    proposal = _proposal(proposal_id="proposal_001", candidate_name="Old Town Waterfront")
+    request = _request(
+        proposals=[proposal],
+        provider_candidates=[_provider_candidate(name="Old Town Waterfront")],
+    )
+    result = CandidateGroundingResult(
+        status=CandidateGroundingStatus.COMPLETED,
+        grounded_candidates=[
+            _grounded_candidate(proposal_id="proposal_001", candidate_name="Old Town Waterfront")
+        ],
+        guardrail_report=_guardrail(True),
+        confidence=0.8,
+    )
+    return CandidateGroundingBatch(request=request, result=result)
+
+
+def test_planning_state_defaults_candidate_grounding_batch_to_none() -> None:
+    planning_state = PlanningState(trip_request=_trip_request())
+    assert planning_state.candidate_grounding_batch is None
+
+
+def test_planning_state_defaults_ai_candidate_proposal_batch_to_none() -> None:
+    planning_state = PlanningState(trip_request=_trip_request())
+    assert planning_state.ai_candidate_proposal_batch is None
+
+
+def test_planning_state_accepts_valid_candidate_grounding_batch() -> None:
+    batch = _completed_grounding_batch()
+    planning_state = PlanningState(trip_request=_trip_request(), candidate_grounding_batch=batch)
+    assert planning_state.candidate_grounding_batch is not None
+    assert planning_state.candidate_grounding_batch.result.status == CandidateGroundingStatus.COMPLETED
+
+
+def test_planning_state_accepts_valid_ai_candidate_proposal_batch() -> None:
+    batch = _not_connected_proposal_batch()
+    planning_state = PlanningState(trip_request=_trip_request(), ai_candidate_proposal_batch=batch)
+    assert planning_state.ai_candidate_proposal_batch is not None
+    assert planning_state.ai_candidate_proposal_batch.result.status == (
+        AICandidateProposalStatus.NOT_CONNECTED
+    )
+
+
+def test_existing_minimal_planning_state_construction_still_works() -> None:
+    planning_state = PlanningState(trip_request=_trip_request())
+    assert planning_state.ai_candidate_proposal_batch is None
+    assert planning_state.candidate_grounding_batch is None
+    # No fake proposal, grounded candidate, or rejected proposal is
+    # introduced merely by constructing a minimal PlanningState.
+    assert planning_state.destination_context is None
+    assert planning_state.experience_plan is None
+
+
+def test_planning_state_serializes_and_deserializes_both_batches() -> None:
+    planning_state = PlanningState(
+        trip_request=_trip_request(),
+        ai_candidate_proposal_batch=_not_connected_proposal_batch(),
+        candidate_grounding_batch=_completed_grounding_batch(),
+    )
+
+    dumped = planning_state.model_dump(mode="json")
+    reloaded = PlanningState.model_validate(dumped)
+
+    assert reloaded.ai_candidate_proposal_batch is not None
+    assert reloaded.ai_candidate_proposal_batch.result.status == (
+        AICandidateProposalStatus.NOT_CONNECTED
+    )
+    assert reloaded.candidate_grounding_batch is not None
+    assert reloaded.candidate_grounding_batch.result.status == CandidateGroundingStatus.COMPLETED
+    assert len(reloaded.candidate_grounding_batch.result.grounded_candidates) == 1
+
+
+def test_planning_state_new_batch_fields_introduce_no_forbidden_factual_keys() -> None:
+    planning_state = PlanningState(
+        trip_request=_trip_request(),
+        ai_candidate_proposal_batch=_not_connected_proposal_batch(),
+        candidate_grounding_batch=_completed_grounding_batch(),
+    )
+    dumped = planning_state.model_dump(mode="json")
+
+    def _collect_keys(value: object, keys: set[str]) -> None:
+        if isinstance(value, dict):
+            keys.update(value.keys())
+            for nested in value.values():
+                _collect_keys(nested, keys)
+        elif isinstance(value, list):
+            for item in value:
+                _collect_keys(item, keys)
+
+    all_keys: set[str] = set()
+    _collect_keys(dumped["ai_candidate_proposal_batch"], all_keys)
+    _collect_keys(dumped["candidate_grounding_batch"], all_keys)
+    overlap = all_keys & _FORBIDDEN_MODEL_FIELD_NAMES
+    assert overlap == set(), f"PlanningState batch fields have forbidden key(s): {overlap}"
