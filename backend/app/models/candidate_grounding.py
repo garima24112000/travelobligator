@@ -16,10 +16,13 @@ from app.models.common import DataStatus, GeoPoint
 # Verification (the trust firewall)", docs/13_llm_reasoning_pipeline.md
 # section 30, docs/14_backend_architecture.md section 25). No LLM, provider
 # call, LangGraph, or LangSmith dependency is wired up yet -- these models
-# exist purely to define what a future grounding step would be allowed to
-# return, and to reject it if it isn't. Nothing in this module calls a
-# network service or mutates `PlanningState`, and nothing elsewhere in the
-# app constructs or consumes these models yet.
+# exist purely to define what a grounding step is allowed to return, and to
+# reject it if it isn't. Nothing in this module calls a network service or
+# mutates `PlanningState`. `app.services.candidate_grounding_service`
+# constructs and consumes these models (Step 159A) to ground AI candidate
+# proposals against explicitly supplied provider candidates only; nothing
+# else in the app does yet, and none of it is wired into
+# `PlanningOrchestrator`, scheduling, validation, or regeneration.
 #
 # Core rule (build spec Stage 0/Stage 6): an `AICandidateProposal` (Step
 # 157A) is only an idea. It becomes a `GroundedCandidate` -- schedulable in
@@ -110,6 +113,35 @@ class CandidateGroundingRejectReason(str, Enum):
     UNSAFE_AI_CLAIM = "unsafe_ai_claim"
     DUPLICATE_CANDIDATE = "duplicate_candidate"
     UNSUPPORTED_CANDIDATE_TYPE = "unsupported_candidate_type"
+
+
+class ProviderCandidateForGrounding(BaseModel):
+    """One provider/open-data candidate supplied inside a
+    `CandidateGroundingRequest` for a future grounding step to match AI
+    proposals against (Step 159A). This is the only kind of place data a
+    proposal is allowed to be grounded against -- never something the
+    grounding step looks up itself.
+    """
+
+    provider_name: str
+    provider_place_id: str
+    name: str
+    category: str | None = None
+    coordinates: GeoPoint
+    data_status: DataStatus
+    confidence: float = Field(ge=0.0, le=1.0)
+
+    @field_validator("provider_name", "provider_place_id", "name")
+    @classmethod
+    def validate_not_blank(cls, value: str, info: ValidationInfo) -> str:
+        return _require_non_blank(value, info.field_name)
+
+    @field_validator("provider_name", "provider_place_id", "name", "category")
+    @classmethod
+    def validate_no_forbidden_claims(cls, value: str | None, info: ValidationInfo) -> str | None:
+        if value is None:
+            return value
+        return _check_forbidden(value, info.field_name)
 
 
 class CandidateGroundingEvidence(BaseModel):
@@ -225,14 +257,20 @@ class CandidateGroundingRequest(BaseModel):
     """Everything a future grounding step would receive as input (build
     spec Stage 6). `proposals` are the Step 157A `AICandidateProposal`
     ideas to verify; empty is valid for `not_connected`/`skipped` cases
-    where grounding never ran. `provider_candidate_summary` is a coverage
-    summary only (e.g. counts by category), matching the same field on
-    `AICandidateProposalRequest`.
+    where grounding never ran. `provider_candidates` (Step 159A) are the
+    only provider/open-data candidates a proposal is allowed to be grounded
+    against -- a grounding step must match against these explicitly
+    supplied candidates only, never a provider lookup of its own; empty is
+    valid for `not_connected` cases where no provider candidates were
+    supplied. `provider_candidate_summary` is a coverage summary only (e.g.
+    counts by category), matching the same field on
+    `AICandidateProposalRequest`, and stays unrelated to `provider_candidates`.
     """
 
     trip_id: str
     destination_name: str
     proposals: list[AICandidateProposal] = Field(default_factory=list)
+    provider_candidates: list[ProviderCandidateForGrounding] = Field(default_factory=list)
     provider_candidate_summary: dict[str, int] = Field(default_factory=dict)
     unavailable_data: list[str] = Field(default_factory=list)
 

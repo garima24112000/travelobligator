@@ -969,3 +969,50 @@ implement real grounding:
 This service exists only so a future pipeline has a safe, honest boundary
 to call before real grounding logic (fuzzy-match against provider data,
 confidence tiering, ambiguity handling) is implemented.
+
+---
+
+## 32. Deterministic Supplied-Candidate Grounding (Step 159A)
+
+`CandidateGroundingService.ground` now grounds `AICandidateProposal` ideas,
+but only against `ProviderCandidateForGrounding` entries explicitly
+supplied on `CandidateGroundingRequest.provider_candidates` -- the caller
+must pass in the provider/open-data candidates to check against. This step
+still does not perform any provider/open-data lookup or LLM call of its
+own; it has no knowledge of any candidate that wasn't handed to it in the
+request.
+
+- `ProviderCandidateForGrounding` (Step 159A,
+  `backend/app/models/candidate_grounding.py`) is the shape of one
+  supplied provider/open-data candidate: `provider_name`,
+  `provider_place_id`, `name`, an optional `category`, a required
+  `coordinates` (`GeoPoint`), `data_status`, and `confidence`. Like every
+  other model in this module, its text fields reject forbidden
+  factual-claim patterns.
+- Matching is deterministic and conservative: exact case-insensitive name
+  match, or normalized name match (lowercase, punctuation stripped,
+  whitespace collapsed, one leading article removed). No fuzzy matching
+  and no substring matching are implemented at this step.
+- A proposal grounds into a `GroundedCandidate` only if **exactly one**
+  supplied provider candidate matches its name after normalization. Zero
+  matches or more than one match both fail to ground the proposal.
+- Unmatched and ambiguous proposals become a `RejectedCandidateProposal`
+  instead of being silently dropped: `NO_PROVIDER_MATCH` for zero matches,
+  `AMBIGUOUS_MATCH` for more than one match.
+- `GroundedCandidate.evidence` is built entirely from the matched
+  `ProviderCandidateForGrounding` fields (`provider_name`,
+  `provider_place_id`, `coordinates`, `data_status`, category, confidence)
+  -- never from the AI proposal's own wording. `GroundedCandidate.confidence`
+  is `min(proposal.confidence, provider_candidate.confidence)`, and
+  `confidence_tier` is `high` only for an exact match with provider
+  confidence >= 0.75, `medium` for a normalized match or provider
+  confidence >= 0.5, and `low` otherwise.
+- `CandidateGroundingRequest.proposals` empty still returns `skipped`;
+  proposals present but `provider_candidates` empty still returns
+  `not_connected`. With both present, the result is `completed` (every
+  proposal grounded), `partial` (a mix), or `rejected` (none grounded).
+
+This is still not wired into `PlanningOrchestrator`, scheduling,
+validation, or regeneration. Nothing in the generation pipeline constructs
+or calls `CandidateGroundingService` yet -- callers must supply
+`provider_candidates` themselves; this step does not fetch them.

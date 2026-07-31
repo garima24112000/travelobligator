@@ -19,6 +19,7 @@ from app.models.candidate_grounding import (
     CandidateGroundingResult,
     CandidateGroundingStatus,
     GroundedCandidate,
+    ProviderCandidateForGrounding,
     RejectedCandidateProposal,
 )
 from app.models.common import DataStatus, GeoPoint
@@ -132,6 +133,20 @@ def _request(**overrides: object) -> CandidateGroundingRequest:
     }
     fields.update(overrides)
     return CandidateGroundingRequest(**fields)
+
+
+def _provider_candidate(**overrides: object) -> ProviderCandidateForGrounding:
+    fields: dict[str, object] = {
+        "provider_name": "openstreetmap",
+        "provider_place_id": "way/12345",
+        "name": "Old Town Waterfront",
+        "category": "neighborhood",
+        "coordinates": _coordinates(),
+        "data_status": DataStatus.LIVE,
+        "confidence": 0.8,
+    }
+    fields.update(overrides)
+    return ProviderCandidateForGrounding(**fields)
 
 
 # ---------------------------------------------------------------------------
@@ -269,6 +284,60 @@ def test_request_rejects_negative_provider_candidate_summary_counts() -> None:
 def test_request_accepts_zero_provider_candidate_summary_counts() -> None:
     request = _request(provider_candidate_summary={"attraction": 0})
     assert request.provider_candidate_summary == {"attraction": 0}
+
+
+# ---------------------------------------------------------------------------
+# ProviderCandidateForGrounding (Step 159A).
+# ---------------------------------------------------------------------------
+
+
+def test_valid_provider_candidate_for_grounding_is_accepted() -> None:
+    candidate = _provider_candidate()
+    assert candidate.provider_name == "openstreetmap"
+    assert candidate.coordinates.lat == pytest.approx(38.7223)
+
+
+@pytest.mark.parametrize("blank_field", ["provider_name", "provider_place_id", "name"])
+def test_provider_candidate_for_grounding_rejects_blank_required_fields(blank_field: str) -> None:
+    with pytest.raises(ValidationError):
+        _provider_candidate(**{blank_field: "   "})
+
+
+def test_provider_candidate_for_grounding_requires_coordinates() -> None:
+    with pytest.raises(ValidationError):
+        ProviderCandidateForGrounding(
+            provider_name="openstreetmap",
+            provider_place_id="way/12345",
+            name="Old Town Waterfront",
+            data_status=DataStatus.LIVE,
+            confidence=0.8,
+        )
+
+
+def test_provider_candidate_for_grounding_rejects_confidence_out_of_range() -> None:
+    with pytest.raises(ValidationError):
+        _provider_candidate(confidence=1.5)
+    with pytest.raises(ValidationError):
+        _provider_candidate(confidence=-0.1)
+
+
+@pytest.mark.parametrize("forbidden_text", _FORBIDDEN_TEXT_CASES)
+def test_provider_candidate_for_grounding_rejects_forbidden_text_in_name(
+    forbidden_text: str,
+) -> None:
+    with pytest.raises(ValidationError):
+        _provider_candidate(name=forbidden_text)
+
+
+def test_request_accepts_provider_candidates() -> None:
+    request = _request(provider_candidates=[_provider_candidate()])
+    assert len(request.provider_candidates) == 1
+    assert request.provider_candidates[0].provider_name == "openstreetmap"
+
+
+def test_request_allows_empty_provider_candidates() -> None:
+    request = _request(provider_candidates=[])
+    assert request.provider_candidates == []
 
 
 # ---------------------------------------------------------------------------
@@ -642,6 +711,7 @@ def test_rejected_proposal_rejects_forbidden_text_in_message(forbidden_text: str
         CandidateGroundingEvidence,
         GroundedCandidate,
         RejectedCandidateProposal,
+        ProviderCandidateForGrounding,
         CandidateGroundingRequest,
         CandidateGroundingResult,
         CandidateGroundingBatch,

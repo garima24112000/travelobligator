@@ -887,13 +887,21 @@ wording -- and `RejectedCandidateProposal` prepares the bridge to a future
 "what the AI suggested but we didn't use" trust UI.
 
 `backend/app/services/candidate_grounding_service.py` contains
-`CandidateGroundingService`, a NotConnected skeleton for the Stage 6
-grounding step (Step 158B, docs/13_llm_reasoning_pipeline.md section 31).
-Its one method, `ground`, always returns a `not_connected`
-`CandidateGroundingResult` -- no real grounding behavior exists yet: it
-never inspects the request's proposals, never calls a provider, and never
-produces a `GroundedCandidate` or `RejectedCandidateProposal`. It is not
-wired into `PlanningOrchestrator`.
+`CandidateGroundingService` for the Stage 6 grounding step. Its NotConnected
+skeleton (Step 158B, docs/13_llm_reasoning_pipeline.md section 31) has
+evolved into deterministic supplied-candidate grounding (Step 159A,
+docs/13_llm_reasoning_pipeline.md section 32): `ground` now matches each
+`AICandidateProposal` against `ProviderCandidateForGrounding` entries
+explicitly supplied on `CandidateGroundingRequest.provider_candidates`,
+using exact case-insensitive or normalized name matching only -- no fuzzy
+matching, no substring matching, and no provider/open-data lookup of its
+own. Empty `proposals` still returns `skipped`; proposals present with
+empty `provider_candidates` still returns `not_connected`. A proposal
+grounds into a `GroundedCandidate` only when exactly one supplied provider
+candidate matches it; zero or multiple matches produce a
+`RejectedCandidateProposal` instead. Still no LLM call, no provider call,
+and no orchestration wiring -- it is not wired into `PlanningOrchestrator`,
+scheduling, validation, or regeneration.
 
 `backend/app/services/candidate_quality_service.py` contains
 `CandidateQualityService` (Step 156A, docs/18_candidate_quality.md), a
