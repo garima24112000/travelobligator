@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from app.core.config import get_settings
 from app.core.errors import trip_not_found_error
+from app.models.ai_candidate_proposal import AICandidateProposalBatch
+from app.models.candidate_grounding import CandidateGroundingBatch
 from app.models.planning_state import PipelineStatus, PlanningStage, PlanningState, TripRequest
 from app.providers.gateway import provider_gateway
 from app.repositories.planning_state_repository import (
@@ -8,6 +11,7 @@ from app.repositories.planning_state_repository import (
     planning_state_repository,
 )
 from app.repositories.trip_repository import TripRepository, trip_repository
+from app.services.ai_candidate_discovery_service import AICandidateDiscoveryService
 from app.services.candidate_quality_service import CandidateQualityService
 from app.services.destination_context_service import DestinationContextService
 from app.services.experience_planner_service import ExperiencePlannerService
@@ -19,6 +23,20 @@ from app.services.stay_transport_service import StayTransportService
 from app.services.traveler_profile_service import TravelerProfileService
 from app.services.trip_strategy_service import TripStrategyService
 from app.services.versioning_service import VersioningService
+
+# AI candidate discovery shadow stage (Step 161B, docs/13_llm_reasoning_
+# pipeline.md section 40, docs/14_backend_architecture.md section 25).
+# PlanningOrchestrator now imports AICandidateDiscoveryService (Step 160B)
+# -- unlike Steps 160D/160E, which deliberately kept it unwired -- but only
+# to run it behind Settings.ai_candidate_discovery_shadow_mode_enabled
+# (default False, docs/13_llm_reasoning_pipeline.md section 40). Disabled
+# (the default), _run_ai_candidate_discovery_shadow_stage is a no-op and
+# every Step 160C storage field stays None exactly as before. Enabled, it
+# only ever stores AICandidateDiscoveryService.dry_run's already-validated
+# AICandidateProposalBatch/CandidateGroundingBatch on planning_state -- it
+# never feeds ExperiencePlannerService, CandidateQualityService, validation
+# readiness, or regeneration, and never mutates any other planning_state
+# field. See PlanningOrchestrator._run_ai_candidate_discovery_shadow_stage.
 
 _READINESS_TO_PIPELINE_STATUS = {
     "ready": PipelineStatus.VALIDATED,
@@ -50,6 +68,7 @@ class PlanningOrchestrator:
         versioning_service: VersioningService | None = None,
         plan_diff_preview_service: PlanDiffPreviewService | None = None,
         regeneration_readiness_service: RegenerationReadinessService | None = None,
+        ai_candidate_discovery_service: AICandidateDiscoveryService | None = None,
         planning_state_repo: PlanningStateRepository | None = None,
         trip_repo: TripRepository | None = None,
     ) -> None:
@@ -69,6 +88,13 @@ class PlanningOrchestrator:
         self.plan_diff_preview_service = plan_diff_preview_service or PlanDiffPreviewService()
         self.regeneration_readiness_service = (
             regeneration_readiness_service or RegenerationReadinessService()
+        )
+        # Shadow-stage-only dependency (Step 161B) -- constructing this here
+        # never makes a network/LLM call; AICandidateDiscoveryService.dry_run
+        # is only ever invoked from _run_ai_candidate_discovery_shadow_stage,
+        # and only when shadow mode is enabled.
+        self.ai_candidate_discovery_service = (
+            ai_candidate_discovery_service or AICandidateDiscoveryService()
         )
         self.planning_state_repository = planning_state_repo or planning_state_repository
         self.trip_repository = trip_repo or trip_repository
@@ -103,7 +129,52 @@ class PlanningOrchestrator:
         planning_state.candidate_quality_report = self.candidate_quality_service.build_report(
             planning_state
         )
+        # Shadow artifact stage only (Step 161B), not a planning stage: a
+        # config-gated no-op unless Settings.ai_candidate_discovery_shadow_
+        # mode_enabled is True. See _run_ai_candidate_discovery_shadow_stage.
+        planning_state = self._run_ai_candidate_discovery_shadow_stage(planning_state)
         planning_state.set_pipeline_status(PipelineStatus.DESTINATION_CONTEXT_CREATED)
+        return planning_state
+
+    def _run_ai_candidate_discovery_shadow_stage(self, planning_state: PlanningState) -> PlanningState:
+        """AI candidate discovery shadow stage (Step 161B,
+        docs/13_llm_reasoning_pipeline.md section 40). Not a planning stage
+        -- it never sets pipeline_status/active_stage itself, and it always
+        runs after destination_context already exists.
+
+        No-ops (leaves both Step 160C fields exactly as they already were)
+        unless `Settings.ai_candidate_discovery_shadow_mode_enabled` is
+        True. When enabled, this stores
+        `AICandidateDiscoveryService.dry_run`'s already-validated
+        `AICandidateProposalBatch`/`CandidateGroundingBatch` on
+        `planning_state` -- nothing else. It never passes proposals or
+        grounded candidates to `ExperiencePlannerService`/
+        `CandidateQualityService`, never touches `experience_plan`,
+        `validation_report`, `provider_coverage`, or `data_sources_used`,
+        and never fabricates a proposal or grounded candidate. If
+        `dry_run` (or assembling the batches from its result) raises
+        unexpectedly, this is caught here so a shadow-only failure can
+        never crash trip generation -- both fields are simply left as they
+        already were, never partially populated.
+        """
+        if not get_settings().ai_candidate_discovery_shadow_mode_enabled:
+            return planning_state
+
+        try:
+            dry_run_result = self.ai_candidate_discovery_service.dry_run(planning_state)
+            proposal_batch = AICandidateProposalBatch(
+                request=dry_run_result.proposal_request,
+                result=dry_run_result.proposal_result,
+            )
+            grounding_batch = CandidateGroundingBatch(
+                request=dry_run_result.grounding_request,
+                result=dry_run_result.grounding_result,
+            )
+        except Exception:
+            return planning_state
+
+        planning_state.ai_candidate_proposal_batch = proposal_batch
+        planning_state.candidate_grounding_batch = grounding_batch
         return planning_state
 
     def run_trip_strategy_stage(self, planning_state: PlanningState) -> PlanningState:

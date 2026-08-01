@@ -50,9 +50,11 @@ from app.services.candidate_grounding_service import CandidateGroundingService
 # - `AICandidateDiscoveryService.dry_run` never mutates `PlanningState`,
 #   never populates its Step 160C storage fields, and never touches
 #   persistence.
-# - No production module (`PlanningOrchestrator`, API routes, scheduling,
-#   validation, or regeneration/feedback/versioning services) imports
-#   `AICandidateDiscoveryService`.
+# - `PlanningOrchestrator` imports `AICandidateDiscoveryService` (Step
+#   161B) only to run it behind the disabled-by-default AI candidate
+#   discovery shadow-mode config gate -- no other production module (API
+#   routes, scheduling, validation, or regeneration/feedback/versioning
+#   services) imports it at all.
 
 _FORBIDDEN_MODEL_FIELD_NAMES = {
     "price",
@@ -549,10 +551,20 @@ def _assert_no_discovery_service_import(module: object) -> None:
     assert not any(name == "AICandidateDiscoveryService" for name in imported_names)
 
 
-def test_planning_orchestrator_does_not_import_discovery_service() -> None:
+def test_planning_orchestrator_imports_discovery_service_for_shadow_mode_only() -> None:
+    """Step 161B: `PlanningOrchestrator` now imports
+    `AICandidateDiscoveryService`, unlike Step 160D, but only to run it
+    behind the disabled-by-default AI candidate discovery shadow-mode
+    config gate (see `test_ai_candidate_discovery_shadow_mode.py` for the
+    shadow-mode behavior itself). Every other module this section checks
+    below (API routes, experience planner, plan validator,
+    feedback/regeneration/versioning) must still never import it.
+    """
     import app.services.planning_orchestrator as orchestrator_module
 
-    _assert_no_discovery_service_import(orchestrator_module)
+    imported_names = _imported_module_names(orchestrator_module)
+    assert any("ai_candidate_discovery_service" in name for name in imported_names)
+    assert any(name == "AICandidateDiscoveryService" for name in imported_names)
 
 
 def test_api_routes_do_not_import_discovery_service() -> None:
