@@ -147,7 +147,14 @@ def test_factory_module_has_no_disallowed_imports() -> None:
     source = inspect.getsource(factory_module)
     tree = ast.parse(source)
 
-    disallowed_substrings = (
+    # Vendor SDK names are only meaningful as *real* top-level imports
+    # (e.g. a bare `import anthropic`). The factory legitimately imports
+    # `app.providers.ai_candidate_proposal.anthropic_adapter` (Step 161A) --
+    # an internal module path that happens to contain "anthropic" without
+    # being a vendor SDK import -- so vendor checks are skipped for
+    # anything under our own `app.` namespace. Internal disallowed-path
+    # checks apply regardless.
+    vendor_disallowed_substrings = (
         "langgraph",
         "langsmith",
         "httpx",
@@ -156,6 +163,8 @@ def test_factory_module_has_no_disallowed_imports() -> None:
         "anthropic",
         "gemini",
         "google.generativeai",
+    )
+    internal_disallowed_substrings = (
         "app.providers.places",
         "app.providers.routes",
         "app.providers.transit",
@@ -175,7 +184,10 @@ def test_factory_module_has_no_disallowed_imports() -> None:
 
     for name in imported_names:
         lowered = name.lower()
-        for disallowed in disallowed_substrings:
+        if not lowered.startswith("app."):
+            for disallowed in vendor_disallowed_substrings:
+                assert disallowed not in lowered, f"Disallowed import found: {name}"
+        for disallowed in internal_disallowed_substrings:
             assert disallowed not in lowered, f"Disallowed import found: {name}"
 
 

@@ -1,3 +1,6 @@
+from app.providers.ai_candidate_proposal.anthropic_adapter import (
+    AnthropicAICandidateProposalProvider,
+)
 from app.providers.ai_candidate_proposal.base import AICandidateProposalProvider
 from app.providers.ai_candidate_proposal.factory import get_ai_candidate_proposal_provider
 from app.providers.ai_candidate_proposal.not_connected_adapter import (
@@ -6,6 +9,7 @@ from app.providers.ai_candidate_proposal.not_connected_adapter import (
 
 __all__ = [
     "AICandidateProposalProvider",
+    "AnthropicAICandidateProposalProvider",
     "NotConnectedAICandidateProposalProvider",
     "get_ai_candidate_proposal_provider",
 ]

@@ -1,5 +1,10 @@
 annotated-doc==0.0.4
 annotated-types==0.7.0
+# TODO: pin an exact version once verified against PyPI (Step 161A). The
+# adapter (backend/app/providers/ai_candidate_proposal/anthropic_adapter.py)
+# only imports this lazily inside _build_client, so the app and test suite
+# both work whether or not this package is actually installed.
+anthropic
 anyio==4.13.0
 click==8.3.3
 fastapi==0.136.1

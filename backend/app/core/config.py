@@ -32,10 +32,19 @@ class Settings(BaseSettings):
     openai_api_key: str | None = Field(default=None, alias="OPENAI_API_KEY")
     openai_model: str = Field(default="gpt-4.1-mini", alias="OPENAI_MODEL")
 
+    # Claude/Anthropic is the selected LLM base for AI candidate proposals
+    # (Step 161A, docs/13_llm_reasoning_pipeline.md section 39). Missing
+    # `anthropic_api_key` must never crash default app/test behavior --
+    # `AnthropicAICandidateProposalProvider.propose` returns an honest
+    # `not_connected` result instead of raising.
+    anthropic_api_key: str | None = Field(default=None, alias="ANTHROPIC_API_KEY")
+    anthropic_model: str = Field(default="claude-sonnet-4-20250514", alias="ANTHROPIC_MODEL")
+
     # Config gate for get_ai_candidate_proposal_provider (Step 160E,
-    # docs/13_llm_reasoning_pipeline.md section 38). "not_connected" is the
-    # only supported value today -- no real LLM-backed adapter exists yet,
-    # so this must never select one.
+    # extended in Step 161A). "not_connected" (default) and "anthropic" are
+    # the only supported values today. An unsupported/unrecognized value
+    # falls back to "not_connected" rather than raising or fabricating
+    # output -- see backend/app/providers/ai_candidate_proposal/factory.py.
     ai_candidate_proposal_provider: str = Field(
         default="not_connected", alias="AI_CANDIDATE_PROPOSAL_PROVIDER"
     )

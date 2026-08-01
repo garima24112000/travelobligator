@@ -1,28 +1,32 @@
 from __future__ import annotations
 
 from app.core.config import get_settings
+from app.providers.ai_candidate_proposal.anthropic_adapter import (
+    AnthropicAICandidateProposalProvider,
+)
 from app.providers.ai_candidate_proposal.base import AICandidateProposalProvider
 from app.providers.ai_candidate_proposal.not_connected_adapter import (
     NotConnectedAICandidateProposalProvider,
 )
 
-# Config-gated provider-selection boundary (Step 160E,
-# itinerary-generator-build-spec.md Stage 5, docs/13_llm_reasoning_
+# Config-gated provider-selection boundary (Step 160E, extended in Step
+# 161A, itinerary-generator-build-spec.md Stage 5, docs/13_llm_reasoning_
 # pipeline.md section 38, docs/14_backend_architecture.md section 25).
-# Still no real LLM, LangGraph, LangSmith, or OpenAI/Anthropic/Gemini
-# client code is added here -- this module only selects between
-# `AICandidateProposalProvider` adapters that already exist.
+# No LangGraph, LangSmith, or OpenAI/Gemini client code is added here --
+# this module only selects between `AICandidateProposalProvider` adapters
+# that already exist. The default remains `"not_connected"`.
 #
-# `"not_connected"` is the only supported value today, mapping to the
-# Step 157B `NotConnectedAICandidateProposalProvider`. This exists so a
-# future real LLM-backed adapter can be added later and config-gated in
-# (e.g. `AI_CANDIDATE_PROPOSAL_PROVIDER=openai`) without changing any
-# calling code -- `AICandidateDiscoveryService` already resolves its
-# default provider through this factory rather than constructing
-# `NotConnectedAICandidateProposalProvider` directly.
+# `"not_connected"` maps to the Step 157B `NotConnectedAICandidateProposalProvider`.
+# `"anthropic"` (Step 161A) maps to `AnthropicAICandidateProposalProvider`,
+# which is itself safe by default: with no `ANTHROPIC_API_KEY` configured
+# it returns an honest `not_connected` result instead of calling the real
+# Anthropic API. `AICandidateDiscoveryService` resolves its default
+# provider through this factory rather than constructing an adapter
+# directly.
 
 _SUPPORTED_PROVIDERS: dict[str, type[AICandidateProposalProvider]] = {
     "not_connected": NotConnectedAICandidateProposalProvider,
+    "anthropic": AnthropicAICandidateProposalProvider,
 }
 
 

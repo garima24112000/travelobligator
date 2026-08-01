@@ -993,6 +993,25 @@ of constructing the not-connected adapter directly; explicit dependency
 injection still bypasses the factory entirely, and default `dry_run`
 behavior is unchanged.
 
+`backend/app/providers/ai_candidate_proposal/anthropic_adapter.py`
+contains `AnthropicAICandidateProposalProvider` (Step 161A,
+docs/13_llm_reasoning_pipeline.md section 39) -- **Claude/Anthropic is the
+planned LLM base for candidate proposal**. It calls Claude through the
+official `anthropic` Python SDK's Messages API (`client.messages.create`
+with a forced tool call), never through the Claude Code CLI. The adapter
+is config-gated and not the default: `get_ai_candidate_proposal_provider`
+now supports `"anthropic"` in addition to `"not_connected"`, but the
+factory's default stays `"not_connected"`. With no `ANTHROPIC_API_KEY`
+configured -- the default -- the adapter itself returns an honest
+`not_connected` result rather than calling the network, and the
+`anthropic` package is only ever imported lazily so the app and test
+suite work whether or not it is installed. Every output still validates
+through `AICandidateProposalResult`/`AICandidateProposal`, never calls
+`CandidateGroundingService` or a provider adapter, and never mutates
+`PlanningState`. There is no `PlanningOrchestrator`/scheduling/runtime
+integration yet -- this stays reachable only through explicit injection
+or config.
+
 `backend/app/services/candidate_quality_service.py` contains
 `CandidateQualityService` (Step 156A, docs/18_candidate_quality.md), a
 deterministic pre-ranking layer that sits between provider-backed

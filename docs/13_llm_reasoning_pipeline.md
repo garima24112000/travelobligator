@@ -1316,3 +1316,84 @@ here.
 - This is still not wired into `PlanningOrchestrator`, scheduling,
   validation, or regeneration, and no provider adapter (places, routes,
   weather, holidays, currency) is imported by the factory.
+
+---
+
+## 39. Anthropic (Claude) AI Candidate Proposal Provider Adapter (Step 161A)
+
+**Claude/Anthropic is the selected LLM base for AI candidate proposals.**
+`backend/app/providers/ai_candidate_proposal/anthropic_adapter.py` defines
+`AnthropicAICandidateProposalProvider`, the first real (non-`not_connected`)
+`AICandidateProposalProvider` implementation. It is still not wired into
+`PlanningOrchestrator`, scheduling, validation, regeneration, or normal
+trip generation -- it is only reachable by explicitly injecting it or by
+setting `AI_CANDIDATE_PROPOSAL_PROVIDER=anthropic`.
+
+- **Uses the Anthropic API boundary, not the Claude Code CLI.** The
+  adapter calls Claude through the official `anthropic` Python SDK's
+  Messages API (`client.messages.create`) -- never by shelling out to a
+  local coding-agent CLI or any other runtime dependency on Claude Code.
+- **Default app behavior remains `not_connected`** unless both
+  `AI_CANDIDATE_PROPOSAL_PROVIDER=anthropic` (Step 160E's factory gate)
+  and a real `ANTHROPIC_API_KEY` are configured. With no API key (the
+  default), `propose` returns an honest `not_connected` result -- it
+  never calls the network and never crashes the app or the test suite.
+- **The `anthropic` package import is deferred**, kept inside a
+  `_build_client` helper rather than a module-level import, so the rest
+  of the app -- and every test that injects a fake client or exercises
+  the no-key path -- keeps working whether or not the package is
+  installed.
+- **Structured output via forced tool use.** The adapter defines one tool,
+  `submit_ai_candidate_proposals`, whose JSON schema mirrors
+  `AICandidateProposal` field-for-field (`proposal_id`, `candidate_name`,
+  `candidate_type`, `priority_hint`, `suggested_area`, `why_consider`,
+  `fit_with_user_preferences`, `verification_requirements`, `confidence`)
+  and deliberately has no coordinate, provider-id, price, rating,
+  opening-hours, route-time, review-count, ticket-price, availability,
+  booking-link, or safety-score field. `tool_choice={"type": "tool",
+  "name": "submit_ai_candidate_proposals"}` forces Claude to respond
+  through that schema. The system/user prompt explicitly instructs Claude
+  that every idea is a proposal, not a fact, and that verification
+  requirements are still needed before any idea can be used.
+- **This adapter only ever creates `AICandidateProposal` objects, which
+  are not facts.** Every parsed proposal still has to pass
+  `AICandidateProposal`'s own validation (forbidden-claim text patterns,
+  non-blank fields, non-empty `verification_requirements`) before it can
+  appear in a `completed` result -- a proposal that fails validation, or a
+  tool-use response Claude never actually produced, never becomes a
+  `completed` result.
+- **All outputs validate through `AICandidateProposalResult`.** Parsing
+  and validating Claude's tool output happens before any status is
+  returned:
+  - Missing package, missing/unset API key, or client-construction
+    failure -> `not_connected` (no proposals, zero confidence, failed
+    guardrail explaining why).
+  - The API call itself raising, no usable `tool_use` block in the
+    response, or the parsed tool input failing
+    `AICandidateProposal`/`AICandidateProposalResult` validation ->
+    `rejected` (no proposals, failed guardrail explaining why).
+  - A valid, schema-conforming tool response -> `completed`, with
+    validated proposals, a passed guardrail, `provider_name`, and
+    `model_name`.
+  - No case ever fabricates a proposal to compensate for a failure.
+- **Proposals still require grounding through `CandidateGroundingService`
+  before scheduling.** This adapter never creates a `GroundedCandidate` or
+  `RejectedCandidateProposal` itself, never calls
+  `CandidateGroundingService`, never calls a provider adapter, and never
+  mutates `PlanningState` -- grounding against real supplied
+  `destination_context` evidence (Step 159A) remains the only path from a
+  proposal to something that could ever be scheduled.
+- **Factory support.** `get_ai_candidate_proposal_provider` (Step 160E)
+  now supports `"anthropic"` -> `AnthropicAICandidateProposalProvider()`
+  alongside `"not_connected"`. The default remains `"not_connected"`, and
+  an unsupported/unrecognized config value still falls back to
+  `NotConnectedAICandidateProposalProvider` -- never to this adapter, and
+  never to a fabricated result.
+- **No orchestration/runtime generation wiring.** Tests prove the full
+  composition path works end to end (an injected fake Anthropic client ->
+  a validated `AICandidateProposal` -> `CandidateGroundingService.ground`
+  producing a `completed` result against a matching supplied
+  `destination_context` candidate) using only in-file fake clients -- no
+  network call is made, and no real `ANTHROPIC_API_KEY` is required for
+  the test suite. `AICandidateDiscoveryService`'s default `dry_run` call
+  is unaffected and still returns `not_connected`/`skipped`.
