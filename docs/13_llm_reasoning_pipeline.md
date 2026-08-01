@@ -1218,3 +1218,67 @@ This is storage-contract only:
   its result here for inspection, without it affecting the plan) -- it
   does not itself wire that integration in, and it does not affect
   scheduling, validation, or regeneration.
+
+---
+
+## 37. AI Candidate Discovery Safety End-to-End Tests (Step 160D)
+
+`backend/app/tests/services/test_ai_candidate_discovery_safety.py` adds
+safety end-to-end tests for the full candidate-discovery composition
+(Steps 157A-160C) **before any real LLM-backed adapter is connected**.
+This step is test-only -- it adds no production code, because none of
+these tests uncovered a real safety gap in the existing models/services.
+Every scenario uses only in-file deterministic fake
+`AICandidateProposalProvider` test doubles; no real LLM, LangGraph,
+LangSmith, or provider adapter is called.
+
+- **Unsafe AI-like output fails schema validation before grounding.** A
+  fake provider that tries to construct an `AICandidateProposal` with a
+  forbidden factual claim (rating, price, opening hours, route time,
+  booking URL, review count, ticket price, availability, safety score,
+  "book now", "highly rated", the "guaran" + "teed" pattern, or "exact
+  travel time") in `candidate_name`, `suggested_area`,
+  `why_consider`, or `fit_with_user_preferences` raises
+  `pydantic.ValidationError` while building the proposal object itself --
+  it can never reach `AICandidateDiscoveryService.dry_run`'s grounding
+  step. A patched `CandidateGroundingService.ground` spy confirms it is
+  never called in any of these cases. The same is true for structurally
+  invalid `AICandidateProposalResult` output (empty
+  `verification_requirements`, a blank `candidate_name`, a `completed`
+  result with no proposals or a failed guardrail, a `not_connected` result
+  that still carries proposals, or a request/result task mismatch on
+  `AICandidateProposalBatch`) -- all rejected by the existing Step 157A
+  model validators before grounding runs.
+- **Valid but unsupported proposals become `RejectedCandidateProposal`
+  through grounding, never silently dropped.** A schema-valid proposal
+  naming a place with no matching supplied provider candidate produces
+  `grounding_result.status=rejected` with a `NO_PROVIDER_MATCH` reason. A
+  schema-valid proposal whose name matches two supplied provider
+  candidates (same normalized name, different `provider_place_id`/
+  coordinates) produces `rejected` with an `AMBIGUOUS_MATCH` reason. In
+  both cases, `grounded_candidates` stays empty.
+- **Matching proposals ground only from supplied provider/open-data
+  evidence.** A schema-valid proposal that matches exactly one supplied
+  `destination_context` candidate produces a `completed` result whose
+  `GroundedCandidate.evidence` (`provider_name`, `provider_place_id`,
+  `matched_name`, `data_status`, `coordinates`) traces back verbatim to
+  that supplied candidate -- confirmed field-by-field, plus a direct check
+  that `AICandidateProposal` itself has no `coordinates`/`provider_name`/
+  `provider_place_id` fields at all, so no such evidence could ever have
+  come from the proposal's own wording.
+- **`dry_run` remains storage-neutral and runtime-neutral.** It never
+  populates `planning_state.ai_candidate_proposal_batch` or
+  `.candidate_grounding_batch` (Step 160C), never mutates `planning_state`
+  otherwise, and a patched `PlanningStateRepository.save` on the real
+  singleton instance confirms `dry_run` never reaches persistence at all
+  (its constructor also takes no repository dependency). Separate
+  import-based checks confirm `PlanningOrchestrator`, `app/api/routes/
+  trips.py`, `ExperiencePlannerService`, `PlanValidatorService`, and the
+  regeneration/feedback/versioning service modules still do not import
+  `AICandidateDiscoveryService`.
+
+This step is a precondition, not an integration: it hardens confidence in
+the existing contract-only pipeline before a real LLM-backed
+`AICandidateProposalProvider` adapter is ever connected. It does not wire
+`AICandidateDiscoveryService` into `PlanningOrchestrator`, change
+scheduling, validation, or regeneration, or touch the frontend.

@@ -962,6 +962,23 @@ yet: `PlanningOrchestrator` is unchanged by this step, so
 shadow-mode integration; it does not wire `AICandidateDiscoveryService`
 into generation.
 
+`backend/app/tests/services/test_ai_candidate_discovery_safety.py`
+(Step 160D, docs/13_llm_reasoning_pipeline.md section 37) adds safety
+end-to-end tests for the whole candidate-discovery composition above
+(Steps 157A-160C) using only in-file deterministic fake proposal
+providers -- no real LLM, LangGraph, LangSmith, or provider adapter. It
+proves unsafe/invalid AI-like output fails schema validation before
+`CandidateGroundingService.ground` is ever called, unsupported (unmatched
+or ambiguous) proposals become `RejectedCandidateProposal` rather than
+being silently dropped or force-matched, matching proposals ground only
+from evidence already present on `PlanningState.destination_context`, and
+`dry_run` stays storage-neutral (Step 160C fields) and runtime-neutral
+(`PlanningOrchestrator`, API routes, scheduling, validation, and
+regeneration/feedback/versioning services still do not import
+`AICandidateDiscoveryService`). This step changed no production code --
+it is a precondition check performed before a real LLM-backed adapter is
+ever connected, not an integration step.
+
 `backend/app/services/candidate_quality_service.py` contains
 `CandidateQualityService` (Step 156A, docs/18_candidate_quality.md), a
 deterministic pre-ranking layer that sits between provider-backed
