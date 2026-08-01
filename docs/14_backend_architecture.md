@@ -979,6 +979,20 @@ regeneration/feedback/versioning services still do not import
 it is a precondition check performed before a real LLM-backed adapter is
 ever connected, not an integration step.
 
+`backend/app/providers/ai_candidate_proposal/factory.py` contains
+`get_ai_candidate_proposal_provider` (Step 160E, docs/13_llm_reasoning_
+pipeline.md section 38), a config-gated provider-selection boundary read
+via `Settings.ai_candidate_proposal_provider`
+(`AI_CANDIDATE_PROPOSAL_PROVIDER`, default `"not_connected"`). The default
+AI candidate proposal provider remains `"not_connected"` -- no real LLM
+provider is connected yet, and an unsupported/unrecognized config value
+falls back to the same honest `NotConnectedAICandidateProposalProvider`
+rather than raising or fabricating output. `AICandidateDiscoveryService`
+now resolves its default `proposal_provider` through this factory instead
+of constructing the not-connected adapter directly; explicit dependency
+injection still bypasses the factory entirely, and default `dry_run`
+behavior is unchanged.
+
 `backend/app/services/candidate_quality_service.py` contains
 `CandidateQualityService` (Step 156A, docs/18_candidate_quality.md), a
 deterministic pre-ranking layer that sits between provider-backed

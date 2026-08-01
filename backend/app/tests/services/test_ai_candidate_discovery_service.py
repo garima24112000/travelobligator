@@ -566,3 +566,34 @@ def test_scheduling_validation_and_regeneration_modules_do_not_import_discovery_
         imported_names = _imported_module_names(module)
         assert not any("ai_candidate_discovery_service" in name for name in imported_names)
         assert not any(name == "AICandidateDiscoveryService" for name in imported_names)
+
+
+# ---------------------------------------------------------------------------
+# Step 160E: default provider construction is resolved through the
+# config-gated factory, and an explicitly injected provider bypasses it.
+# ---------------------------------------------------------------------------
+
+
+def test_default_provider_construction_uses_the_factory(monkeypatch: pytest.MonkeyPatch) -> None:
+    sentinel_provider = _FakeAICandidateProposalProvider([])
+
+    def _fake_factory(provider_name: str | None = None) -> _FakeAICandidateProposalProvider:
+        return sentinel_provider
+
+    monkeypatch.setattr(discovery_module, "get_ai_candidate_proposal_provider", _fake_factory)
+
+    service = AICandidateDiscoveryService()
+
+    assert service.proposal_provider is sentinel_provider
+
+
+def test_injected_provider_bypasses_the_factory(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _fail_factory(provider_name: str | None = None) -> None:
+        raise AssertionError("get_ai_candidate_proposal_provider must not be called when a provider is injected")
+
+    monkeypatch.setattr(discovery_module, "get_ai_candidate_proposal_provider", _fail_factory)
+
+    injected_provider = _FakeAICandidateProposalProvider([_proposal()])
+    service = AICandidateDiscoveryService(proposal_provider=injected_provider)
+
+    assert service.proposal_provider is injected_provider

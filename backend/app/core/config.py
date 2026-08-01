@@ -32,6 +32,14 @@ class Settings(BaseSettings):
     openai_api_key: str | None = Field(default=None, alias="OPENAI_API_KEY")
     openai_model: str = Field(default="gpt-4.1-mini", alias="OPENAI_MODEL")
 
+    # Config gate for get_ai_candidate_proposal_provider (Step 160E,
+    # docs/13_llm_reasoning_pipeline.md section 38). "not_connected" is the
+    # only supported value today -- no real LLM-backed adapter exists yet,
+    # so this must never select one.
+    ai_candidate_proposal_provider: str = Field(
+        default="not_connected", alias="AI_CANDIDATE_PROPOSAL_PROVIDER"
+    )
+
     google_places_api_key: str | None = Field(default=None, alias="GOOGLE_PLACES_API_KEY")
     google_routes_api_key: str | None = Field(default=None, alias="GOOGLE_ROUTES_API_KEY")
     mapbox_access_token: str | None = Field(default=None, alias="MAPBOX_ACCESS_TOKEN")

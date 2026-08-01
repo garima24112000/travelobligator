@@ -180,6 +180,7 @@ def test_provider_output_would_fail_validation_if_status_mismatched() -> None:
     [
         "app.providers.ai_candidate_proposal.base",
         "app.providers.ai_candidate_proposal.not_connected_adapter",
+        "app.providers.ai_candidate_proposal.factory",
     ],
 )
 def test_provider_modules_have_no_disallowed_imports(module_name: str) -> None:

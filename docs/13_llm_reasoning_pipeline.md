@@ -1282,3 +1282,37 @@ the existing contract-only pipeline before a real LLM-backed
 `AICandidateProposalProvider` adapter is ever connected. It does not wire
 `AICandidateDiscoveryService` into `PlanningOrchestrator`, change
 scheduling, validation, or regeneration, or touch the frontend.
+
+---
+
+## 38. Config-Gated AI Candidate Proposal Provider Factory (Step 160E)
+
+`backend/app/providers/ai_candidate_proposal/factory.py` defines
+`get_ai_candidate_proposal_provider(provider_name: str | None = None) ->
+AICandidateProposalProvider`, a provider-selection boundary so a future
+real LLM-backed adapter can be config-gated in later without changing any
+calling code. **This step still does not add a real LLM adapter** -- no
+LangGraph, LangSmith, or OpenAI/Anthropic/Gemini client code is added
+here.
+
+- `"not_connected"` (mapping to the Step 157B
+  `NotConnectedAICandidateProposalProvider`) is the only supported
+  provider name today.
+- When `provider_name` is omitted, the factory reads
+  `Settings.ai_candidate_proposal_provider` (`AI_CANDIDATE_PROPOSAL_PROVIDER`
+  env var), which defaults to `"not_connected"`.
+- **An unsupported/unrecognized provider name can never silently create
+  fake proposals.** The factory falls back to the same honest
+  `NotConnectedAICandidateProposalProvider` used when nothing is
+  configured, rather than raising or guessing -- unknown configuration is
+  treated as functionally identical to "not connected."
+- `AICandidateDiscoveryService` (Step 160B) now resolves its default
+  `proposal_provider` through this factory instead of constructing
+  `NotConnectedAICandidateProposalProvider` directly. Dependency injection
+  is unchanged: an explicitly passed `proposal_provider` still bypasses
+  the factory entirely, and the default `dry_run` behavior (`not_connected`
+  proposal result, empty proposals, `skipped` grounding result) is
+  unaffected by this change.
+- This is still not wired into `PlanningOrchestrator`, scheduling,
+  validation, or regeneration, and no provider adapter (places, routes,
+  weather, holidays, currency) is imported by the factory.

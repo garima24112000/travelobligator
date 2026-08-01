@@ -11,7 +11,7 @@ from app.models.candidate_grounding import CandidateGroundingRequest, CandidateG
 from app.models.planning_state import PlanningState
 from app.providers.ai_candidate_proposal import (
     AICandidateProposalProvider,
-    NotConnectedAICandidateProposalProvider,
+    get_ai_candidate_proposal_provider,
 )
 from app.services.ai_candidate_proposal_request_builder import AICandidateProposalRequestBuilder
 from app.services.candidate_grounding_request_builder import CandidateGroundingRequestBuilder
@@ -27,16 +27,19 @@ from app.services.candidate_grounding_service import CandidateGroundingService
 # one deterministic call, without adding a real LLM and without any
 # runtime/orchestrator wiring.
 #
-# The default `proposal_provider` is `NotConnectedAICandidateProposalProvider`
-# (Step 157B), which never calls a network service and always returns an
-# honest `not_connected` result with an empty `proposals` list. Because
-# `CandidateGroundingService.ground` returns `skipped` for an empty
-# `proposals` list, the default `dry_run` call therefore produces no
-# proposals and no grounded candidates -- this module never fabricates a
-# fallback proposal or grounded candidate to compensate. A real LLM-backed
-# `AICandidateProposalProvider` adapter can be injected via the
-# constructor, but nothing in this module ever constructs or calls one
-# itself.
+# The default `proposal_provider` is resolved through
+# `get_ai_candidate_proposal_provider` (Step 160E, docs/13_llm_reasoning_
+# pipeline.md section 38) -- a config-gated factory whose only supported
+# value today is `"not_connected"`, mapping to the Step 157B
+# `NotConnectedAICandidateProposalProvider`. That adapter never calls a
+# network service and always returns an honest `not_connected` result with
+# an empty `proposals` list. Because `CandidateGroundingService.ground`
+# returns `skipped` for an empty `proposals` list, the default `dry_run`
+# call therefore produces no proposals and no grounded candidates -- this
+# module never fabricates a fallback proposal or grounded candidate to
+# compensate. A real LLM-backed `AICandidateProposalProvider` adapter can
+# be injected via the constructor (bypassing the factory entirely), but
+# nothing in this module ever constructs or calls one itself.
 
 
 class AICandidateDiscoveryDryRunResult(BaseModel):
@@ -71,7 +74,7 @@ class AICandidateDiscoveryService:
         grounding_service: CandidateGroundingService | None = None,
     ) -> None:
         self.proposal_request_builder = proposal_request_builder or AICandidateProposalRequestBuilder()
-        self.proposal_provider = proposal_provider or NotConnectedAICandidateProposalProvider()
+        self.proposal_provider = proposal_provider or get_ai_candidate_proposal_provider()
         self.grounding_request_builder = grounding_request_builder or CandidateGroundingRequestBuilder()
         self.grounding_service = grounding_service or CandidateGroundingService()
 
