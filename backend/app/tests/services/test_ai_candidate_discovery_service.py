@@ -512,9 +512,11 @@ def test_dry_run_result_dump_has_no_forbidden_factual_keys() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Step 160C: AICandidateDiscoveryService is still not called by
-# PlanningOrchestrator or any API route, and no scheduling/validation/
-# regeneration module imports it.
+# Step 160C: AICandidateDiscoveryService is not called by any API route, and
+# no scheduling/validation/regeneration module imports it. Step 161B:
+# PlanningOrchestrator now imports it, but only behind the disabled-by-
+# default AI candidate discovery shadow-mode config gate (see
+# test_ai_candidate_discovery_shadow_mode.py).
 # ---------------------------------------------------------------------------
 
 
@@ -532,13 +534,13 @@ def _imported_module_names(module: object) -> list[str]:
     return imported_names
 
 
-def test_planning_orchestrator_does_not_import_discovery_service() -> None:
+def test_planning_orchestrator_imports_discovery_service_for_shadow_mode_only() -> None:
     import app.services.planning_orchestrator as orchestrator_module
 
     imported_names = _imported_module_names(orchestrator_module)
 
-    assert not any("ai_candidate_discovery_service" in name for name in imported_names)
-    assert not any(name == "AICandidateDiscoveryService" for name in imported_names)
+    assert any("ai_candidate_discovery_service" in name for name in imported_names)
+    assert any(name == "AICandidateDiscoveryService" for name in imported_names)
 
 
 def test_api_routes_do_not_import_discovery_service() -> None:

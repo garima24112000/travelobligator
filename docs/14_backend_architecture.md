@@ -1008,9 +1008,28 @@ configured -- the default -- the adapter itself returns an honest
 suite work whether or not it is installed. Every output still validates
 through `AICandidateProposalResult`/`AICandidateProposal`, never calls
 `CandidateGroundingService` or a provider adapter, and never mutates
-`PlanningState`. There is no `PlanningOrchestrator`/scheduling/runtime
-integration yet -- this stays reachable only through explicit injection
-or config.
+`PlanningState`. There is still no scheduling/experience-plan integration
+-- this adapter only ever reaches `PlanningOrchestrator` indirectly,
+through the disabled-by-default AI candidate discovery shadow stage
+described next.
+
+`PlanningOrchestrator` (`backend/app/services/planning_orchestrator.py`)
+now imports `AICandidateDiscoveryService` and, from
+`run_destination_context_stage`, may optionally run it as a shadow stage
+(Step 161B, docs/13_llm_reasoning_pipeline.md section 40) -- gated by
+`Settings.ai_candidate_discovery_shadow_mode_enabled` (default `False`).
+Disabled, `PlanningState.ai_candidate_proposal_batch`/
+`candidate_grounding_batch` (Step 160C) stay `None` exactly as before this
+step, and every other stage runs identically. Enabled, the shadow stage
+only ever stores `AICandidateDiscoveryService.dry_run`'s already-validated
+`AICandidateProposalBatch`/`CandidateGroundingBatch` on `planning_state`
+via a private `_run_ai_candidate_discovery_shadow_stage` helper -- it does
+not alter itinerary generation: it never touches `experience_plan`,
+`validation_report`, `destination_context`'s candidate lists,
+`provider_coverage`, or `data_sources_used`, and neither
+`ExperiencePlannerService` nor `CandidateQualityService` reads either
+batch field. An unexpected `dry_run` failure is caught inside the helper
+so trip generation itself can never crash because of it.
 
 `backend/app/services/candidate_quality_service.py` contains
 `CandidateQualityService` (Step 156A, docs/18_candidate_quality.md), a

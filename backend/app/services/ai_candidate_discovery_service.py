@@ -17,15 +17,21 @@ from app.services.ai_candidate_proposal_request_builder import AICandidatePropos
 from app.services.candidate_grounding_request_builder import CandidateGroundingRequestBuilder
 from app.services.candidate_grounding_service import CandidateGroundingService
 
-# Dry-run composition service for the future candidate-discovery flow (Step
-# 160B, itinerary-generator-build-spec.md Stages 5-6,
-# docs/13_llm_reasoning_pipeline.md section 35,
-# docs/14_backend_architecture.md section 25). This wires together four
-# already-safe pieces built in Steps 157B/159A/159B/160A --
-# `AICandidateProposalRequestBuilder` -> a proposal provider ->
+# Dry-run composition service for the candidate-discovery flow (Step 160B,
+# itinerary-generator-build-spec.md Stages 5-6, docs/13_llm_reasoning_
+# pipeline.md section 35, docs/14_backend_architecture.md section 25). This
+# wires together four already-safe pieces built in Steps 157B/159A/159B/160A
+# -- `AICandidateProposalRequestBuilder` -> a proposal provider ->
 # `CandidateGroundingRequestBuilder` -> `CandidateGroundingService` -- into
-# one deterministic call, without adding a real LLM and without any
-# runtime/orchestrator wiring.
+# one deterministic call, without adding a real LLM.
+#
+# `PlanningOrchestrator` calls `dry_run` (Step 161B, docs/13_llm_reasoning_
+# pipeline.md section 40) only from its disabled-by-default AI candidate
+# discovery shadow stage -- `dry_run` itself is unaware of that caller and
+# behaves identically either way: it still never mutates `planning_state`,
+# persists anything, or schedules anything (see below). Nothing else in the
+# app (API routes, scheduling, validation, or regeneration/feedback/
+# versioning services) calls it.
 #
 # The default `proposal_provider` is resolved through
 # `get_ai_candidate_proposal_provider` (Step 160E, docs/13_llm_reasoning_
@@ -63,7 +69,10 @@ class AICandidateDiscoveryService:
     `dry_run` only ever reads `planning_state` (via the injected builders)
     and calls the injected proposal provider / grounding service -- it
     never mutates `planning_state`, never persists anything, and never
-    schedules anything. It is not called by `PlanningOrchestrator`.
+    schedules anything. `PlanningOrchestrator`'s AI candidate discovery
+    shadow stage (Step 161B) is the only caller in the app, and only when
+    explicitly enabled via config; storing the result on `planning_state`
+    is that caller's responsibility, not this service's.
     """
 
     def __init__(

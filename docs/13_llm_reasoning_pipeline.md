@@ -1397,3 +1397,73 @@ setting `AI_CANDIDATE_PROPOSAL_PROVIDER=anthropic`.
   network call is made, and no real `ANTHROPIC_API_KEY` is required for
   the test suite. `AICandidateDiscoveryService`'s default `dry_run` call
   is unaffected and still returns `not_connected`/`skipped`.
+
+---
+
+## 40. AI Candidate Discovery Shadow Mode (Step 161B)
+
+**AI candidate discovery shadow mode lets `PlanningOrchestrator` optionally
+store validated discovery artifacts during normal trip generation,
+disabled by default.** `Settings.ai_candidate_discovery_shadow_mode_enabled`
+(alias `AI_CANDIDATE_DISCOVERY_SHADOW_MODE_ENABLED`, default `False`) gates
+a new private helper, `PlanningOrchestrator._run_ai_candidate_discovery_
+shadow_stage`, called from `run_destination_context_stage` right after
+`destination_context`/`candidate_quality_report` are built.
+
+- **Disabled by default -- unchanged default behavior.** With the flag at
+  its default `False` (or explicitly `False`), the helper is a pure no-op:
+  `PlanningState.ai_candidate_proposal_batch`/`candidate_grounding_batch`
+  (Step 160C) stay `None` exactly as before this step, for every existing
+  trip-generation test and API caller.
+- **What it stores when enabled.** The helper calls
+  `AICandidateDiscoveryService().dry_run(planning_state)` (Step 160B) and,
+  only if that succeeds, wraps the result into
+  `AICandidateProposalBatch(request=..., result=...)` and
+  `CandidateGroundingBatch(request=..., result=...)`, assigning both to
+  `planning_state`. Nothing else about `dry_run` or the batch models
+  changes -- see sections 35/36 above.
+- **Still not a planning stage.** The helper never sets
+  `pipeline_status`/`active_stage` itself, never touches
+  `experience_plan`, `validation_report`, `destination_context`'s
+  candidate lists, `provider_coverage`, or `data_sources_used`, and never
+  passes a proposal or `GroundedCandidate` to `ExperiencePlannerService`
+  or `CandidateQualityService` -- neither service references the Step
+  160C fields at all. A completed shadow grounding result is never
+  scheduled.
+- **Default `not_connected` provider stays safe when enabled.** With
+  shadow mode on but no `AI_CANDIDATE_PROPOSAL_PROVIDER=anthropic`
+  configured, the stored `AICandidateProposalBatch.result` is an honest
+  `not_connected` result (empty proposals) and the stored
+  `CandidateGroundingBatch.result` is `skipped` -- the same safe default
+  `AICandidateDiscoveryService.dry_run` already produced before this step,
+  now just persisted rather than discarded.
+- **Anthropic can be selected through config, but proposals still require
+  grounding and are never scheduled.** Setting both
+  `AI_CANDIDATE_DISCOVERY_SHADOW_MODE_ENABLED=true` and
+  `AI_CANDIDATE_PROPOSAL_PROVIDER=anthropic` (Step 161A) makes the shadow
+  stage call the real Anthropic-backed provider. A missing
+  `ANTHROPIC_API_KEY` still never crashes generation -- the adapter itself
+  returns `not_connected` (section 39 above), and the shadow stage stores
+  that honestly. Whatever proposals the provider does return still go
+  through `CandidateGroundingService` inside the same `dry_run` call
+  before being stored -- an ungrounded proposal is never treated as
+  schedulable, and nothing here feeds `ExperiencePlannerService`.
+- **Fails safe.** If `dry_run` (or assembling the batches from its
+  result) raises unexpectedly, the shadow stage catches it and leaves
+  `planning_state` exactly as it already was -- both fields stay at
+  whatever value they already had (normally `None`), trip generation
+  continues normally, and no partial or fabricated batch is ever stored.
+- **`PlanningOrchestrator` now imports `AICandidateDiscoveryService`.**
+  Unlike Step 160D/160E's deliberate non-wiring, this is expected as of
+  Step 161B -- `test_ai_candidate_discovery_safety.py`/
+  `test_ai_candidate_discovery_service.py` assert the import is present
+  but confirm no other production module (API routes, scheduling,
+  validation, or regeneration/feedback/versioning services) imports it.
+- **No frontend, scheduling, validation-readiness, or regeneration
+  impact.** Nothing in this step touches `frontend/`, changes what
+  `ExperiencePlannerService` schedules, changes `PlanValidatorService`'s
+  logic, or changes `RegenerationReadinessService`/`FeedbackService`
+  behavior -- see `test_ai_candidate_discovery_shadow_mode.py` for tests
+  proving `experience_plan` and `validation_report.readiness_status` are
+  identical with shadow mode on vs. off for the same deterministic test
+  providers.

@@ -49,6 +49,18 @@ class Settings(BaseSettings):
         default="not_connected", alias="AI_CANDIDATE_PROPOSAL_PROVIDER"
     )
 
+    # Config gate for PlanningOrchestrator's AI candidate discovery shadow
+    # stage (Step 161B, docs/13_llm_reasoning_pipeline.md section 40).
+    # Disabled by default: normal trip generation leaves
+    # PlanningState.ai_candidate_proposal_batch/candidate_grounding_batch
+    # (Step 160C) at None exactly as before unless this is explicitly True.
+    # Enabling it only ever stores AICandidateDiscoveryService.dry_run's
+    # already-validated artifacts -- it never feeds scheduling, validation
+    # readiness, or regeneration.
+    ai_candidate_discovery_shadow_mode_enabled: bool = Field(
+        default=False, alias="AI_CANDIDATE_DISCOVERY_SHADOW_MODE_ENABLED"
+    )
+
     google_places_api_key: str | None = Field(default=None, alias="GOOGLE_PLACES_API_KEY")
     google_routes_api_key: str | None = Field(default=None, alias="GOOGLE_ROUTES_API_KEY")
     mapbox_access_token: str | None = Field(default=None, alias="MAPBOX_ACCESS_TOKEN")
@@ -89,6 +101,16 @@ class Settings(BaseSettings):
         env_file=".env",
         env_file_encoding="utf-8",
         extra="ignore",
+        # Every field below has an explicit alias (its env var name) for
+        # real env-var/`.env` loading, which is unaffected by this flag.
+        # Without `populate_by_name`, direct keyword construction like
+        # `Settings(some_field=...)` -- the pattern this test suite already
+        # uses throughout -- silently falls back to that field's default
+        # instead of applying the override (pydantic only accepts a
+        # field's alias for keyword population unless this is set). This
+        # only widens accepted keyword-construction input; it changes
+        # nothing about how real settings are loaded.
+        populate_by_name=True,
     )
 
     def resolved_local_storage_path(self) -> Path:
