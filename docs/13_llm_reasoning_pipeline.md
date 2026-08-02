@@ -1397,3 +1397,80 @@ setting `AI_CANDIDATE_PROPOSAL_PROVIDER=anthropic`.
   network call is made, and no real `ANTHROPIC_API_KEY` is required for
   the test suite. `AICandidateDiscoveryService`'s default `dry_run` call
   is unaffected and still returns `not_connected`/`skipped`.
+
+---
+
+## 40. Config-Gated AI Candidate Discovery Shadow Mode (Step 161B)
+
+Step 161B gives `AICandidateDiscoveryService.dry_run` (Steps 157A-160E,
+safety-hardened in Step 160D, extended with a real Claude/Anthropic-backed
+adapter in Step 161A) its first runtime caller. `PlanningOrchestrator` now
+defines a private helper,
+`_run_ai_candidate_discovery_shadow_stage(planning_state: PlanningState) ->
+PlanningState`, called once per generation after the destination context
+stage runs.
+
+- **Disabled by default.** The helper is gated by
+  `Settings.ai_candidate_discovery_shadow_mode_enabled`
+  (`AI_CANDIDATE_DISCOVERY_SHADOW_MODE_ENABLED`, default `False`). When
+  disabled -- the default for every existing deployment and test -- the
+  helper returns `planning_state` completely untouched: `POST
+  /trips/{trip_id}/generate` behaves exactly as it did before this step,
+  and `planning_state.ai_candidate_proposal_batch` /
+  `.candidate_grounding_batch` (Step 160C's storage fields) stay `None`.
+- **What "enabled" actually does.** When the flag is on and
+  `planning_state.destination_context` already exists, the helper calls
+  `AICandidateDiscoveryService().dry_run(planning_state)` and stores the
+  validated request/result pairs it returns:
+  `AICandidateProposalBatch(request=result.proposal_request,
+  result=result.proposal_result)` into `ai_candidate_proposal_batch`, and
+  `CandidateGroundingBatch(request=result.grounding_request,
+  result=result.grounding_result)` into `candidate_grounding_batch`. Both
+  fields still validate through their existing Step 157A/158A contract
+  models -- no new validation rule, no raw prompt text, no unvalidated
+  provider response.
+- **This is "shadow mode," not integration.** Storing these batches is
+  purely for later inspection. The helper never mutates
+  `destination_context.candidate_pois` / `candidate_restaurants` /
+  `candidate_accommodation_pois`, never passes any `AICandidateProposal`
+  or `GroundedCandidate` into `ExperiencePlannerService` (scheduling) or
+  `CandidateQualityService` (pre-ranking), never changes
+  `validation_report.readiness_status`, never affects
+  `RegenerationReadinessService`/`PlanDiffPreviewService`, and never adds
+  an AI-related name to `provider_coverage` or `data_sources_used`. A
+  Claude/Anthropic-backed proposal (Step 161A) is exactly as unscheduled
+  as a `not_connected` one -- every proposal, from any provider, still has
+  to pass through `CandidateGroundingService` against real supplied
+  `destination_context` evidence before it is even a `GroundedCandidate`,
+  and nothing downstream of this helper consumes a `GroundedCandidate`
+  yet.
+- **Fails safe.** If `AICandidateDiscoveryService.dry_run` raises for any
+  reason (a misbehaving injected provider, a network-level exception from
+  a real adapter, anything), the helper catches it, stores nothing, and
+  generation continues exactly as if shadow mode were disabled for that
+  request -- it never crashes `POST /trips/{trip_id}/generate` and never
+  fabricates a proposal or grounded candidate to compensate.
+- **Test coverage
+  (`backend/app/tests/services/test_ai_candidate_discovery_shadow_mode.py`)**
+  proves, using only in-file deterministic fake proposal providers/discovery
+  services (never a real network call, never a required
+  `ANTHROPIC_API_KEY`): the config default is `False`; default generation
+  leaves both batch fields `None`; enabling shadow mode with the default
+  `not_connected` provider still succeeds and stores a `not_connected`
+  proposal batch and a `skipped` grounding batch; running the same trip
+  request through the full pipeline with shadow mode disabled vs. enabled
+  produces an identical `experience_plan`, identical
+  `validation_report.readiness_status`, and identical
+  `destination_context` candidates; both batch fields round-trip through
+  the real planning-state repository; an `AnthropicAICandidateProposalProvider`
+  with no API key configured does not crash generation; an injected fake
+  discovery service returning a `completed` proposal/grounding result still
+  is not scheduled by `ExperiencePlannerService` and is not consumed by
+  `CandidateQualityService`; a raising fake discovery service is swallowed
+  fail-safe; and no forbidden factual field (price, rating, opening hours,
+  route time, booking URL, review count, ticket price, availability, safety
+  score) ever appears in a stored batch dump.
+- **No frontend, scheduling, or regeneration change.** This step touches
+  only `backend/app/core/config.py` and
+  `backend/app/services/planning_orchestrator.py`; no frontend file, no
+  scheduling logic, and no regeneration logic changed.

@@ -49,6 +49,17 @@ class Settings(BaseSettings):
         default="not_connected", alias="AI_CANDIDATE_PROPOSAL_PROVIDER"
     )
 
+    # Config gate for PlanningOrchestrator._run_ai_candidate_discovery_shadow_stage
+    # (Step 161B, docs/13_llm_reasoning_pipeline.md section 40). Default is
+    # False so normal generation is completely unaffected -- when disabled,
+    # AICandidateDiscoveryService.dry_run is never called during generation
+    # and ai_candidate_proposal_batch/candidate_grounding_batch stay None,
+    # exactly as before this step.
+    ai_candidate_discovery_shadow_mode_enabled: bool = Field(
+        default=False,
+        alias="AI_CANDIDATE_DISCOVERY_SHADOW_MODE_ENABLED",
+    )
+
     google_places_api_key: str | None = Field(default=None, alias="GOOGLE_PLACES_API_KEY")
     google_routes_api_key: str | None = Field(default=None, alias="GOOGLE_ROUTES_API_KEY")
     mapbox_access_token: str | None = Field(default=None, alias="MAPBOX_ACCESS_TOKEN")

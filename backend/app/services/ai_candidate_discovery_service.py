@@ -17,15 +17,19 @@ from app.services.ai_candidate_proposal_request_builder import AICandidatePropos
 from app.services.candidate_grounding_request_builder import CandidateGroundingRequestBuilder
 from app.services.candidate_grounding_service import CandidateGroundingService
 
-# Dry-run composition service for the future candidate-discovery flow (Step
-# 160B, itinerary-generator-build-spec.md Stages 5-6,
-# docs/13_llm_reasoning_pipeline.md section 35,
-# docs/14_backend_architecture.md section 25). This wires together four
-# already-safe pieces built in Steps 157B/159A/159B/160A --
-# `AICandidateProposalRequestBuilder` -> a proposal provider ->
+# Dry-run composition service for the candidate-discovery flow (Step 160B,
+# itinerary-generator-build-spec.md Stages 5-6, docs/13_llm_reasoning_
+# pipeline.md section 35, docs/14_backend_architecture.md section 25). This
+# wires together four already-safe pieces built in Steps 157B/159A/159B/160A
+# -- `AICandidateProposalRequestBuilder` -> a proposal provider ->
 # `CandidateGroundingRequestBuilder` -> `CandidateGroundingService` -- into
-# one deterministic call, without adding a real LLM and without any
-# runtime/orchestrator wiring.
+# one deterministic call, without adding a real LLM.
+#
+# `PlanningOrchestrator._run_ai_candidate_discovery_shadow_stage` (Step
+# 161B, docs/13_llm_reasoning_pipeline.md section 40) is the only production
+# caller of this service, and only when
+# `Settings.ai_candidate_discovery_shadow_mode_enabled` is explicitly set --
+# default app/generation behavior is unaffected by that wiring.
 #
 # The default `proposal_provider` is resolved through
 # `get_ai_candidate_proposal_provider` (Step 160E, docs/13_llm_reasoning_
@@ -63,7 +67,9 @@ class AICandidateDiscoveryService:
     `dry_run` only ever reads `planning_state` (via the injected builders)
     and calls the injected proposal provider / grounding service -- it
     never mutates `planning_state`, never persists anything, and never
-    schedules anything. It is not called by `PlanningOrchestrator`.
+    schedules anything. It is only called by `PlanningOrchestrator` when
+    shadow mode is explicitly enabled (Step 161B); by default it is not
+    called by anything in the runtime pipeline.
     """
 
     def __init__(

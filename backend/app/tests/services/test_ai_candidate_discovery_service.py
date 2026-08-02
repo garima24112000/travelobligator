@@ -532,13 +532,21 @@ def _imported_module_names(module: object) -> list[str]:
     return imported_names
 
 
-def test_planning_orchestrator_does_not_import_discovery_service() -> None:
+def test_planning_orchestrator_imports_discovery_service_only_for_shadow_stage() -> None:
+    """Step 161B: `PlanningOrchestrator` now imports `AICandidateDiscoveryService`
+    solely to construct the default `ai_candidate_discovery_service` used by
+    its config-gated `_run_ai_candidate_discovery_shadow_stage` helper (see
+    backend/app/tests/services/test_ai_candidate_discovery_shadow_mode.py for
+    full coverage of that helper's disabled/enabled/fail-safe behavior).
+    Default (shadow-mode-disabled) generation behavior is unchanged by this
+    import -- it is not a general scheduling/validation/regeneration wiring.
+    """
     import app.services.planning_orchestrator as orchestrator_module
 
     imported_names = _imported_module_names(orchestrator_module)
 
-    assert not any("ai_candidate_discovery_service" in name for name in imported_names)
-    assert not any(name == "AICandidateDiscoveryService" for name in imported_names)
+    assert any("ai_candidate_discovery_service" in name for name in imported_names)
+    assert any(name == "AICandidateDiscoveryService" for name in imported_names)
 
 
 def test_api_routes_do_not_import_discovery_service() -> None:
