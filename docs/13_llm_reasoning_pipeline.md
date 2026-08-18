@@ -1628,3 +1628,100 @@ scheduling, validation, or regeneration in any way.
   pulls in the `langsmith` package -- this module does not import
   `langsmith` directly, and does not set any LangSmith tracing environment
   variable or configuration.
+
+---
+
+## 43. AI Candidate Shadow Node Wired Into the LangGraph Skeleton (Step 162C)
+
+Step 162C replaces `backend/app/graphs/planning_graph.py`'s Step 162B
+placeholder (`ai_candidate_shadow_placeholder_node`, always a no-op) with a
+real node, `ai_candidate_shadow_node`, that calls the existing
+`AICandidateDiscoveryService.dry_run` -- but only when shadow mode is
+explicitly enabled. **The graph is still not wired into `/generate` or any
+other runtime path**; this step only gives the graph's shadow node the same
+real (config-gated, off-by-default) behavior
+`PlanningOrchestrator._run_ai_candidate_discovery_shadow_stage` (Step 161B)
+already has.
+
+- **Same safe-default gate as the orchestrator's shadow stage.** The node
+  reads `Settings.ai_candidate_discovery_shadow_mode_enabled`
+  (`AI_CANDIDATE_DISCOVERY_SHADOW_MODE_ENABLED`, default `False`) live via
+  `get_settings()` on every run, exactly like
+  `PlanningOrchestrator._run_ai_candidate_discovery_shadow_stage` does --
+  `build_planning_graph`'s new `shadow_mode_enabled` parameter only exists
+  so tests can force an explicit override; it changes nothing about the
+  live-settings default path. `Settings.ai_candidate_proposal_provider`
+  (`AI_CANDIDATE_PROPOSAL_PROVIDER`, default `"not_connected"`) is
+  similarly untouched by this step -- whichever provider
+  `AICandidateDiscoveryService`'s underlying factory call resolves (Groq,
+  Anthropic, or the default not_connected) is exactly as config-gated as
+  it already was.
+- **No stage logic duplicated.** The node calls exactly one method,
+  `ai_candidate_discovery_service.dry_run(planning_state)` -- the same
+  `AICandidateDiscoveryService` (Steps 157A-161B) `PlanningOrchestrator`
+  already uses, injected via `PlanningGraphRunner`'s constructor (mirroring
+  every other stage service's DI pattern in this module). No new
+  discovery/grounding logic is written in the graph module itself.
+- **Three-way gate, matching the orchestrator's shadow stage exactly:**
+  - Disabled (the default) -> no-op: `executed_nodes` still records
+    `"ai_candidate_shadow"` ran, but no batch field is touched.
+  - Enabled but `planning_state.destination_context` is still `None` ->
+    no-op: the discovery service is never called without real candidate
+    data to ground against (grounding needs `destination_context`'s
+    candidate lists).
+  - Enabled and `destination_context` exists -> calls `dry_run`, then
+    stores `AICandidateProposalBatch(request=..., result=...)` and
+    `CandidateGroundingBatch(request=..., result=...)` onto
+    `planning_state`, reusing the exact same batch models
+    `PlanningOrchestrator`'s shadow stage already constructs -- no new
+    model, no new validation rule.
+- **Fails safe on any exception.** If `dry_run` raises for any reason, the
+  node stores nothing and appends one generic, secret-free marker string
+  to the graph's `errors` list (never the raw exception message, a prompt,
+  an API key, or a raw LLM response) -- and the graph continues to run
+  every remaining node exactly as if shadow mode were disabled for that
+  run. This never raises out of the node itself.
+- **Still shadow-only -- nothing downstream consumes a proposal or grounded
+  candidate.** `candidate_quality_node` (which runs *before*
+  `ai_candidate_shadow_node`) and `experience_plan_node`,
+  `stay_transport_node`, `trip_strategy_node`, `validation_node` (which all
+  run through their existing service `run(planning_state)` method) have no
+  parameter through which an AI proposal or `GroundedCandidate` could ever
+  be passed in -- `CandidateQualityService.build_report` and
+  `ExperiencePlannerService.run` both take only `planning_state` as their
+  sole argument, structurally identical to how
+  `PlanningOrchestrator`/`ExperiencePlannerService` already guarantee this
+  (docs/14_backend_architecture.md section 25, Step 156C/156E). Neither
+  `provider_coverage` nor `data_sources_used` ever gains a Groq/Anthropic/
+  AI-related source name from this node.
+- **Never persists.** Exactly like every other node, storing the batches
+  onto `planning_state` is an in-memory mutation only -- `PlanningGraphRunner.run`
+  still never calls `PlanningStateRepository`/`TripRepository`.
+- **No real Groq/Anthropic API call in automated tests.**
+  `backend/app/tests/graphs/test_planning_graph.py` adds a
+  `_FakeAICandidateDiscoveryService` test double that returns a canned
+  `AICandidateDiscoveryDryRunResult` built entirely from existing, already-
+  validated models (`AICandidateProposalRequest`/`Result`,
+  `CandidateGroundingRequest`/`Result`, `GroundedCandidate`,
+  `RejectedCandidateProposal`) -- never a dict, never a real provider call.
+  Tests prove: the node is a no-op with batches untouched when disabled;
+  a no-op when `destination_context` is missing even with shadow mode
+  forced on; the fake discovery service is called exactly once when
+  enabled with `destination_context` present; not_connected/skipped,
+  completed, and partial fake results all store correctly; a raising fake
+  discovery service is swallowed fail-safe with only a generic marker
+  appended to `errors`, and every other observable field (data sources
+  used, candidate quality report) stays identical whether shadow mode is
+  disabled or enabled-but-failing; node execution order stays exactly
+  `traveler_profile -> destination_context -> candidate_quality ->
+  ai_candidate_shadow -> trip_strategy -> stay_transport ->
+  experience_plan -> validation`; the graph runner still never saves to
+  either repository; neither `PlanningOrchestrator` nor
+  `app/api/routes/trips.py` import the graph module;
+  `PlanningOrchestrator.generate_full_plan`'s own source has no reference
+  to a graph; and `POST /trips/{trip_id}/generate` behaves exactly as
+  before this step.
+- **No scheduling, validation, or regeneration behavior changes.** This
+  step touches only `backend/app/graphs/planning_graph.py` and its test
+  file -- no frontend file, no `ExperiencePlannerService`/
+  `PlanValidatorService` logic, and no regeneration logic changed.

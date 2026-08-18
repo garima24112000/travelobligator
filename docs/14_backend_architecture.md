@@ -1090,19 +1090,35 @@ scheduling; if there aren't enough of them to fill every day/pace slot,
 the day is left lighter instead, with an honest per-day warning explaining
 why. See docs/18_candidate_quality.md section 8 for the full behavior.
 
-**Optional LangGraph graph wrapper (Step 162B, `backend/app/graphs/`,
-docs/13_llm_reasoning_pipeline.md section 42).** A `PlanningGraphRunner`/
-`build_planning_graph` LangGraph `StateGraph` skeleton mirrors
-`PlanningOrchestrator`'s stage order, calling the same stage services
-`PlanningOrchestrator` calls -- no stage logic is duplicated in a graph
-node. **`PlanningOrchestrator` remains the active runtime path**: this
-graph is not wired into `generate_full_plan`, not imported by any API
-route, and does not change `/trips/{trip_id}/generate` behavior,
-scheduling, validation, or regeneration. Its `ai_candidate_shadow_placeholder`
-node is a deliberate no-op in this step (no LLM call of any kind); a future
-step is expected to wire the real shadow-mode call there. No module-level
-graph singleton is constructed, matching the "not yet wired" boundary used
-by every other unwired piece of the AI-candidate-discovery track.
+**Optional LangGraph graph wrapper (Step 162B, extended in Step 162C,
+`backend/app/graphs/`, docs/13_llm_reasoning_pipeline.md sections 42-43).**
+A `PlanningGraphRunner`/`build_planning_graph` LangGraph `StateGraph`
+skeleton mirrors `PlanningOrchestrator`'s stage order, calling the same
+stage services `PlanningOrchestrator` calls -- no stage logic is
+duplicated in a graph node. **`PlanningOrchestrator` remains the active
+runtime path and this graph is still not production runtime**: it is not
+wired into `generate_full_plan`, not imported by any API route, and does
+not change `/trips/{trip_id}/generate` behavior, scheduling, validation,
+or regeneration.
+
+As of Step 162C, the graph's `ai_candidate_shadow` node (renamed from Step
+162B's always-no-op `ai_candidate_shadow_placeholder`) is real but
+**shadow-only**: it calls the existing `AICandidateDiscoveryService.dry_run`
+-- the same service `PlanningOrchestrator._run_ai_candidate_discovery_shadow_stage`
+already uses -- but only when `Settings.ai_candidate_discovery_shadow_mode_enabled`
+(default `False`) is explicitly on and `destination_context` already
+exists; disabled or missing context both leave the node a no-op. On
+success it stores `ai_candidate_proposal_batch`/`candidate_grounding_batch`
+for inspection only, using the exact same batch models the orchestrator's
+shadow stage already produces; on any exception it fails safe (a generic,
+secret-free marker appended to the graph's `errors`, nothing stored, no
+raise). Nothing downstream of this node -- `experience_plan`,
+`stay_transport`, `trip_strategy`, `validation` -- has any parameter
+through which a proposal or grounded candidate could reach it, and
+`candidate_quality` already ran earlier, so it can never consume one
+either. No module-level graph singleton is constructed, matching the "not
+yet wired" boundary used by every other unwired piece of the
+AI-candidate-discovery track.
 
 ---
 

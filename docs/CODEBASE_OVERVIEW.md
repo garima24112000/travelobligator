@@ -271,7 +271,9 @@ A human-run-only smoke script, `backend/scripts/manual_anthropic_shadow_smoke.py
 
 **Net effect**: this entire subsystem is fully built and tested but produces zero effect on any itinerary served today.
 
-**LangGraph skeleton (Step 162B, `backend/app/graphs/planning_graph.py`)**: a separate, not-yet-wired `StateGraph` that mirrors `PlanningOrchestrator`'s deterministic stage order (`traveler_profile → destination_context → candidate_quality → ai_candidate_shadow_placeholder → trip_strategy → stay_transport → experience_plan → validation`), calling the exact same stage services `PlanningOrchestrator` calls — no stage logic is duplicated. `PlanningOrchestrator.generate_full_plan` remains the only active runtime path; this graph module is not imported by any API route or by the orchestrator, and its `ai_candidate_shadow_placeholder` node is a deliberate no-op (Step 162C is expected to wire a real shadow-mode call there).
+**LangGraph skeleton (Step 162B, `backend/app/graphs/planning_graph.py`)**: a separate, not-yet-wired `StateGraph` that mirrors `PlanningOrchestrator`'s deterministic stage order (`traveler_profile → destination_context → candidate_quality → ai_candidate_shadow → trip_strategy → stay_transport → experience_plan → validation`), calling the exact same stage services `PlanningOrchestrator` calls — no stage logic is duplicated. `PlanningOrchestrator.generate_full_plan` remains the only active runtime path; this graph module is not imported by any API route or by the orchestrator.
+
+**Step 162C** wired the graph's `ai_candidate_shadow` node to the existing `AICandidateDiscoveryService.dry_run` (the same call `PlanningOrchestrator`'s own shadow stage already makes), gated the same way — off by default, calls only when shadow mode is explicitly enabled and `destination_context` exists, fails safe on any exception. The graph itself remains non-runtime: still not wired into `/generate`, still not imported by any API route.
 
 ### 6.5 Data Models
 
