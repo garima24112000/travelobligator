@@ -1090,6 +1090,20 @@ scheduling; if there aren't enough of them to fill every day/pace slot,
 the day is left lighter instead, with an honest per-day warning explaining
 why. See docs/18_candidate_quality.md section 8 for the full behavior.
 
+**Optional LangGraph graph wrapper (Step 162B, `backend/app/graphs/`,
+docs/13_llm_reasoning_pipeline.md section 42).** A `PlanningGraphRunner`/
+`build_planning_graph` LangGraph `StateGraph` skeleton mirrors
+`PlanningOrchestrator`'s stage order, calling the same stage services
+`PlanningOrchestrator` calls -- no stage logic is duplicated in a graph
+node. **`PlanningOrchestrator` remains the active runtime path**: this
+graph is not wired into `generate_full_plan`, not imported by any API
+route, and does not change `/trips/{trip_id}/generate` behavior,
+scheduling, validation, or regeneration. Its `ai_candidate_shadow_placeholder`
+node is a deliberate no-op in this step (no LLM call of any kind); a future
+step is expected to wire the real shadow-mode call there. No module-level
+graph singleton is constructed, matching the "not yet wired" boundary used
+by every other unwired piece of the AI-candidate-discovery track.
+
 ---
 
 ## 26. Suggested Backend Folder Structure

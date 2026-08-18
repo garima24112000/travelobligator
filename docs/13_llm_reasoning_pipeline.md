@@ -1554,3 +1554,77 @@ the same shadow-mode-only treatment Anthropic does.
   (`GROQ_API_KEY`, default `None`) and `groq_model` (`GROQ_MODEL`, default
   `"openai/gpt-oss-20b"`), following the exact same optional/safe-default
   pattern as `anthropic_api_key`/`anthropic_model`.
+
+---
+
+## 42. LangGraph Skeleton Around the Deterministic Planning Pipeline (Step 162B)
+
+**This is a LangGraph skeleton only -- architecture/resume foundation, not
+a runtime change.** `backend/app/graphs/planning_graph.py` defines a
+LangGraph `StateGraph` that mirrors `PlanningOrchestrator`'s existing
+deterministic stage order, but it is not wired into
+`PlanningOrchestrator.generate_full_plan`, is not imported by any API
+route, and does not change `POST /trips/{trip_id}/generate` behavior,
+scheduling, validation, or regeneration in any way.
+
+- **No LLM call of any kind.** This step calls no LLM -- not Groq (Step
+  162A), not Anthropic (Step 161A), not any other provider. No Kiwi/MCP
+  integration and no scraping are added. The graph nodes call only the
+  existing deterministic stage services, exactly as `PlanningOrchestrator`
+  already does.
+- **`PlanningState` remains the single source of truth.** `PlanningGraphState`
+  (a `TypedDict`) carries `planning_state: PlanningState` through the graph
+  unchanged in shape; `executed_nodes` and `errors` are a test/debug-only
+  trace, not new plan data. No node reconstructs, duplicates, or bypasses
+  `PlanningState`.
+- **No stage logic is duplicated.** Every node calls exactly one existing
+  service method and nothing else:
+  - `traveler_profile_node` -> `TravelerProfileService.run`
+  - `destination_context_node` -> `DestinationContextService.run`
+  - `candidate_quality_node` -> `CandidateQualityService.build_report`,
+    stored onto `planning_state.candidate_quality_report` exactly like
+    `PlanningOrchestrator.run_destination_context_stage` already does (Step
+    156B)
+  - `ai_candidate_shadow_placeholder_node` -> **a deliberate no-op**. It
+    does not call `AICandidateDiscoveryService`, Groq, or Anthropic, and it
+    leaves `ai_candidate_proposal_batch`/`candidate_grounding_batch`
+    untouched -- it only records that the node executed. **Step 162C is
+    expected to wire the real config-gated shadow-mode call into this
+    node.**
+  - `trip_strategy_node` -> `TripStrategyService.run`
+  - `stay_transport_node` -> `StayTransportService.run`
+  - `experience_plan_node` -> `ExperiencePlannerService.run`
+  - `validation_node` -> `PlanValidatorService.run`
+- **Node order matches the documented pipeline order** (docs/14_backend_
+  architecture.md section 7), with `candidate_quality` and
+  `ai_candidate_shadow_placeholder` inserted at the same points
+  `PlanningOrchestrator` already runs them (inline inside
+  `run_destination_context_stage`):
+  `START -> traveler_profile -> destination_context -> candidate_quality ->
+  ai_candidate_shadow_placeholder -> trip_strategy -> stay_transport ->
+  experience_plan -> validation -> END`.
+- **Dependency injection throughout, no module-level singleton.**
+  `PlanningGraphRunner.__init__` accepts every stage service and defaults
+  to constructing the real ones (mirroring `PlanningOrchestrator.__init__`'s
+  own pattern) only when not injected. Tests inject fake stage-service
+  doubles so no real provider/network call is ever made. Unlike
+  `planning_orchestrator` (a module-level singleton `PlanningOrchestrator()`
+  instance), no `PlanningGraphRunner`/graph singleton is constructed at
+  import time or imported by any API route.
+- **Never persists anything.** `PlanningGraphRunner.run` never calls
+  `PlanningStateRepository`/`TripRepository` -- persistence stays the
+  caller's responsibility, exactly as it already is for
+  `PlanningOrchestrator`'s individual stage-runner methods.
+- **No real LLM/provider call in tests.**
+  `backend/app/tests/graphs/test_planning_graph.py` proves the graph
+  compiles, runs nodes in the exact documented order, returns a
+  `PlanningState`, calls only injected fake services, never saves to either
+  repository, is not imported by `PlanningOrchestrator` or
+  `app/api/routes/trips.py`, and that `POST /trips/{trip_id}/generate`
+  behaves exactly as before this step -- all using only in-file fake
+  service doubles, never a real provider or LLM call.
+- **No LangSmith runtime configuration added.** `langgraph` depends on
+  `langchain-core`, which (as already noted in Step 162A) transitively
+  pulls in the `langsmith` package -- this module does not import
+  `langsmith` directly, and does not set any LangSmith tracing environment
+  variable or configuration.
