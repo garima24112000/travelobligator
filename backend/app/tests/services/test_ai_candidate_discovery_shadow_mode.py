@@ -9,6 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import app.providers.ai_candidate_proposal.anthropic_adapter as anthropic_adapter_module
+import app.providers.ai_candidate_proposal.groq_adapter as groq_adapter_module
 import app.services.planning_orchestrator as orchestrator_module
 from app.core.config import Settings
 from app.models.ai_candidate_proposal import (
@@ -23,6 +24,7 @@ from app.models.ai_candidate_proposal import (
 from app.models.planning_state import DestinationContext, PlanningState, TravelGroupType, TripRequest
 from app.providers.ai_candidate_proposal import AICandidateProposalProvider
 from app.providers.ai_candidate_proposal.anthropic_adapter import AnthropicAICandidateProposalProvider
+from app.providers.ai_candidate_proposal.groq_adapter import GroqAICandidateProposalProvider
 from app.services.ai_candidate_discovery_service import AICandidateDiscoveryService
 from app.services.planning_orchestrator import PlanningOrchestrator
 
@@ -426,6 +428,38 @@ def test_shadow_mode_with_anthropic_provider_missing_api_key_does_not_crash(
     assert planning_state.ai_candidate_proposal_batch is not None
     assert planning_state.ai_candidate_proposal_batch.result.status == AICandidateProposalStatus.NOT_CONNECTED
     assert planning_state.candidate_grounding_batch is not None
+
+
+# ---------------------------------------------------------------------------
+# 12b. Shadow mode with provider=groq and no GROQ_API_KEY does not crash
+#      generation (Step 162A).
+# ---------------------------------------------------------------------------
+
+
+def test_shadow_mode_with_groq_provider_missing_api_key_does_not_crash(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(groq_adapter_module, "get_settings", lambda: Settings(GROQ_API_KEY=None))
+    monkeypatch.setattr(
+        orchestrator_module,
+        "get_settings",
+        lambda: Settings(AI_CANDIDATE_DISCOVERY_SHADOW_MODE_ENABLED=True),
+    )
+    provider = GroqAICandidateProposalProvider(api_key=None)
+    service = AICandidateDiscoveryService(proposal_provider=provider)
+    orchestrator = PlanningOrchestrator(ai_candidate_discovery_service=service)
+
+    planning_state = orchestrator.create_trip(_trip_request())
+    planning_state = orchestrator.run_traveler_profile_stage(planning_state)
+    planning_state = orchestrator.run_destination_context_stage(planning_state)  # must not raise
+
+    assert planning_state.ai_candidate_proposal_batch is not None
+    assert planning_state.ai_candidate_proposal_batch.result.status == AICandidateProposalStatus.NOT_CONNECTED
+    assert planning_state.ai_candidate_proposal_batch.result.proposals == []
+    assert planning_state.candidate_grounding_batch is not None
+    from app.models.candidate_grounding import CandidateGroundingStatus
+
+    assert planning_state.candidate_grounding_batch.result.status == CandidateGroundingStatus.SKIPPED
 
 
 # ---------------------------------------------------------------------------

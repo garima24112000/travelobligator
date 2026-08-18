@@ -6,6 +6,7 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
+from app.core.config import get_settings
 from app.main import app
 from app.models.common import DataStatus, GeoPoint, ProviderStatus
 from app.models.providers import NormalizedPlace, ProviderResponse
@@ -14,6 +15,31 @@ from app.providers.gateway import provider_gateway
 from app.repositories.planning_state_repository import planning_state_repository
 from app.repositories.trip_repository import trip_repository
 from app.storage.local_json_store import LocalJsonStore
+
+
+@pytest.fixture(autouse=True)
+def _isolate_ai_candidate_proposal_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Isolates the automated test suite from whatever a developer's local
+    `.env` happens to set for AI candidate proposal config (Step 162A fix,
+    docs/13_llm_reasoning_pipeline.md section 41). `Settings.model_config`
+    still reads `.env` normally for real app/dev-server startup -- this
+    fixture only forces the documented, safe defaults as real OS
+    environment variables (which `pydantic-settings` prioritizes over the
+    `.env` file) for the lifetime of each test.
+
+    A test that wants to exercise non-default config still can, either by
+    calling `monkeypatch.setenv(...)` itself (this fixture's overrides
+    apply first in the same test, so a later call in the test body wins),
+    or by monkeypatching `get_settings` / constructing `Settings(...)`
+    directly, which bypasses environment resolution entirely.
+    """
+    monkeypatch.setenv("AI_CANDIDATE_PROPOSAL_PROVIDER", "not_connected")
+    monkeypatch.setenv("AI_CANDIDATE_DISCOVERY_SHADOW_MODE_ENABLED", "false")
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
 
 
 class DeterministicTestPlacesProvider(PlacesProvider):

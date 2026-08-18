@@ -1012,6 +1012,27 @@ through `AICandidateProposalResult`/`AICandidateProposal`, never calls
 stays reachable only through explicit injection, config, or (Step 161B
 below) the optional shadow-mode orchestration.
 
+`backend/app/providers/ai_candidate_proposal/groq_adapter.py` contains
+`GroqAICandidateProposalProvider` (Step 162A,
+docs/13_llm_reasoning_pipeline.md section 41) -- **Groq is a second,
+low-cost dev-iteration LLM base for AI candidate proposals, alongside (not
+replacing) Anthropic/Claude.** It calls Groq through
+`langchain_groq.ChatGroq`'s structured-output support, never a raw HTTP
+call. Like the Anthropic adapter, it is config-gated and not the default:
+`get_ai_candidate_proposal_provider` now supports `"groq"` in addition to
+`"not_connected"` and `"anthropic"`, but the factory's default stays
+`"not_connected"`. With no `GROQ_API_KEY` configured -- the default -- the
+adapter itself returns an honest `not_connected` result rather than
+calling the network, and the `langchain_groq` package is only ever
+imported lazily so the app and test suite work whether or not it is
+installed. Every output still validates through
+`AICandidateProposalResult`/`AICandidateProposal`, never calls
+`CandidateGroundingService` or a provider adapter, and never mutates
+`PlanningState`. There is no scheduling/regeneration integration -- it
+stays reachable only through explicit injection or config, and it uses the
+exact same shadow-mode-only path (Step 161B) as Anthropic, since that
+stage calls whichever provider the factory resolves.
+
 `backend/app/services/planning_orchestrator.py` now also defines a
 private `_run_ai_candidate_discovery_shadow_stage` helper (Step 161B,
 docs/13_llm_reasoning_pipeline.md section 40), giving

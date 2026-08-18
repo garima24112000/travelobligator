@@ -1474,3 +1474,83 @@ stage runs.
   only `backend/app/core/config.py` and
   `backend/app/services/planning_orchestrator.py`; no frontend file, no
   scheduling logic, and no regeneration logic changed.
+
+---
+
+## 41. Groq AI Candidate Proposal Provider Adapter (Step 162A)
+
+**Groq is a second, cheap/dev-iteration LLM base for AI candidate
+proposals, alongside (not replacing) the Anthropic/Claude adapter (Step
+161A).** `backend/app/providers/ai_candidate_proposal/groq_adapter.py`
+defines `GroqAICandidateProposalProvider`, a second real (non-
+`not_connected`) `AICandidateProposalProvider` implementation. It is still
+not wired into `PlanningOrchestrator`'s default path, scheduling,
+validation, or regeneration -- it is only reachable by explicitly
+injecting it or by setting `AI_CANDIDATE_PROPOSAL_PROVIDER=groq`. The
+shadow-mode stage (Step 161B) is provider-agnostic: it calls whichever
+`AICandidateProposalProvider` the factory resolves, so Groq gets exactly
+the same shadow-mode-only treatment Anthropic does.
+
+- **Default app behavior remains `not_connected`.** The factory default
+  (`Settings.ai_candidate_proposal_provider`) is unchanged by this step --
+  still `"not_connected"`. Even with `AI_CANDIDATE_PROPOSAL_PROVIDER=groq`
+  explicitly set, a missing `GROQ_API_KEY` (the default) makes `propose`
+  return an honest `not_connected` result -- it never calls the network and
+  never crashes the app or the test suite.
+- **Uses `langchain_groq.ChatGroq`'s structured output, not a raw HTTP
+  call.** The adapter builds a `ChatGroq` client bound to
+  `with_structured_output(_GroqProposalBatchSchema)`, where
+  `_GroqProposalBatchSchema` (and its nested `_GroqProposalSchema`) mirror
+  `AICandidateProposal` field-for-field (`proposal_id`, `candidate_name`,
+  `candidate_type`, `priority_hint`, `suggested_area`, `why_consider`,
+  `fit_with_user_preferences`, `verification_requirements`, `confidence`)
+  and deliberately have no coordinate, provider-id, price, rating,
+  opening-hours, route-time, review-count, ticket-price, availability,
+  booking-link, or safety-score field.
+- **The `langchain_groq` package import is deferred**, kept inside a
+  `_build_client` method rather than a module-level import, exactly like
+  the Anthropic adapter's deferred `anthropic` import -- so the rest of the
+  app, and every test that injects a fake client or exercises the no-key
+  path, keeps working whether or not the package is installed.
+- **Every output still validates through `AICandidateProposalResult`/
+  `AICandidateProposal` before acceptance.** `client.invoke(prompt)`'s
+  return value (a `_GroqProposalBatchSchema` instance, or a plain dict from
+  a simpler injected fake) is normalized to a dict, then each proposal
+  entry is parsed through `AICandidateProposal`'s own validation
+  (forbidden-claim text patterns, non-blank fields, non-empty
+  `verification_requirements`) before it can appear in a `completed`
+  result:
+  - Missing package, missing/unset `GROQ_API_KEY`, or client-construction
+    failure -> `not_connected` (no proposals, zero confidence, failed
+    guardrail explaining why).
+  - The `invoke` call itself raising, an unparseable/non-structured
+    response, or a parsed proposal failing
+    `AICandidateProposal`/`AICandidateProposalResult` validation ->
+    `rejected` (no proposals, failed guardrail explaining why).
+  - A valid, schema-conforming response -> `completed`, with validated
+    proposals, a passed guardrail, `provider_name`, and `model_name`.
+  - No case ever fabricates a proposal to compensate for a failure.
+- **Proposals still require grounding through `CandidateGroundingService`
+  before scheduling**, exactly like every other proposal provider. This
+  adapter never creates a `GroundedCandidate` or `RejectedCandidateProposal`
+  itself, never calls `CandidateGroundingService`, never calls a provider
+  adapter, and never mutates `PlanningState`.
+- **Factory support.** `get_ai_candidate_proposal_provider` (Step 160E) now
+  supports `"groq"` -> `GroqAICandidateProposalProvider()`, alongside
+  `"not_connected"` and `"anthropic"`. The default remains
+  `"not_connected"`, and an unsupported/unrecognized config value still
+  falls back to `NotConnectedAICandidateProposalProvider`.
+- **No real Groq API call in automated tests.**
+  `backend/app/tests/providers/test_groq_ai_candidate_proposal_provider.py`
+  proves the full adapter contract -- no-key path, fake-client success/
+  rejection/exception paths, explicit `api_key`/`model` forwarding into a
+  faked `langchain_groq` module, no forbidden factual field in any result,
+  and no `CandidateGroundingService` call -- using only in-file fake
+  clients. No test in this suite requires a real `GROQ_API_KEY`, and no
+  test imports the real `langchain_groq`/`groq` packages.
+- **No LangGraph in this step.** This adapter calls `ChatGroq` directly; no
+  LangGraph graph/node is added here or anywhere else in this step.
+- **Config.** `backend/app/core/config.py` adds `groq_api_key`
+  (`GROQ_API_KEY`, default `None`) and `groq_model` (`GROQ_MODEL`, default
+  `"openai/gpt-oss-20b"`), following the exact same optional/safe-default
+  pattern as `anthropic_api_key`/`anthropic_model`.

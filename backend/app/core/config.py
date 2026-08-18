@@ -40,6 +40,14 @@ class Settings(BaseSettings):
     anthropic_api_key: str | None = Field(default=None, alias="ANTHROPIC_API_KEY")
     anthropic_model: str = Field(default="claude-sonnet-4-20250514", alias="ANTHROPIC_MODEL")
 
+    # Groq is a second, cheap/dev-only LLM base for AI candidate proposals
+    # (Step 162A, docs/13_llm_reasoning_pipeline.md section 41). Like
+    # `anthropic_api_key`, a missing `groq_api_key` must never crash default
+    # app/test behavior -- `GroqAICandidateProposalProvider.propose` returns
+    # an honest `not_connected` result instead of raising.
+    groq_api_key: str | None = Field(default=None, alias="GROQ_API_KEY")
+    groq_model: str = Field(default="openai/gpt-oss-20b", alias="GROQ_MODEL")
+
     # Config gate for get_ai_candidate_proposal_provider (Step 160E,
     # extended in Step 161A). "not_connected" (default) and "anthropic" are
     # the only supported values today. An unsupported/unrecognized value
@@ -100,6 +108,13 @@ class Settings(BaseSettings):
         env_file=".env",
         env_file_encoding="utf-8",
         extra="ignore",
+        # Lets `Settings(...)` be constructed with plain field names
+        # (e.g. `Settings(groq_api_key=None)`) in addition to the alias/env
+        # var name (`Settings(GROQ_API_KEY=None)`) -- both now bind the same
+        # field. Purely additive: env var / .env resolution still goes
+        # through each field's `alias` exactly as before (Step 162A fix,
+        # docs/13_llm_reasoning_pipeline.md section 41).
+        populate_by_name=True,
     )
 
     def resolved_local_storage_path(self) -> Path:

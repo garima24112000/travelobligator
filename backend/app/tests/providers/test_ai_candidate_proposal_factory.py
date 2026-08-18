@@ -17,6 +17,8 @@ from app.providers.ai_candidate_proposal import (
     get_ai_candidate_proposal_provider,
 )
 from app.providers.ai_candidate_proposal import factory as factory_module
+from app.providers.ai_candidate_proposal.anthropic_adapter import AnthropicAICandidateProposalProvider
+from app.providers.ai_candidate_proposal.groq_adapter import GroqAICandidateProposalProvider
 
 _FORBIDDEN_MODEL_FIELD_NAMES = {
     "price",
@@ -50,8 +52,12 @@ def _request(**overrides: object) -> AICandidateProposalRequest:
 def test_factory_returns_not_connected_provider_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
     # Isolate from any AI_CANDIDATE_PROPOSAL_PROVIDER set in the real
     # environment/.env so this test reflects the documented default.
+    # `_env_file=None` is required, not just `delenv`: pydantic-settings
+    # still reads a local .env file directly regardless of the current
+    # process environment, so a plain `Settings()` here would otherwise
+    # pick up a developer's local .env override.
     monkeypatch.delenv("AI_CANDIDATE_PROPOSAL_PROVIDER", raising=False)
-    monkeypatch.setattr(factory_module, "get_settings", lambda: Settings())
+    monkeypatch.setattr(factory_module, "get_settings", lambda: Settings(_env_file=None))
 
     provider = get_ai_candidate_proposal_provider()
 
@@ -90,6 +96,29 @@ def test_factory_falls_back_to_not_connected_for_unsupported_names(unsupported_n
 
 
 # ---------------------------------------------------------------------------
+# "anthropic" and "groq" remain supported, non-default provider names.
+# ---------------------------------------------------------------------------
+
+
+def test_factory_returns_anthropic_provider_for_explicit_anthropic() -> None:
+    provider = get_ai_candidate_proposal_provider("anthropic")
+    assert isinstance(provider, AnthropicAICandidateProposalProvider)
+
+
+def test_factory_returns_groq_provider_for_explicit_groq() -> None:
+    provider = get_ai_candidate_proposal_provider("groq")
+    assert isinstance(provider, GroqAICandidateProposalProvider)
+
+
+def test_factory_uses_settings_when_provider_is_groq(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        factory_module, "get_settings", lambda: Settings(AI_CANDIDATE_PROPOSAL_PROVIDER="groq")
+    )
+    provider = get_ai_candidate_proposal_provider()
+    assert isinstance(provider, GroqAICandidateProposalProvider)
+
+
+# ---------------------------------------------------------------------------
 # 4. Config default is "not_connected".
 # ---------------------------------------------------------------------------
 
@@ -97,8 +126,11 @@ def test_factory_falls_back_to_not_connected_for_unsupported_names(unsupported_n
 def test_settings_default_ai_candidate_proposal_provider_is_not_connected(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # `_env_file=None` isolates this from a developer's local .env, which
+    # pydantic-settings reads directly regardless of the current process
+    # environment.
     monkeypatch.delenv("AI_CANDIDATE_PROPOSAL_PROVIDER", raising=False)
-    settings = Settings()
+    settings = Settings(_env_file=None)
     assert settings.ai_candidate_proposal_provider == "not_connected"
 
 
