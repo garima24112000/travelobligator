@@ -24,23 +24,10 @@ from app.services.candidate_grounding_service import CandidateGroundingService
 def _no_key_settings() -> Settings:
     """A `Settings` instance that always has no Anthropic API key, no
     matter what `ANTHROPIC_API_KEY` happens to be set to in the ambient
-    environment/local `.env` this suite runs in -- bypasses
-    `get_settings()`'s `lru_cache` entirely rather than relying on
-    `monkeypatch.delenv`.
-
-    Uses the alias kwarg (`ANTHROPIC_API_KEY=`), not the field name
-    (`anthropic_api_key=`): pydantic-settings still reads a local `.env`
-    file directly regardless of the current process environment, and when
-    both an alias-sourced value (from `.env`) and a field-name-sourced
-    value (from an init kwarg) are present, the alias wins -- so
-    `Settings(anthropic_api_key=None)` would silently lose to a
-    developer's local `.env` `ANTHROPIC_API_KEY=...` line (this is exactly
-    what caused this suite to make a real Anthropic API call under
-    `pytest` -- Step 163B fix; see the matching helper and comment in
-    `test_groq_ai_candidate_proposal_provider.py`). The alias kwarg has no
-    such ambiguity.
+    environment this suite runs in -- bypasses `get_settings()`'s
+    `lru_cache` entirely rather than relying on `monkeypatch.delenv`.
     """
-    return Settings(ANTHROPIC_API_KEY=None)
+    return Settings(anthropic_api_key=None)
 
 _FORBIDDEN_MODEL_FIELD_NAMES = {
     "price",
