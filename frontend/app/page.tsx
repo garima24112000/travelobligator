@@ -2757,6 +2757,96 @@ function LockedItemsSummarySection({
   );
 }
 
+const TRAVEL_LOADING_STAGES = [
+  "Preparing your travel plan",
+  "Checking destination data",
+  "Building your draft itinerary",
+  "Validating available provider data",
+  "Almost there",
+];
+
+/**
+ * Decorative-only loading animation shown while a new trip is being created
+ * and generated (Step 163A). Progress and stage copy are driven purely by
+ * local timers -- generation is still a single synchronous
+ * POST /trips/{trip_id}/generate call with no real stage-by-stage signal to
+ * render, so this must never be read as live flight tracking, a real
+ * flight route/duration, booking status, or actual backend pipeline
+ * progress. It resets and unmounts as soon as `isLoading` goes false,
+ * whether that's because the result rendered or an error rendered.
+ */
+function TravelGenerationLoading({
+  originCity,
+  destination,
+  isLoading,
+}: {
+  originCity?: string;
+  destination?: string;
+  isLoading: boolean;
+}) {
+  const [progress, setProgress] = useState(0);
+  const [stageIndex, setStageIndex] = useState(0);
+
+  useEffect(() => {
+    if (!isLoading) {
+      return;
+    }
+
+    const progressTimer = setInterval(() => {
+      setProgress((previous) => (previous >= 88 ? 88 : previous + 4));
+    }, 500);
+    const stageTimer = setInterval(() => {
+      setStageIndex(
+        (previous) => (previous + 1) % TRAVEL_LOADING_STAGES.length,
+      );
+    }, 2200);
+
+    return () => {
+      clearInterval(progressTimer);
+      clearInterval(stageTimer);
+    };
+  }, [isLoading]);
+
+  if (!isLoading) return null;
+
+  const origin = originCity?.trim() || "Origin";
+  const dest = destination?.trim() || "Destination";
+
+  return (
+    <div className="mt-8 rounded-2xl border border-white/10 bg-white/5 p-6">
+      <div className="flex items-center justify-between text-sm font-medium text-slate-300">
+        <span>{origin}</span>
+        <span>{dest}</span>
+      </div>
+      <div
+        className="relative mt-4 h-1.5 rounded-full bg-slate-800"
+        aria-hidden="true"
+      >
+        <div
+          className="h-1.5 rounded-full bg-cyan-400/70 transition-[width] duration-500 motion-reduce:transition-none"
+          style={{ width: `${progress}%` }}
+        />
+        <span
+          className="absolute -top-2.5 -translate-x-1/2 text-base transition-[left] duration-500 motion-reduce:transition-none"
+          style={{ left: `${progress}%` }}
+        >
+          ✈️
+        </span>
+      </div>
+      <p
+        className="mt-4 text-sm text-slate-200"
+        role="status"
+        aria-live="polite"
+      >
+        {TRAVEL_LOADING_STAGES[stageIndex]}
+      </p>
+      <p className="mt-2 text-[11px] text-slate-500">
+        Loading animation only — not live flight tracking.
+      </p>
+    </div>
+  );
+}
+
 export default function Home() {
   const [form, setForm] = useState<TripRequestInput>(DEFAULT_TRIP_REQUEST);
   const [interestsText, setInterestsText] = useState("");
@@ -3122,6 +3212,13 @@ export default function Home() {
             {isLoading ? "Planning..." : "Create trip and generate plan"}
           </button>
         </form>
+
+        <TravelGenerationLoading
+          key={isLoading ? "loading" : "idle"}
+          originCity={form.origin_city}
+          destination={form.primary_destination}
+          isLoading={isLoading}
+        />
 
         {error && (
           <div className="mt-6 rounded-2xl border border-red-400/30 bg-red-400/10 p-5 text-sm text-red-100">
