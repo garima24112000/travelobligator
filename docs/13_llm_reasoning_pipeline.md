@@ -1725,3 +1725,95 @@ already has.
   step touches only `backend/app/graphs/planning_graph.py` and its test
   file -- no frontend file, no `ExperiencePlannerService`/
   `PlanValidatorService` logic, and no regeneration logic changed.
+
+---
+
+## 44. Backend Generation Stage-Progress Model (Step 163B)
+
+Step 163B adds `GenerationProgress`
+(`backend/app/models/planning_state.py`), a dedicated model recording real
+`PlanningOrchestrator` pipeline stage progress during `POST
+/trips/{trip_id}/generate`, plus a read-only `GET
+/trips/{trip_id}/generation-progress` endpoint (docs/11_api_contracts.md
+section 29). **This is preparation for future frontend progress
+polling/animation only -- the frontend is not wired to it in this step.**
+The Step 163A decorative loading animation (frontend/app/page.tsx's
+`TravelGenerationLoading`) continues to run entirely off local UI timer
+state; it does not read `generation_progress` and this step does not
+change that.
+
+- **Real backend stage progress, nothing else.** `GenerationProgress`
+  tracks which named pipeline stage `PlanningOrchestrator.generate_full_plan`
+  is running or has run: `status` (`idle`/`generating`/`completed`/
+  `failed`), `current_stage`/`current_stage_label`, `completed_stages`,
+  `total_stages`, `progress_percent`, `message`, `updated_at`, and a fixed
+  `is_real_backend_stage_progress: true` marker. It is never flight
+  tracking, a real flight route, a real route/travel time, a booking
+  status, a flight number, a price, a rating, or an availability claim --
+  no such field exists on this model, and the boolean marker exists
+  specifically so nothing downstream can confuse backend pipeline
+  bookkeeping with real-world travel movement.
+- **Allowed stage keys** (`GENERATION_STAGE_KEYS`, in this fixed order):
+  `traveler_profile`, `destination_context`, `candidate_quality`,
+  `ai_candidate_shadow`, `trip_strategy`, `stay_transport`,
+  `experience_plan`, `validation`, `post_processing`. The first eight mirror
+  the LangGraph skeleton's node names (Step 162B/162C section 42/43) for
+  consistency; `post_processing` is new, covering the
+  versioning/plan-diff-preview/regeneration-readiness bookkeeping
+  `generate_full_plan` runs after the last stage. **This list is
+  independent of `app.graphs` -- the LangGraph module remains not wired
+  into `/generate`; this step does not change that** (re-verified by this
+  step's own tests, in addition to the existing Step 162B/162C tests).
+- **`PlanningOrchestrator.create_trip`** now sets
+  `planning_state.generation_progress = GenerationProgress()` (idle,
+  `progress_percent=0`, empty `completed_stages`) on every new trip,
+  instead of leaving the field `None`, so `GET
+  /trips/{trip_id}/generation-progress` always has real state to read
+  immediately after trip creation.
+- **`PlanningOrchestrator.generate_full_plan`** wraps its existing,
+  unmodified stage calls with progress bookkeeping only -- stage order and
+  stage outputs are unchanged, and the existing save-after-each-stage
+  cadence is unchanged (progress fields are updated on the same
+  `planning_state` object already being saved at each existing save point;
+  no new save call was added on the success path). Before the stage loop
+  starts, progress resets to `generating`/0%/empty `completed_stages` for
+  that run (so re-generating an already-generated trip reports that run's
+  progress, never stale counts appended on top of a previous run).
+  `candidate_quality` and `ai_candidate_shadow` are recorded as their own
+  completed stage keys immediately after `run_destination_context_stage`
+  returns (both are real sub-steps it already performs internally) --
+  without any change to `run_destination_context_stage` or
+  `_run_ai_candidate_discovery_shadow_stage` themselves. After the last
+  stage plus the post-processing recomputes, `status` becomes `completed`
+  and `progress_percent` is forced to exactly `100`.
+- **Failure path**: if any stage raises, `generation_progress.status`
+  becomes `failed` (via a `try`/`except`/`raise` around the stage loop)
+  before the original exception is re-raised unchanged -- the exception is
+  never swallowed or replaced, and no other error-handling behavior
+  changes. `current_stage` is deliberately left pointing at whichever
+  stage was running when the failure happened, rather than cleared, since
+  that's more useful for diagnosis.
+- **No scheduling, validation, or regeneration behavior changes.**
+  `ExperiencePlannerService`, `PlanValidatorService`, and every
+  regeneration-safety service/endpoint (`POST /regenerate` still always
+  refuses with `REGENERATION_NOT_AVAILABLE`) are untouched. Shadow-mode
+  default behavior is untouched: with
+  `AI_CANDIDATE_DISCOVERY_SHADOW_MODE_ENABLED` at its default `false`,
+  `ai_candidate_proposal_batch`/`candidate_grounding_batch` still stay
+  `None` after `/generate`, re-verified by this step's own tests alongside
+  the new `generation_progress` assertions.
+- **No Groq/Anthropic/Kiwi/MCP/scraping call anywhere in this step.** No
+  provider adapter, AI candidate proposal provider, or LangGraph node is
+  imported or called by `GenerationProgress`, the new stage-progress
+  helper methods on `PlanningOrchestrator`, or the new endpoint --
+  confirmed by this step's static source-inspection tests (no `"graph"`
+  reference in `generate_full_plan`'s source, no `app.graphs` import
+  anywhere in `planning_orchestrator.py`) plus the existing
+  `conftest.py` autouse env-isolation fixture
+  (`_isolate_ai_candidate_proposal_env`) that already prevents any real
+  LLM key from leaking into the test suite.
+- **Persists like every other `PlanningState` field.** `generation_progress`
+  round-trips through `LocalJsonStore` unchanged; a planning state
+  persisted before this step (no `generation_progress` key at all) still
+  loads, with the field honestly defaulting to `None` rather than raising
+  or fabricating a progress record.

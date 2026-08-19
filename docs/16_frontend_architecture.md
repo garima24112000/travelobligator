@@ -1079,6 +1079,27 @@ The frontend should not show fake completed sections before the backend returns 
 
 If a provider is not connected, show that honestly instead of pretending it loaded.
 
+### 29.1 Current State (Step 163A) and Future Wiring (Step 163B)
+
+Today, `TravelGenerationLoading` (`frontend/app/page.tsx`, Step 163A) is a
+**decorative-only** loading animation: an origin/destination pair, a moving
+plane emoji, and rotating stage copy, all driven purely by local UI
+`setInterval` timers tied to the existing `isLoading` state around
+`handlePlanTrip()`. It does not call, poll, or read from the backend at
+all -- it explicitly does not imply real flight tracking, a real flight
+route, a real route/travel time, or real backend stage progress.
+
+The backend separately records real pipeline stage progress in
+`PlanningState.generation_progress` (Step 163B, `GenerationProgress`,
+docs/13_llm_reasoning_pipeline.md section 44), readable via `GET
+/trips/{trip_id}/generation-progress` (docs/11_api_contracts.md section
+29). **This is not wired into the frontend yet.** A future step could have
+`TravelGenerationLoading` poll that endpoint and drive its stage copy/
+progress bar from real `current_stage`/`progress_percent` values instead
+of (or in addition to) the local timer -- but until that wiring exists,
+treat the two as completely independent: the animation's copy and timing
+say nothing about what the backend has actually done.
+
 ---
 
 ## 30. Error States

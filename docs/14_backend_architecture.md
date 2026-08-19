@@ -1280,6 +1280,22 @@ This supports:
 - frontend progress display
 - failed-stage diagnosis
 
+### 28.1 Generation Progress Metadata (Step 163B)
+
+`PlanningState.generation_progress` (`GenerationProgress`,
+`backend/app/models/planning_state.py`) is backend pipeline-progress
+*metadata* only, recorded by `PlanningOrchestrator.generate_full_plan`
+alongside the stage-persistence saves above -- it never changes planning
+behavior. It carries no travel fact (no flight route, route/travel time,
+booking status, price, rating, or availability) and no scheduling,
+validation, or regeneration decision reads or depends on it; it exists
+purely so a caller can ask "which pipeline stage is running/has run"
+(`GET /trips/{trip_id}/generation-progress`, docs/11_api_contracts.md
+section 29, docs/13_llm_reasoning_pipeline.md section 44). The frontend is
+not wired to it yet -- the Step 163A decorative loading animation
+continues to run off local UI state only (docs/16_frontend_architecture.md
+section 29).
+
 ---
 
 ## 29. Provider Failure Handling

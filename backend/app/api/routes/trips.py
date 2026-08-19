@@ -10,13 +10,14 @@ from app.core.errors import (
 )
 from app.core.response import success_response
 from app.models.common import ReadinessStatus
-from app.models.planning_state import TripRequest
+from app.models.planning_state import GenerationProgress, TripRequest
 from app.repositories.planning_state_repository import planning_state_repository
 from app.schemas.api_responses import ApiResponse
 from app.schemas.candidate_quality import CandidateQualityResponseData
 from app.schemas.destination_context import DestinationContextResponseData
 from app.schemas.errors import ErrorCode
 from app.schemas.experience_plan import ExperiencePlanResponseData
+from app.schemas.generation_progress import GenerationProgressResponseData
 from app.schemas.provider_coverage import ProviderCoverageResponseData
 from app.schemas.regeneration_attempts import RegenerationAttemptsResponseData
 from app.schemas.regeneration_readiness import RegenerationReadinessResponseData
@@ -400,5 +401,32 @@ def get_regeneration_attempts(trip_id: str) -> ApiResponse[RegenerationAttemptsR
     data = RegenerationAttemptsResponseData(
         trip_id=trip_id,
         regeneration_attempts=planning_state.regeneration_attempts,
+    )
+    return success_response(data)
+
+
+@router.get(
+    "/{trip_id}/generation-progress",
+    response_model=ApiResponse[GenerationProgressResponseData],
+)
+def get_generation_progress(trip_id: str) -> ApiResponse[GenerationProgressResponseData]:
+    """Read-only backend `PlanningOrchestrator` pipeline stage-progress
+    readout (Step 163B, docs/13_llm_reasoning_pipeline.md section 44).
+
+    This reflects real backend stage progress only -- never a real flight
+    route, real route/travel time, booking status, or any other travel
+    fact. It never triggers generation and never mutates state; if
+    `generation_progress` hasn't been set yet (a planning state persisted
+    before this step), an idle default is returned instead of null. The
+    Step 163A decorative frontend loading animation is not wired to this
+    endpoint yet.
+    """
+    planning_state = planning_state_repository.get_by_trip_id(trip_id)
+    if planning_state is None:
+        raise trip_not_found_error(trip_id)
+
+    data = GenerationProgressResponseData(
+        trip_id=trip_id,
+        generation_progress=planning_state.generation_progress or GenerationProgress(),
     )
     return success_response(data)

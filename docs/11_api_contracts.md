@@ -1154,3 +1154,76 @@ No score entry ever contains a price, rating, opening-hours, route-time,
 review-count, booking-link, or safety-score field. A high `quality_tier`
 is a pre-ranking signal only, never a claim of final quality, availability,
 or bookability.
+
+---
+
+## 29. Generation Progress Endpoint
+
+### GET `/trips/{trip_id}/generation-progress`
+
+Purpose: returns real backend `PlanningOrchestrator` pipeline stage-progress
+bookkeeping (Step 163B, docs/13_llm_reasoning_pipeline.md section 44) --
+which stage of `POST /trips/{trip_id}/generate` is running or has run.
+This is preparation for future frontend progress polling/animation; the
+frontend is not wired to this endpoint yet, and the Step 163A decorative
+loading animation continues to run entirely off local UI state, not this
+data.
+
+Mutation behavior: none. This endpoint never triggers generation and never
+mutates state -- it only reads whatever `generation_progress` already
+holds. If `generation_progress` hasn't been set yet (a planning state
+persisted before this step), an idle default is returned instead of null.
+
+Response data (idle, before generation):
+
+```json
+{
+  "trip_id": "trip_001",
+  "generation_progress": {
+    "status": "idle",
+    "current_stage": null,
+    "current_stage_label": null,
+    "completed_stages": [],
+    "total_stages": 9,
+    "progress_percent": 0,
+    "message": "Generation has not started yet.",
+    "updated_at": "2026-08-19T18:00:00Z",
+    "is_real_backend_stage_progress": true
+  }
+}
+```
+
+Response data (after a successful generate):
+
+```json
+{
+  "trip_id": "trip_001",
+  "generation_progress": {
+    "status": "completed",
+    "current_stage": "post_processing",
+    "current_stage_label": "Finalizing plan bookkeeping",
+    "completed_stages": [
+      "traveler_profile",
+      "destination_context",
+      "candidate_quality",
+      "ai_candidate_shadow",
+      "trip_strategy",
+      "stay_transport",
+      "experience_plan",
+      "validation",
+      "post_processing"
+    ],
+    "total_stages": 9,
+    "progress_percent": 100,
+    "message": "Backend pipeline generation completed.",
+    "updated_at": "2026-08-19T18:00:03Z",
+    "is_real_backend_stage_progress": true
+  }
+}
+```
+
+`generation_progress` never contains a flight route, flight number,
+route/travel time, booking status, price, rating, or availability field --
+`is_real_backend_stage_progress` exists specifically so this can never be
+mistaken for real flight tracking or real travel movement. Returns 404
+(`TRIP_NOT_FOUND`) if `trip_id` does not exist.

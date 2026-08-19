@@ -783,6 +783,53 @@ def test_older_persisted_planning_state_without_ai_candidate_discovery_batches_s
     assert reloaded.candidate_grounding_batch is None
 
 
+def test_generation_progress_is_persisted_and_reloadable(client: TestClient) -> None:
+    """End-to-end: the backend pipeline stage-progress bookkeeping (Step
+    163B) recorded by generating a trip survives a simulated backend
+    process restart, recoverable by a brand-new repository instance
+    pointed at the same local JSON file.
+    """
+    create_response = client.post(
+        "/trips",
+        json={
+            "destination_scope": "single_city",
+            "primary_destination": "Testville, Testland",
+            "origin_city": "Home City",
+            "start_date": "2026-08-10",
+            "end_date": "2026-08-12",
+            "travelers_count": 2,
+            "travel_group_type": "couple",
+        },
+    )
+    assert create_response.status_code == 201
+    trip_id = create_response.json()["data"]["trip_id"]
+    created_progress = create_response.json()["data"]["planning_state"]["generation_progress"]
+    assert created_progress is not None
+    assert created_progress["status"] == "idle"
+
+    generate_response = client.post(f"/trips/{trip_id}/generate")
+    assert generate_response.status_code == 200
+    generated_progress = generate_response.json()["data"]["planning_state"][
+        "generation_progress"
+    ]
+    assert generated_progress["status"] == "completed"
+    assert generated_progress["progress_percent"] == 100
+
+    from app.repositories.planning_state_repository import (
+        planning_state_repository as live_planning_state_repository,
+    )
+
+    fresh_planning_repo = PlanningStateRepository(
+        store=live_planning_state_repository._store
+    )
+    reloaded_state = fresh_planning_repo.get_by_trip_id(trip_id)
+
+    assert reloaded_state is not None
+    assert reloaded_state.generation_progress is not None
+    reloaded_progress = reloaded_state.generation_progress.model_dump(mode="json")
+    assert reloaded_progress == generated_progress
+
+
 def test_get_unknown_trip_id_still_returns_404(client: TestClient) -> None:
     response = client.get("/trips/does-not-exist")
     assert response.status_code == 404

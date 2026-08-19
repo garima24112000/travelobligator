@@ -984,6 +984,62 @@ class PlanningMetadata(BaseModel):
     extra: dict[str, Any] = Field(default_factory=dict)
 
 
+# Backend PlanningOrchestrator pipeline stage keys tracked by
+# `GenerationProgress` (Step 163B, docs/13_llm_reasoning_pipeline.md section
+# 44). These mirror the LangGraph skeleton's node names (Steps 162B/162C)
+# for consistency, but this list is independent of `app.graphs` -- the
+# LangGraph module is still not wired into `/generate` (Step 163B does not
+# change that). "candidate_quality" and "ai_candidate_shadow" are recorded
+# as their own keys because `PlanningOrchestrator.run_destination_context_stage`
+# runs both as real sub-steps of destination context generation;
+# "post_processing" covers the versioning/plan-diff-preview/regeneration-
+# readiness bookkeeping `generate_full_plan` runs after the last stage.
+GENERATION_STAGE_KEYS: tuple[str, ...] = (
+    "traveler_profile",
+    "destination_context",
+    "candidate_quality",
+    "ai_candidate_shadow",
+    "trip_strategy",
+    "stay_transport",
+    "experience_plan",
+    "validation",
+    "post_processing",
+)
+
+
+class GenerationStageStatus(str, Enum):
+    IDLE = "idle"
+    GENERATING = "generating"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+class GenerationProgress(BaseModel):
+    """Backend `PlanningOrchestrator` pipeline stage-progress bookkeeping
+    (Step 163B, docs/13_llm_reasoning_pipeline.md section 44,
+    docs/14_backend_architecture.md section 28.1).
+
+    This is real backend stage progress -- which `generate_full_plan` stage
+    is running/has run -- and nothing else. It is never flight tracking, a
+    real flight route, a real route/travel time, a booking status, or any
+    other travel fact: no such field exists here, and
+    `is_real_backend_stage_progress` exists specifically so nothing
+    downstream can mistake this for real-world travel movement. The Step
+    163A frontend loading animation is decorative and UI-timer-driven only
+    -- it is not wired to this model yet.
+    """
+
+    status: GenerationStageStatus = GenerationStageStatus.IDLE
+    current_stage: str | None = None
+    current_stage_label: str | None = None
+    completed_stages: list[str] = Field(default_factory=list)
+    total_stages: int = Field(default_factory=lambda: len(GENERATION_STAGE_KEYS))
+    progress_percent: int = Field(default=0, ge=0, le=100)
+    message: str = "Generation has not started yet."
+    updated_at: datetime = Field(default_factory=_utc_now)
+    is_real_backend_stage_progress: bool = True
+
+
 class PlanningState(BaseModel):
     planning_state_id: str = Field(default_factory=lambda: _new_id("planning_state"))
     trip_id: str = Field(default_factory=lambda: _new_id("trip"))
@@ -1015,6 +1071,13 @@ class PlanningState(BaseModel):
     # AICandidateDiscoveryService) populates these yet.
     ai_candidate_proposal_batch: AICandidateProposalBatch | None = None
     candidate_grounding_batch: CandidateGroundingBatch | None = None
+    # Backend PlanningOrchestrator pipeline stage-progress bookkeeping (Step
+    # 163B) -- never real flight/route/travel progress. `None` only for
+    # planning states persisted before this step; `PlanningOrchestrator.
+    # create_trip` sets a fresh idle `GenerationProgress()` on every new
+    # trip. The Step 163A frontend loading animation does not read this
+    # field yet.
+    generation_progress: GenerationProgress | None = None
 
     decision_cards: list[DecisionCard] = Field(default_factory=list)
     experience_cards: list[ExperienceCard] = Field(default_factory=list)
