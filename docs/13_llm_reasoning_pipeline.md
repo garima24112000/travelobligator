@@ -1862,3 +1862,57 @@ data source.
   Groq/Anthropic-backed code path are exactly as Step 163B left them --
   this step only adds a frontend consumer of an endpoint that already
   existed and was already read-only/side-effect-free.
+
+---
+
+## 46. Provider Cache Foundation (Step 164A)
+
+Step 164A adds `ProviderCacheStore`
+(`backend/app/storage/provider_cache_store.py`,
+docs/12_provider_architecture.md section 25) -- a small local SQLite cache
+store keyed by `(source, query_hash)`. **This is deterministic
+infrastructure, not AI.** It contains no LLM call, no prompt, no model
+inference, and no reasoning of any kind -- `make_query_hash` is a plain
+SHA-256 hash of canonical JSON, and `get`/`set`/`delete`/`prune_expired`/
+`clear_source` are ordinary SQLite reads/writes. It sits in the same
+category as `LocalJsonStore` (Python stdlib only), not alongside the
+AI candidate-proposal/grounding subsystem (sections 28-41) or the LangGraph
+skeleton (sections 42-43).
+
+- **No provider behavior changes yet.** `OpenStreetMapPlacesAdapter`,
+  `OpenMeteoWeatherAdapter`, `NagerDateHolidaysAdapter`,
+  `FrankfurterCurrencyAdapter`, `ProviderGateway`, and
+  `PlanningOrchestrator` do not import or call this module -- confirmed by
+  this step's own static source-inspection tests, the same pattern used to
+  confirm LangGraph isn't wired into `/generate` (section 43/45). Every
+  provider call still goes out live (or reports `not_connected`/
+  `unavailable` honestly) exactly as before this step; no response is
+  read from or written to a cache anywhere in the current request path.
+- **Cache miss is always honest.** `get` returns `None` for a missing row
+  or an expired row -- it never fabricates, guesses, or backfills a
+  payload. This matters even though nothing calls `get` yet: it's the
+  contract a future wiring step will rely on to preserve the "if data is
+  unavailable, mark it `unavailable`" rule (CLAUDE.md Core Rules) rather
+  than accidentally serving stale-but-plausible-looking data as if it
+  were fresh.
+- **Never stores raw query text, secrets, or user-private trip data.**
+  Only an opaque `query_hash` is persisted per row (never the query dict/
+  string that produced it); `payload`/`metadata` must be JSON-serializable
+  and are documented as provider-response data only -- never an API key,
+  token, prompt, raw LLM response, or `PlanningState`/trip-specific
+  content.
+- **Config declared, not read.** `Settings.provider_cache_path`
+  (`PROVIDER_CACHE_PATH`) and `Settings.provider_cache_enabled`
+  (`PROVIDER_CACHE_ENABLED`, default `true`) exist so a later step can
+  wire a provider without a config change first; no code path reads
+  `provider_cache_enabled` yet.
+- **No real network/Groq/Anthropic/Kiwi/MCP/scraping call anywhere in
+  this step or its tests.** `ProviderCacheStore` imports only Python
+  stdlib (`sqlite3`, `json`, `hashlib`, `dataclasses`, `datetime`,
+  `pathlib`, `threading`) -- confirmed by a static import-check test
+  mirroring the one already used for the AI candidate-proposal adapters
+  and the LangGraph module. Every test in
+  `backend/app/tests/repositories/test_provider_cache_store.py` and
+  `backend/app/tests/core/test_provider_cache_config.py` uses only
+  in-file payloads and a `tmp_path`-backed SQLite file -- no HTTP call,
+  no live provider, no API key required.

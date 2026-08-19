@@ -104,6 +104,21 @@ class Settings(BaseSettings):
         alias="LOCAL_STORAGE_PATH",
     )
 
+    # Provider cache foundation (Step 164A,
+    # docs/12_provider_architecture.md "Provider Cache Foundation" section).
+    # Declared here so a later step can wire provider adapters to
+    # `ProviderCacheStore` without a config change -- no adapter reads
+    # `provider_cache_enabled` yet, and this step does not change any
+    # provider behavior.
+    provider_cache_path: str = Field(
+        default=".data/provider_cache.sqlite3",
+        alias="PROVIDER_CACHE_PATH",
+    )
+    provider_cache_enabled: bool = Field(
+        default=True,
+        alias="PROVIDER_CACHE_ENABLED",
+    )
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
@@ -125,6 +140,16 @@ class Settings(BaseSettings):
         regardless of where the app was started from.
         """
         path = Path(self.local_storage_path)
+        return path if path.is_absolute() else _BACKEND_ROOT / path
+
+    def resolved_provider_cache_path(self) -> Path:
+        """Local provider-cache SQLite path, not a production database.
+
+        Mirrors `resolved_local_storage_path` -- resolved against the
+        backend project root so the default value works the same way
+        regardless of where the app was started from.
+        """
+        path = Path(self.provider_cache_path)
         return path if path.is_absolute() else _BACKEND_ROOT / path
 
 

@@ -911,3 +911,88 @@ categories before planning/scheduling uses them. It only classifies
 candidates already present in `DestinationContext`; it never calls a
 provider, never invents a place, and never attaches a price, rating,
 opening hour, route time, review count, booking link, or safety score.
+
+---
+
+## 25. Provider Cache Foundation (Step 164A)
+
+`backend/app/storage/provider_cache_store.py` (`ProviderCacheStore`) adds
+a small local SQLite cache store so repeated dev runs against free/open-data
+providers (OpenStreetMap/Overpass + Nominatim, Open-Meteo, Nager.Date,
+Frankfurter, and future providers like OSRM, Wikivoyage/Wikipedia,
+lodging, or Kiwi/MCP) become cheaper and safer over time.
+
+**This is foundation only.** As of Step 164A:
+
+- No provider adapter (`OpenStreetMapPlacesAdapter`, `OpenMeteoWeatherAdapter`,
+  `NagerDateHolidaysAdapter`, `FrankfurterCurrencyAdapter`) reads from or
+  writes to this store.
+- `ProviderGateway` and `PlanningOrchestrator` do not import it either.
+- No current provider result, `data_status`, `provider_coverage`, or
+  planning behavior changes because of this step.
+- No API endpoint exposes it.
+
+### 25.1 Keying: source + query_hash
+
+Cache rows are keyed by `(source, query_hash)` -- never by the raw query.
+`source` is a short provider identifier (e.g. `"openstreetmap_places"`,
+`"open_meteo"`, `"nager_date"`, `"frankfurter"`), matching the
+`provider_name` values already used in `ProviderResponse`/
+`ProviderStatusEntry`. `query_hash` is produced by
+`make_query_hash(query)`, a deterministic SHA-256 hash of the query
+normalized to canonical JSON (`sort_keys=True`) -- so the same logical
+query always hashes the same way regardless of dict key order, and the
+raw query text (which could be a full destination string, coordinates,
+or date range) is never itself written to the cache row, logged, or
+returned by any cache method. Only the opaque hex digest is persisted.
+
+### 25.2 Cache miss is always honest
+
+A cache miss -- no row for `(source, query_hash)`, or a row whose
+`expires_at` has passed -- always returns `None` from `ProviderCacheStore.get`.
+**The cache never fabricates, guesses, or backfills a payload on miss**;
+callers (once wired, in a later step) would still need to fall back to a
+real provider call or an honest `unavailable`/`not_connected` result,
+exactly as today. An expired row is left in place until `prune_expired`
+is called explicitly, so miss-on-expiry never depends on background
+cleanup having run.
+
+### 25.3 What can be cached
+
+`payload` (the cached value) and `metadata` must both be JSON-serializable
+and non-secret -- `ProviderCacheStore.set` raises `ProviderCacheValueError`
+otherwise. Never store an API key, token, prompt, raw LLM response, or any
+other secret in a cache row. Never cache user-private trip data through
+this store unless a future step explicitly designs that (this store today
+is meant for provider *responses*, which are shared/public data, not
+per-trip planning state).
+
+### 25.4 Recommended TTL guidance (not enforced yet)
+
+`ProviderCacheStore.set`'s `ttl_seconds` parameter is generic -- Step 164A
+does not hardcode a per-source policy. Recommended starting points for
+whichever future step wires a given provider in:
+
+```text
+geocode (Nominatim resolution)         long / effectively permanent
+OSM POI geometry (Overpass)            long / permanent-ish
+Wikipedia / Wikivoyage summaries       months
+weather forecast (Open-Meteo)          short (hours)
+currency exchange rate (Frankfurter)   short/medium (hours to a day)
+lodging / flight prices                very short, or do not cache at all
+scraped/personal-dev-only providers    very short, and clearly labeled
+                                        as such when introduced later
+```
+
+Public holidays (Nager.Date) are date-based and rarely change once
+published for a given year/country, so a long TTL is also reasonable
+there, but this is guidance only -- no provider reads `ttl_seconds` from
+this table yet.
+
+### 25.5 Config
+
+`Settings.provider_cache_path` (`PROVIDER_CACHE_PATH`, default
+`.data/provider_cache.sqlite3`) and `Settings.provider_cache_enabled`
+(`PROVIDER_CACHE_ENABLED`, default `true`) exist so a later wiring step
+doesn't need a config change first -- `provider_cache_enabled` is declared
+but not read by any code path yet.

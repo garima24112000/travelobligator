@@ -770,14 +770,33 @@ Should not store:
 
 ---
 
-## 23. CacheRepository
+## 23. CacheRepository / ProviderCacheStore (Step 164A)
 
-Responsibilities:
+This section originally described an aspirational cache layer; as of Step
+164A, a real (but not-yet-wired) implementation exists:
+`backend/app/storage/provider_cache_store.py` (`ProviderCacheStore`), a
+small local SQLite store (`sqlite3`, Python stdlib only) keyed by
+`(source, query_hash)`, alongside `Settings.provider_cache_path`/
+`provider_cache_enabled` in `backend/app/core/config.py`
+(docs/12_provider_architecture.md section 25 has the full design:
+canonical-JSON `query_hash`, TTL semantics, and per-source TTL guidance).
+
+**Not wired into any provider adapter yet.** `OpenStreetMapPlacesAdapter`,
+`OpenMeteoWeatherAdapter`, `NagerDateHolidaysAdapter`,
+`FrankfurterCurrencyAdapter`, `ProviderGateway`, and
+`PlanningOrchestrator` do not import or call `ProviderCacheStore` --
+every provider call still goes out live (or reports honestly as
+`not_connected`/`unavailable`) exactly as before this step. A cache miss
+from this store (once wired) will always mean "miss," never a guessed or
+fabricated payload.
+
+Responsibilities (intended once wired in a future step):
 
 - cache allowed provider responses
-- respect freshness rules
+- respect freshness rules via `ttl_seconds`/`expires_at`
 - avoid caching restricted data when not allowed
-- separate user-specific state from reusable provider data
+- separate reusable provider data from user-specific trip state (this
+  store is not for `PlanningState`/trip content)
 
 Cacheable examples:
 
