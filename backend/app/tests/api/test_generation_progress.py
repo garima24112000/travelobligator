@@ -17,7 +17,10 @@ from app.services.planning_orchestrator import PlanningOrchestrator
 # read-only GET /trips/{trip_id}/generation-progress endpoint. This is
 # backend-only, real pipeline stage progress -- never flight tracking, a
 # real flight route, a real route/travel time, a booking status, or any
-# other travel fact -- and the frontend is not wired to it in this step.
+# other travel fact. Step 163C (section 45) later polls this same endpoint
+# from the frontend purely for loading-UI display -- these backend-side
+# tests are unaffected by that and still exercise the endpoint/model
+# directly, with no dependency on any frontend code.
 
 
 def _create_trip_payload(**overrides: Any) -> dict[str, Any]:
@@ -327,27 +330,23 @@ def test_regenerate_endpoint_still_refuses_after_generation_progress_added(
 
 
 # ---------------------------------------------------------------------------
-# 14. No frontend files reference the new backend-only feature.
+# 14. Frontend wiring boundary. Step 163B kept the frontend fully
+# unaware of this feature; Step 163C (docs/13_llm_reasoning_pipeline.md
+# section 45) intentionally wires frontend/lib/api.ts and
+# frontend/app/page.tsx to the read-only /generation-progress endpoint for
+# loading-UI display only. This test now asserts the *other* direction:
+# the frontend never reaches past the response shape into backend-internal
+# implementation details (the Python-only stage-key/status enum names),
+# which would indicate real coupling beyond "poll this JSON endpoint and
+# render a few of its fields."
 # ---------------------------------------------------------------------------
 
 
-def test_no_frontend_files_reference_generation_progress_feature() -> None:
-    """Strict rule: 'Do not modify frontend' / 'this frontend animation must
-    be based only on UI loading state, not actual backend stage progress'
-    (Step 163A remains untouched). `git diff --stat` (run separately per
-    the task's verification steps) is the authoritative check that no
-    frontend file changed at all; this test additionally confirms the
-    frontend source tree has no coupling to the new backend-only model/
-    endpoint names.
-    """
+def test_frontend_does_not_reference_backend_internal_generation_progress_names() -> (
+    None
+):
     repo_root = Path(__file__).resolve().parents[4]
-    needles = (
-        "generation_progress",
-        "GenerationProgress",
-        "generation-progress",
-        "GENERATION_STAGE_KEYS",
-        "GenerationStageStatus",
-    )
+    needles = ("GENERATION_STAGE_KEYS", "GenerationStageStatus")
     for subdir in ("frontend/app", "frontend/lib"):
         target = repo_root / subdir
         if not target.exists():

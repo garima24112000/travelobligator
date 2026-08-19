@@ -10,6 +10,7 @@ import {
   generatePlan,
   getDestinationContext,
   getExperiencePlan,
+  getGenerationProgress,
   getProviderCoverage,
   getRegenerationAttempts,
   getRegenerationReadiness,
@@ -29,6 +30,7 @@ import type {
   ExperienceItem,
   FeedbackChangePreview,
   FeedbackEvent,
+  GenerationProgress,
   GeoPoint,
   HolidayContext,
   ImplementationGaps,
@@ -2766,25 +2768,39 @@ const TRAVEL_LOADING_STAGES = [
 ];
 
 /**
- * Decorative-only loading animation shown while a new trip is being created
- * and generated (Step 163A). Progress and stage copy are driven purely by
- * local timers -- generation is still a single synchronous
- * POST /trips/{trip_id}/generate call with no real stage-by-stage signal to
- * render, so this must never be read as live flight tracking, a real
- * flight route/duration, booking status, or actual backend pipeline
- * progress. It resets and unmounts as soon as `isLoading` goes false,
- * whether that's because the result rendered or an error rendered.
+ * Decorative loading animation shown while a new trip is being created and
+ * generated (Step 163A, wired to real backend pipeline progress in Step
+ * 163C). The plane/progress bar are always decorative -- they never
+ * represent a real flight, a real flight route, or a real route/travel
+ * time. By default (no backend props, or before a trip_id exists yet)
+ * progress and stage copy are driven purely by local timers, since
+ * generation may still be running with no signal read yet. Once the
+ * caller has a real `GenerationProgress` poll result, it can pass
+ * `progressPercent`/`stageLabel`/`progressMessage`/
+ * `isRealBackendStageProgress` and this component prefers those values
+ * over the local timer loop -- but the "Loading animation only" disclaimer
+ * always stays visible either way. It resets and unmounts as soon as
+ * `isLoading` goes false, whether that's because the result rendered or
+ * an error rendered.
  */
 function TravelGenerationLoading({
   originCity,
   destination,
   isLoading,
+  progressPercent,
+  stageLabel,
+  progressMessage,
+  isRealBackendStageProgress,
 }: {
   originCity?: string;
   destination?: string;
   isLoading: boolean;
+  progressPercent?: number;
+  stageLabel?: string;
+  progressMessage?: string;
+  isRealBackendStageProgress?: boolean;
 }) {
-  const [progress, setProgress] = useState(0);
+  const [localProgress, setLocalProgress] = useState(0);
   const [stageIndex, setStageIndex] = useState(0);
 
   useEffect(() => {
@@ -2793,7 +2809,7 @@ function TravelGenerationLoading({
     }
 
     const progressTimer = setInterval(() => {
-      setProgress((previous) => (previous >= 88 ? 88 : previous + 4));
+      setLocalProgress((previous) => (previous >= 88 ? 88 : previous + 4));
     }, 500);
     const stageTimer = setInterval(() => {
       setStageIndex(
@@ -2809,8 +2825,13 @@ function TravelGenerationLoading({
 
   if (!isLoading) return null;
 
+  const hasBackendProgress = progressPercent !== undefined;
+  const showBackendNote = hasBackendProgress && isRealBackendStageProgress === true;
   const origin = originCity?.trim() || "Origin";
   const dest = destination?.trim() || "Destination";
+  const displayProgress = hasBackendProgress ? progressPercent : localProgress;
+  const displayMessage =
+    stageLabel || progressMessage || TRAVEL_LOADING_STAGES[stageIndex];
 
   return (
     <div className="mt-8 rounded-2xl border border-white/10 bg-white/5 p-6">
@@ -2824,11 +2845,11 @@ function TravelGenerationLoading({
       >
         <div
           className="h-1.5 rounded-full bg-cyan-400/70 transition-[width] duration-500 motion-reduce:transition-none"
-          style={{ width: `${progress}%` }}
+          style={{ width: `${displayProgress}%` }}
         />
         <span
           className="absolute -top-2.5 -translate-x-1/2 text-base transition-[left] duration-500 motion-reduce:transition-none"
-          style={{ left: `${progress}%` }}
+          style={{ left: `${displayProgress}%` }}
         >
           ✈️
         </span>
@@ -2838,11 +2859,16 @@ function TravelGenerationLoading({
         role="status"
         aria-live="polite"
       >
-        {TRAVEL_LOADING_STAGES[stageIndex]}
+        {displayMessage}
       </p>
       <p className="mt-2 text-[11px] text-slate-500">
         Loading animation only — not live flight tracking.
       </p>
+      {showBackendNote && (
+        <p className="mt-1 text-[11px] text-emerald-300/80">
+          Using backend stage progress
+        </p>
+      )}
     </div>
   );
 }
@@ -2853,6 +2879,9 @@ export default function Home() {
   const [mustVisitText, setMustVisitText] = useState("");
   const [constraintsText, setConstraintsText] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+  const [backendProgress, setBackendProgress] = useState<GenerationProgress | null>(
+    null,
+  );
   const [existingTripId, setExistingTripId] = useState("");
   const [isLoadingExisting, setIsLoadingExisting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -2922,7 +2951,23 @@ export default function Home() {
     setIsLoading(true);
     setError(null);
     setResult(null);
+    setBackendProgress(null);
     resetFeedbackPanelState();
+
+    // Real backend pipeline stage-progress polling (Step 163C). This is
+    // additive to the decorative animation, never a replacement for
+    // generation itself: exactly one POST /generate call still happens
+    // below, and loadPlanResult still runs exactly once at the end.
+    let pollTimer: ReturnType<typeof setInterval> | null = null;
+    let pollingStopped = false;
+
+    function stopPolling() {
+      pollingStopped = true;
+      if (pollTimer !== null) {
+        clearInterval(pollTimer);
+        pollTimer = null;
+      }
+    }
 
     try {
       const requestBody: TripRequestInput = {
@@ -2932,7 +2977,36 @@ export default function Home() {
         constraints: parseCommaList(constraintsText),
       };
       const { trip_id: tripId } = await createTrip(requestBody);
+
+      // Poll while POST /generate (below) is in flight. A transient poll
+      // failure never fails generation or surfaces an error -- it's
+      // silently ignored so the loading animation just keeps running,
+      // decoratively, until the next successful poll or completion.
+      pollTimer = setInterval(() => {
+        void getGenerationProgress(tripId)
+          .then((data) => {
+            if (!pollingStopped) {
+              setBackendProgress(data.generation_progress);
+            }
+          })
+          .catch(() => {
+            // Ignore transient polling failures.
+          });
+      }, 700);
+
       await generatePlan(tripId);
+      stopPolling();
+
+      // Briefly show the completed/100% backend state before switching to
+      // the rendered result.
+      try {
+        const finalProgress = await getGenerationProgress(tripId);
+        setBackendProgress(finalProgress.generation_progress);
+      } catch {
+        // Non-critical: still render the result even if this last read fails.
+      }
+      await new Promise((resolve) => setTimeout(resolve, 500));
+
       setResult(await loadPlanResult(tripId));
     } catch (err) {
       setError(
@@ -2941,7 +3015,9 @@ export default function Home() {
           : "Something went wrong while talking to the backend.",
       );
     } finally {
+      stopPolling();
       setIsLoading(false);
+      setBackendProgress(null);
     }
   }
 
@@ -3218,6 +3294,10 @@ export default function Home() {
           originCity={form.origin_city}
           destination={form.primary_destination}
           isLoading={isLoading}
+          progressPercent={backendProgress?.progress_percent}
+          stageLabel={backendProgress?.current_stage_label ?? undefined}
+          progressMessage={backendProgress?.message}
+          isRealBackendStageProgress={backendProgress?.is_real_backend_stage_progress}
         />
 
         {error && (

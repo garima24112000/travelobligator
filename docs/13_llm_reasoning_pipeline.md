@@ -1817,3 +1817,48 @@ change that.
   persisted before this step (no `generation_progress` key at all) still
   loads, with the field honestly defaulting to `None` rather than raising
   or fabricating a progress record.
+
+---
+
+## 45. Frontend Wired to Backend Generation Progress (Step 163C)
+
+Step 163C is frontend/API-client wiring only -- **no AI, provider,
+planning, scheduling, validation, or regeneration behavior changes**. It
+connects the Step 163A decorative loading animation to the real Step 163B
+`GET /trips/{trip_id}/generation-progress` endpoint, purely as a loading-UI
+data source.
+
+- **What changed**: `frontend/lib/api.ts` gained `getGenerationProgress`
+  (same `request()`/envelope helper every other client function already
+  uses); `frontend/lib/types.ts` gained a `GenerationProgress` type
+  mirroring the backend response field-for-field; `frontend/app/page.tsx`'s
+  `handlePlanTrip()` now polls that endpoint on a ~700ms interval while
+  `POST /trips/{trip_id}/generate` is in flight, and
+  `TravelGenerationLoading` gained four optional props
+  (`progressPercent`, `stageLabel`, `progressMessage`,
+  `isRealBackendStageProgress`) it uses in preference to its local timer
+  loop when present (docs/16_frontend_architecture.md section 29.1).
+- **The frontend only ever reads this data for loading-UI display.**
+  Nothing in `loadPlanResult`, itinerary rendering, validation display, or
+  any other section reads `generation_progress` -- it is consumed
+  exclusively inside `TravelGenerationLoading` while `isLoading` is true,
+  and discarded (`setBackendProgress(null)`) once generation finishes or
+  fails.
+- **`loadPlanResult` is still called exactly once** per successful
+  `handlePlanTrip()` run, after generation completes and after one final
+  progress read plus a brief pause to show the completed/100% state --
+  never on every poll tick. **`POST /generate` is still called exactly
+  once** per submission; the polling loop only ever calls the read-only
+  `GET /generation-progress` endpoint.
+- **Poll failures are non-fatal by design.** Each poll tick's promise has
+  its own `.catch()` that silently ignores the failure (never calls
+  `setError`); if the final post-generation read also fails, the result
+  still renders. A transient progress-polling hiccup can never surface as
+  a user-facing error or block the actual generation flow, which does not
+  depend on polling succeeding at all.
+- **No backend file was touched by this step.** `PlanningOrchestrator`,
+  the `GenerationProgress` model, the `/generation-progress` endpoint,
+  `app/graphs/planning_graph.py`, every provider adapter, and every
+  Groq/Anthropic-backed code path are exactly as Step 163B left them --
+  this step only adds a frontend consumer of an endpoint that already
+  existed and was already read-only/side-effect-free.

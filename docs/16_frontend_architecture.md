@@ -1079,26 +1079,48 @@ The frontend should not show fake completed sections before the backend returns 
 
 If a provider is not connected, show that honestly instead of pretending it loaded.
 
-### 29.1 Current State (Step 163A) and Future Wiring (Step 163B)
+### 29.1 Loading Animation: Decorative Shell, Backend-Polled Progress (Steps 163A-163C)
 
-Today, `TravelGenerationLoading` (`frontend/app/page.tsx`, Step 163A) is a
-**decorative-only** loading animation: an origin/destination pair, a moving
-plane emoji, and rotating stage copy, all driven purely by local UI
-`setInterval` timers tied to the existing `isLoading` state around
-`handlePlanTrip()`. It does not call, poll, or read from the backend at
-all -- it explicitly does not imply real flight tracking, a real flight
-route, a real route/travel time, or real backend stage progress.
+`TravelGenerationLoading` (`frontend/app/page.tsx`, introduced Step 163A)
+renders an origin/destination pair, a moving plane emoji, a progress bar,
+and rotating stage copy. **The plane and progress bar are always
+decorative -- they never represent a real flight, a real flight route, or
+a real route/travel time**, regardless of what drives the numbers behind
+them.
 
-The backend separately records real pipeline stage progress in
-`PlanningState.generation_progress` (Step 163B, `GenerationProgress`,
-docs/13_llm_reasoning_pipeline.md section 44), readable via `GET
-/trips/{trip_id}/generation-progress` (docs/11_api_contracts.md section
-29). **This is not wired into the frontend yet.** A future step could have
-`TravelGenerationLoading` poll that endpoint and drive its stage copy/
-progress bar from real `current_stage`/`progress_percent` values instead
-of (or in addition to) the local timer -- but until that wiring exists,
-treat the two as completely independent: the animation's copy and timing
-say nothing about what the backend has actually done.
+As of Step 163C, `handlePlanTrip()` polls the real backend pipeline
+stage-progress endpoint (`getGenerationProgress`, Step 163B, `GET
+/trips/{trip_id}/generation-progress`, docs/11_api_contracts.md section
+29) on a ~700ms interval while `POST /trips/{trip_id}/generate` is in
+flight, and feeds the result into `TravelGenerationLoading` as optional
+props (`progressPercent`, `stageLabel`, `progressMessage`,
+`isRealBackendStageProgress`):
+
+- **Before a `trip_id` exists** (the brief window before `createTrip()`
+  resolves), no backend props are set, so the component falls back to its
+  original Step 163A local-timer decorative loop.
+- **Once a `trip_id` exists and polling returns data**, the component
+  prefers the real `current_stage_label`/`message`/`progress_percent`
+  values over the local timer loop, and shows a small "Using backend
+  stage progress" note (only when the backend's own
+  `is_real_backend_stage_progress` marker is `true`) -- but the "Loading
+  animation only -- not live flight tracking." disclaimer stays visible
+  either way, since the visual (plane, bar) is still decorative framing
+  around real numbers, not a real flight visualization.
+- **On completion**, `handlePlanTrip()` stops polling, does one final read
+  to show the completed/100% backend state briefly, then renders the
+  result -- `loadPlanResult` is still called exactly once, not on every
+  poll tick.
+- **On error**, polling stops and the existing error state renders exactly
+  as before Step 163C.
+- **A transient polling failure never fails generation** and never
+  surfaces as a user-facing error -- it's silently ignored, and the
+  animation just keeps showing whatever state it already had (or falls
+  back to the local timer loop) until the next successful poll.
+
+This is UI wiring only: no scheduling, validation, regeneration, or
+provider/AI behavior changed by this polling, and no new travel fact is
+ever introduced by it.
 
 ---
 

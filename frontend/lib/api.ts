@@ -2,6 +2,7 @@ import type {
   ApiResponse,
   DestinationContextData,
   ExperiencePlanData,
+  GenerationProgressData,
   ProviderCoverageData,
   RegenerationAttemptsData,
   RegenerationReadinessData,
@@ -145,5 +146,16 @@ export function getRegenerationAttempts(
 ): Promise<RegenerationAttemptsData> {
   return request<RegenerationAttemptsData>(
     `/trips/${tripId}/regeneration-attempts`,
+  );
+}
+
+// Read-only backend pipeline stage-progress readout (Step 163B/163C). Never
+// triggers generation and never mutates state -- see GenerationProgress in
+// ./types for why this is never flight tracking or real travel progress.
+export function getGenerationProgress(
+  tripId: string,
+): Promise<GenerationProgressData> {
+  return request<GenerationProgressData>(
+    `/trips/${tripId}/generation-progress`,
   );
 }

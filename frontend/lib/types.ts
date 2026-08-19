@@ -492,6 +492,31 @@ export type RegenerationAttemptsData = {
   regeneration_attempts: RegenerationAttempt[];
 };
 
+// Real backend PlanningOrchestrator pipeline stage-progress bookkeeping
+// (backend: app.models.planning_state.GenerationProgress, Step 163B) --
+// which stage of POST /trips/{trip_id}/generate is running or has run.
+// This is never flight tracking, a real flight route, a real route/travel
+// time, or a booking status; `is_real_backend_stage_progress` is a fixed
+// safety marker confirming that. Consumed only by the Step 163A/163C
+// decorative loading animation as an optional data source, never as a
+// claim of real travel progress.
+export type GenerationProgress = {
+  status: "idle" | "generating" | "completed" | "failed";
+  current_stage: string | null;
+  current_stage_label: string | null;
+  completed_stages: string[];
+  total_stages: number;
+  progress_percent: number;
+  message: string;
+  updated_at: string;
+  is_real_backend_stage_progress: boolean;
+};
+
+export type GenerationProgressData = {
+  trip_id: string;
+  generation_progress: GenerationProgress;
+};
+
 // Full PlanningState is much larger than this; only feedback_history,
 // pending_feedback_summary, user_locks, version_history, plan_diff_preview,
 // regeneration_readiness, and regeneration_attempts are declared here since
