@@ -6,7 +6,7 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from app.core.config import get_settings
+from app.core.config import Settings, get_settings
 from app.main import app
 from app.models.common import DataStatus, GeoPoint, ProviderStatus
 from app.models.providers import NormalizedPlace, ProviderResponse
@@ -21,11 +21,26 @@ from app.storage.local_json_store import LocalJsonStore
 def _isolate_ai_candidate_proposal_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Isolates the automated test suite from whatever a developer's local
     `.env` happens to set for AI candidate proposal config (Step 162A fix,
-    docs/13_llm_reasoning_pipeline.md section 41). `Settings.model_config`
-    still reads `.env` normally for real app/dev-server startup -- this
-    fixture only forces the documented, safe defaults as real OS
-    environment variables (which `pydantic-settings` prioritizes over the
-    `.env` file) for the lifetime of each test.
+    extended in Step 163B). `Settings.model_config` still reads `.env`
+    normally for real app/dev-server startup -- this fixture only forces
+    the documented, safe defaults as real OS environment variables for the
+    lifetime of each test.
+
+    Every var below is set (never `monkeypatch.delenv`-ed). This matters
+    because pydantic-settings' dotenv source reads the physical `.env` file
+    independently of `os.environ` -- `monkeypatch.delenv("ANTHROPIC_API_KEY")`
+    only removes the OS env var, it does not stop `Settings()` from still
+    picking up a real `ANTHROPIC_API_KEY`/`GROQ_API_KEY` value sitting in
+    `.env` (Step 163B: this is exactly what let a local `.env` placeholder
+    key leak into `AnthropicAICandidateProposalProvider` and trigger a real
+    outbound API call during `pytest`). Explicitly setting the OS env var
+    instead -- even to `""` -- makes the higher-priority env source own
+    that key so it always overrides `.env`, regardless of how a test
+    constructs `Settings(...)` (via `get_settings()`, `Settings()`, or
+    `Settings(<field_name>=None)` -- the last of which does NOT reliably
+    override a `.env` value on its own, since pydantic-settings merges the
+    dotenv source under the field's alias while an init kwarg passed by
+    field name is stored under a different dict key).
 
     A test that wants to exercise non-default config still can, either by
     calling `monkeypatch.setenv(...)` itself (this fixture's overrides
@@ -35,8 +50,10 @@ def _isolate_ai_candidate_proposal_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """
     monkeypatch.setenv("AI_CANDIDATE_PROPOSAL_PROVIDER", "not_connected")
     monkeypatch.setenv("AI_CANDIDATE_DISCOVERY_SHADOW_MODE_ENABLED", "false")
-    monkeypatch.delenv("GROQ_API_KEY", raising=False)
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "")
+    monkeypatch.setenv("GROQ_API_KEY", "")
+    monkeypatch.setenv("ANTHROPIC_MODEL", Settings.model_fields["anthropic_model"].default)
+    monkeypatch.setenv("GROQ_MODEL", Settings.model_fields["groq_model"].default)
     get_settings.cache_clear()
     yield
     get_settings.cache_clear()
