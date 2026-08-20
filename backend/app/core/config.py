@@ -129,6 +129,18 @@ class Settings(BaseSettings):
         ge=0,
     )
 
+    # Nager.Date cache TTL (Step 164C, docs/12_provider_architecture.md
+    # "Provider Cache Foundation" section). Only `NagerDateHolidaysAdapter`
+    # reads this. 30 days is acceptable here because public holiday
+    # calendars change slowly once published for a given year/country, but
+    # it stays configurable. Must be non-negative, matching
+    # `open_meteo_cache_ttl_seconds`.
+    nager_date_cache_ttl_seconds: int = Field(
+        default=2592000,
+        alias="NAGER_DATE_CACHE_TTL_SECONDS",
+        ge=0,
+    )
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

@@ -1963,3 +1963,62 @@ never anything invented or inferred.
   existing in-file `_FakeClient`/`_FakeResponse` test doubles and an
   injected or `tmp_path`-backed `ProviderCacheStore` -- no real HTTP call
   to Open-Meteo or any other network service.
+
+---
+
+## 48. Nager.Date Holiday Provider Cache Wiring (Step 164C)
+
+Step 164C wires the Step 164A `ProviderCacheStore` foundation into a
+second provider adapter, `NagerDateHolidaysAdapter`
+(`backend/app/providers/holidays/nager_date_adapter.py`,
+docs/12_provider_architecture.md section 27), alongside Open-Meteo (Step
+164B, section 47). **This is deterministic provider infrastructure, not AI
+reasoning** -- it contains no LLM call, no prompt, and no model inference;
+a cache hit and a cache miss both return data that already came from the
+real Nager.Date API on some earlier call, never anything invented or
+inferred.
+
+- **Open-Meteo and Nager.Date are now the two cache consumers.**
+  `OpenStreetMapPlacesAdapter`, `FrankfurterCurrencyAdapter`,
+  `ProviderGateway`, and `PlanningOrchestrator` are unchanged by this step
+  and still do not import `ProviderCacheStore` -- confirmed by this step's
+  own static source-inspection tests
+  (`backend/app/tests/core/test_provider_cache_config.py`), which also
+  re-confirm Open-Meteo's Step 164B wiring is unaffected.
+- **Cache key is `source="nager_date"` + a hash of the normalized
+  request** (`country_code`, `year`) -- never the raw destination string,
+  trip ID, trip date range, or any other `PlanningState`/trip-private
+  field. Caching is per calendar year rather than per trip date range,
+  matching Nager.Date's own per-year API shape and letting a different
+  trip in the same country/year reuse the same cache entry. The cached
+  payload is the normalized `NormalizedHoliday[]` list Nager.Date itself
+  already returned for that year on a prior live call, not anything
+  reasoned about or reformatted by an AI step.
+- **Cache hit/miss never fabricates data.** A hit for a given year returns
+  the exact same `NormalizedHoliday` shape a live call for that year would,
+  relabeled `data_status="cached"`; a miss (including an expired entry,
+  treated exactly like a miss) runs the existing live HTTP path for that
+  year unchanged and normalizes it exactly as before. A year is only
+  cached if its live fetch produced at least one usable holiday; a
+  malformed/empty year, and any overall `unavailable`/`failed` response,
+  is never cached.
+- **Cache failure is non-fatal.** A broken cache read for a year falls
+  back to the live request for that year; a broken cache write still
+  returns the already-computed live result. Neither failure path logs the
+  query or payload contents.
+- **Config**: `Settings.nager_date_cache_ttl_seconds`
+  (`NAGER_DATE_CACHE_TTL_SECONDS`, default `2592000` = 30 days, must be
+  non-negative) controls TTL -- 30 days is acceptable because public
+  holiday calendars change slowly once published for a given year/country,
+  but it stays configurable; the existing `Settings.provider_cache_enabled`
+  (`PROVIDER_CACHE_ENABLED`, default `true`) gates whether the cache is
+  used at all -- when `false`, every call goes live even if a cache store
+  was explicitly injected.
+- **No real network/Groq/Anthropic/Kiwi/MCP/scraping call in this step's
+  tests.** Every test in
+  `backend/app/tests/providers/test_nager_date_adapter.py` uses the
+  existing in-file `_FakeClient`/`_FakeResponse` test doubles and an
+  injected or `tmp_path`-backed `ProviderCacheStore` -- no real HTTP call
+  to Nager.Date or any other network service. Open-Meteo's own cache tests
+  (`backend/app/tests/providers/test_open_meteo_adapter.py`) are re-run
+  unchanged and still pass, confirming this step didn't disturb Step 164B.

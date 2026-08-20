@@ -1068,3 +1068,83 @@ using `Settings.provider_cache_path` -- but only if
 skipped completely (every call goes live), even if a `cache_store` was
 explicitly injected. Constructing `OpenMeteoWeatherAdapter()` with no
 arguments remains fully backward compatible.
+
+---
+
+## 27. Nager.Date Holiday Provider Cache Wiring (Step 164C)
+
+`NagerDateHolidaysAdapter` (`backend/app/providers/holidays/nager_date_adapter.py`)
+is now the second provider adapter wired to the Step 164A `ProviderCacheStore`
+foundation (Open-Meteo was the first, section 26). **No other provider is
+wired yet** -- `OpenStreetMapPlacesAdapter`, `FrankfurterCurrencyAdapter`,
+`ProviderGateway`, and `PlanningOrchestrator` still do not import or call
+`ProviderCacheStore`, and every call they make still goes out live exactly
+as before this step.
+
+### 27.1 Cache key
+
+Cache rows are stored under source `"nager_date"` (matching
+`NagerDateHolidaysAdapter.provider_name`), keyed by `query_hash =
+make_query_hash(query)` where `query` is the normalized request:
+
+```json
+{
+  "country_code": "PT",
+  "year": 2026
+}
+```
+
+Unlike Open-Meteo's per-trip-date-range key, Nager.Date is cached **per
+calendar year**, not per trip date range -- this matches Nager.Date's own
+API shape (`GET /api/v3/PublicHolidays/{year}/{country_code}`, one HTTP
+call per year) and lets a different trip in the same country/year reuse
+the same cache entry regardless of its specific date range. The adapter
+has no subdivision/region parameter today, so none is part of the key. The
+raw destination string, trip ID, or trip date range is never included in
+the hash.
+
+### 27.2 What is cached
+
+The cache stores the normalized `NormalizedHoliday[]` payload for one
+`(country_code, year)` -- provider response data, not `PlanningState` or
+any other user-private trip content. `metadata` is always empty (`{}`); no
+API key, token, prompt, or raw LLM response is ever written (Nager.Date
+itself requires no API key). A year is only cached if its live fetch
+produced at least one usable holiday; a malformed or empty payload for a
+year is never cached, and neither an overall `unavailable` (no country
+code, no usable data for any year) nor `failed` (request-level failure)
+response is ever cached.
+
+### 27.3 Cache hit/miss behavior
+
+Each requested year is looked up independently. A cache hit for a year
+returns that year's holidays in the exact same `NormalizedHoliday` shape a
+live call would produce, relabeled `data_status="cached"`; a miss for a
+year (no row, or an expired row -- expiry behaves exactly like a miss)
+calls the existing live Nager.Date HTTP path for that year exactly as
+before, normalizes it exactly as before, then caches the result with TTL
+`Settings.nager_date_cache_ttl_seconds`
+(`NAGER_DATE_CACHE_TTL_SECONDS`, default `2592000` = 30 days -- public
+holiday calendars change slowly once published for a given year/country).
+The overall `ProviderResponse.data_status` is `"cached"` only when *every*
+requested year came from the cache; if any year required a live fetch
+(including a multi-year trip where only one year misses), the overall
+response is labeled `"live"`, since it's honestly a mix.
+
+Cache reads and writes are both best-effort and never fail holiday
+retrieval: a broken cache read for a given year is logged and treated as a
+miss for that year (falls through to the live path), and a broken cache
+write is logged but the already-computed live result is still returned.
+Neither log line includes the query payload.
+
+### 27.4 Dependency injection
+
+`NagerDateHolidaysAdapter.__init__` accepts an optional `cache_store:
+ProviderCacheStore | None` parameter for tests, mirroring
+`OpenMeteoWeatherAdapter` (section 26.4). When not supplied, the adapter
+lazily resolves a shared store via `get_provider_cache_store` using
+`Settings.provider_cache_path` -- but only if `Settings.provider_cache_enabled`
+is `true`; when `false`, the cache is skipped completely (every call goes
+live), even if a `cache_store` was explicitly injected. Constructing
+`NagerDateHolidaysAdapter()` with no arguments remains fully backward
+compatible.

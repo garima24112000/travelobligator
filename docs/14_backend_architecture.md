@@ -781,25 +781,30 @@ small local SQLite store (`sqlite3`, Python stdlib only) keyed by
 (docs/12_provider_architecture.md section 25 has the full design:
 canonical-JSON `query_hash`, TTL semantics, and per-source TTL guidance).
 
-**Wired into one provider adapter so far (Step 164B).**
-`OpenMeteoWeatherAdapter` is the first, and currently only, consumer of
+**Wired into two provider adapters so far (Step 164B, extended in Step
+164C).** `OpenMeteoWeatherAdapter` is the first consumer of
 `ProviderCacheStore` (docs/12_provider_architecture.md section 26,
 docs/13_llm_reasoning_pipeline.md section 47) -- it caches successful,
 usable Open-Meteo weather responses under source `"open_meteo"`, keyed by
 a hash of the normalized request (latitude, longitude, start/end date,
-timezone). `OpenStreetMapPlacesAdapter`, `NagerDateHolidaysAdapter`,
-`FrankfurterCurrencyAdapter`, `ProviderGateway`, and
-`PlanningOrchestrator` still do not import or call `ProviderCacheStore` --
-every one of their provider calls still goes out live (or reports honestly
-as `not_connected`/`unavailable`) exactly as before this step. A cache
-miss from this store always means "miss," never a guessed or fabricated
-payload -- confirmed for Open-Meteo specifically by `unavailable`/`failed`
-responses never being written to the cache.
+timezone). `NagerDateHolidaysAdapter` is the second consumer
+(docs/12_provider_architecture.md section 27, docs/13_llm_reasoning_pipeline.md
+section 48) -- it caches successful, usable public-holiday responses under
+source `"nager_date"`, keyed per calendar year by a hash of the normalized
+request (`country_code`, `year`), matching Nager.Date's own per-year API
+shape rather than the trip's date range. `OpenStreetMapPlacesAdapter`,
+`FrankfurterCurrencyAdapter`, `ProviderGateway`, and `PlanningOrchestrator`
+still do not import or call `ProviderCacheStore` -- every one of their
+provider calls still goes out live (or reports honestly as
+`not_connected`/`unavailable`) exactly as before these steps. A cache miss
+from this store always means "miss," never a guessed or fabricated
+payload -- confirmed for both Open-Meteo and Nager.Date specifically by
+`unavailable`/`failed` responses never being written to the cache.
 
-**Cache failure is non-fatal for Open-Meteo.** A broken cache read falls
-back to the live Open-Meteo request; a broken cache write still returns
-the already-computed live result. Weather retrieval can never fail because
-the cache layer failed.
+**Cache failure is non-fatal for both consumers.** A broken cache read
+falls back to the live Open-Meteo/Nager.Date request; a broken cache write
+still returns the already-computed live result. Weather and holiday
+retrieval can never fail because the cache layer failed.
 
 Responsibilities (intended once wired in a future step):
 

@@ -89,21 +89,53 @@ def test_open_meteo_cache_ttl_seconds_rejects_negative_value() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 15. Only Open-Meteo is wired to the provider cache (Step 164B). OSM,
-# Nager.Date, and Frankfurter remain unwired -- Step 164A's foundation-only
-# boundary still holds for every provider except weather.
+# nager_date_cache_ttl_seconds (Step 164C): default, env override, and
+# negative-value rejection.
+# ---------------------------------------------------------------------------
+
+
+def test_nager_date_cache_ttl_seconds_default() -> None:
+    field_info = Settings.model_fields["nager_date_cache_ttl_seconds"]
+    assert field_info.default == 2592000
+    assert field_info.alias == "NAGER_DATE_CACHE_TTL_SECONDS"
+
+
+def test_nager_date_cache_ttl_seconds_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setitem(Settings.model_config, "env_file", None)
+    monkeypatch.setenv("NAGER_DATE_CACHE_TTL_SECONDS", "86400")
+
+    settings = Settings()
+
+    assert settings.nager_date_cache_ttl_seconds == 86400
+
+
+def test_nager_date_cache_ttl_seconds_rejects_negative_value() -> None:
+    with pytest.raises(ValueError):
+        Settings(nager_date_cache_ttl_seconds=-1)
+
+
+# ---------------------------------------------------------------------------
+# 15. Open-Meteo (Step 164B) and Nager.Date (Step 164C) are wired to the
+# provider cache. OSM and Frankfurter remain unwired -- Step 164A's
+# foundation-only boundary still holds for every other provider.
 # ---------------------------------------------------------------------------
 
 
 def _unwired_adapter_modules():
     import app.providers.currency.frankfurter_adapter as frankfurter_module
-    import app.providers.holidays.nager_date_adapter as nager_module
     import app.providers.places.openstreetmap_adapter as osm_module
 
-    return [osm_module, nager_module, frankfurter_module]
+    return [osm_module, frankfurter_module]
 
 
-def test_no_non_weather_provider_adapter_imports_provider_cache_store() -> None:
+def _wired_adapter_modules():
+    import app.providers.holidays.nager_date_adapter as nager_module
+    import app.providers.weather.open_meteo_adapter as open_meteo_module
+
+    return [open_meteo_module, nager_module]
+
+
+def test_no_non_weather_non_holiday_provider_adapter_imports_provider_cache_store() -> None:
     for module in _unwired_adapter_modules():
         source = inspect.getsource(module)
         assert "provider_cache_store" not in source
@@ -111,14 +143,14 @@ def test_no_non_weather_provider_adapter_imports_provider_cache_store() -> None:
         assert "get_provider_cache_store" not in source
 
 
-def test_open_meteo_adapter_imports_provider_cache_store() -> None:
-    """Step 164B wires only Open-Meteo into the provider cache foundation."""
-    import app.providers.weather.open_meteo_adapter as open_meteo_module
-
-    source = inspect.getsource(open_meteo_module)
-    assert "provider_cache_store" in source
-    assert "ProviderCacheStore" in source
-    assert "get_provider_cache_store" in source
+def test_open_meteo_and_nager_date_adapters_import_provider_cache_store() -> None:
+    """Step 164B wired Open-Meteo, Step 164C wired Nager.Date -- both are
+    now provider cache consumers."""
+    for module in _wired_adapter_modules():
+        source = inspect.getsource(module)
+        assert "provider_cache_store" in source
+        assert "ProviderCacheStore" in source
+        assert "get_provider_cache_store" in source
 
 
 def test_provider_gateway_does_not_import_provider_cache_store() -> None:

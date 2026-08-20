@@ -10,6 +10,11 @@ from app.core.config import get_settings
 from app.models.common import DataStatus, ProviderStatus
 from app.models.providers import NormalizedHoliday, ProviderResponse
 from app.providers.base import HolidayProvider, failed_response, unavailable_response
+from app.storage.provider_cache_store import (
+    ProviderCacheStore,
+    get_provider_cache_store,
+    make_query_hash,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -88,13 +93,44 @@ class NagerDateHolidaysAdapter(HolidayProvider):
     be inferred, or every requested year comes back with no usable data,
     this reports `unavailable` instead -- both are honest; neither invents
     data.
+
+    Cache (Step 164C, docs/12_provider_architecture.md "Provider Cache
+    Foundation" section): each requested year's public holiday list is
+    cached in `ProviderCacheStore` under source `"nager_date"`, keyed by a
+    hash of the normalized request (`country_code`, `year`) -- never the
+    raw query text, a secret, or user-private trip data. Caching per year
+    rather than per trip date range matches Nager.Date's own API shape (one
+    HTTP call per year) and lets a different trip in the same country/year
+    reuse the same cache entry regardless of its specific date range. A
+    cache hit for a given year returns the exact same normalized shape a
+    live call for that year would; the overall response is only labeled
+    `data_status="cached"` when every requested year came from the cache.
+    Cache reads/writes never fail holiday retrieval: a broken cache read
+    falls back to the live request for that year, and a broken cache write
+    still returns the live result. A year whose live fetch produced no
+    usable holidays is not cached, and neither `unavailable` nor `failed`
+    overall responses are ever cached.
     """
 
     provider_name = "nager_date"
 
-    def __init__(self) -> None:
+    def __init__(self, cache_store: ProviderCacheStore | None = None) -> None:
         settings = get_settings()
         self._base_url = settings.nager_date_api_url
+        self._cache_enabled = settings.provider_cache_enabled
+        self._cache_ttl_seconds = settings.nager_date_cache_ttl_seconds
+        self._cache_path = settings.resolved_provider_cache_path()
+        self._cache_store = cache_store
+
+    def _resolve_cache_store(self) -> ProviderCacheStore | None:
+        """Lazily resolves the shared cache store, or `None` when the cache
+        is disabled entirely. Injecting `cache_store` in the constructor
+        bypasses this lazy resolution."""
+        if not self._cache_enabled:
+            return None
+        if self._cache_store is None:
+            self._cache_store = get_provider_cache_store(self._cache_path)
+        return self._cache_store
 
     def get_public_holidays(
         self, destination: str, dates: dict[str, Any]
@@ -138,19 +174,37 @@ class NagerDateHolidaysAdapter(HolidayProvider):
             )
 
         years = sorted({start_date.year, end_date.year})
+        cache_store = self._resolve_cache_store()
 
         try:
             all_holidays: list[NormalizedHoliday] = []
+            any_live_fetch = False
             with httpx.Client(
                 timeout=_REQUEST_TIMEOUT_SECONDS, headers={"User-Agent": _USER_AGENT}
             ) as client:
                 for year in years:
+                    query_hash = make_query_hash(
+                        {"country_code": country_code, "year": year}
+                    )
+                    cached_holidays = (
+                        self._read_cache(cache_store, query_hash)
+                        if cache_store is not None
+                        else None
+                    )
+                    if cached_holidays is not None:
+                        all_holidays.extend(cached_holidays)
+                        continue
+
+                    any_live_fetch = True
                     response = client.get(
                         f"{self._base_url}/api/v3/PublicHolidays/{year}/{country_code}"
                     )
                     response.raise_for_status()
                     payload = response.json()
-                    all_holidays.extend(self._normalize(payload, country_code))
+                    year_holidays = self._normalize(payload, country_code)
+                    all_holidays.extend(year_holidays)
+                    if cache_store is not None and year_holidays:
+                        self._write_cache(cache_store, query_hash, year_holidays)
         except (httpx.HTTPError, ValueError) as exc:
             logger.warning(
                 "Nager.Date request failed for %s (%s): %s", destination, country_code, exc
@@ -180,19 +234,65 @@ class NagerDateHolidaysAdapter(HolidayProvider):
         # The provider genuinely has data for the relevant year(s), even if
         # none of it falls inside this trip's specific date range -- that is
         # still a successful, usable response, not an unavailable one.
+        data_status = DataStatus.LIVE if any_live_fetch else DataStatus.CACHED
+        cached_note = "" if any_live_fetch else " (cached)"
         return ProviderResponse[list[NormalizedHoliday]](
             provider_name=self.provider_name,
             provider_type=self.provider_type,
             status=ProviderStatus.SUCCESS,
-            data_status=DataStatus.LIVE,
+            data_status=data_status,
             data=in_range_holidays,
             confidence=0.6,
             message=(
                 f"{len(in_range_holidays)} public holiday(s) found within the trip date "
                 f"range via Nager.Date for {country_code} (out of {len(all_holidays)} "
-                f"found for {years})."
+                f"found for {years}){cached_note}."
             ),
         )
+
+    def _read_cache(
+        self, cache_store: ProviderCacheStore, query_hash: str
+    ) -> list[NormalizedHoliday] | None:
+        """Returns the cached holiday list for one year, or `None` on a
+        cache miss/expiry or a broken cache read -- either way, the caller
+        falls back to the live request for that year rather than failing."""
+        try:
+            entry = cache_store.get(self.provider_name, query_hash)
+        except Exception:
+            logger.warning("Nager.Date provider cache read failed; falling back to live request.")
+            return None
+
+        if entry is None:
+            return None
+
+        try:
+            return [
+                NormalizedHoliday(**{**item, "data_status": DataStatus.CACHED})
+                for item in entry.payload
+            ]
+        except (TypeError, ValueError):
+            logger.warning(
+                "Nager.Date provider cache entry was unusable; falling back to live request."
+            )
+            return None
+
+    def _write_cache(
+        self,
+        cache_store: ProviderCacheStore,
+        query_hash: str,
+        holidays: list[NormalizedHoliday],
+    ) -> None:
+        """Best-effort cache write -- a failure here must never affect the
+        already-computed live result being returned to the caller."""
+        try:
+            cache_store.set(
+                self.provider_name,
+                query_hash,
+                [holiday.model_dump(mode="json") for holiday in holidays],
+                ttl_seconds=self._cache_ttl_seconds,
+            )
+        except Exception:
+            logger.warning("Nager.Date provider cache write failed; returning live result anyway.")
 
     def _normalize(self, payload: Any, country_code: str) -> list[NormalizedHoliday]:
         if not isinstance(payload, list):
