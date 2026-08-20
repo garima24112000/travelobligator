@@ -1916,3 +1916,50 @@ skeleton (sections 42-43).
   `backend/app/tests/core/test_provider_cache_config.py` uses only
   in-file payloads and a `tmp_path`-backed SQLite file -- no HTTP call,
   no live provider, no API key required.
+
+---
+
+## 47. Open-Meteo Weather Provider Cache Wiring (Step 164B)
+
+Step 164B wires the Step 164A `ProviderCacheStore` foundation into exactly
+one provider adapter, `OpenMeteoWeatherAdapter`
+(`backend/app/providers/weather/open_meteo_adapter.py`,
+docs/12_provider_architecture.md section 26). **This is deterministic
+provider infrastructure, not AI reasoning** -- it contains no LLM call, no
+prompt, and no model inference; a cache hit and a cache miss both return
+data that already came from the real Open-Meteo API on some earlier call,
+never anything invented or inferred.
+
+- **Only Open-Meteo is wired.** `OpenStreetMapPlacesAdapter`,
+  `NagerDateHolidaysAdapter`, `FrankfurterCurrencyAdapter`,
+  `ProviderGateway`, and `PlanningOrchestrator` are unchanged by this step
+  and still do not import `ProviderCacheStore` -- confirmed by this step's
+  own static source-inspection tests
+  (`backend/app/tests/core/test_provider_cache_config.py`).
+- **Cache key is `source="open_meteo"` + a hash of the normalized
+  request** (latitude, longitude, start/end date, timezone) -- never the
+  raw destination string, trip ID, or any other `PlanningState`/trip-private
+  field. The cached payload is the normalized `NormalizedDailyWeather[]`
+  response Open-Meteo itself already returned on a prior live call, not
+  anything reasoned about or reformatted by an AI step.
+- **Cache hit/miss never fabricates data.** A hit returns the exact same
+  `ProviderResponse` shape a live call would, relabeled
+  `data_status="cached"`; a miss (including an expired entry, which is
+  treated exactly like a miss) runs the existing live HTTP path unchanged
+  and normalizes it exactly as before. Only a successful, usable forecast
+  is ever cached -- `unavailable`/`failed` responses are not.
+- **Cache failure is non-fatal.** A broken cache read falls back to the
+  live request; a broken cache write still returns the already-computed
+  live result. Neither failure path logs the query or payload contents.
+- **Config**: `Settings.open_meteo_cache_ttl_seconds`
+  (`OPEN_METEO_CACHE_TTL_SECONDS`, default `3600`, must be non-negative)
+  controls TTL; the existing `Settings.provider_cache_enabled`
+  (`PROVIDER_CACHE_ENABLED`, default `true`) gates whether the cache is
+  used at all -- when `false`, every call goes live even if a cache store
+  was explicitly injected.
+- **No real network/Groq/Anthropic/Kiwi/MCP/scraping call in this step's
+  tests.** Every test in
+  `backend/app/tests/providers/test_open_meteo_adapter.py` uses the
+  existing in-file `_FakeClient`/`_FakeResponse` test doubles and an
+  injected or `tmp_path`-backed `ProviderCacheStore` -- no real HTTP call
+  to Open-Meteo or any other network service.

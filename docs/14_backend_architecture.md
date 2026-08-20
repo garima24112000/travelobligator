@@ -781,14 +781,25 @@ small local SQLite store (`sqlite3`, Python stdlib only) keyed by
 (docs/12_provider_architecture.md section 25 has the full design:
 canonical-JSON `query_hash`, TTL semantics, and per-source TTL guidance).
 
-**Not wired into any provider adapter yet.** `OpenStreetMapPlacesAdapter`,
-`OpenMeteoWeatherAdapter`, `NagerDateHolidaysAdapter`,
+**Wired into one provider adapter so far (Step 164B).**
+`OpenMeteoWeatherAdapter` is the first, and currently only, consumer of
+`ProviderCacheStore` (docs/12_provider_architecture.md section 26,
+docs/13_llm_reasoning_pipeline.md section 47) -- it caches successful,
+usable Open-Meteo weather responses under source `"open_meteo"`, keyed by
+a hash of the normalized request (latitude, longitude, start/end date,
+timezone). `OpenStreetMapPlacesAdapter`, `NagerDateHolidaysAdapter`,
 `FrankfurterCurrencyAdapter`, `ProviderGateway`, and
-`PlanningOrchestrator` do not import or call `ProviderCacheStore` --
-every provider call still goes out live (or reports honestly as
-`not_connected`/`unavailable`) exactly as before this step. A cache miss
-from this store (once wired) will always mean "miss," never a guessed or
-fabricated payload.
+`PlanningOrchestrator` still do not import or call `ProviderCacheStore` --
+every one of their provider calls still goes out live (or reports honestly
+as `not_connected`/`unavailable`) exactly as before this step. A cache
+miss from this store always means "miss," never a guessed or fabricated
+payload -- confirmed for Open-Meteo specifically by `unavailable`/`failed`
+responses never being written to the cache.
+
+**Cache failure is non-fatal for Open-Meteo.** A broken cache read falls
+back to the live Open-Meteo request; a broken cache write still returns
+the already-computed live result. Weather retrieval can never fail because
+the cache layer failed.
 
 Responsibilities (intended once wired in a future step):
 

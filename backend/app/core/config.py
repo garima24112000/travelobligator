@@ -119,6 +119,16 @@ class Settings(BaseSettings):
         alias="PROVIDER_CACHE_ENABLED",
     )
 
+    # Open-Meteo cache TTL (Step 164B, docs/12_provider_architecture.md
+    # "Provider Cache Foundation" section). Only `OpenMeteoWeatherAdapter`
+    # reads this -- no other provider is wired to the cache yet. Must be
+    # non-negative; a negative TTL has no sane meaning for `ProviderCacheStore.set`.
+    open_meteo_cache_ttl_seconds: int = Field(
+        default=3600,
+        alias="OPEN_METEO_CACHE_TTL_SECONDS",
+        ge=0,
+    )
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

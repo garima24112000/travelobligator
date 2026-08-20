@@ -996,3 +996,75 @@ this table yet.
 (`PROVIDER_CACHE_ENABLED`, default `true`) exist so a later wiring step
 doesn't need a config change first -- `provider_cache_enabled` is declared
 but not read by any code path yet.
+
+---
+
+## 26. Open-Meteo Weather Provider Cache Wiring (Step 164B)
+
+`OpenMeteoWeatherAdapter` (`backend/app/providers/weather/open_meteo_adapter.py`)
+is now the first provider adapter wired to the Step 164A `ProviderCacheStore`
+foundation. **No other provider is wired yet** -- `OpenStreetMapPlacesAdapter`,
+`NagerDateHolidaysAdapter`, `FrankfurterCurrencyAdapter`, `ProviderGateway`,
+and `PlanningOrchestrator` still do not import or call `ProviderCacheStore`,
+and every call they make still goes out live exactly as before this step.
+
+### 26.1 Cache key
+
+Cache rows are stored under source `"open_meteo"` (matching
+`OpenMeteoWeatherAdapter.provider_name`), keyed by `query_hash =
+make_query_hash(query)` where `query` is the normalized request:
+
+```json
+{
+  "latitude": 34.0522,
+  "longitude": -118.2437,
+  "start_date": "2026-08-10",
+  "end_date": "2026-08-12",
+  "timezone": "auto"
+}
+```
+
+Only these normalized fields feed the hash -- the raw destination string,
+trip ID, or any other user-private field is never included, matching the
+existing "never store raw query text" rule (section 25.1). The fixed set
+of daily weather fields requested (`temperature_2m_max`, etc.) is not part
+of the query, since it never varies per call.
+
+### 26.2 What is cached
+
+The cache stores the normalized `NormalizedDailyWeather[]` payload --
+provider response data, not `PlanningState` or any other user-private trip
+content. `metadata` is always empty (`{}`); no API key, token, prompt, or
+raw LLM response is ever written (Open-Meteo itself requires no API key).
+Only a `status=success` response with usable daily data is cached --
+`unavailable` (no usable data, or Open-Meteo reported an error) and
+`failed` (request-level failure) responses are never cached, so a transient
+provider problem can never be replayed as a false "success" later.
+
+### 26.3 Cache hit/miss behavior
+
+A cache hit returns the exact same `ProviderResponse[list[NormalizedDailyWeather]]`
+shape a live call would return, just relabeled `data_status="cached"` (both
+at the response level and on each `NormalizedDailyWeather.data_status`) --
+it never fabricates a field the live path wouldn't have populated. A cache
+miss (no row, or an expired row) calls the existing live Open-Meteo HTTP
+path exactly as before, normalizes it exactly as before, then caches the
+normalized result with TTL `Settings.open_meteo_cache_ttl_seconds`
+(`OPEN_METEO_CACHE_TTL_SECONDS`, default `3600`).
+
+Cache reads and writes are both best-effort and never fail weather
+retrieval: a broken cache read is logged and treated as a miss (falls
+through to the live path), and a broken cache write is logged but the
+already-computed live result is still returned. Neither log line includes
+the query payload.
+
+### 26.4 Dependency injection
+
+`OpenMeteoWeatherAdapter.__init__` accepts an optional `cache_store:
+ProviderCacheStore | None` parameter for tests. When not supplied, the
+adapter lazily resolves a shared store via `get_provider_cache_store`
+using `Settings.provider_cache_path` -- but only if
+`Settings.provider_cache_enabled` is `true`; when `false`, the cache is
+skipped completely (every call goes live), even if a `cache_store` was
+explicitly injected. Constructing `OpenMeteoWeatherAdapter()` with no
+arguments remains fully backward compatible.

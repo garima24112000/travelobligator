@@ -10,6 +10,11 @@ from app.core.config import get_settings
 from app.models.common import DataStatus, GeoPoint, ProviderStatus
 from app.models.providers import NormalizedDailyWeather, ProviderResponse
 from app.providers.base import WeatherProvider, failed_response, unavailable_response
+from app.storage.provider_cache_store import (
+    ProviderCacheStore,
+    get_provider_cache_store,
+    make_query_hash,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -52,13 +57,38 @@ class OpenMeteoWeatherAdapter(WeatherProvider):
     error for the requested range (e.g. a date range outside what the
     forecast endpoint supports) or returns no usable daily data, this
     reports `unavailable` instead -- both are honest; neither invents data.
+
+    Cache (Step 164B, docs/12_provider_architecture.md "Provider Cache
+    Foundation" section): a successful, usable forecast is cached in
+    `ProviderCacheStore` under source `"open_meteo"`, keyed by a hash of the
+    normalized request (latitude, longitude, start/end date, timezone) --
+    never the raw query text, never a secret, and never user-private trip
+    data. A cache hit returns the exact same normalized shape as a live
+    call, only relabeled `data_status="cached"`. Cache reads/writes never
+    fail weather retrieval: a broken cache read falls back to the live
+    request, and a broken cache write still returns the live result.
+    `unavailable`/`failed` responses are never cached.
     """
 
     provider_name = "open_meteo"
 
-    def __init__(self) -> None:
+    def __init__(self, cache_store: ProviderCacheStore | None = None) -> None:
         settings = get_settings()
         self._base_url = settings.open_meteo_api_url
+        self._cache_enabled = settings.provider_cache_enabled
+        self._cache_ttl_seconds = settings.open_meteo_cache_ttl_seconds
+        self._cache_path = settings.resolved_provider_cache_path()
+        self._cache_store = cache_store
+
+    def _resolve_cache_store(self) -> ProviderCacheStore | None:
+        """Lazily resolves the shared cache store, or `None` when the cache
+        is disabled entirely. Injecting `cache_store` in the constructor
+        bypasses this lazy resolution."""
+        if not self._cache_enabled:
+            return None
+        if self._cache_store is None:
+            self._cache_store = get_provider_cache_store(self._cache_path)
+        return self._cache_store
 
     def get_weather_forecast(
         self,
@@ -88,6 +118,33 @@ class OpenMeteoWeatherAdapter(WeatherProvider):
                 unavailable_fields=[field_name],
                 message="Trip start/end dates are required to request Open-Meteo weather.",
             )
+
+        query_hash = make_query_hash(
+            {
+                "latitude": coordinates.lat,
+                "longitude": coordinates.lng,
+                "start_date": start_date,
+                "end_date": end_date,
+                "timezone": "auto",
+            }
+        )
+        cache_store = self._resolve_cache_store()
+
+        if cache_store is not None:
+            cached_daily_weather = self._read_cache(cache_store, query_hash)
+            if cached_daily_weather is not None:
+                return ProviderResponse[list[NormalizedDailyWeather]](
+                    provider_name=self.provider_name,
+                    provider_type=self.provider_type,
+                    status=ProviderStatus.SUCCESS,
+                    data_status=DataStatus.CACHED,
+                    data=cached_daily_weather,
+                    confidence=0.6,
+                    message=(
+                        f"{len(cached_daily_weather)} day(s) of daily forecast found via "
+                        f"Open-Meteo for '{destination}' (cached)."
+                    ),
+                )
 
         try:
             with httpx.Client(
@@ -137,6 +194,9 @@ class OpenMeteoWeatherAdapter(WeatherProvider):
                 ),
             )
 
+        if cache_store is not None:
+            self._write_cache(cache_store, query_hash, daily_weather)
+
         return ProviderResponse[list[NormalizedDailyWeather]](
             provider_name=self.provider_name,
             provider_type=self.provider_type,
@@ -149,6 +209,48 @@ class OpenMeteoWeatherAdapter(WeatherProvider):
                 f"for '{destination}'."
             ),
         )
+
+    def _read_cache(
+        self, cache_store: ProviderCacheStore, query_hash: str
+    ) -> list[NormalizedDailyWeather] | None:
+        """Returns the cached forecast, or `None` on a cache miss/expiry or
+        a broken cache read -- either way, the caller falls back to the live
+        request rather than failing."""
+        try:
+            entry = cache_store.get(self.provider_name, query_hash)
+        except Exception:
+            logger.warning("Open-Meteo provider cache read failed; falling back to live request.")
+            return None
+
+        if entry is None:
+            return None
+
+        try:
+            return [
+                NormalizedDailyWeather(**{**item, "data_status": DataStatus.CACHED})
+                for item in entry.payload
+            ]
+        except (TypeError, ValueError):
+            logger.warning("Open-Meteo provider cache entry was unusable; falling back to live request.")
+            return None
+
+    def _write_cache(
+        self,
+        cache_store: ProviderCacheStore,
+        query_hash: str,
+        daily_weather: list[NormalizedDailyWeather],
+    ) -> None:
+        """Best-effort cache write -- a failure here must never affect the
+        already-computed live result being returned to the caller."""
+        try:
+            cache_store.set(
+                self.provider_name,
+                query_hash,
+                [day.model_dump(mode="json") for day in daily_weather],
+                ttl_seconds=self._cache_ttl_seconds,
+            )
+        except Exception:
+            logger.warning("Open-Meteo provider cache write failed; returning live result anyway.")
 
     def _normalize(self, payload: dict[str, Any]) -> list[NormalizedDailyWeather]:
         daily = payload.get("daily")
