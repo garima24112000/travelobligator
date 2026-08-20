@@ -1148,3 +1148,83 @@ is `true`; when `false`, the cache is skipped completely (every call goes
 live), even if a `cache_store` was explicitly injected. Constructing
 `NagerDateHolidaysAdapter()` with no arguments remains fully backward
 compatible.
+
+---
+
+## 28. Frankfurter Currency Provider Cache Wiring (Step 164D)
+
+`FrankfurterCurrencyAdapter` (`backend/app/providers/currency/frankfurter_adapter.py`)
+is now the third provider adapter wired to the Step 164A `ProviderCacheStore`
+foundation, alongside Open-Meteo (section 26) and Nager.Date (section 27).
+**Other providers are not wired yet** -- `OpenStreetMapPlacesAdapter`,
+`ProviderGateway`, and `PlanningOrchestrator` still do not import or call
+`ProviderCacheStore`, and every call they make still goes out live exactly
+as before this step.
+
+### 28.1 Cache key
+
+Cache rows are stored under source `"frankfurter"` (matching
+`FrankfurterCurrencyAdapter.provider_name`), keyed by `query_hash =
+make_query_hash(query)` where `query` is the normalized request:
+
+```json
+{
+  "base_currency": "USD",
+  "destination_currency": "EUR",
+  "query_type": "latest"
+}
+```
+
+`query_type` is a fixed `"latest"` marker rather than a real date, since
+this adapter only ever calls Frankfurter's `/latest` endpoint and never
+requests a historical rate. `amount` is not part of the key: this adapter
+always requests a single-unit rate (`amount=1` is Frankfurter's implicit
+default, never sent as a parameter) and the normalized result
+(`NormalizedExchangeRate.exchange_rate`) does not depend on it. The raw
+destination string, trip ID, or any other trip-private field is never
+included in the hash.
+
+### 28.2 What is cached
+
+The cache stores the normalized `NormalizedExchangeRate` payload for one
+`(base_currency, destination_currency)` pair -- provider response data,
+not `PlanningState` or any other user-private trip content. `metadata` is
+always empty (`{}`); no API key, token, prompt, or raw LLM response is
+ever written (Frankfurter itself requires no API key). Only a
+`status=success` response fetched over the network is cached --
+`unavailable`/`failed` responses are never cached. The same-currency
+identity result (`base_currency == destination_currency`, `exchange_rate
+=1.0`, no HTTP call made at all) is also never cached, since there is
+nothing to save by caching a computation that already skips the network.
+
+### 28.3 Cache hit/miss behavior
+
+A cache hit returns the exact same `ProviderResponse[NormalizedExchangeRate]`
+shape a live call would return, relabeled `data_status="cached"` (both at
+the response level and on `NormalizedExchangeRate.data_status`) -- it
+never fabricates a rate the live path wouldn't have populated. A cache
+miss (no row, or an expired row, which is treated exactly like a miss)
+calls the existing live Frankfurter HTTP path exactly as before,
+normalizes it exactly as before, then caches the normalized result with
+TTL `Settings.frankfurter_cache_ttl_seconds`
+(`FRANKFURTER_CACHE_TTL_SECONDS`, default `21600` = 6 hours -- currency
+data can change but not minute-by-minute for this app).
+
+Cache reads and writes are both best-effort and never fail currency
+retrieval: a broken cache read is logged and treated as a miss (falls
+through to the live path), and a broken cache write is logged but the
+already-computed live result is still returned. Neither log line includes
+the query payload.
+
+### 28.4 Dependency injection
+
+`FrankfurterCurrencyAdapter.__init__` accepts an optional `cache_store:
+ProviderCacheStore | None` parameter for tests, mirroring
+`OpenMeteoWeatherAdapter` (section 26.4) and `NagerDateHolidaysAdapter`
+(section 27.4). When not supplied, the adapter lazily resolves a shared
+store via `get_provider_cache_store` using `Settings.provider_cache_path`
+-- but only if `Settings.provider_cache_enabled` is `true`; when `false`,
+the cache is skipped completely (every call goes live), even if a
+`cache_store` was explicitly injected. Constructing
+`FrankfurterCurrencyAdapter()` with no arguments remains fully backward
+compatible.

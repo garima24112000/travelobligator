@@ -141,6 +141,17 @@ class Settings(BaseSettings):
         ge=0,
     )
 
+    # Frankfurter cache TTL (Step 164D, docs/12_provider_architecture.md
+    # "Provider Cache Foundation" section). Only `FrankfurterCurrencyAdapter`
+    # reads this. 6 hours is acceptable here because this app's currency
+    # data can change but not minute-by-minute, but it stays configurable.
+    # Must be non-negative, matching the other provider cache TTL settings.
+    frankfurter_cache_ttl_seconds: int = Field(
+        default=21600,
+        alias="FRANKFURTER_CACHE_TTL_SECONDS",
+        ge=0,
+    )
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

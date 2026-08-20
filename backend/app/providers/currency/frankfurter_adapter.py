@@ -10,6 +10,11 @@ from app.core.config import get_settings
 from app.models.common import DataStatus, ProviderStatus
 from app.models.providers import NormalizedExchangeRate, ProviderResponse
 from app.providers.base import CurrencyProvider, failed_response, unavailable_response
+from app.storage.provider_cache_store import (
+    ProviderCacheStore,
+    get_provider_cache_store,
+    make_query_hash,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -89,13 +94,43 @@ class FrankfurterCurrencyAdapter(CurrencyProvider):
     the response has no usable rate for the requested currency, this
     reports `unavailable` instead -- both are honest; neither invents
     data.
+
+    Cache (Step 164D, docs/12_provider_architecture.md "Provider Cache
+    Foundation" section): a successful, usable exchange rate fetched over
+    the network is cached in `ProviderCacheStore` under source
+    `"frankfurter"`, keyed by a hash of the normalized request
+    (base_currency, destination_currency, a fixed `"latest"` marker since
+    this adapter only ever requests the latest rate, never a historical
+    date) -- never the raw query text, a secret, or user-private trip data.
+    A cache hit returns the exact same normalized shape as a live call,
+    only relabeled `data_status="cached"`. Cache reads/writes never fail
+    currency retrieval: a broken cache read falls back to the live request,
+    and a broken cache write still returns the live result.
+    `unavailable`/`failed` responses are never cached. The same-currency
+    identity result (no HTTP call at all) is not cached either -- there is
+    nothing to save by caching a computation that already skips the
+    network.
     """
 
     provider_name = "frankfurter"
 
-    def __init__(self) -> None:
+    def __init__(self, cache_store: ProviderCacheStore | None = None) -> None:
         settings = get_settings()
         self._base_url = settings.frankfurter_api_url
+        self._cache_enabled = settings.provider_cache_enabled
+        self._cache_ttl_seconds = settings.frankfurter_cache_ttl_seconds
+        self._cache_path = settings.resolved_provider_cache_path()
+        self._cache_store = cache_store
+
+    def _resolve_cache_store(self) -> ProviderCacheStore | None:
+        """Lazily resolves the shared cache store, or `None` when the cache
+        is disabled entirely. Injecting `cache_store` in the constructor
+        bypasses this lazy resolution."""
+        if not self._cache_enabled:
+            return None
+        if self._cache_store is None:
+            self._cache_store = get_provider_cache_store(self._cache_path)
+        return self._cache_store
 
     def get_exchange_rate(
         self, base_currency: str, destination: str
@@ -118,7 +153,8 @@ class FrankfurterCurrencyAdapter(CurrencyProvider):
         if destination_currency == base_currency:
             # No conversion is needed -- this identity result is itself
             # honest/provider-backed, not a network call away from being
-            # invented, so no HTTP request is made.
+            # invented, so no HTTP request is made, and there is nothing to
+            # cache either.
             return ProviderResponse[NormalizedExchangeRate](
                 provider_name=self.provider_name,
                 provider_type=self.provider_type,
@@ -138,6 +174,31 @@ class FrankfurterCurrencyAdapter(CurrencyProvider):
                     f"currency ({base_currency}); no conversion is needed."
                 ),
             )
+
+        query_hash = make_query_hash(
+            {
+                "base_currency": base_currency,
+                "destination_currency": destination_currency,
+                "query_type": "latest",
+            }
+        )
+        cache_store = self._resolve_cache_store()
+
+        if cache_store is not None:
+            cached_exchange_rate = self._read_cache(cache_store, query_hash)
+            if cached_exchange_rate is not None:
+                return ProviderResponse[NormalizedExchangeRate](
+                    provider_name=self.provider_name,
+                    provider_type=self.provider_type,
+                    status=ProviderStatus.SUCCESS,
+                    data_status=DataStatus.CACHED,
+                    data=cached_exchange_rate,
+                    confidence=0.6,
+                    message=(
+                        f"Exchange rate found via Frankfurter for {base_currency} -> "
+                        f"{destination_currency} (cached)."
+                    ),
+                )
 
         try:
             with httpx.Client(
@@ -180,6 +241,9 @@ class FrankfurterCurrencyAdapter(CurrencyProvider):
                 ),
             )
 
+        if cache_store is not None:
+            self._write_cache(cache_store, query_hash, exchange_rate)
+
         return ProviderResponse[NormalizedExchangeRate](
             provider_name=self.provider_name,
             provider_type=self.provider_type,
@@ -192,6 +256,51 @@ class FrankfurterCurrencyAdapter(CurrencyProvider):
                 f"{destination_currency}."
             ),
         )
+
+    def _read_cache(
+        self, cache_store: ProviderCacheStore, query_hash: str
+    ) -> NormalizedExchangeRate | None:
+        """Returns the cached exchange rate, or `None` on a cache miss/
+        expiry or a broken cache read -- either way, the caller falls back
+        to the live request rather than failing."""
+        try:
+            entry = cache_store.get(self.provider_name, query_hash)
+        except Exception:
+            logger.warning(
+                "Frankfurter provider cache read failed; falling back to live request."
+            )
+            return None
+
+        if entry is None:
+            return None
+
+        try:
+            return NormalizedExchangeRate(**{**entry.payload, "data_status": DataStatus.CACHED})
+        except (TypeError, ValueError):
+            logger.warning(
+                "Frankfurter provider cache entry was unusable; falling back to live request."
+            )
+            return None
+
+    def _write_cache(
+        self,
+        cache_store: ProviderCacheStore,
+        query_hash: str,
+        exchange_rate: NormalizedExchangeRate,
+    ) -> None:
+        """Best-effort cache write -- a failure here must never affect the
+        already-computed live result being returned to the caller."""
+        try:
+            cache_store.set(
+                self.provider_name,
+                query_hash,
+                exchange_rate.model_dump(mode="json"),
+                ttl_seconds=self._cache_ttl_seconds,
+            )
+        except Exception:
+            logger.warning(
+                "Frankfurter provider cache write failed; returning live result anyway."
+            )
 
     def _normalize(
         self, payload: Any, destination_currency: str

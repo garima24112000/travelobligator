@@ -2022,3 +2022,61 @@ inferred.
   to Nager.Date or any other network service. Open-Meteo's own cache tests
   (`backend/app/tests/providers/test_open_meteo_adapter.py`) are re-run
   unchanged and still pass, confirming this step didn't disturb Step 164B.
+
+---
+
+## 49. Frankfurter Currency Provider Cache Wiring (Step 164D)
+
+Step 164D wires the Step 164A `ProviderCacheStore` foundation into a third
+provider adapter, `FrankfurterCurrencyAdapter`
+(`backend/app/providers/currency/frankfurter_adapter.py`,
+docs/12_provider_architecture.md section 28), alongside Open-Meteo (Step
+164B, section 47) and Nager.Date (Step 164C, section 48). **This is
+deterministic provider infrastructure, not AI reasoning** -- it contains
+no LLM call, no prompt, and no model inference; a cache hit and a cache
+miss both return a rate that already came from the real Frankfurter API on
+some earlier call, never anything invented or inferred.
+
+- **Open-Meteo, Nager.Date, and Frankfurter are now the three cache
+  consumers.** `OpenStreetMapPlacesAdapter`, `ProviderGateway`, and
+  `PlanningOrchestrator` are unchanged by this step and still do not
+  import `ProviderCacheStore` -- confirmed by this step's own static
+  source-inspection tests (`backend/app/tests/core/test_provider_cache_config.py`),
+  which also re-confirm Open-Meteo's and Nager.Date's earlier wiring is
+  unaffected.
+- **Cache key is `source="frankfurter"` + a hash of the normalized
+  request** (`base_currency`, `destination_currency`, a fixed `"latest"`
+  marker) -- never the raw destination string, trip ID, or any other
+  `PlanningState`/trip-private field. `amount` is not part of the key,
+  since this adapter always requests a single-unit rate and the
+  normalized result doesn't depend on it. The cached payload is the
+  normalized `NormalizedExchangeRate` Frankfurter itself already returned
+  on a prior live call, not anything reasoned about or reformatted by an
+  AI step.
+- **Cache hit/miss never fabricates data.** A hit returns the exact same
+  `ProviderResponse` shape a live call would, relabeled
+  `data_status="cached"`; a miss (including an expired entry, treated
+  exactly like a miss) runs the existing live HTTP path unchanged and
+  normalizes it exactly as before. Only a successful rate fetched over the
+  network is ever cached -- `unavailable`/`failed` responses are not, and
+  neither is the same-currency identity result (which never makes an HTTP
+  call in the first place).
+- **Cache failure is non-fatal.** A broken cache read falls back to the
+  live request; a broken cache write still returns the already-computed
+  live result. Neither failure path logs the query or payload contents.
+- **Config**: `Settings.frankfurter_cache_ttl_seconds`
+  (`FRANKFURTER_CACHE_TTL_SECONDS`, default `21600` = 6 hours, must be
+  non-negative) controls TTL -- 6 hours is acceptable because this app's
+  currency data can change but not minute-by-minute, but it stays
+  configurable; the existing `Settings.provider_cache_enabled`
+  (`PROVIDER_CACHE_ENABLED`, default `true`) gates whether the cache is
+  used at all -- when `false`, every call goes live even if a cache store
+  was explicitly injected.
+- **No real network/Groq/Anthropic/Kiwi/MCP/scraping call in this step's
+  tests.** Every test in
+  `backend/app/tests/providers/test_frankfurter_adapter.py` uses the
+  existing in-file `_FakeClient`/`_FakeResponse` test doubles and an
+  injected or `tmp_path`-backed `ProviderCacheStore` -- no real HTTP call
+  to Frankfurter or any other network service. Open-Meteo's and
+  Nager.Date's own cache tests are re-run unchanged and still pass,
+  confirming this step didn't disturb Steps 164B/164C.
