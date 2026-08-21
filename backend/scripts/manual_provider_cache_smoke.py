@@ -1,23 +1,27 @@
 #!/usr/bin/env python3
-"""MANUAL-ONLY dev smoke test -- Step 164D.1.
+"""MANUAL-ONLY dev smoke test -- Step 164D.1, extended in Step 164F.
 
 This script is not part of the application runtime and is never imported by
 `app.main`, any service, or the automated test suite. It exists purely so a
-developer can, by hand, confirm that the three provider-cache-wired
-adapters -- Open-Meteo (Step 164B), Nager.Date (Step 164C), and Frankfurter
-(Step 164D) -- still work against their real public APIs, and that the
-`ProviderCacheStore` foundation (Step 164A) actually populates and is read
-back correctly for each of them.
+developer can, by hand, confirm that the four provider-cache-wired
+adapters -- Open-Meteo (Step 164B), Nager.Date (Step 164C), Frankfurter
+(Step 164D), and OpenStreetMap/Nominatim geocoding (Step 164E) -- still work
+against their real public APIs, and that the `ProviderCacheStore` foundation
+(Step 164A) actually populates and is read back correctly for each of them.
+
+**OpenStreetMap coverage is geocoding only.** This script never calls
+Overpass (attractions/restaurants/accommodation POI search) -- that path is
+not cache-wired yet (Step 164E's own scope) and is not smoke-tested here.
 
 WARNING: running this script with the required env var set makes real
-network calls to Open-Meteo, Nager.Date, and Frankfurter -- three free,
-keyless public APIs (no API key is required or read by this script). It is
-never invoked by pytest, by `python -m compileall`, by CI, or by normal
-`uvicorn`/app startup -- it only runs when a human explicitly executes this
-file.
+network calls to Open-Meteo, Nager.Date, Frankfurter, and Nominatim --
+four free, keyless public APIs (no API key is required or read by this
+script). It is never invoked by pytest, by `python -m compileall`, by CI,
+or by normal `uvicorn`/app startup -- it only runs when a human explicitly
+executes this file.
 
 No Groq, Anthropic, Kiwi/MCP, or scraping call is made anywhere in this
-script -- only the three providers above.
+script -- only the four providers above.
 
 Required environment variable (or this script exits without calling
 anything):
@@ -32,11 +36,12 @@ and does not mean.
 
 Output safety: this script only ever prints a short per-provider summary
 (provider name, live_path_ok, cache_path_ok, status, cache_row_count) plus a
-final PASS/FAIL line. It never prints a full weather/holiday/currency
-payload, a raw query, or any secret, and it never writes to the app's real
-provider cache (`Settings.provider_cache_path`) or trip storage -- it always
-uses its own temporary, clearly-named `ProviderCacheStore` file that is
-deleted when the script exits.
+final PASS/FAIL line. It never prints a full weather/holiday/currency/
+geocode payload, a raw query, an API URL with its query string, or any
+secret, and it never writes to the app's real provider cache
+(`Settings.provider_cache_path`) or trip storage -- it always uses its own
+temporary, clearly-named `ProviderCacheStore` file that is deleted when the
+script exits.
 """
 
 from __future__ import annotations
@@ -63,17 +68,18 @@ if str(_BACKEND_ROOT) not in sys.path:
 
 _REQUIRED_ENV_VAR = "RUN_LIVE_PROVIDER_CACHE_SMOKE"
 
-# Known, fixed real-world inputs -- never resolved via a geocoding/places
-# lookup, so this script depends on nothing beyond the three providers under
-# test. Lisbon, Portugal is used consistently across all three so a single
-# temporary cache file/instance exercises Open-Meteo, Nager.Date, and
-# Frankfurter with one coherent destination.
+# Known, fixed real-world inputs. Lisbon, Portugal is used consistently
+# across all four providers (including as the OSM/Nominatim geocode query
+# itself) so a single temporary cache file/instance exercises Open-Meteo,
+# Nager.Date, Frankfurter, and OSM geocoding with one coherent destination.
 _KNOWN_LATITUDE = 38.7223
 _KNOWN_LONGITUDE = -9.1393
 _KNOWN_DESTINATION = "Lisbon, Portugal"
 _KNOWN_BASE_CURRENCY = "USD"
 
-_EXPECTED_SOURCES = ("open_meteo", "nager_date", "frankfurter")
+_OSM_GEOCODE_SOURCE = "openstreetmap_geocode"
+
+_EXPECTED_SOURCES = ("open_meteo", "nager_date", "frankfurter", _OSM_GEOCODE_SOURCE)
 
 # Checked against stored query_hash/payload_json/metadata_json text as a
 # defense-in-depth assertion -- none of these three providers require an API
@@ -149,15 +155,123 @@ def _cache_rows_contain_secret_markers(db_path: Path, source: str) -> bool:
     return any(needle in combined for needle in _FORBIDDEN_SECRET_SUBSTRINGS)
 
 
+def _metadata_is_empty_for_every_row(db_path: Path, source: str) -> bool:
+    """True only if every stored `metadata_json` for `source` is the empty
+    object -- none of these adapters ever pass an explicit `metadata=` to
+    `ProviderCacheStore.set`, so this should always hold. Used as an extra,
+    explicit check that no raw destination/search text was smuggled into
+    `metadata` specifically (on top of the broader secret-marker check)."""
+    with sqlite3.connect(db_path) as conn:
+        rows = conn.execute(
+            "SELECT metadata_json FROM provider_cache WHERE source = ?", (source,)
+        ).fetchall()
+    return all(row[0] == "{}" for row in rows)
+
+
+def _run_osm_geocode_check(
+    db_path: Path, store: Any, checks: list[tuple[str, bool]]
+) -> None:
+    """Geocoding-only OSM/Nominatim check (Step 164F). Calls
+    `OpenStreetMapPlacesAdapter.resolve_coordinates` -- never Overpass POI
+    search -- with two separate, fresh adapter instances (each with its own
+    empty per-instance dict) sharing one persistent `ProviderCacheStore`.
+
+    `resolve_coordinates` returns a plain `GeoPoint | None`, not a
+    `ProviderResponse` with a `data_status` field, so "cache_path_ok" can't
+    be read off a response attribute the way it can for the other three
+    providers. Instead, this wraps the adapter's own `httpx.Client` calls in
+    a thin, transparent counter (never a fake response, never altered
+    headers/timeout/User-Agent -- the real client still makes the real
+    request) so the second call can be proven to have made no additional
+    live request. Never asserts an exact coordinate, OSM ID, or display
+    name -- only that a real point was resolved and that a second identical
+    lookup didn't need a second live request.
+    """
+    from app.providers.places import openstreetmap_adapter
+    from app.providers.places.openstreetmap_adapter import OpenStreetMapPlacesAdapter
+
+    call_counters = {"get": 0}
+    real_client_cls = openstreetmap_adapter.httpx.Client
+
+    class _CallCountingHttpxClient:
+        def __init__(self, real_client: Any) -> None:
+            self._real_client = real_client
+
+        def __enter__(self) -> "_CallCountingHttpxClient":
+            self._real_client.__enter__()
+            return self
+
+        def __exit__(self, *exc_info: object) -> bool:
+            return self._real_client.__exit__(*exc_info)
+
+        def get(self, *args: Any, **kwargs: Any) -> Any:
+            call_counters["get"] += 1
+            return self._real_client.get(*args, **kwargs)
+
+    def _wrapped_client(**kwargs: Any) -> _CallCountingHttpxClient:
+        return _CallCountingHttpxClient(real_client_cls(**kwargs))
+
+    openstreetmap_adapter.httpx.Client = _wrapped_client
+    try:
+        # `resolve_coordinates` already catches httpx.HTTPError/ValueError
+        # internally and returns None rather than raising -- no exception
+        # handling is needed here beyond restoring the real client.
+        first_point = OpenStreetMapPlacesAdapter(cache_store=store).resolve_coordinates(
+            _KNOWN_DESTINATION
+        )
+        calls_after_first = call_counters["get"]
+
+        second_point = OpenStreetMapPlacesAdapter(cache_store=store).resolve_coordinates(
+            _KNOWN_DESTINATION
+        )
+        calls_after_second = call_counters["get"]
+    finally:
+        openstreetmap_adapter.httpx.Client = real_client_cls
+
+    def _is_valid_point(point: Any) -> bool:
+        return (
+            point is not None
+            and isinstance(point.lat, (int, float))
+            and isinstance(point.lng, (int, float))
+        )
+
+    live_path_ok = _is_valid_point(first_point) and calls_after_first >= 1
+    cache_path_ok = (
+        live_path_ok
+        and _is_valid_point(second_point)
+        and calls_after_second == calls_after_first
+    )
+    row_count = _cache_row_count(db_path, _OSM_GEOCODE_SOURCE)
+    status_label = "success" if live_path_ok else "failed"
+
+    print(
+        f"provider={_OSM_GEOCODE_SOURCE} live_path_ok={live_path_ok} "
+        f"cache_path_ok={cache_path_ok} status={status_label} "
+        f"cache_row_count={row_count}"
+    )
+
+    checks.append((f"{_OSM_GEOCODE_SOURCE} live path ok", live_path_ok))
+    checks.append((f"{_OSM_GEOCODE_SOURCE} cache path ok", cache_path_ok))
+    checks.append((f"{_OSM_GEOCODE_SOURCE} has at least one cache row", row_count >= 1))
+    checks.append(
+        (
+            f"{_OSM_GEOCODE_SOURCE} cache metadata is empty (no raw text smuggled in)",
+            _metadata_is_empty_for_every_row(db_path, _OSM_GEOCODE_SOURCE),
+        )
+    )
+
+
 def _run_smoke_test(db_path: Path) -> bool:
-    """Calls each of the three cache-wired adapters twice with identical,
-    known inputs, sharing one `ProviderCacheStore` pointed at `db_path` (a
-    temporary file, never the app's real provider cache). The first call is
-    expected to populate the cache from a live provider request; the second
-    is expected to be served from the cache (`data_status="cached"`).
-    Returns True on PASS, False on FAIL. Never asserts an exact weather
-    value, holiday name, or exchange rate -- only structure and cache
-    behavior.
+    """Calls each of the four cache-wired adapters (Open-Meteo, Nager.Date,
+    Frankfurter, and OSM geocoding) twice with identical, known inputs,
+    sharing one `ProviderCacheStore` pointed at `db_path` (a temporary file,
+    never the app's real provider cache). The first call is expected to
+    populate the cache from a live provider request; the second is expected
+    to be served from the cache. Returns True on PASS, False on FAIL. Never
+    asserts an exact weather value, holiday name, exchange rate, geocode
+    coordinate, OSM ID, or display name -- only structure and cache
+    behavior. OSM/Overpass POI search (attractions/restaurants/
+    accommodation) is not exercised here -- only geocoding.
     """
     from app.models.common import DataStatus, GeoPoint, ProviderStatus
     from app.providers.currency.frankfurter_adapter import FrankfurterCurrencyAdapter
@@ -215,6 +329,10 @@ def _run_smoke_test(db_path: Path) -> bool:
     currency_first = currency_adapter.get_exchange_rate(_KNOWN_BASE_CURRENCY, _KNOWN_DESTINATION)
     currency_second = currency_adapter.get_exchange_rate(_KNOWN_BASE_CURRENCY, _KNOWN_DESTINATION)
     _report("frankfurter", currency_first, currency_second)
+
+    # --- OpenStreetMap/Nominatim geocoding only (Step 164F) -- never
+    # Overpass POI search, which is not cache-wired and not smoke-tested. ---
+    _run_osm_geocode_check(db_path, store, checks)
 
     no_secrets = not any(
         _cache_rows_contain_secret_markers(db_path, source) for source in _EXPECTED_SOURCES

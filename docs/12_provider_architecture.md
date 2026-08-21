@@ -1330,3 +1330,13 @@ As of Step 164E, four real provider adapters are cache consumers: Open-Meteo
 provider (routes, transit, accommodation pricing, flights) is cache-wired,
 and no LangGraph, Groq, Anthropic, or Kiwi/MCP call is cached or otherwise
 touched by any of these four steps.
+
+### 29.6 Manual live smoke coverage (Step 164F)
+
+`backend/scripts/manual_provider_cache_smoke.py` (manual/dev-only, never
+run by CI or pytest; see docs/21_manual_provider_cache_smoke.md) now
+covers all four cache-wired providers against their real public APIs:
+Open-Meteo, Nager.Date, Frankfurter, and OpenStreetMap/Nominatim
+**geocoding only** -- it calls `resolve_coordinates`, never Overpass POI
+search, so it does not validate `search_attractions`/`search_restaurants`/
+`search_accommodation_pois`/`search_must_visit_place`.

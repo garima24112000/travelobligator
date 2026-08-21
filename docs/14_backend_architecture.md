@@ -821,6 +821,12 @@ request; a broken cache write still returns the already-computed live
 result. Weather, holiday, currency, and geocoding retrieval can never fail
 because the cache layer failed.
 
+**Manual live smoke coverage (Step 164F).** `backend/scripts/manual_provider_cache_smoke.py`
+(manual/dev-only, docs/21_manual_provider_cache_smoke.md) now exercises
+all four cache-wired providers against their real public APIs, including
+OSM geocoding (`resolve_coordinates`) -- but not Overpass POI search,
+which remains untouched by any manual smoke coverage.
+
 Responsibilities (intended once wired in a future step):
 
 - cache allowed provider responses

@@ -7,8 +7,9 @@ import sys
 from pathlib import Path
 
 # Safety-boundary tests for the Step 164D.1 manual/dev-only provider-cache
-# smoke script. This suite never calls a real Open-Meteo/Nager.Date/
-# Frankfurter (or any other) network endpoint and never requires
+# smoke script, extended in Step 164F to cover OSM/Nominatim geocoding. This
+# suite never calls a real Open-Meteo/Nager.Date/Frankfurter/Nominatim (or
+# any other) network endpoint and never requires
 # RUN_LIVE_PROVIDER_CACHE_SMOKE to be truthy -- it only inspects the
 # script's source (AST/string checks) and runs it as a subprocess with the
 # guardrail env var deliberately missing/falsy, which the script itself is
@@ -35,7 +36,7 @@ _DISALLOWED_IMPORT_SUBSTRINGS = (
     "claude_code",
 )
 
-_EXPECTED_SOURCES = ("open_meteo", "nager_date", "frankfurter")
+_EXPECTED_SOURCES = ("open_meteo", "nager_date", "frankfurter", "openstreetmap_geocode")
 
 
 def _clean_env(**overrides: str) -> dict[str, str]:
@@ -221,17 +222,43 @@ def test_manual_smoke_script_module_imports_cleanly_without_network() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 7. Script checks the three expected providers.
+# 7. Script checks all four expected providers, including OSM geocoding
+#    (Step 164F).
 # ---------------------------------------------------------------------------
 
 
-def test_manual_smoke_script_checks_three_expected_providers() -> None:
+def test_manual_smoke_script_checks_four_expected_providers() -> None:
     source = _SCRIPT_PATH.read_text()
     for provider_source in _EXPECTED_SOURCES:
         assert provider_source in source
     assert "open_meteo_adapter" in source
     assert "nager_date_adapter" in source
     assert "frankfurter_adapter" in source
+    assert "openstreetmap_adapter" in source
+
+
+def test_manual_smoke_script_includes_osm_geocoding_coverage() -> None:
+    source = _SCRIPT_PATH.read_text()
+    assert "openstreetmap_geocode" in source
+    assert "OpenStreetMapPlacesAdapter" in source
+    assert "resolve_coordinates" in source
+
+
+def test_manual_smoke_script_does_not_include_overpass_poi_smoke_calls() -> None:
+    """Step 164F is geocoding-only -- the script must never *call* Overpass
+    POI search (attractions/restaurants/accommodation), which is not
+    cache-wired (Step 164E's own scope). Comments explaining this
+    intentional exclusion (e.g. the word "Overpass" itself) are expected and
+    fine -- only actual call sites are disallowed."""
+    source = _SCRIPT_PATH.read_text()
+    for disallowed_call in (
+        ".search_attractions(",
+        ".search_restaurants(",
+        ".search_accommodation_pois(",
+        ".search_must_visit_place(",
+        "._query_overpass(",
+    ):
+        assert disallowed_call not in source, f"Unexpected Overpass/POI call: {disallowed_call}"
 
 
 # ---------------------------------------------------------------------------
@@ -317,6 +344,24 @@ def test_manual_smoke_doc_warns_values_are_not_asserted_exactly() -> None:
 def test_manual_smoke_doc_warns_this_is_not_ci() -> None:
     text = _DOC_PATH.read_text().lower()
     assert "not part of ci" in text or "never run by ci" in text or "not run by ci" in text or "never runs in ci" in text
+
+
+# ---------------------------------------------------------------------------
+# 11. Docs clarify OSM coverage is geocoding only, and does not validate
+#     OSM/Overpass POI behavior (Step 164F).
+# ---------------------------------------------------------------------------
+
+
+def test_manual_smoke_doc_clarifies_osm_geocoding_only_scope() -> None:
+    text = _DOC_PATH.read_text().lower()
+    assert "openstreetmap_geocode" in text or "osm" in text
+    assert "geocoding only" in text or "geocoding-only" in text
+
+
+def test_manual_smoke_doc_clarifies_it_does_not_validate_overpass_poi() -> None:
+    text = _DOC_PATH.read_text().lower()
+    assert "overpass" in text
+    assert "does not" in text
 
 
 # ---------------------------------------------------------------------------

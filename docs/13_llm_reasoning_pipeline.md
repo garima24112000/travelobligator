@@ -2152,3 +2152,49 @@ anything invented or inferred.
   to Nominatim, Overpass, or any other network service. Open-Meteo's,
   Nager.Date's, and Frankfurter's own cache tests are re-run unchanged and
   still pass, confirming this step didn't disturb Steps 164B/164C/164D.
+
+---
+
+## 51. Manual Live Smoke Coverage for OSM Geocoding Cache (Step 164F)
+
+Step 164F extends the existing Step 164D.1 manual smoke script
+(`backend/scripts/manual_provider_cache_smoke.py`,
+docs/21_manual_provider_cache_smoke.md) to also exercise Step 164E's OSM
+geocoding cache wiring against the real Nominatim API. **This is manual
+live provider verification, not AI reasoning** -- it contains no LLM call,
+no prompt, and no model inference; it only proves that a real, already-
+built HTTP integration and its cache wiring still work together, the same
+way the script already did for Open-Meteo/Nager.Date/Frankfurter.
+
+- **Geocoding only, added to the existing script -- no new script, no CI,
+  no pytest integration.** The script still requires
+  `RUN_LIVE_PROVIDER_CACHE_SMOKE=true` and still exits immediately with no
+  network call when that's missing/falsy. It now calls
+  `OpenStreetMapPlacesAdapter.resolve_coordinates` -- never
+  `search_attractions`/`search_restaurants`/`search_accommodation_pois`/
+  `search_must_visit_place`, all of which call Overpass, not just
+  Nominatim, and Overpass is not cache-wired (Step 164E's own scope).
+- **A network-call counter, not a fake response, proves the cache path.**
+  `resolve_coordinates` returns a plain coordinate, not a
+  `ProviderResponse` with a `data_status` field, so unlike the other three
+  providers' `data_status="cached"` check, this step wraps the adapter's
+  own `httpx.Client` in a thin, transparent counter (delegating every call
+  to the real client, changing no header/timeout/User-Agent) to prove a
+  second, fresh-instance lookup made no additional live HTTP request. This
+  is still a real live network call underneath -- nothing is faked.
+- **Still only structural assertions.** No exact coordinate, OSM ID, or
+  display name is ever asserted -- only that a real point was resolved
+  (`status=success`-equivalent), that the second call needed no new
+  network request, that a cache row exists for source
+  `"openstreetmap_geocode"`, and that no secret marker or raw destination
+  text is stored in `query_hash`/`payload_json`/`metadata_json`.
+- **No provider behavior changed.** No file under
+  `backend/app/providers/` or `backend/app/core/config.py` was touched by
+  this step -- only the manual script, its test suite, and docs.
+- **No real network/Groq/Anthropic/Kiwi/MCP/scraping call in this step's
+  own tests.** Every test in
+  `backend/app/tests/scripts/test_manual_provider_cache_smoke_script.py`
+  still only inspects the script's source and runs it as a subprocess with
+  the guardrail env var deliberately missing/falsy -- no real HTTP call to
+  Nominatim or any other network service, and no `RUN_LIVE_PROVIDER_CACHE_SMOKE`
+  requirement anywhere in the automated suite.
