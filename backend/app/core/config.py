@@ -152,6 +152,19 @@ class Settings(BaseSettings):
         ge=0,
     )
 
+    # OpenStreetMap/Nominatim geocode cache TTL (Step 164E,
+    # docs/12_provider_architecture.md "Provider Cache Foundation" section).
+    # Only `OpenStreetMapPlacesAdapter`'s destination-geocode path
+    # (`_resolve_destination`) reads this -- Overpass POI searches are not
+    # cache-wired yet. 30 days is acceptable here because geocoding a given
+    # destination string changes slowly, but it stays configurable. Must be
+    # non-negative, matching the other provider cache TTL settings.
+    osm_geocode_cache_ttl_seconds: int = Field(
+        default=2592000,
+        alias="OSM_GEOCODE_CACHE_TTL_SECONDS",
+        ge=0,
+    )
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

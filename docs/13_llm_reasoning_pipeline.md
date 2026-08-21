@@ -2080,3 +2080,75 @@ some earlier call, never anything invented or inferred.
   to Frankfurter or any other network service. Open-Meteo's and
   Nager.Date's own cache tests are re-run unchanged and still pass,
   confirming this step didn't disturb Steps 164B/164C.
+
+---
+
+## 50. OpenStreetMap Geocoding Cache Wiring (Step 164E)
+
+Step 164E wires the Step 164A `ProviderCacheStore` foundation into a
+fourth provider adapter, `OpenStreetMapPlacesAdapter`
+(`backend/app/providers/places/openstreetmap_adapter.py`,
+docs/12_provider_architecture.md section 29), alongside Open-Meteo (Step
+164B, section 47), Nager.Date (Step 164C, section 48), and Frankfurter
+(Step 164D, section 49). **This is deterministic provider infrastructure,
+not AI reasoning** -- it contains no LLM call, no prompt, and no model
+inference; a cache hit and a cache miss both return a geocode result that
+already came from the real Nominatim API on some earlier call, never
+anything invented or inferred.
+
+- **Geocoding only -- Overpass POI search is untouched.** Only
+  `_resolve_destination` (the Nominatim destination lookup used by
+  `_search`, `resolve_coordinates`, and `search_must_visit_place`) is
+  cache-wired. Attraction/restaurant/accommodation-POI search via Overpass
+  still goes out live on every call, exactly as before this step --
+  confirmed by every pre-existing Overpass-related test in
+  `backend/app/tests/providers/test_openstreetmap_adapter.py` still
+  passing unchanged, plus a dedicated source-inspection test
+  (`backend/app/tests/core/test_provider_cache_config.py`) confirming
+  `_query_overpass` itself references neither `cache_store` nor
+  `ProviderCacheStore`.
+- **Open-Meteo, Nager.Date, Frankfurter, and now OSM geocoding are the
+  four cache consumers.** No other provider (routes, transit,
+  accommodation, flights) is wired, and `ProviderGateway`/
+  `PlanningOrchestrator` still do not import `ProviderCacheStore` --
+  confirmed by this step's own static source-inspection tests, which also
+  re-confirm the three earlier adapters' wiring is unaffected.
+- **Cache key is `source="openstreetmap_geocode"` + a hash of the
+  normalized search text** (plus the fixed `format`/`limit` Nominatim
+  params) -- never the raw trip destination stored as its own field, a
+  trip ID, or any other `PlanningState`/trip-private data. The cached
+  payload is the geocode result (`lat`, `lng`, `bounding_box`,
+  `display_name`) Nominatim itself already returned on a prior live call,
+  not anything reasoned about or reformatted by an AI step.
+- **Cache hit/miss never fabricates a coordinate, place name, or OSM
+  ID.** A hit returns the exact same internal `_ResolvedDestination` shape
+  a live geocode would; a miss (including an expired entry, treated
+  exactly like a miss) runs the existing live Nominatim request unchanged
+  and applies the exact same plausibility check as before. Only a
+  successfully resolved, plausibility-checked destination is ever cached
+  -- an unresolved destination, a rejected implausible match, or a request
+  failure is not.
+- **Sits underneath the existing per-instance in-memory
+  `self._destination_cache` dict**, which is unchanged and still checked
+  first; the persistent cache only extends reuse across separate adapter
+  instances and process restarts, which the in-memory dict alone cannot
+  do.
+- **Cache failure is non-fatal.** A broken cache read falls back to the
+  live request; a broken cache write still returns the already-computed
+  live result. Neither failure path logs the query or payload contents.
+- **Config**: `Settings.osm_geocode_cache_ttl_seconds`
+  (`OSM_GEOCODE_CACHE_TTL_SECONDS`, default `2592000` = 30 days, must be
+  non-negative) controls TTL -- 30 days is acceptable because geocoding a
+  given destination string changes slowly, but it stays configurable; the
+  existing `Settings.provider_cache_enabled` (`PROVIDER_CACHE_ENABLED`,
+  default `true`) gates whether the persistent cache is used at all --
+  when `false`, every call goes live even if a cache store was explicitly
+  injected (only the in-memory per-instance dict still applies).
+- **No real network/Groq/Anthropic/Kiwi/MCP/scraping call in this step's
+  tests.** Every test in
+  `backend/app/tests/providers/test_openstreetmap_adapter.py` uses the
+  existing in-file `_FakeClient`/`_FakeResponse` test doubles and an
+  injected or `tmp_path`-backed `ProviderCacheStore` -- no real HTTP call
+  to Nominatim, Overpass, or any other network service. Open-Meteo's,
+  Nager.Date's, and Frankfurter's own cache tests are re-run unchanged and
+  still pass, confirming this step didn't disturb Steps 164B/164C/164D.

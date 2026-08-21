@@ -10,11 +10,23 @@ from app.core.config import get_settings
 from app.models.common import DataStatus, GeoPoint, ProviderStatus
 from app.models.providers import NormalizedPlace, ProviderResponse
 from app.providers.base import PlacesProvider, failed_response, unavailable_response
+from app.storage.provider_cache_store import (
+    ProviderCacheStore,
+    get_provider_cache_store,
+    make_query_hash,
+)
 from app.utils.geo import haversine_distance_km, point_in_bounding_box
 
 logger = logging.getLogger(__name__)
 
 _USER_AGENT = "TravelObligator/0.1 (dev; legit-data-only)"
+# Step 164E: source label for the persistent geocode cache -- distinct from
+# `OpenStreetMapPlacesAdapter.provider_name` ("openstreetmap_places"), which
+# still labels every `ProviderResponse` this adapter returns (attractions,
+# restaurants, accommodation POIs, must-visit lookups). Only destination
+# geocoding (`_resolve_destination`) is cached under this source; Overpass
+# POI searches are not cache-wired in this step.
+_GEOCODE_CACHE_SOURCE = "openstreetmap_geocode"
 _SEARCH_RADIUS_METERS = 6000
 _FALLBACK_SEARCH_RADIUS_METERS = 12000
 _MAX_RESULTS = 20
@@ -217,15 +229,47 @@ class OpenStreetMapPlacesAdapter(PlacesProvider):
     location candidates only, never bookable inventory — no price,
     availability, rating, review, opening hours, or booking/reservation link
     is ever attached, exactly like the primary accommodation query.
+
+    Geocode cache (Step 164E, docs/12_provider_architecture.md "Provider
+    Cache Foundation" section): `_resolve_destination`'s Nominatim
+    destination lookup -- the geocoding step used by `_search`,
+    `resolve_coordinates`, and `search_must_visit_place` -- is additionally
+    cached in `ProviderCacheStore` under source `"openstreetmap_geocode"`,
+    keyed by a hash of the normalized query text (plus the fixed
+    `format`/`limit` params sent to Nominatim). This sits underneath the
+    existing per-instance `self._destination_cache` dict (checked first,
+    unchanged) and extends it across process restarts/dev runs. Only a
+    successfully resolved, plausibility-checked destination is cached -- an
+    unresolved or implausible geocode result is never cached, and never
+    fabricated. **Overpass POI searches (attractions/restaurants/
+    accommodation) are not cache-wired by this step** and still go out live
+    on every call. A cache hit returns the exact same `_ResolvedDestination`
+    shape a live geocode would. Cache reads/writes never fail geocoding: a
+    broken cache read falls back to the live Nominatim request, and a
+    broken cache write still returns the live result.
     """
 
     provider_name = "openstreetmap_places"
 
-    def __init__(self) -> None:
+    def __init__(self, cache_store: ProviderCacheStore | None = None) -> None:
         settings = get_settings()
         self._overpass_url = settings.overpass_api_url
         self._nominatim_url = settings.nominatim_api_url
         self._destination_cache: dict[str, _ResolvedDestination] = {}
+        self._cache_enabled = settings.provider_cache_enabled
+        self._geocode_cache_ttl_seconds = settings.osm_geocode_cache_ttl_seconds
+        self._cache_path = settings.resolved_provider_cache_path()
+        self._cache_store = cache_store
+
+    def _resolve_cache_store(self) -> ProviderCacheStore | None:
+        """Lazily resolves the shared cache store, or `None` when the cache
+        is disabled entirely. Injecting `cache_store` in the constructor
+        bypasses this lazy resolution."""
+        if not self._cache_enabled:
+            return None
+        if self._cache_store is None:
+            self._cache_store = get_provider_cache_store(self._cache_path)
+        return self._cache_store
 
     def search_attractions(
         self, destination: str, filters: dict[str, Any] | None = None
@@ -625,10 +669,31 @@ class OpenStreetMapPlacesAdapter(PlacesProvider):
         looser query (e.g. retrying with just the first word) -- exactly
         `place_name` is geocoded, once, and the result is cached under that
         exact string.
+
+        Step 164E: underneath this per-instance dict, a successful
+        resolution is also read from/written to the persistent
+        `ProviderCacheStore` (source `"openstreetmap_geocode"`), so a later
+        process/dev run can reuse it too. That cache is checked only after
+        the in-memory dict misses, and is skipped entirely when disabled.
         """
         cached = self._destination_cache.get(place_name)
         if cached is not None:
             return cached
+
+        query_hash = make_query_hash(
+            {
+                "query": place_name.strip().lower(),
+                "format": "jsonv2",
+                "limit": 1,
+            }
+        )
+        cache_store = self._resolve_cache_store()
+
+        if cache_store is not None:
+            persisted = self._read_geocode_cache(cache_store, query_hash)
+            if persisted is not None:
+                self._destination_cache[place_name] = persisted
+                return persisted
 
         response = client.get(
             f"{self._nominatim_url}/search",
@@ -661,7 +726,67 @@ class OpenStreetMapPlacesAdapter(PlacesProvider):
             display_name=display_name,
         )
         self._destination_cache[place_name] = resolved
+        if cache_store is not None:
+            self._write_geocode_cache(cache_store, query_hash, resolved)
         return resolved
+
+    def _read_geocode_cache(
+        self, cache_store: ProviderCacheStore, query_hash: str
+    ) -> _ResolvedDestination | None:
+        """Returns the cached geocode result, or `None` on a cache miss/
+        expiry or a broken cache read -- either way, the caller falls back
+        to the live Nominatim request rather than failing."""
+        try:
+            entry = cache_store.get(_GEOCODE_CACHE_SOURCE, query_hash)
+        except Exception:
+            logger.warning(
+                "OpenStreetMap geocode cache read failed; falling back to live request."
+            )
+            return None
+
+        if entry is None:
+            return None
+
+        try:
+            payload = entry.payload
+            bounding_box = payload.get("bounding_box")
+            return _ResolvedDestination(
+                point=GeoPoint(lat=payload["lat"], lng=payload["lng"]),
+                bounding_box=tuple(bounding_box) if bounding_box is not None else None,
+                display_name=payload["display_name"],
+            )
+        except (KeyError, TypeError, ValueError):
+            logger.warning(
+                "OpenStreetMap geocode cache entry was unusable; falling back to live request."
+            )
+            return None
+
+    def _write_geocode_cache(
+        self,
+        cache_store: ProviderCacheStore,
+        query_hash: str,
+        resolved: _ResolvedDestination,
+    ) -> None:
+        """Best-effort cache write -- a failure here must never affect the
+        already-computed live result being returned to the caller."""
+        try:
+            cache_store.set(
+                _GEOCODE_CACHE_SOURCE,
+                query_hash,
+                {
+                    "lat": resolved.point.lat,
+                    "lng": resolved.point.lng,
+                    "bounding_box": (
+                        list(resolved.bounding_box) if resolved.bounding_box is not None else None
+                    ),
+                    "display_name": resolved.display_name,
+                },
+                ttl_seconds=self._geocode_cache_ttl_seconds,
+            )
+        except Exception:
+            logger.warning(
+                "OpenStreetMap geocode cache write failed; returning live result anyway."
+            )
 
     def _query_overpass(
         self,

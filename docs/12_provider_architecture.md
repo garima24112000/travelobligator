@@ -1228,3 +1228,105 @@ the cache is skipped completely (every call goes live), even if a
 `cache_store` was explicitly injected. Constructing
 `FrankfurterCurrencyAdapter()` with no arguments remains fully backward
 compatible.
+
+---
+
+## 29. OpenStreetMap Geocoding Cache Wiring (Step 164E)
+
+`OpenStreetMapPlacesAdapter` (`backend/app/providers/places/openstreetmap_adapter.py`)
+is now the fourth provider adapter wired to the Step 164A `ProviderCacheStore`
+foundation, alongside Open-Meteo (section 26), Nager.Date (section 27), and
+Frankfurter (section 28). **This step is geocoding only.** Only
+`_resolve_destination` -- the Nominatim destination-lookup step used by
+`_search` (attractions/restaurants/accommodation), `resolve_coordinates`,
+and `search_must_visit_place` -- is cache-wired. **OSM/Overpass POI
+searches (attractions, restaurants, accommodation POIs) are not cached by
+this step** and still go out live on every call, exactly as before.
+
+### 29.1 Cache key
+
+Cache rows are stored under source `"openstreetmap_geocode"` -- distinct
+from `OpenStreetMapPlacesAdapter.provider_name`
+(`"openstreetmap_places"`, which still labels every `ProviderResponse`
+this adapter returns) -- keyed by `query_hash = make_query_hash(query)`
+where `query` is the normalized request:
+
+```json
+{
+  "query": "los angeles",
+  "format": "jsonv2",
+  "limit": 1
+}
+```
+
+`query` is the destination/search text normalized (stripped and
+lowercased) before hashing; the live Nominatim request itself still sends
+the original, un-normalized string, unchanged. `format` and `limit` are
+included even though currently fixed, so the hash would correctly change
+if either is ever varied later. No country code, bounding box, or language
+parameter is sent by this adapter today, so none is part of the key. As
+with every other cache-wired provider, the raw query text is never
+persisted as its own column or metadata field -- only the opaque
+`query_hash` digest is stored; the normalized dict above exists only to
+produce that hash.
+
+### 29.2 What is cached
+
+The cache stores the resolved geocode result (`lat`, `lng`,
+`bounding_box`, `display_name`) for one normalized destination string --
+provider response data, not `PlanningState` or any other user-private trip
+content. `metadata` is always empty (`{}`); no API key, token, prompt, or
+raw LLM response is ever written (Nominatim itself requires no API key).
+Only a successfully resolved, plausibility-checked destination
+(`_is_plausible_geocode_match`) is cached -- an unresolved destination, an
+implausible/rejected match, or a request failure is never cached, matching
+the existing "no broad token-fallback retry, no guessed location" rule
+(section 10). **Overpass POI results are never written to this cache in
+this step.**
+
+### 29.3 Cache hit/miss behavior
+
+A cache hit returns the exact same internal `_ResolvedDestination` shape a
+live geocode would -- no coordinate, place name, or OSM ID is ever
+fabricated on a hit. A cache miss (no row, or an expired row, treated
+exactly like a miss) calls the existing live Nominatim request exactly as
+before, applies the same plausibility check exactly as before, then caches
+the result with TTL `Settings.osm_geocode_cache_ttl_seconds`
+(`OSM_GEOCODE_CACHE_TTL_SECONDS`, default `2592000` = 30 days -- geocoding
+a given destination string changes slowly).
+
+This persistent cache sits **underneath** the adapter's pre-existing
+per-instance `self._destination_cache` dict (unchanged, still checked
+first as a zero-cost shortcut for repeated lookups of the same destination
+within one adapter instance/request). The persistent cache extends reuse
+across separate adapter instances, process restarts, and dev runs, which
+the in-memory dict alone cannot do.
+
+Cache reads and writes are both best-effort and never fail geocoding: a
+broken cache read is logged and treated as a miss (falls through to the
+live path), and a broken cache write is logged but the already-computed
+live result is still returned. Neither log line includes the query
+payload.
+
+### 29.4 Dependency injection
+
+`OpenStreetMapPlacesAdapter.__init__` accepts an optional `cache_store:
+ProviderCacheStore | None` parameter for tests, mirroring the other three
+cache-wired adapters (sections 26.4, 27.4, 28.4). When not supplied, the
+adapter lazily resolves a shared store via `get_provider_cache_store`
+using `Settings.provider_cache_path` -- but only if
+`Settings.provider_cache_enabled` is `true`; when `false`, the persistent
+cache is skipped completely (every call goes live), even if a
+`cache_store` was explicitly injected -- only the pre-existing in-memory
+`self._destination_cache` dict still applies per instance. Constructing
+`OpenStreetMapPlacesAdapter()` with no arguments remains fully backward
+compatible.
+
+### 29.5 Cache consumer summary
+
+As of Step 164E, four real provider adapters are cache consumers: Open-Meteo
+(weather), Nager.Date (holidays), Frankfurter (currency), and OpenStreetMap
+(geocoding only -- Overpass POI search remains live-only). No other
+provider (routes, transit, accommodation pricing, flights) is cache-wired,
+and no LangGraph, Groq, Anthropic, or Kiwi/MCP call is cached or otherwise
+touched by any of these four steps.

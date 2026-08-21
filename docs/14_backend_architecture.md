@@ -781,8 +781,8 @@ small local SQLite store (`sqlite3`, Python stdlib only) keyed by
 (docs/12_provider_architecture.md section 25 has the full design:
 canonical-JSON `query_hash`, TTL semantics, and per-source TTL guidance).
 
-**Wired into three provider adapters so far (Step 164B, extended in Steps
-164C and 164D).** `OpenMeteoWeatherAdapter` is the first consumer of
+**Wired into four provider adapters so far (Step 164B, extended in Steps
+164C, 164D, and 164E).** `OpenMeteoWeatherAdapter` is the first consumer of
 `ProviderCacheStore` (docs/12_provider_architecture.md section 26,
 docs/13_llm_reasoning_pipeline.md section 47) -- it caches successful,
 usable Open-Meteo weather responses under source `"open_meteo"`, keyed by
@@ -799,20 +799,27 @@ exchange-rate responses fetched over the network under source
 `"frankfurter"`, keyed by a hash of the normalized request
 (`base_currency`, `destination_currency`, a fixed `"latest"` marker); the
 same-currency identity result (no HTTP call at all) is not cached.
-`OpenStreetMapPlacesAdapter`, `ProviderGateway`, and `PlanningOrchestrator`
-still do not import or call `ProviderCacheStore` -- every one of their
-provider calls still goes out live (or reports honestly as
+`OpenStreetMapPlacesAdapter` is the fourth consumer, **geocoding only**
+(docs/12_provider_architecture.md section 29, docs/13_llm_reasoning_pipeline.md
+section 50) -- only its Nominatim destination-lookup step
+(`_resolve_destination`) caches successful, plausibility-checked results
+under source `"openstreetmap_geocode"`, keyed by a hash of the normalized
+search text. **Its Overpass POI search path (attractions, restaurants,
+accommodation) is intentionally not cache-wired** and still goes out live
+on every call, exactly as before this step. `ProviderGateway` and
+`PlanningOrchestrator` still do not import or call `ProviderCacheStore` --
+every call through them still goes out live (or reports honestly as
 `not_connected`/`unavailable`) exactly as before these steps. A cache miss
 from this store always means "miss," never a guessed or fabricated
-payload -- confirmed for Open-Meteo, Nager.Date, and Frankfurter
-specifically by `unavailable`/`failed` responses never being written to
-the cache.
+payload -- confirmed for Open-Meteo, Nager.Date, Frankfurter, and OSM
+geocoding specifically by `unavailable`/`failed`/unresolved responses
+never being written to the cache.
 
-**Cache failure is non-fatal for all three consumers.** A broken cache
-read falls back to the live Open-Meteo/Nager.Date/Frankfurter request; a
-broken cache write still returns the already-computed live result.
-Weather, holiday, and currency retrieval can never fail because the cache
-layer failed.
+**Cache failure is non-fatal for all four consumers.** A broken cache
+read falls back to the live Open-Meteo/Nager.Date/Frankfurter/Nominatim
+request; a broken cache write still returns the already-computed live
+result. Weather, holiday, currency, and geocoding retrieval can never fail
+because the cache layer failed.
 
 Responsibilities (intended once wired in a future step):
 

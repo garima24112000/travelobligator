@@ -1,13 +1,53 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import httpx
 import pytest
 
+from app.core.config import Settings
 from app.models.common import DataStatus, ProviderStatus
 from app.providers.places import openstreetmap_adapter
 from app.providers.places.openstreetmap_adapter import OpenStreetMapPlacesAdapter
+from app.storage.provider_cache_store import ProviderCacheStore, make_query_hash
+
+
+@pytest.fixture(autouse=True)
+def _isolated_default_provider_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Every test in this file gets a fresh, isolated `ProviderCacheStore`
+    whenever an adapter is constructed *without* an explicit `cache_store`
+    (Step 164E lazily resolves one via `get_provider_cache_store`). Without
+    this, the adapter's default lazy resolution would share one real,
+    process-wide cache file (`get_provider_cache_store` is a singleton
+    keyed by resolved path) across every test function in this file --
+    including the many pre-existing tests below that construct
+    `OpenStreetMapPlacesAdapter()` with no arguments and geocode the same
+    destination strings ("Los Angeles", "New York") repeatedly with
+    different expected HTTP call counts/results. Without isolation, an
+    earlier test's persistently cached geocode result would silently
+    satisfy a later test's `.get()` call-count assertions -- or worse,
+    shift a `_get_responses`-mode fake client's response list out of sync
+    -- instead of exercising the fake HTTP client as each test expects, and
+    would write to the real repo-local `.data/provider_cache.sqlite3` file.
+    """
+    fresh_store = ProviderCacheStore(tmp_path / "isolated_default_cache.sqlite3")
+    monkeypatch.setattr(
+        openstreetmap_adapter, "get_provider_cache_store", lambda path: fresh_store
+    )
+    return fresh_store
+
+
+def _geocode_query_hash(query: str) -> str:
+    return make_query_hash({"query": query.strip().lower(), "format": "jsonv2", "limit": 1})
+
+
+def _settings(monkeypatch: pytest.MonkeyPatch, **overrides: Any) -> Settings:
+    """A `Settings` instance for adapter construction, isolated from any
+    real `.env` file so cache-enabled/TTL behavior in these tests is
+    deterministic regardless of local dev environment contents."""
+    monkeypatch.setitem(Settings.model_config, "env_file", None)
+    return Settings(**overrides)
 
 
 class _FakeResponse:
@@ -976,3 +1016,257 @@ def test_must_visit_place_reports_unavailable_when_destination_cannot_be_resolve
     # The must-visit-specific lookup is never attempted once the
     # destination itself can't be resolved.
     assert fake_client.get_call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# Provider cache wiring: geocoding only (Step 164E,
+# docs/12_provider_architecture.md "Provider Cache Foundation" section).
+# Every test below injects its own `ProviderCacheStore` via the constructor
+# -- never the real repo-local `.data/provider_cache.sqlite3` file -- and
+# never makes a real network call; only the existing `_FakeClient`/
+# `_FakeResponse` doubles are used. Overpass POI search behavior is
+# intentionally not touched or tested here -- see the tests above, which
+# are unchanged and still pass.
+# ---------------------------------------------------------------------------
+
+
+def test_geocode_cache_hit_returns_cached_response_without_http_call(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake_client = _install_fake_client_for_get(monkeypatch, get_responses=[])
+    store = ProviderCacheStore(tmp_path / "cache.sqlite3")
+    store.set(
+        "openstreetmap_geocode",
+        _geocode_query_hash("Los Angeles"),
+        {
+            "lat": 34.0522,
+            "lng": -118.2437,
+            "bounding_box": [33.5, 34.5, -118.8, -117.5],
+            "display_name": "Los Angeles, California, United States",
+        },
+        ttl_seconds=2592000,
+    )
+
+    adapter = OpenStreetMapPlacesAdapter(cache_store=store)
+    point = adapter.resolve_coordinates("Los Angeles")
+
+    assert fake_client.get_call_count == 0
+    assert point is not None
+    assert point.lat == pytest.approx(34.0522)
+    assert point.lng == pytest.approx(-118.2437)
+
+
+def test_geocode_cache_miss_calls_http_once_and_writes_normalized_response(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake_client = _install_fake_client_for_get(monkeypatch, get_responses=[_geocode_ok("Los Angeles")])
+    store = ProviderCacheStore(tmp_path / "cache.sqlite3")
+
+    adapter = OpenStreetMapPlacesAdapter(cache_store=store)
+    point = adapter.resolve_coordinates("Los Angeles")
+
+    assert fake_client.get_call_count == 1
+    assert point is not None
+    assert point.lat == pytest.approx(34.0522)
+
+    entry = store.get("openstreetmap_geocode", _geocode_query_hash("Los Angeles"))
+    assert entry is not None
+    assert entry.payload == {
+        "lat": 34.0522,
+        "lng": -118.2437,
+        "bounding_box": [33.5, 34.5, -118.8, -117.5],
+        "display_name": "Los Angeles, California, United States",
+    }
+
+
+def test_second_identical_geocode_call_across_instances_uses_persistent_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Distinct from the pre-existing `test_resolve_coordinates_reuses_geocode_cache`
+    (which proves the per-instance in-memory dict shortcut) -- this uses two
+    *separate* adapter instances sharing one persistent `ProviderCacheStore`
+    to prove the durable cache itself is what's serving the second call."""
+    fake_client = _install_fake_client_for_get(monkeypatch, get_responses=[_geocode_ok("Los Angeles")])
+    store = ProviderCacheStore(tmp_path / "cache.sqlite3")
+
+    first_point = OpenStreetMapPlacesAdapter(cache_store=store).resolve_coordinates("Los Angeles")
+    second_point = OpenStreetMapPlacesAdapter(cache_store=store).resolve_coordinates("Los Angeles")
+
+    assert fake_client.get_call_count == 1
+    assert first_point == second_point
+
+
+def test_expired_geocode_cache_entry_behaves_like_miss_and_refreshes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from datetime import datetime, timedelta, timezone
+
+    fake_client = _install_fake_client_for_get(monkeypatch, get_responses=[_geocode_ok("Los Angeles")])
+    store = ProviderCacheStore(tmp_path / "cache.sqlite3")
+    already_expired = datetime.now(timezone.utc) - timedelta(hours=1)
+    store.set(
+        "openstreetmap_geocode",
+        _geocode_query_hash("Los Angeles"),
+        {
+            "lat": 0.0,
+            "lng": 0.0,
+            "bounding_box": None,
+            "display_name": "stale entry",
+        },
+        ttl_seconds=1,
+        now=already_expired,
+    )
+
+    adapter = OpenStreetMapPlacesAdapter(cache_store=store)
+    point = adapter.resolve_coordinates("Los Angeles")
+
+    assert fake_client.get_call_count == 1
+    assert point is not None
+    assert point.lat == pytest.approx(34.0522)
+    assert point.lng == pytest.approx(-118.2437)
+
+    refreshed_entry = store.get("openstreetmap_geocode", _geocode_query_hash("Los Angeles"))
+    assert refreshed_entry is not None
+    assert refreshed_entry.payload["lat"] == pytest.approx(34.0522)
+
+
+def test_provider_cache_disabled_bypasses_cache_and_calls_http(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake_client = _install_fake_client_for_get(
+        monkeypatch, get_responses=[_geocode_ok("Los Angeles"), _geocode_ok("Los Angeles")]
+    )
+    disabled_settings = _settings(monkeypatch, provider_cache_enabled=False)
+    monkeypatch.setattr(openstreetmap_adapter, "get_settings", lambda: disabled_settings)
+    store = ProviderCacheStore(tmp_path / "cache.sqlite3")
+
+    # Two separate adapter instances (each with its own empty in-memory
+    # dict) sharing one injected cache_store -- provider_cache_enabled=False
+    # must skip the persistent cache completely, even though it was
+    # explicitly injected.
+    first_point = OpenStreetMapPlacesAdapter(cache_store=store).resolve_coordinates("Los Angeles")
+    second_point = OpenStreetMapPlacesAdapter(cache_store=store).resolve_coordinates("Los Angeles")
+
+    assert fake_client.get_call_count == 2
+    assert first_point is not None and second_point is not None
+    assert store.get("openstreetmap_geocode", _geocode_query_hash("Los Angeles")) is None
+
+
+def test_geocode_cache_read_failure_falls_back_to_http(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_client = _install_fake_client_for_get(monkeypatch, get_responses=[_geocode_ok("Los Angeles")])
+
+    class _RaisingGetCacheStore:
+        def get(self, source: str, query_hash: str, now: Any = None) -> None:
+            raise RuntimeError("cache backend unavailable")
+
+        def set(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
+    adapter = OpenStreetMapPlacesAdapter(cache_store=_RaisingGetCacheStore())
+    point = adapter.resolve_coordinates("Los Angeles")
+
+    assert fake_client.get_call_count == 1
+    assert point is not None
+    assert point.lat == pytest.approx(34.0522)
+
+
+def test_geocode_cache_write_failure_still_returns_live_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_client = _install_fake_client_for_get(monkeypatch, get_responses=[_geocode_ok("Los Angeles")])
+
+    class _RaisingSetCacheStore:
+        def get(self, source: str, query_hash: str, now: Any = None) -> None:
+            return None
+
+        def set(self, *args: Any, **kwargs: Any) -> None:
+            raise RuntimeError("cache write failed")
+
+    adapter = OpenStreetMapPlacesAdapter(cache_store=_RaisingSetCacheStore())
+    point = adapter.resolve_coordinates("Los Angeles")
+
+    assert fake_client.get_call_count == 1
+    assert point is not None
+    assert point.lat == pytest.approx(34.0522)
+
+
+def test_geocode_cache_key_is_deterministic_for_equivalent_normalized_queries() -> None:
+    assert _geocode_query_hash("Los Angeles") == _geocode_query_hash("  LOS ANGELES  ")
+    assert _geocode_query_hash("Los Angeles") == _geocode_query_hash("los angeles")
+
+
+def test_different_destination_text_produces_different_query_hashes() -> None:
+    assert _geocode_query_hash("Los Angeles") != _geocode_query_hash("New York")
+
+
+def test_geocode_cache_entry_stores_no_secrets_in_payload_or_metadata(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _install_fake_client_for_get(monkeypatch, get_responses=[_geocode_ok("Los Angeles")])
+    store = ProviderCacheStore(tmp_path / "cache.sqlite3")
+
+    adapter = OpenStreetMapPlacesAdapter(cache_store=store)
+    adapter.resolve_coordinates("Los Angeles")
+
+    entry = store.get("openstreetmap_geocode", _geocode_query_hash("Los Angeles"))
+    assert entry is not None
+    assert entry.metadata == {}
+
+    dumped = str(entry.payload)
+    for forbidden in ("api_key", "token", "secret", "authorization", "bearer"):
+        assert forbidden not in dumped.lower()
+
+
+def test_geocode_not_found_response_is_not_cached(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _install_fake_client_for_get(monkeypatch, get_responses=[_FakeResponse(json_data=[])])
+    store = ProviderCacheStore(tmp_path / "cache.sqlite3")
+
+    adapter = OpenStreetMapPlacesAdapter(cache_store=store)
+    point = adapter.resolve_coordinates("Nowhere")
+
+    assert point is None
+    assert store.get("openstreetmap_geocode", _geocode_query_hash("Nowhere")) is None
+
+
+def test_geocode_implausible_match_is_not_cached(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _install_fake_client_for_get(
+        monkeypatch,
+        get_responses=[
+            _FakeResponse(
+                json_data=[
+                    {
+                        "lat": "51.1805",
+                        "lon": "6.4428",
+                        "display_name": "Rheydt, Mönchengladbach, North Rhine-Westphalia, Germany",
+                        "boundingbox": ["51.1", "51.2", "6.4", "6.5"],
+                    }
+                ]
+            )
+        ],
+    )
+    store = ProviderCacheStore(tmp_path / "cache.sqlite3")
+
+    adapter = OpenStreetMapPlacesAdapter(cache_store=store)
+    point = adapter.resolve_coordinates("New York")
+
+    assert point is None
+    assert store.get("openstreetmap_geocode", _geocode_query_hash("New York")) is None
+
+
+def test_geocode_request_failure_is_not_cached(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _install_fake_client_for_get(monkeypatch, get_responses=[_FakeResponse(should_fail=True)])
+    store = ProviderCacheStore(tmp_path / "cache.sqlite3")
+
+    adapter = OpenStreetMapPlacesAdapter(cache_store=store)
+    point = adapter.resolve_coordinates("Los Angeles")
+
+    assert point is None
+    assert store.get("openstreetmap_geocode", _geocode_query_hash("Los Angeles")) is None

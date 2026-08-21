@@ -141,45 +141,73 @@ def test_frankfurter_cache_ttl_seconds_rejects_negative_value() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 15. Open-Meteo (Step 164B), Nager.Date (Step 164C), and Frankfurter
-# (Step 164D) are wired to the provider cache. OSM remains unwired --
-# Step 164A's foundation-only boundary still holds for every other
-# provider.
+# osm_geocode_cache_ttl_seconds (Step 164E): default, env override, and
+# negative-value rejection.
 # ---------------------------------------------------------------------------
 
 
-def _unwired_adapter_modules():
-    import app.providers.places.openstreetmap_adapter as osm_module
+def test_osm_geocode_cache_ttl_seconds_default() -> None:
+    field_info = Settings.model_fields["osm_geocode_cache_ttl_seconds"]
+    assert field_info.default == 2592000
+    assert field_info.alias == "OSM_GEOCODE_CACHE_TTL_SECONDS"
 
-    return [osm_module]
+
+def test_osm_geocode_cache_ttl_seconds_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setitem(Settings.model_config, "env_file", None)
+    monkeypatch.setenv("OSM_GEOCODE_CACHE_TTL_SECONDS", "86400")
+
+    settings = Settings()
+
+    assert settings.osm_geocode_cache_ttl_seconds == 86400
+
+
+def test_osm_geocode_cache_ttl_seconds_rejects_negative_value() -> None:
+    with pytest.raises(ValueError):
+        Settings(osm_geocode_cache_ttl_seconds=-1)
+
+
+# ---------------------------------------------------------------------------
+# 15. Open-Meteo (Step 164B), Nager.Date (Step 164C), Frankfurter
+# (Step 164D), and OSM geocoding (Step 164E) are wired to the provider
+# cache. Step 164A's foundation-only boundary is now fully retired -- every
+# real provider adapter imports the cache store, though OSM's Overpass POI
+# search path specifically remains uncached (verified in
+# backend/app/tests/providers/test_openstreetmap_adapter.py, not here).
+# ---------------------------------------------------------------------------
 
 
 def _wired_adapter_modules():
     import app.providers.currency.frankfurter_adapter as frankfurter_module
     import app.providers.holidays.nager_date_adapter as nager_module
+    import app.providers.places.openstreetmap_adapter as osm_module
     import app.providers.weather.open_meteo_adapter as open_meteo_module
 
-    return [open_meteo_module, nager_module, frankfurter_module]
+    return [open_meteo_module, nager_module, frankfurter_module, osm_module]
 
 
-def test_no_non_weather_non_holiday_non_currency_provider_adapter_imports_provider_cache_store() -> (
-    None
-):
-    for module in _unwired_adapter_modules():
-        source = inspect.getsource(module)
-        assert "provider_cache_store" not in source
-        assert "ProviderCacheStore" not in source
-        assert "get_provider_cache_store" not in source
-
-
-def test_open_meteo_nager_date_and_frankfurter_adapters_import_provider_cache_store() -> None:
+def test_all_four_real_provider_adapters_import_provider_cache_store() -> None:
     """Step 164B wired Open-Meteo, Step 164C wired Nager.Date, Step 164D
-    wired Frankfurter -- all three are now provider cache consumers."""
+    wired Frankfurter, Step 164E wired OSM geocoding -- all four real
+    adapters are now provider cache consumers."""
     for module in _wired_adapter_modules():
         source = inspect.getsource(module)
         assert "provider_cache_store" in source
         assert "ProviderCacheStore" in source
         assert "get_provider_cache_store" in source
+
+
+def test_osm_module_wires_geocoding_only_not_overpass() -> None:
+    """Step 164E scope check: the cache source label used for geocoding is
+    present, but Overpass POI search (`_query_overpass`) does not read or
+    write the cache -- only `_resolve_destination` does."""
+    import app.providers.places.openstreetmap_adapter as osm_module
+
+    source = inspect.getsource(osm_module)
+    assert '"openstreetmap_geocode"' in source
+
+    query_overpass_source = inspect.getsource(osm_module.OpenStreetMapPlacesAdapter._query_overpass)
+    assert "cache_store" not in query_overpass_source
+    assert "ProviderCacheStore" not in query_overpass_source
 
 
 def test_provider_gateway_does_not_import_provider_cache_store() -> None:
