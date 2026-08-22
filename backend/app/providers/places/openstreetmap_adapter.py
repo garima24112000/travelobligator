@@ -24,9 +24,14 @@ _USER_AGENT = "TravelObligator/0.1 (dev; legit-data-only)"
 # `OpenStreetMapPlacesAdapter.provider_name` ("openstreetmap_places"), which
 # still labels every `ProviderResponse` this adapter returns (attractions,
 # restaurants, accommodation POIs, must-visit lookups). Only destination
-# geocoding (`_resolve_destination`) is cached under this source; Overpass
-# POI searches are not cache-wired in this step.
+# geocoding (`_resolve_destination`) is cached under this source.
 _GEOCODE_CACHE_SOURCE = "openstreetmap_geocode"
+# Step 164G: source label for the persistent Overpass POI search cache --
+# one row per (point, radius, tag set) Overpass query, whether it's the
+# primary query or a single fallback tag query. `search_must_visit_place`'s
+# `_lookup_named_place` (a Nominatim search, not Overpass) is not cached
+# under this source or any other.
+_POI_CACHE_SOURCE = "openstreetmap_poi"
 _SEARCH_RADIUS_METERS = 6000
 _FALLBACK_SEARCH_RADIUS_METERS = 12000
 _MAX_RESULTS = 20
@@ -233,20 +238,37 @@ class OpenStreetMapPlacesAdapter(PlacesProvider):
     Geocode cache (Step 164E, docs/12_provider_architecture.md "Provider
     Cache Foundation" section): `_resolve_destination`'s Nominatim
     destination lookup -- the geocoding step used by `_search`,
-    `resolve_coordinates`, and `search_must_visit_place` -- is additionally
-    cached in `ProviderCacheStore` under source `"openstreetmap_geocode"`,
-    keyed by a hash of the normalized query text (plus the fixed
-    `format`/`limit` params sent to Nominatim). This sits underneath the
-    existing per-instance `self._destination_cache` dict (checked first,
-    unchanged) and extends it across process restarts/dev runs. Only a
-    successfully resolved, plausibility-checked destination is cached -- an
-    unresolved or implausible geocode result is never cached, and never
-    fabricated. **Overpass POI searches (attractions/restaurants/
-    accommodation) are not cache-wired by this step** and still go out live
-    on every call. A cache hit returns the exact same `_ResolvedDestination`
-    shape a live geocode would. Cache reads/writes never fail geocoding: a
-    broken cache read falls back to the live Nominatim request, and a
-    broken cache write still returns the live result.
+    `resolve_coordinates`, and `search_must_visit_place` -- is cached in
+    `ProviderCacheStore` under source `"openstreetmap_geocode"`, keyed by a
+    hash of the normalized query text (plus the fixed `format`/`limit`
+    params sent to Nominatim). This sits underneath the existing
+    per-instance `self._destination_cache` dict (checked first, unchanged)
+    and extends it across process restarts/dev runs. Only a successfully
+    resolved, plausibility-checked destination is cached -- an unresolved
+    or implausible geocode result is never cached, and never fabricated.
+
+    POI cache (Step 164G, docs/12_provider_architecture.md "Provider Cache
+    Foundation" section): each individual Overpass query run by
+    `_try_query` -- one per (resolved point, search radius, tag filter set)
+    -- is additionally cached under source `"openstreetmap_poi"`, keyed by
+    a hash of that normalized request. This covers the primary query for
+    `search_attractions`/`search_restaurants`/`search_accommodation_pois`
+    and every individual fallback tag query, but not
+    `search_must_visit_place`'s Nominatim named-place lookup. Only a
+    successful query with at least one named, destination-contained result
+    is cached; an empty or failed query is never cached, and no rating,
+    price, opening hours, availability, booking link, or route time is ever
+    added to a cached place -- the normalized shape and content are
+    identical to what the live Overpass path already produces. Cache reads/
+    writes never fail POI search: a broken cache read falls back to the
+    live Overpass request, and a broken cache write still returns the live
+    result. The overall `ProviderResponse.status`/`data_status` returned by
+    `search_attractions`/`search_restaurants`/`search_accommodation_pois`
+    is unchanged by caching -- it still reflects only whether fallback was
+    needed, exactly as before this step; only each cached
+    `NormalizedPlace.data_status` is relabeled `"cached"` on a hit, which
+    nothing in `CandidateQualityService`, `ExperiencePlannerService`, or
+    `provider_coverage`/`data_sources_used` filters or gates on.
     """
 
     provider_name = "openstreetmap_places"
@@ -258,6 +280,7 @@ class OpenStreetMapPlacesAdapter(PlacesProvider):
         self._destination_cache: dict[str, _ResolvedDestination] = {}
         self._cache_enabled = settings.provider_cache_enabled
         self._geocode_cache_ttl_seconds = settings.osm_geocode_cache_ttl_seconds
+        self._poi_cache_ttl_seconds = settings.osm_poi_cache_ttl_seconds
         self._cache_path = settings.resolved_provider_cache_path()
         self._cache_store = cache_store
 
@@ -525,7 +548,28 @@ class OpenStreetMapPlacesAdapter(PlacesProvider):
         Returns `(places, request_failed)`. Request-level failures are
         caught here, rather than left to propagate, so a fallback query can
         still be attempted after a primary failure.
+
+        Step 164G: this exact (point, radius, tag set) query is cached in
+        `ProviderCacheStore` -- checked first, and written to only on a
+        successful, non-empty result. A cache hit returns `(places, False)`
+        without calling Overpass at all.
         """
+        poi_query_hash = make_query_hash(
+            {
+                "lat": resolved.point.lat,
+                "lon": resolved.point.lng,
+                "radius_meters": radius_meters,
+                "tags": sorted(tag_filters),
+                "limit": _MAX_RESULTS,
+            }
+        )
+        cache_store = self._resolve_cache_store()
+
+        if cache_store is not None:
+            cached_places = self._read_poi_cache(cache_store, poi_query_hash)
+            if cached_places is not None:
+                return cached_places, False
+
         try:
             elements = self._query_overpass(client, resolved.point, tag_filters, radius_meters)
         except (httpx.HTTPError, ValueError) as exc:
@@ -539,6 +583,10 @@ class OpenStreetMapPlacesAdapter(PlacesProvider):
             if place.coordinates is not None
             and _is_within_destination(place.coordinates, resolved, radius_meters)
         ]
+
+        if cache_store is not None and contained_places:
+            self._write_poi_cache(cache_store, poi_query_hash, contained_places)
+
         return contained_places, False
 
     def _try_fallback_queries(
@@ -786,6 +834,53 @@ class OpenStreetMapPlacesAdapter(PlacesProvider):
         except Exception:
             logger.warning(
                 "OpenStreetMap geocode cache write failed; returning live result anyway."
+            )
+
+    def _read_poi_cache(
+        self, cache_store: ProviderCacheStore, query_hash: str
+    ) -> list[NormalizedPlace] | None:
+        """Returns the cached POI list for one Overpass query, or `None` on
+        a cache miss/expiry or a broken cache read -- either way, the
+        caller falls back to the live Overpass request rather than
+        failing."""
+        try:
+            entry = cache_store.get(_POI_CACHE_SOURCE, query_hash)
+        except Exception:
+            logger.warning("OpenStreetMap POI cache read failed; falling back to live request.")
+            return None
+
+        if entry is None:
+            return None
+
+        try:
+            return [
+                NormalizedPlace(**{**item, "data_status": DataStatus.CACHED})
+                for item in entry.payload
+            ]
+        except (TypeError, ValueError):
+            logger.warning(
+                "OpenStreetMap POI cache entry was unusable; falling back to live request."
+            )
+            return None
+
+    def _write_poi_cache(
+        self,
+        cache_store: ProviderCacheStore,
+        query_hash: str,
+        places: list[NormalizedPlace],
+    ) -> None:
+        """Best-effort cache write -- a failure here must never affect the
+        already-computed live result being returned to the caller."""
+        try:
+            cache_store.set(
+                _POI_CACHE_SOURCE,
+                query_hash,
+                [place.model_dump(mode="json") for place in places],
+                ttl_seconds=self._poi_cache_ttl_seconds,
+            )
+        except Exception:
+            logger.warning(
+                "OpenStreetMap POI cache write failed; returning live result anyway."
             )
 
     def _query_overpass(

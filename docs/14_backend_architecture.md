@@ -799,33 +799,56 @@ exchange-rate responses fetched over the network under source
 `"frankfurter"`, keyed by a hash of the normalized request
 (`base_currency`, `destination_currency`, a fixed `"latest"` marker); the
 same-currency identity result (no HTTP call at all) is not cached.
-`OpenStreetMapPlacesAdapter` is the fourth consumer, **geocoding only**
-(docs/12_provider_architecture.md section 29, docs/13_llm_reasoning_pipeline.md
-section 50) -- only its Nominatim destination-lookup step
-(`_resolve_destination`) caches successful, plausibility-checked results
-under source `"openstreetmap_geocode"`, keyed by a hash of the normalized
-search text. **Its Overpass POI search path (attractions, restaurants,
-accommodation) is intentionally not cache-wired** and still goes out live
-on every call, exactly as before this step. `ProviderGateway` and
-`PlanningOrchestrator` still do not import or call `ProviderCacheStore` --
-every call through them still goes out live (or reports honestly as
-`not_connected`/`unavailable`) exactly as before these steps. A cache miss
-from this store always means "miss," never a guessed or fabricated
-payload -- confirmed for Open-Meteo, Nager.Date, Frankfurter, and OSM
-geocoding specifically by `unavailable`/`failed`/unresolved responses
-never being written to the cache.
+`OpenStreetMapPlacesAdapter` is the fourth consumer
+(docs/12_provider_architecture.md sections 29-30,
+docs/13_llm_reasoning_pipeline.md sections 50 and 52). Its Nominatim
+destination-lookup step (`_resolve_destination`, Step 164E) caches
+successful, plausibility-checked results under source
+`"openstreetmap_geocode"`, keyed by a hash of the normalized search text.
+**As of Step 164G, its Overpass POI search path is also cache-wired** --
+`_try_query` (used by `search_attractions`/`search_restaurants`/
+`search_accommodation_pois`, both the primary and every fallback tag
+query) caches successful, non-empty, destination-contained results under
+source `"openstreetmap_poi"`, keyed by a hash of the normalized Overpass
+request (`lat`, `lon`, `radius_meters`, sorted tags, `limit`).
+`search_must_visit_place`'s Nominatim named-place lookup remains
+uncached. `ProviderGateway` and `PlanningOrchestrator` still do not import
+or call `ProviderCacheStore` -- every call through them still goes out
+live (or reports honestly as `not_connected`/`unavailable`) exactly as
+before these steps. A cache miss from this store always means "miss,"
+never a guessed or fabricated payload -- confirmed for Open-Meteo,
+Nager.Date, Frankfurter, OSM geocoding, and OSM POI search specifically by
+`unavailable`/`failed`/unresolved/empty responses never being written to
+the cache. **Provider behavior is otherwise identical apart from cache
+hit/miss as the source of a result** -- the `ProviderResponse.status`/
+`data_status`/`fallback_used` envelope returned by `search_attractions`/
+`search_restaurants`/`search_accommodation_pois` is unchanged by caching;
+only each individual cached place's own `data_status` field is relabeled
+`"cached"`, which nothing in candidate quality, scheduling, validation, or
+provider coverage tracking reads.
 
 **Cache failure is non-fatal for all four consumers.** A broken cache
-read falls back to the live Open-Meteo/Nager.Date/Frankfurter/Nominatim
-request; a broken cache write still returns the already-computed live
-result. Weather, holiday, currency, and geocoding retrieval can never fail
-because the cache layer failed.
+read falls back to the live Open-Meteo/Nager.Date/Frankfurter/Nominatim/
+Overpass request; a broken cache write still returns the already-computed
+live result. Weather, holiday, currency, geocoding, and POI search
+retrieval can never fail because the cache layer failed.
 
 **Manual live smoke coverage (Step 164F).** `backend/scripts/manual_provider_cache_smoke.py`
-(manual/dev-only, docs/21_manual_provider_cache_smoke.md) now exercises
-all four cache-wired providers against their real public APIs, including
-OSM geocoding (`resolve_coordinates`) -- but not Overpass POI search,
-which remains untouched by any manual smoke coverage.
+(manual/dev-only, docs/21_manual_provider_cache_smoke.md) exercises all
+four cache-wired providers against their real public APIs, including OSM
+geocoding (`resolve_coordinates`) -- but not Overpass POI search, which
+remains untouched by any manual smoke coverage even after Step 164G wired
+it into the persistent cache.
+
+**Test isolation fix (Step 164G).** Wiring POI search into the same
+lazily-resolved cache singleton geocoding already used surfaced a latent
+cross-test contamination risk for any test constructing a real provider
+adapter without an explicit `cache_store` (not limited to
+`test_openstreetmap_adapter.py`). `backend/app/tests/conftest.py` gained
+an autouse `_isolate_provider_cache_store` fixture, mirroring the
+pre-existing `_reset_in_memory_repositories` fixture, giving every test a
+fresh, throwaway provider cache store -- a test suite fix, not a
+production behavior change.
 
 Responsibilities (intended once wired in a future step):
 

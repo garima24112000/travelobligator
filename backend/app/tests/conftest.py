@@ -15,6 +15,7 @@ from app.providers.gateway import provider_gateway
 from app.repositories.planning_state_repository import planning_state_repository
 from app.repositories.trip_repository import trip_repository
 from app.storage.local_json_store import LocalJsonStore
+from app.storage.provider_cache_store import ProviderCacheStore
 
 
 @pytest.fixture(autouse=True)
@@ -145,6 +146,56 @@ def _reset_in_memory_repositories(tmp_path: Path) -> None:
     planning_state_repository._store = test_store
     planning_state_repository._states = {}
     yield
+
+
+@pytest.fixture(autouse=True)
+def _isolate_provider_cache_store(monkeypatch: pytest.MonkeyPatch):
+    """Isolate the provider cache singleton (`get_provider_cache_store`,
+    Steps 164A-164G) between test functions, mirroring
+    `_reset_in_memory_repositories` above for the same reason.
+
+    `get_provider_cache_store` is a process-wide singleton keyed by
+    resolved path (`backend/app/storage/provider_cache_store.py`). Any real
+    provider adapter (`OpenMeteoWeatherAdapter`, `NagerDateHolidaysAdapter`,
+    `FrankfurterCurrencyAdapter`, `OpenStreetMapPlacesAdapter`) constructed
+    without an explicit `cache_store` -- e.g. a test that monkeypatches
+    `provider_gateway.places` with a real `OpenStreetMapPlacesAdapter()` to
+    exercise its real containment/normalization logic against a fake HTTP
+    client -- would otherwise lazily resolve and share the *same* real
+    cache store across the whole test session (and, without this fixture,
+    the real repo-local `.data/provider_cache.sqlite3` file). That let one
+    test's cached, successful POI/geocode/weather/holiday/currency result
+    silently satisfy a *different* test's fake-client expectations instead
+    of exercising the fake client at all.
+
+    Each adapter module binds `get_provider_cache_store` as a local name at
+    import time (`from ... import get_provider_cache_store`), so it must be
+    patched per-module, not on the source module alone. The store's file
+    lives in its own throwaway `tempfile.mkdtemp()` directory -- deliberately
+    *not* a test's own `tmp_path` fixture, since eagerly creating a file
+    there would break tests that assert on `tmp_path`'s exact contents
+    (e.g. `test_write_is_atomic_and_leaves_no_temp_files`).
+    """
+    import shutil
+    import tempfile
+
+    import app.providers.currency.frankfurter_adapter as frankfurter_adapter_module
+    import app.providers.holidays.nager_date_adapter as nager_date_adapter_module
+    import app.providers.places.openstreetmap_adapter as openstreetmap_adapter_module
+    import app.providers.weather.open_meteo_adapter as open_meteo_adapter_module
+
+    isolation_dir = Path(tempfile.mkdtemp(prefix="travelobligator_test_provider_cache_"))
+    fresh_store = ProviderCacheStore(isolation_dir / "test_provider_cache.sqlite3")
+    for adapter_module in (
+        openstreetmap_adapter_module,
+        open_meteo_adapter_module,
+        nager_date_adapter_module,
+        frankfurter_adapter_module,
+    ):
+        monkeypatch.setattr(adapter_module, "get_provider_cache_store", lambda path: fresh_store)
+
+    yield
+    shutil.rmtree(isolation_dir, ignore_errors=True)
 
 
 @pytest.fixture()

@@ -2198,3 +2198,84 @@ way the script already did for Open-Meteo/Nager.Date/Frankfurter.
   the guardrail env var deliberately missing/falsy -- no real HTTP call to
   Nominatim or any other network service, and no `RUN_LIVE_PROVIDER_CACHE_SMOKE`
   requirement anywhere in the automated suite.
+
+---
+
+## 52. OSM/Overpass POI Search Cache Wiring (Step 164G)
+
+Step 164G extends `OpenStreetMapPlacesAdapter`'s Step 164E geocode cache
+wiring (section 50) to also cover Overpass POI search
+(`backend/app/providers/places/openstreetmap_adapter.py`'s `_try_query`,
+docs/12_provider_architecture.md section 30). **This is deterministic
+provider infrastructure, not AI reasoning** -- it contains no LLM call, no
+prompt, and no model inference; a cache hit and a cache miss both return
+places that already came from the real Overpass API on some earlier call,
+never anything invented or inferred.
+
+- **Overpass POI search only, not the must-visit lookup.** Only
+  `_try_query` (used by `search_attractions`, `search_restaurants`, and
+  `search_accommodation_pois`, for both the primary and every fallback tag
+  query) is cache-wired. `search_must_visit_place`'s Nominatim named-place
+  lookup (`_lookup_named_place`) is untouched -- it was never Overpass to
+  begin with.
+- **Cache key is `source="openstreetmap_poi"` + a hash of the normalized
+  request** (`lat`, `lon`, `radius_meters`, sorted `tags`, `limit`) --
+  never the raw destination string, trip ID, or any other
+  `PlanningState`/trip-private field, and the Overpass query string itself
+  is never persisted as raw metadata. One row per individual Overpass
+  query (primary or one fallback tag), matching how the live path already
+  issues separate requests.
+- **Cache hit/miss never fabricates a place, coordinate, OSM ID, rating,
+  price, opening hours, availability, booking link, or route time.** A hit
+  returns the exact same `NormalizedPlace` list a live query would, each
+  place relabeled `data_status="cached"`; a miss (including an expired
+  entry, treated exactly like a miss) runs the existing live Overpass path
+  unchanged and applies the exact same containment filter as before. Only
+  a query with at least one named, contained result is cached --
+  empty/unusable results and request failures are not.
+- **The overall `ProviderResponse` envelope is unaffected.** `status`,
+  `data_status`, `fallback_used`, and `fallback_provider` on
+  `search_attractions`/`search_restaurants`/`search_accommodation_pois`
+  still reflect only whether fallback was needed, exactly as before this
+  step -- confirmed by a dedicated test
+  (`test_poi_cache_hit_does_not_change_provider_coverage_relevant_fields`)
+  and by the fact that nothing in `CandidateQualityService`,
+  `ExperiencePlannerService`, `destination_context_service.py`'s
+  candidate-list construction, or `provider_coverage`/`data_sources_used`
+  reads or filters on an individual place's `data_status`. Candidate
+  quality, scheduling, validation, and provider coverage logic are
+  unchanged by this step.
+- **Cache failure is non-fatal.** A broken cache read falls back to the
+  live request; a broken cache write still returns the already-computed
+  live result. Neither failure path logs the query or payload contents.
+- **Config**: `Settings.osm_poi_cache_ttl_seconds`
+  (`OSM_POI_CACHE_TTL_SECONDS`, default `604800` = 7 days, must be
+  non-negative) controls TTL -- shorter than the 30-day geocode TTL since
+  POI data changes more often than geocoding but not every minute, but it
+  stays configurable; the existing `Settings.provider_cache_enabled`
+  (`PROVIDER_CACHE_ENABLED`, default `true`) gates whether the cache is
+  used at all -- when `false`, every call goes live even if a cache store
+  was explicitly injected.
+- **A latent test-isolation gap was found and fixed, not a provider
+  behavior change.** Because POI search now also reads the same lazily-
+  resolved, process-wide cache singleton geocoding already used, an
+  existing API test (`test_destination_grounding.py`) that monkeypatches
+  `provider_gateway.places` with a real `OpenStreetMapPlacesAdapter()` (no
+  injected `cache_store`) started intermittently reusing a different
+  test's cached POI result instead of exercising its own fake HTTP client.
+  `backend/app/tests/conftest.py` gained an autouse
+  `_isolate_provider_cache_store` fixture (mirroring the pre-existing
+  `_reset_in_memory_repositories` fixture) that points every cache-wired
+  adapter module at a fresh, throwaway, per-test store. This is a test
+  suite fix only -- no production code path changed.
+- **No real network/Groq/Anthropic/Kiwi/MCP/scraping call in this step's
+  tests.** Every test in
+  `backend/app/tests/providers/test_openstreetmap_adapter.py` uses the
+  existing in-file `_FakeClient`/`_FakeResponse` test doubles and an
+  injected or `tmp_path`-backed `ProviderCacheStore` -- no real HTTP call
+  to Overpass, Nominatim, or any other network service. Open-Meteo's,
+  Nager.Date's, and Frankfurter's own cache tests, and OSM's own geocode
+  cache tests, are re-run unchanged and still pass, confirming this step
+  didn't disturb Steps 164B/164C/164D/164E. No live smoke coverage was
+  added for Overpass in this step (docs/21_manual_provider_cache_smoke.md
+  still only covers OSM geocoding).

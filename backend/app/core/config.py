@@ -165,6 +165,20 @@ class Settings(BaseSettings):
         ge=0,
     )
 
+    # OpenStreetMap/Overpass POI search cache TTL (Step 164G,
+    # docs/12_provider_architecture.md "Provider Cache Foundation" section).
+    # Only `OpenStreetMapPlacesAdapter`'s Overpass POI search path
+    # (`_try_query`, used by attractions/restaurants/accommodation search)
+    # reads this -- geocoding uses `osm_geocode_cache_ttl_seconds` instead.
+    # 7 days is shorter than the geocode TTL because POI data changes more
+    # often than geocoding but not every minute, and it stays configurable.
+    # Must be non-negative, matching the other provider cache TTL settings.
+    osm_poi_cache_ttl_seconds: int = Field(
+        default=604800,
+        alias="OSM_POI_CACHE_TTL_SECONDS",
+        ge=0,
+    )
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

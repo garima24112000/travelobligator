@@ -1326,10 +1326,11 @@ compatible.
 
 As of Step 164E, four real provider adapters are cache consumers: Open-Meteo
 (weather), Nager.Date (holidays), Frankfurter (currency), and OpenStreetMap
-(geocoding only -- Overpass POI search remains live-only). No other
-provider (routes, transit, accommodation pricing, flights) is cache-wired,
-and no LangGraph, Groq, Anthropic, or Kiwi/MCP call is cached or otherwise
-touched by any of these four steps.
+(geocoding only -- Overpass POI search remains live-only as of this step).
+No other provider (routes, transit, accommodation pricing, flights) is
+cache-wired, and no LangGraph, Groq, Anthropic, or Kiwi/MCP call is cached
+or otherwise touched by any of these four steps. **Step 164G (section 30)
+extends OpenStreetMap's own wiring to cover Overpass POI search too.**
 
 ### 29.6 Manual live smoke coverage (Step 164F)
 
@@ -1339,4 +1340,124 @@ covers all four cache-wired providers against their real public APIs:
 Open-Meteo, Nager.Date, Frankfurter, and OpenStreetMap/Nominatim
 **geocoding only** -- it calls `resolve_coordinates`, never Overpass POI
 search, so it does not validate `search_attractions`/`search_restaurants`/
-`search_accommodation_pois`/`search_must_visit_place`.
+`search_accommodation_pois`/`search_must_visit_place`. **This remains true
+after Step 164G** -- Overpass POI search caching still has no manual live
+smoke coverage, even though it is now cache-wired (section 30).
+
+---
+
+## 30. OSM/Overpass POI Search Cache Wiring (Step 164G)
+
+`OpenStreetMapPlacesAdapter` extends its Step 164E geocode cache wiring
+(section 29) to also cover Overpass POI search -- the `_try_query` method
+used by `search_attractions`, `search_restaurants`, and
+`search_accommodation_pois` (both the primary query and every individual
+fallback tag query). **`search_must_visit_place`'s Nominatim named-place
+lookup (`_lookup_named_place`) is not cached by this step** -- it is a
+targeted single-place lookup, not an Overpass POI search.
+
+### 30.1 Scope: normalized POI provider responses only
+
+Only normalized `NormalizedPlace` results already produced by the existing
+live Overpass path are cached -- nothing new is added to what a place can
+carry. No rating, price, opening hours, availability, booking link, or
+route time is introduced by caching; those fields were never present on
+`NormalizedPlace` before this step and still aren't. A cache hit and a
+cache miss return the identical set of fields
+(`place_id`, `name`, `category`, `coordinates`, `address`, `source`,
+`data_status`, `confidence`) -- caching never fabricates a place, a
+coordinate, or an OSM ID.
+
+### 30.2 Cache key
+
+Cache rows are stored under source `"openstreetmap_poi"`, keyed by
+`query_hash = make_query_hash(query)` where `query` is the normalized
+Overpass request:
+
+```json
+{
+  "lat": 34.0522,
+  "lon": -118.2437,
+  "radius_meters": 6000,
+  "tags": ["\"historic\"", "\"tourism\"~\"attraction|museum|gallery|viewpoint|artwork|zoo|theme_park\""],
+  "limit": 20
+}
+```
+
+`lat`/`lon` are the already-resolved destination point (itself geocode-
+cache-backed, section 29), `radius_meters` distinguishes a primary query
+(`_SEARCH_RADIUS_METERS` = 6000) from a fallback tag query
+(`_FALLBACK_SEARCH_RADIUS_METERS` = 12000), `tags` is the sorted Overpass
+tag filter list (so key order never affects the hash), and `limit` is the
+fixed `_MAX_RESULTS` cap. One row is written per individual Overpass query
+-- a primary query and each fallback tag query (queried one at a time,
+per the existing fallback design) get separate cache entries, so a later
+search for the same destination/category can reuse whichever of those
+sub-queries it needs. The Overpass query string itself is never persisted
+as raw metadata -- only its normalized (point, radius, tags, limit)
+shape feeds the hash, and only the opaque digest is stored.
+
+### 30.3 What is cached
+
+Only a query that returns at least one named, destination-contained place
+is cached -- an empty result (whether from unnamed-only elements, results
+outside containment, or a genuinely POI-free area) and a request failure
+are both left uncached, matching the "do not cache unavailable/error
+responses" rule already applied to the other three cache-wired providers.
+`metadata` is always empty (`{}`); no API key, token, prompt, or raw LLM
+response is ever written (Overpass itself requires no API key).
+
+### 30.4 Cache hit/miss behavior
+
+A cache hit returns the exact same normalized `NormalizedPlace` list a
+live Overpass query for that (point, radius, tags) would, with each
+place's `data_status` relabeled `"cached"`. A cache miss (no row, or an
+expired row, treated exactly like a miss) runs the existing live Overpass
+HTTP path unchanged, applies the exact same containment filter as before,
+then caches the result with TTL `Settings.osm_poi_cache_ttl_seconds`
+(`OSM_POI_CACHE_TTL_SECONDS`, default `604800` = 7 days -- shorter than
+the 30-day geocode TTL, since POI data changes more often than geocoding
+but not every minute).
+
+**The overall `ProviderResponse.status`/`data_status` returned by
+`search_attractions`/`search_restaurants`/`search_accommodation_pois` is
+unaffected by caching.** That envelope-level status still reflects only
+whether fallback was needed (`SUCCESS`/`PARTIAL` vs `FALLBACK_USED`),
+exactly as before this step -- only each individual cached place's
+`data_status` field differs. Nothing in `CandidateQualityService`,
+`ExperiencePlannerService`, `destination_context_service.py`'s
+`candidate_pois`/`candidate_restaurants`/`candidate_accommodation_pois`
+construction, or `provider_coverage`/`data_sources_used` filters or gates
+on an individual place's `data_status`, so this cannot silently change
+scheduling, candidate quality scoring, validation, or provider coverage
+reporting.
+
+Cache reads and writes are both best-effort and never fail POI search: a
+broken cache read is logged and treated as a miss (falls through to the
+live Overpass path), and a broken cache write is logged but the
+already-computed live result is still returned. Neither log line includes
+the query payload.
+
+### 30.5 Dependency injection
+
+`OpenStreetMapPlacesAdapter` reuses the exact same `cache_store`
+constructor parameter and `_resolve_cache_store()` lazy-resolution helper
+already added for geocoding (section 29.4) -- no new constructor
+parameter was needed. When `Settings.provider_cache_enabled` is `false`,
+both the geocode cache and the POI cache are skipped completely (every
+call goes live), even if a `cache_store` was explicitly injected.
+
+### 30.6 Test isolation fix
+
+Wiring POI search into the same lazily-resolved, process-wide cache
+singleton surfaced a latent cross-test contamination risk: any test that
+constructs a real provider adapter without an explicit `cache_store` (not
+just in `test_openstreetmap_adapter.py`, but anywhere in the suite, e.g.
+an API test that monkeypatches `provider_gateway.places` with a real
+`OpenStreetMapPlacesAdapter()` to exercise containment logic against a
+fake HTTP client) would otherwise share one real cache store across the
+whole test session. `backend/app/tests/conftest.py` now has an autouse
+`_isolate_provider_cache_store` fixture, mirroring the pre-existing
+`_reset_in_memory_repositories` fixture, that points every cache-wired
+adapter module's `get_provider_cache_store` at a fresh, throwaway,
+per-test store instead.

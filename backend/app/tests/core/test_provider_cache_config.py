@@ -167,12 +167,37 @@ def test_osm_geocode_cache_ttl_seconds_rejects_negative_value() -> None:
 
 
 # ---------------------------------------------------------------------------
+# osm_poi_cache_ttl_seconds (Step 164G): default, env override, and
+# negative-value rejection.
+# ---------------------------------------------------------------------------
+
+
+def test_osm_poi_cache_ttl_seconds_default() -> None:
+    field_info = Settings.model_fields["osm_poi_cache_ttl_seconds"]
+    assert field_info.default == 604800
+    assert field_info.alias == "OSM_POI_CACHE_TTL_SECONDS"
+
+
+def test_osm_poi_cache_ttl_seconds_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setitem(Settings.model_config, "env_file", None)
+    monkeypatch.setenv("OSM_POI_CACHE_TTL_SECONDS", "3600")
+
+    settings = Settings()
+
+    assert settings.osm_poi_cache_ttl_seconds == 3600
+
+
+def test_osm_poi_cache_ttl_seconds_rejects_negative_value() -> None:
+    with pytest.raises(ValueError):
+        Settings(osm_poi_cache_ttl_seconds=-1)
+
+
+# ---------------------------------------------------------------------------
 # 15. Open-Meteo (Step 164B), Nager.Date (Step 164C), Frankfurter
-# (Step 164D), and OSM geocoding (Step 164E) are wired to the provider
-# cache. Step 164A's foundation-only boundary is now fully retired -- every
-# real provider adapter imports the cache store, though OSM's Overpass POI
-# search path specifically remains uncached (verified in
-# backend/app/tests/providers/test_openstreetmap_adapter.py, not here).
+# (Step 164D), OSM geocoding (Step 164E), and OSM/Overpass POI search
+# (Step 164G) are all wired to the provider cache. Step 164A's
+# foundation-only boundary is now fully retired -- every real provider
+# adapter imports the cache store.
 # ---------------------------------------------------------------------------
 
 
@@ -187,8 +212,9 @@ def _wired_adapter_modules():
 
 def test_all_four_real_provider_adapters_import_provider_cache_store() -> None:
     """Step 164B wired Open-Meteo, Step 164C wired Nager.Date, Step 164D
-    wired Frankfurter, Step 164E wired OSM geocoding -- all four real
-    adapters are now provider cache consumers."""
+    wired Frankfurter, Step 164E wired OSM geocoding (extended to OSM/
+    Overpass POI search in Step 164G) -- all four real adapters are now
+    provider cache consumers."""
     for module in _wired_adapter_modules():
         source = inspect.getsource(module)
         assert "provider_cache_store" in source
@@ -196,14 +222,22 @@ def test_all_four_real_provider_adapters_import_provider_cache_store() -> None:
         assert "get_provider_cache_store" in source
 
 
-def test_osm_module_wires_geocoding_only_not_overpass() -> None:
-    """Step 164E scope check: the cache source label used for geocoding is
-    present, but Overpass POI search (`_query_overpass`) does not read or
-    write the cache -- only `_resolve_destination` does."""
+def test_osm_module_wires_both_geocoding_and_poi_search() -> None:
+    """Step 164E wired geocoding (`_resolve_destination`); Step 164G
+    extended that to Overpass POI search via `_try_query`. Both cache
+    source labels are present, and `_try_query` itself (not just
+    `_resolve_destination`) references the cache store -- `_query_overpass`
+    (the innermost raw HTTP call) still does not, since the caching
+    decision is made by its caller, `_try_query`, before/after invoking
+    it."""
     import app.providers.places.openstreetmap_adapter as osm_module
 
     source = inspect.getsource(osm_module)
     assert '"openstreetmap_geocode"' in source
+    assert '"openstreetmap_poi"' in source
+
+    try_query_source = inspect.getsource(osm_module.OpenStreetMapPlacesAdapter._try_query)
+    assert "cache_store" in try_query_source
 
     query_overpass_source = inspect.getsource(osm_module.OpenStreetMapPlacesAdapter._query_overpass)
     assert "cache_store" not in query_overpass_source

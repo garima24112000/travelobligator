@@ -42,6 +42,24 @@ def _geocode_query_hash(query: str) -> str:
     return make_query_hash({"query": query.strip().lower(), "format": "jsonv2", "limit": 1})
 
 
+def _poi_query_hash(
+    lat: float = 34.0522,
+    lon: float = -118.2437,
+    radius_meters: int = 6000,
+    tags: list[str] | None = None,
+) -> str:
+    tags = tags if tags is not None else openstreetmap_adapter._ATTRACTION_TAG_FILTERS
+    return make_query_hash(
+        {
+            "lat": lat,
+            "lon": lon,
+            "radius_meters": radius_meters,
+            "tags": sorted(tags),
+            "limit": openstreetmap_adapter._MAX_RESULTS,
+        }
+    )
+
+
 def _settings(monkeypatch: pytest.MonkeyPatch, **overrides: Any) -> Settings:
     """A `Settings` instance for adapter construction, isolated from any
     real `.env` file so cache-enabled/TTL behavior in these tests is
@@ -1270,3 +1288,471 @@ def test_geocode_request_failure_is_not_cached(
 
     assert point is None
     assert store.get("openstreetmap_geocode", _geocode_query_hash("Los Angeles")) is None
+
+
+# ---------------------------------------------------------------------------
+# Provider cache wiring: OSM/Overpass POI search (Step 164G,
+# docs/12_provider_architecture.md "Provider Cache Foundation" section).
+# Every test below injects its own `ProviderCacheStore` via the constructor
+# -- never the real repo-local `.data/provider_cache.sqlite3` file -- and
+# never makes a real network call; only the existing `_FakeClient`/
+# `_FakeResponse` doubles are used. Geocoding remains covered by the tests
+# above, unchanged by this section.
+# ---------------------------------------------------------------------------
+
+_CACHED_ATTRACTION_PAYLOAD = [
+    {
+        "place_id": "node/1",
+        "name": "Griffith Observatory",
+        "category": "attraction",
+        "coordinates": {"lat": 34.0, "lng": -118.0},
+        "address": None,
+        "source": "openstreetmap_places",
+        "data_status": "live",
+        "confidence": 0.6,
+    },
+    {
+        "place_id": "node/2",
+        "name": "The Getty",
+        "category": "museum",
+        "coordinates": {"lat": 34.0, "lng": -118.0},
+        "address": None,
+        "source": "openstreetmap_places",
+        "data_status": "live",
+        "confidence": 0.6,
+    },
+    {
+        "place_id": "node/3",
+        "name": "Walt Disney Concert Hall",
+        "category": "attraction",
+        "coordinates": {"lat": 34.0, "lng": -118.0},
+        "address": None,
+        "source": "openstreetmap_places",
+        "data_status": "live",
+        "confidence": 0.6,
+    },
+]
+
+
+def test_poi_cache_hit_returns_cached_response_without_http_call(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake_client = _FakeClient()
+    monkeypatch.setattr(openstreetmap_adapter.httpx, "Client", lambda **kwargs: fake_client)
+
+    store = ProviderCacheStore(tmp_path / "cache.sqlite3")
+    store.set(
+        "openstreetmap_geocode",
+        _geocode_query_hash("Los Angeles"),
+        {
+            "lat": 34.0522,
+            "lng": -118.2437,
+            "bounding_box": [33.5, 34.5, -118.8, -117.5],
+            "display_name": "Los Angeles, California, United States",
+        },
+        ttl_seconds=2592000,
+    )
+    store.set(
+        "openstreetmap_poi",
+        _poi_query_hash(),
+        _CACHED_ATTRACTION_PAYLOAD,
+        ttl_seconds=604800,
+    )
+
+    adapter = OpenStreetMapPlacesAdapter(cache_store=store)
+    response = adapter.search_attractions("Los Angeles")
+
+    assert fake_client.get_call_count == 0
+    assert fake_client.post_call_count == 0
+    assert response.status == ProviderStatus.SUCCESS
+    assert response.data_status == DataStatus.LIVE  # envelope status unchanged by caching
+    assert response.fallback_used is False
+    names = {place.name for place in response.data}
+    assert names == {"Griffith Observatory", "The Getty", "Walt Disney Concert Hall"}
+    assert all(place.data_status == DataStatus.CACHED for place in response.data)
+
+
+def test_poi_cache_miss_calls_http_once_and_writes_normalized_response(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    primary_elements = [
+        _element(1, "Griffith Observatory", tourism="attraction"),
+        _element(2, "The Getty", tourism="museum"),
+        _element(3, "Walt Disney Concert Hall", tourism="attraction"),
+    ]
+    fake_client = _install_fake_client(
+        monkeypatch,
+        geocode_response=_geocode_ok(),
+        post_responses=[_FakeResponse(json_data={"elements": primary_elements})],
+    )
+    store = ProviderCacheStore(tmp_path / "cache.sqlite3")
+
+    adapter = OpenStreetMapPlacesAdapter(cache_store=store)
+    response = adapter.search_attractions("Los Angeles")
+
+    assert fake_client.post_call_count == 1
+    assert response.status == ProviderStatus.SUCCESS
+
+    entry = store.get("openstreetmap_poi", _poi_query_hash())
+    assert entry is not None
+    names = {item["name"] for item in entry.payload}
+    assert names == {"Griffith Observatory", "The Getty", "Walt Disney Concert Hall"}
+    for item in entry.payload:
+        assert item["data_status"] == "live"
+
+
+def test_second_identical_poi_call_across_instances_uses_persistent_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    primary_elements = [
+        _element(1, "Griffith Observatory", tourism="attraction"),
+        _element(2, "The Getty", tourism="museum"),
+        _element(3, "Walt Disney Concert Hall", tourism="attraction"),
+    ]
+    fake_client = _install_fake_client(
+        monkeypatch,
+        geocode_response=_geocode_ok(),
+        post_responses=[_FakeResponse(json_data={"elements": primary_elements})],
+    )
+    store = ProviderCacheStore(tmp_path / "cache.sqlite3")
+
+    first = OpenStreetMapPlacesAdapter(cache_store=store).search_attractions("Los Angeles")
+    second = OpenStreetMapPlacesAdapter(cache_store=store).search_attractions("Los Angeles")
+
+    # Geocoding (Step 164E) and POI search (Step 164G) are both cached, so
+    # the second, fresh adapter instance needs no live call for either.
+    # `_FakeClient` in geocode_response/post_responses mode only tracks GET
+    # calls via `get_queries` (see `_FakeClient.get`), not `get_call_count`.
+    assert len(fake_client.get_queries) == 1
+    assert fake_client.post_call_count == 1
+    assert {p.name for p in first.data} == {p.name for p in second.data}
+    assert all(place.data_status == DataStatus.CACHED for place in second.data)
+
+
+def test_expired_poi_cache_entry_behaves_like_miss_and_refreshes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from datetime import datetime, timedelta, timezone
+
+    fresh_elements = [
+        _element(1, "Griffith Observatory", tourism="attraction"),
+        _element(2, "The Getty", tourism="museum"),
+        _element(3, "Walt Disney Concert Hall", tourism="attraction"),
+    ]
+    fake_client = _install_fake_client(
+        monkeypatch,
+        geocode_response=_geocode_ok(),
+        post_responses=[_FakeResponse(json_data={"elements": fresh_elements})],
+    )
+    store = ProviderCacheStore(tmp_path / "cache.sqlite3")
+    already_expired = datetime.now(timezone.utc) - timedelta(hours=1)
+    store.set(
+        "openstreetmap_poi",
+        _poi_query_hash(),
+        [
+            {
+                "place_id": "node/999",
+                "name": "Stale Place",
+                "category": "attraction",
+                "coordinates": {"lat": 34.0, "lng": -118.0},
+                "address": None,
+                "source": "openstreetmap_places",
+                "data_status": "live",
+                "confidence": 0.6,
+            }
+        ],
+        ttl_seconds=1,
+        now=already_expired,
+    )
+
+    adapter = OpenStreetMapPlacesAdapter(cache_store=store)
+    response = adapter.search_attractions("Los Angeles")
+
+    assert fake_client.post_call_count == 1
+    names = {place.name for place in response.data}
+    assert names == {"Griffith Observatory", "The Getty", "Walt Disney Concert Hall"}
+    assert "Stale Place" not in names
+
+    refreshed_entry = store.get("openstreetmap_poi", _poi_query_hash())
+    assert refreshed_entry is not None
+    refreshed_names = {item["name"] for item in refreshed_entry.payload}
+    assert refreshed_names == {"Griffith Observatory", "The Getty", "Walt Disney Concert Hall"}
+
+
+def test_poi_provider_cache_disabled_bypasses_cache_and_calls_http(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    primary_elements = [
+        _element(1, "Griffith Observatory", tourism="attraction"),
+        _element(2, "The Getty", tourism="museum"),
+        _element(3, "Walt Disney Concert Hall", tourism="attraction"),
+    ]
+    fake_client = _install_fake_client(
+        monkeypatch,
+        geocode_response=_geocode_ok(),
+        post_responses=[
+            _FakeResponse(json_data={"elements": primary_elements}),
+            _FakeResponse(json_data={"elements": primary_elements}),
+        ],
+    )
+    disabled_settings = _settings(monkeypatch, provider_cache_enabled=False)
+    monkeypatch.setattr(openstreetmap_adapter, "get_settings", lambda: disabled_settings)
+    store = ProviderCacheStore(tmp_path / "cache.sqlite3")
+
+    # Even with an explicit cache_store injected, provider_cache_enabled=False
+    # must skip the cache completely -- two fresh instances both go live.
+    first = OpenStreetMapPlacesAdapter(cache_store=store).search_attractions("Los Angeles")
+    second = OpenStreetMapPlacesAdapter(cache_store=store).search_attractions("Los Angeles")
+
+    assert len(fake_client.get_queries) == 2
+    assert fake_client.post_call_count == 2
+    assert first.status == ProviderStatus.SUCCESS
+    assert second.status == ProviderStatus.SUCCESS
+    assert store.get("openstreetmap_poi", _poi_query_hash()) is None
+
+
+def test_poi_cache_read_failure_falls_back_to_http(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    primary_elements = [
+        _element(1, "Griffith Observatory", tourism="attraction"),
+        _element(2, "The Getty", tourism="museum"),
+        _element(3, "Walt Disney Concert Hall", tourism="attraction"),
+    ]
+    fake_client = _install_fake_client(
+        monkeypatch,
+        geocode_response=_geocode_ok(),
+        post_responses=[_FakeResponse(json_data={"elements": primary_elements})],
+    )
+
+    class _RaisingGetCacheStore:
+        def get(self, source: str, query_hash: str, now: Any = None) -> None:
+            raise RuntimeError("cache backend unavailable")
+
+        def set(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
+    adapter = OpenStreetMapPlacesAdapter(cache_store=_RaisingGetCacheStore())
+    response = adapter.search_attractions("Los Angeles")
+
+    assert fake_client.post_call_count == 1
+    assert response.status == ProviderStatus.SUCCESS
+    names = {place.name for place in response.data}
+    assert names == {"Griffith Observatory", "The Getty", "Walt Disney Concert Hall"}
+
+
+def test_poi_cache_write_failure_still_returns_live_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    primary_elements = [
+        _element(1, "Griffith Observatory", tourism="attraction"),
+        _element(2, "The Getty", tourism="museum"),
+        _element(3, "Walt Disney Concert Hall", tourism="attraction"),
+    ]
+    fake_client = _install_fake_client(
+        monkeypatch,
+        geocode_response=_geocode_ok(),
+        post_responses=[_FakeResponse(json_data={"elements": primary_elements})],
+    )
+
+    class _RaisingSetCacheStore:
+        def get(self, source: str, query_hash: str, now: Any = None) -> None:
+            return None
+
+        def set(self, *args: Any, **kwargs: Any) -> None:
+            raise RuntimeError("cache write failed")
+
+    adapter = OpenStreetMapPlacesAdapter(cache_store=_RaisingSetCacheStore())
+    response = adapter.search_attractions("Los Angeles")
+
+    assert fake_client.post_call_count == 1
+    assert response.status == ProviderStatus.SUCCESS
+    names = {place.name for place in response.data}
+    assert names == {"Griffith Observatory", "The Getty", "Walt Disney Concert Hall"}
+
+
+def test_poi_cache_key_is_deterministic_for_equivalent_normalized_queries() -> None:
+    query_a = {
+        "lat": 34.0522,
+        "lon": -118.2437,
+        "radius_meters": 6000,
+        "tags": sorted(["b_tag", "a_tag"]),
+        "limit": 20,
+    }
+    query_b = {
+        "limit": 20,
+        "tags": sorted(["a_tag", "b_tag"]),
+        "radius_meters": 6000,
+        "lon": -118.2437,
+        "lat": 34.0522,
+    }
+    assert make_query_hash(query_a) == make_query_hash(query_b)
+
+
+def test_different_poi_category_radius_or_location_produces_different_query_hashes() -> None:
+    base_hash = _poi_query_hash()
+
+    different_tags_hash = _poi_query_hash(tags=openstreetmap_adapter._RESTAURANT_TAG_FILTERS)
+    different_radius_hash = _poi_query_hash(radius_meters=12000)
+    different_location_hash = _poi_query_hash(lat=40.7128, lon=-74.0060)
+
+    assert base_hash != different_tags_hash
+    assert base_hash != different_radius_hash
+    assert base_hash != different_location_hash
+
+
+def test_poi_cache_entry_stores_no_secrets_in_payload_or_metadata(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    primary_elements = [
+        _element(1, "Griffith Observatory", tourism="attraction"),
+        _element(2, "The Getty", tourism="museum"),
+        _element(3, "Walt Disney Concert Hall", tourism="attraction"),
+    ]
+    _install_fake_client(
+        monkeypatch,
+        geocode_response=_geocode_ok(),
+        post_responses=[_FakeResponse(json_data={"elements": primary_elements})],
+    )
+    store = ProviderCacheStore(tmp_path / "cache.sqlite3")
+
+    adapter = OpenStreetMapPlacesAdapter(cache_store=store)
+    adapter.search_attractions("Los Angeles")
+
+    entry = store.get("openstreetmap_poi", _poi_query_hash())
+    assert entry is not None
+    assert entry.metadata == {}
+
+    dumped = str(entry.payload)
+    for forbidden in ("api_key", "token", "secret", "authorization", "bearer"):
+        assert forbidden not in dumped.lower()
+
+
+def test_failed_poi_queries_are_not_cached(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _install_fake_client(
+        monkeypatch,
+        geocode_response=_geocode_ok("Nowhere Land"),
+        post_responses=[_FakeResponse(should_fail=True)] * 5,
+    )
+    store = ProviderCacheStore(tmp_path / "cache.sqlite3")
+
+    adapter = OpenStreetMapPlacesAdapter(cache_store=store)
+    response = adapter.search_attractions("Nowhere Land")
+
+    assert response.status == ProviderStatus.FAILED
+    assert store.get("openstreetmap_poi", _poi_query_hash()) is None
+    assert (
+        store.get(
+            "openstreetmap_poi",
+            _poi_query_hash(
+                radius_meters=12000, tags=[openstreetmap_adapter._ATTRACTION_FALLBACK_TAG_FILTERS[0]]
+            ),
+        )
+        is None
+    )
+
+
+def test_empty_unnamed_only_poi_queries_are_not_cached(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Primary and every fallback tag query return unnamed-only/empty
+    elements (no request failure, just nothing usable) -- none of these
+    per-query results should be cached."""
+    primary_elements = [_element(1, None, tourism="attraction")]  # unnamed only
+    _install_fake_client(
+        monkeypatch,
+        geocode_response=_geocode_ok("Nowhere Land"),
+        post_responses=[
+            _FakeResponse(json_data={"elements": primary_elements}),
+            _FakeResponse(json_data={"elements": []}),
+            _FakeResponse(json_data={"elements": []}),
+            _FakeResponse(json_data={"elements": []}),
+            _FakeResponse(json_data={"elements": [_element(2, None, leisure="park")]}),
+        ],
+    )
+    store = ProviderCacheStore(tmp_path / "cache.sqlite3")
+
+    adapter = OpenStreetMapPlacesAdapter(cache_store=store)
+    response = adapter.search_attractions("Nowhere Land")
+
+    assert response.status == ProviderStatus.UNAVAILABLE
+    assert store.get("openstreetmap_poi", _poi_query_hash()) is None
+    for fallback_tag in openstreetmap_adapter._ATTRACTION_FALLBACK_TAG_FILTERS:
+        assert store.get("openstreetmap_poi", _poi_query_hash(radius_meters=12000, tags=[fallback_tag])) is None
+
+
+def test_poi_cache_introduces_no_forbidden_fields(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A cache-hit POI result must carry no rating, price, opening hours,
+    availability, or booking/route-time field -- the same guarantee the
+    live path already provides, confirmed here specifically through the
+    cache-hit code path."""
+    store = ProviderCacheStore(tmp_path / "cache.sqlite3")
+    store.set("openstreetmap_geocode", _geocode_query_hash("Los Angeles"), {
+        "lat": 34.0522,
+        "lng": -118.2437,
+        "bounding_box": [33.5, 34.5, -118.8, -117.5],
+        "display_name": "Los Angeles, California, United States",
+    }, ttl_seconds=2592000)
+    store.set("openstreetmap_poi", _poi_query_hash(), _CACHED_ATTRACTION_PAYLOAD, ttl_seconds=604800)
+    fake_client = _FakeClient()
+    monkeypatch.setattr(openstreetmap_adapter.httpx, "Client", lambda **kwargs: fake_client)
+
+    adapter = OpenStreetMapPlacesAdapter(cache_store=store)
+    response = adapter.search_attractions("Los Angeles")
+
+    for place in response.data:
+        dumped = place.model_dump()
+        assert set(dumped.keys()) == {
+            "place_id",
+            "name",
+            "category",
+            "coordinates",
+            "address",
+            "source",
+            "data_status",
+            "confidence",
+        }
+        for forbidden_field in (
+            "rating",
+            "price",
+            "review",
+            "opening_hours",
+            "booking_url",
+            "availability",
+            "route_time",
+        ):
+            assert forbidden_field not in dumped
+
+
+def test_poi_cache_hit_does_not_change_provider_coverage_relevant_fields(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The overall `ProviderResponse` envelope (`status`, `data_status`,
+    `fallback_used`, `fallback_provider`, `unavailable_fields`) is
+    unaffected by whether the underlying places came from cache -- exactly
+    what `destination_context_service.py`'s `provider_coverage`/
+    `data_sources_used` tracking reads. Only individual `NormalizedPlace.
+    data_status` differs on a cache hit."""
+    store = ProviderCacheStore(tmp_path / "cache.sqlite3")
+    store.set("openstreetmap_geocode", _geocode_query_hash("Los Angeles"), {
+        "lat": 34.0522,
+        "lng": -118.2437,
+        "bounding_box": [33.5, 34.5, -118.8, -117.5],
+        "display_name": "Los Angeles, California, United States",
+    }, ttl_seconds=2592000)
+    store.set("openstreetmap_poi", _poi_query_hash(), _CACHED_ATTRACTION_PAYLOAD, ttl_seconds=604800)
+    fake_client = _FakeClient()
+    monkeypatch.setattr(openstreetmap_adapter.httpx, "Client", lambda **kwargs: fake_client)
+
+    adapter = OpenStreetMapPlacesAdapter(cache_store=store)
+    response = adapter.search_attractions("Los Angeles")
+
+    assert response.status == ProviderStatus.SUCCESS
+    assert response.data_status == DataStatus.LIVE
+    assert response.fallback_used is False
+    assert response.fallback_provider is None
+    assert response.unavailable_fields == []

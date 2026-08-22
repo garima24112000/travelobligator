@@ -20,8 +20,9 @@ four.
 `OpenStreetMapPlacesAdapter.resolve_coordinates` -- the real Nominatim
 destination lookup -- and nothing else on that adapter. **It does not call
 and does not validate Overpass POI search** (attractions, restaurants,
-accommodation POIs), because that path is not cache-wired (Step 164E's own
-scope) and has no manual live-smoke coverage yet.
+accommodation POIs). As of Step 164G, that path *is* cache-wired
+(docs/12_provider_architecture.md section 30) -- but it still has no
+manual live-smoke coverage in this script.
 
 **This script makes real network calls.** Open-Meteo, Nager.Date,
 Frankfurter, and Nominatim are all free, keyless public APIs -- no API key
@@ -118,9 +119,10 @@ query, an API URL with its query string, or any secret.
   `OpenStreetMapPlacesAdapter.resolve_coordinates` (geocoding) is called.
   `search_attractions`, `search_restaurants`, `search_accommodation_pois`,
   and `search_must_visit_place` -- all of which call Overpass, not just
-  Nominatim -- are never exercised by this script, and Overpass itself is
-  not cache-wired (Step 164E's own scope). A PASS here says nothing about
-  whether Overpass POI search currently works.
+  Nominatim -- are never exercised by this script. Overpass POI search
+  *is* cache-wired as of Step 164G, but still has no manual live-smoke
+  coverage here. A PASS here says nothing about whether Overpass POI
+  search currently works.
 - **It does not mean the provider cache is wired into any other
   adapter.** `ProviderGateway` and `PlanningOrchestrator` are untouched by
   Steps 164A-164F and are not exercised by this script at all.
