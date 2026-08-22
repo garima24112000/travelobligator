@@ -833,12 +833,15 @@ Overpass request; a broken cache write still returns the already-computed
 live result. Weather, holiday, currency, geocoding, and POI search
 retrieval can never fail because the cache layer failed.
 
-**Manual live smoke coverage (Step 164F).** `backend/scripts/manual_provider_cache_smoke.py`
-(manual/dev-only, docs/21_manual_provider_cache_smoke.md) exercises all
-four cache-wired providers against their real public APIs, including OSM
-geocoding (`resolve_coordinates`) -- but not Overpass POI search, which
-remains untouched by any manual smoke coverage even after Step 164G wired
-it into the persistent cache.
+**Manual live smoke coverage (Step 164F, extended in Step 164H).**
+`backend/scripts/manual_provider_cache_smoke.py` (manual/dev-only,
+docs/21_manual_provider_cache_smoke.md) exercises all four cache-wired
+providers against their real public APIs, including OSM geocoding
+(`resolve_coordinates`) and, as of Step 164H, one respectful OSM/Overpass
+POI search (`search_attractions`, one known destination) -- proving a
+real Overpass response parses and the persistent cache is used, but not
+validating `search_restaurants`, `search_accommodation_pois`,
+`search_must_visit_place`, or any other destination/category.
 
 **Test isolation fix (Step 164G).** Wiring POI search into the same
 lazily-resolved cache singleton geocoding already used surfaced a latent

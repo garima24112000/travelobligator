@@ -2279,3 +2279,57 @@ never anything invented or inferred.
   didn't disturb Steps 164B/164C/164D/164E. No live smoke coverage was
   added for Overpass in this step (docs/21_manual_provider_cache_smoke.md
   still only covers OSM geocoding).
+
+---
+
+## 53. Manual Live Smoke Coverage for OSM/Overpass POI Cache (Step 164H)
+
+Step 164H extends the Step 164D.1/164F manual smoke script
+(`backend/scripts/manual_provider_cache_smoke.py`,
+docs/21_manual_provider_cache_smoke.md) to also exercise Step 164G's
+OSM/Overpass POI search cache wiring against the real Overpass API. **This
+is manual live provider verification, not AI reasoning** -- it contains no
+LLM call, no prompt, and no model inference; it only proves that a real,
+already-built HTTP integration and its cache wiring still work together,
+the same way the script already did for the other four providers.
+
+- **One small, respectful POI call, added to the existing script -- no new
+  script, no CI, no pytest integration.** The script still requires
+  `RUN_LIVE_PROVIDER_CACHE_SMOKE=true` and still exits immediately with no
+  network call when that's missing/falsy. It now additionally calls
+  `OpenStreetMapPlacesAdapter.search_attractions` -- never
+  `search_restaurants`, `search_accommodation_pois`, or
+  `search_must_visit_place` -- for the same known destination ("Lisbon,
+  Portugal") already used for every other provider in this script, whose
+  geocoding was already cached by the existing OSM geocoding check earlier
+  in the same run, so no additional Nominatim request is made either.
+- **A network-call counter, not a fake response, proves the cache path,**
+  the same technique already used for OSM geocoding.
+  `search_attractions`'s overall `ProviderResponse.status`/`data_status`
+  reflects only whether Overpass fallback was needed (Step 164G design),
+  not whether the result came from cache, so this wraps the adapter's own
+  `httpx.Client` in a thin, transparent counter (delegating every call to
+  the real client, changing no header/timeout/User-Agent) to prove a
+  second, fresh-instance search made no additional live Overpass request.
+  This is still a real live network call underneath -- nothing is faked.
+- **Still only structural assertions.** No exact POI name, OSM ID, or
+  coordinate is ever asserted -- only that real, named places were
+  returned (`status` in `success`/`partial`/`fallback_used` and a non-empty
+  result), that the second call needed no new Overpass request, that a
+  cache row exists for source `"openstreetmap_poi"`, that no secret marker
+  or raw destination text is stored in
+  `query_hash`/`payload_json`/`metadata_json`, and that the cached payload
+  itself contains no rating/price/opening-hours/availability/booking/
+  route-time marker -- checked directly against the stored bytes, since
+  `NormalizedPlace` never carries any of those fields to begin with.
+- **No provider behavior changed.** No file under
+  `backend/app/providers/` or `backend/app/core/config.py` was touched by
+  this step -- only the manual script, its test suite, and docs.
+- **No real network/Groq/Anthropic/Kiwi/MCP/scraping call in this step's
+  own tests.** Every test in
+  `backend/app/tests/scripts/test_manual_provider_cache_smoke_script.py`
+  still only inspects the script's source and runs it as a subprocess with
+  the guardrail env var deliberately missing/falsy -- no real HTTP call to
+  Overpass or any other network service, and no
+  `RUN_LIVE_PROVIDER_CACHE_SMOKE` requirement anywhere in the automated
+  suite.

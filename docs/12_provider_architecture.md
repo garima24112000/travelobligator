@@ -1332,17 +1332,20 @@ cache-wired, and no LangGraph, Groq, Anthropic, or Kiwi/MCP call is cached
 or otherwise touched by any of these four steps. **Step 164G (section 30)
 extends OpenStreetMap's own wiring to cover Overpass POI search too.**
 
-### 29.6 Manual live smoke coverage (Step 164F)
+### 29.6 Manual live smoke coverage (Step 164F, extended in Step 164H)
 
 `backend/scripts/manual_provider_cache_smoke.py` (manual/dev-only, never
-run by CI or pytest; see docs/21_manual_provider_cache_smoke.md) now
-covers all four cache-wired providers against their real public APIs:
-Open-Meteo, Nager.Date, Frankfurter, and OpenStreetMap/Nominatim
-**geocoding only** -- it calls `resolve_coordinates`, never Overpass POI
-search, so it does not validate `search_attractions`/`search_restaurants`/
-`search_accommodation_pois`/`search_must_visit_place`. **This remains true
-after Step 164G** -- Overpass POI search caching still has no manual live
-smoke coverage, even though it is now cache-wired (section 30).
+run by CI or pytest; see docs/21_manual_provider_cache_smoke.md) covers
+all four cache-wired providers against their real public APIs: Open-Meteo,
+Nager.Date, Frankfurter, and OpenStreetMap/Nominatim geocoding (Step 164F)
+-- extended in Step 164H to also cover one OSM/Overpass POI search
+(`search_attractions`, for one known destination). It still does not call
+`search_restaurants`, `search_accommodation_pois`, or
+`search_must_visit_place`, and its POI coverage is deliberately structural
+only (real Overpass response parses, cache populated/reused, no
+rating/price/opening-hours/availability/booking/route-time claim in the
+cached payload) -- it is not a claim that every POI, category, or
+destination currently works.
 
 ---
 

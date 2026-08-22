@@ -1,27 +1,33 @@
 #!/usr/bin/env python3
-"""MANUAL-ONLY dev smoke test -- Step 164D.1, extended in Step 164F.
+"""MANUAL-ONLY dev smoke test -- Step 164D.1, extended in Steps 164F/164H.
 
 This script is not part of the application runtime and is never imported by
 `app.main`, any service, or the automated test suite. It exists purely so a
 developer can, by hand, confirm that the four provider-cache-wired
 adapters -- Open-Meteo (Step 164B), Nager.Date (Step 164C), Frankfurter
-(Step 164D), and OpenStreetMap/Nominatim geocoding (Step 164E) -- still work
-against their real public APIs, and that the `ProviderCacheStore` foundation
-(Step 164A) actually populates and is read back correctly for each of them.
+(Step 164D), and OpenStreetMap/Nominatim (geocoding: Step 164E; Overpass POI
+search: Step 164G) -- still work against their real public APIs, and that
+the `ProviderCacheStore` foundation (Step 164A) actually populates and is
+read back correctly for each of them.
 
-**OpenStreetMap coverage is geocoding only.** This script never calls
-Overpass (attractions/restaurants/accommodation POI search) -- that path is
-not cache-wired yet (Step 164E's own scope) and is not smoke-tested here.
+**OSM coverage is geocoding plus one small, real POI search.** It calls
+`resolve_coordinates` (geocoding) and `search_attractions` (a single,
+respectful Overpass category search around one known destination) --
+nothing else on that adapter. It never calls `search_restaurants`,
+`search_accommodation_pois`, or `search_must_visit_place`, and it never
+claims or asserts a rating, price, opening hours, availability, booking
+link, or route time -- `NormalizedPlace` never carries any of those fields,
+cached or live.
 
 WARNING: running this script with the required env var set makes real
-network calls to Open-Meteo, Nager.Date, Frankfurter, and Nominatim --
-four free, keyless public APIs (no API key is required or read by this
-script). It is never invoked by pytest, by `python -m compileall`, by CI,
-or by normal `uvicorn`/app startup -- it only runs when a human explicitly
-executes this file.
+network calls to Open-Meteo, Nager.Date, Frankfurter, Nominatim, and
+Overpass -- five free, keyless public APIs (no API key is required or read
+by this script). It is never invoked by pytest, by `python -m compileall`,
+by CI, or by normal `uvicorn`/app startup -- it only runs when a human
+explicitly executes this file.
 
 No Groq, Anthropic, Kiwi/MCP, or scraping call is made anywhere in this
-script -- only the four providers above.
+script -- only the providers above.
 
 Required environment variable (or this script exits without calling
 anything):
@@ -37,11 +43,11 @@ and does not mean.
 Output safety: this script only ever prints a short per-provider summary
 (provider name, live_path_ok, cache_path_ok, status, cache_row_count) plus a
 final PASS/FAIL line. It never prints a full weather/holiday/currency/
-geocode payload, a raw query, an API URL with its query string, or any
-secret, and it never writes to the app's real provider cache
-(`Settings.provider_cache_path`) or trip storage -- it always uses its own
-temporary, clearly-named `ProviderCacheStore` file that is deleted when the
-script exits.
+geocode/POI payload, a raw query, a raw Overpass query string, an API URL
+with its query string, or any secret, and it never writes to the app's real
+provider cache (`Settings.provider_cache_path`) or trip storage -- it always
+uses its own temporary, clearly-named `ProviderCacheStore` file that is
+deleted when the script exits.
 """
 
 from __future__ import annotations
@@ -69,21 +75,29 @@ if str(_BACKEND_ROOT) not in sys.path:
 _REQUIRED_ENV_VAR = "RUN_LIVE_PROVIDER_CACHE_SMOKE"
 
 # Known, fixed real-world inputs. Lisbon, Portugal is used consistently
-# across all four providers (including as the OSM/Nominatim geocode query
-# itself) so a single temporary cache file/instance exercises Open-Meteo,
-# Nager.Date, Frankfurter, and OSM geocoding with one coherent destination.
+# across all four providers (including as both the OSM/Nominatim geocode
+# query and the OSM/Overpass POI search destination) so a single temporary
+# cache file/instance exercises Open-Meteo, Nager.Date, Frankfurter, and OSM
+# (geocoding and POI search) with one coherent destination.
 _KNOWN_LATITUDE = 38.7223
 _KNOWN_LONGITUDE = -9.1393
 _KNOWN_DESTINATION = "Lisbon, Portugal"
 _KNOWN_BASE_CURRENCY = "USD"
 
 _OSM_GEOCODE_SOURCE = "openstreetmap_geocode"
+_OSM_POI_SOURCE = "openstreetmap_poi"
 
-_EXPECTED_SOURCES = ("open_meteo", "nager_date", "frankfurter", _OSM_GEOCODE_SOURCE)
+_EXPECTED_SOURCES = (
+    "open_meteo",
+    "nager_date",
+    "frankfurter",
+    _OSM_GEOCODE_SOURCE,
+    _OSM_POI_SOURCE,
+)
 
 # Checked against stored query_hash/payload_json/metadata_json text as a
-# defense-in-depth assertion -- none of these three providers require an API
-# key, so none of these should ever legitimately appear in a cache row.
+# defense-in-depth assertion -- none of these providers require an API key,
+# so none of these should ever legitimately appear in a cache row.
 _FORBIDDEN_SECRET_SUBSTRINGS = (
     "api_key",
     "apikey",
@@ -92,6 +106,19 @@ _FORBIDDEN_SECRET_SUBSTRINGS = (
     "authorization",
     "bearer",
     "password",
+)
+
+# Checked against the POI cache payload only -- `NormalizedPlace` never
+# carries any of these fields (cached or live), so none of these substrings
+# should ever legitimately appear in an `openstreetmap_poi` cache row.
+_FORBIDDEN_POI_CLAIM_SUBSTRINGS = (
+    "rating",
+    "price",
+    "opening_hours",
+    "availability",
+    "booking_url",
+    "booking_link",
+    "route_time",
 )
 
 
@@ -166,6 +193,20 @@ def _metadata_is_empty_for_every_row(db_path: Path, source: str) -> bool:
             "SELECT metadata_json FROM provider_cache WHERE source = ?", (source,)
         ).fetchall()
     return all(row[0] == "{}" for row in rows)
+
+
+def _poi_cache_rows_contain_forbidden_claims(db_path: Path, source: str) -> bool:
+    """True if any stored `payload_json` for `source` contains a rating,
+    price, opening-hours, availability, booking, or route-time marker.
+    `NormalizedPlace` never carries any of these fields -- cached or live
+    -- so this should always be False; it exists as a structural,
+    defense-in-depth check on the actual cached bytes."""
+    with sqlite3.connect(db_path) as conn:
+        rows = conn.execute(
+            "SELECT payload_json FROM provider_cache WHERE source = ?", (source,)
+        ).fetchall()
+    combined = " ".join(str(row[0]) for row in rows).lower()
+    return any(needle in combined for needle in _FORBIDDEN_POI_CLAIM_SUBSTRINGS)
 
 
 def _run_osm_geocode_check(
@@ -261,17 +302,124 @@ def _run_osm_geocode_check(
     )
 
 
+def _run_osm_poi_check(db_path: Path, store: Any, checks: list[tuple[str, bool]]) -> None:
+    """Overpass POI search check (Step 164H). Calls
+    `OpenStreetMapPlacesAdapter.search_attractions` -- one small, real,
+    single-category search around the same known destination already
+    geocoded above -- with two separate, fresh adapter instances sharing
+    one persistent `ProviderCacheStore`. This is the only Overpass call
+    this script makes: never `search_restaurants`,
+    `search_accommodation_pois`, or `search_must_visit_place`, and the
+    destination's geocoding was already cached by `_run_osm_geocode_check`
+    above, so this makes no additional Nominatim request either.
+
+    Like geocoding, `search_attractions`'s overall `ProviderResponse.status`/
+    `data_status` reflects only whether Overpass fallback was needed, not
+    whether the result came from cache (Step 164G design) -- so
+    "cache_path_ok" is proven the same way as geocoding: a thin,
+    transparent counter around the adapter's own `httpx.Client` (never a
+    fake response, never altered headers/timeout/User-Agent) shows the
+    second call made no additional live Overpass request. Never asserts an
+    exact POI name, OSM ID, or coordinate -- only that real, named places
+    were returned, and that no rating, price, opening hours, availability,
+    booking link, or route time was introduced.
+    """
+    from app.providers.places import openstreetmap_adapter
+    from app.providers.places.openstreetmap_adapter import OpenStreetMapPlacesAdapter
+
+    call_counters = {"post": 0}
+    real_client_cls = openstreetmap_adapter.httpx.Client
+
+    class _PostCountingHttpxClient:
+        def __init__(self, real_client: Any) -> None:
+            self._real_client = real_client
+
+        def __enter__(self) -> "_PostCountingHttpxClient":
+            self._real_client.__enter__()
+            return self
+
+        def __exit__(self, *exc_info: object) -> bool:
+            return self._real_client.__exit__(*exc_info)
+
+        def get(self, *args: Any, **kwargs: Any) -> Any:
+            return self._real_client.get(*args, **kwargs)
+
+        def post(self, *args: Any, **kwargs: Any) -> Any:
+            call_counters["post"] += 1
+            return self._real_client.post(*args, **kwargs)
+
+    def _wrapped_client(**kwargs: Any) -> _PostCountingHttpxClient:
+        return _PostCountingHttpxClient(real_client_cls(**kwargs))
+
+    openstreetmap_adapter.httpx.Client = _wrapped_client
+    try:
+        # `search_attractions` never raises -- request/geocode failures are
+        # already caught internally and reported via `ProviderResponse`.
+        first_response = OpenStreetMapPlacesAdapter(cache_store=store).search_attractions(
+            _KNOWN_DESTINATION
+        )
+        posts_after_first = call_counters["post"]
+
+        second_response = OpenStreetMapPlacesAdapter(cache_store=store).search_attractions(
+            _KNOWN_DESTINATION
+        )
+        posts_after_second = call_counters["post"]
+    finally:
+        openstreetmap_adapter.httpx.Client = real_client_cls
+
+    def _has_usable_places(response: Any) -> bool:
+        return bool(response.data) and response.status.value in (
+            "success",
+            "partial",
+            "fallback_used",
+        )
+
+    live_path_ok = _has_usable_places(first_response) and posts_after_first >= 1
+    cache_path_ok = (
+        live_path_ok
+        and _has_usable_places(second_response)
+        and posts_after_second == posts_after_first
+    )
+    row_count = _cache_row_count(db_path, _OSM_POI_SOURCE)
+    status_label = first_response.status.value if live_path_ok else "failed"
+
+    print(
+        f"provider={_OSM_POI_SOURCE} live_path_ok={live_path_ok} "
+        f"cache_path_ok={cache_path_ok} status={status_label} "
+        f"cache_row_count={row_count}"
+    )
+
+    checks.append((f"{_OSM_POI_SOURCE} live path ok", live_path_ok))
+    checks.append((f"{_OSM_POI_SOURCE} cache path ok", cache_path_ok))
+    checks.append((f"{_OSM_POI_SOURCE} has at least one cache row", row_count >= 1))
+    checks.append(
+        (
+            f"{_OSM_POI_SOURCE} cache metadata is empty (no raw text smuggled in)",
+            _metadata_is_empty_for_every_row(db_path, _OSM_POI_SOURCE),
+        )
+    )
+    checks.append(
+        (
+            f"{_OSM_POI_SOURCE} cached payload has no rating/price/hours/"
+            "availability/booking/route-time claim",
+            not _poi_cache_rows_contain_forbidden_claims(db_path, _OSM_POI_SOURCE),
+        )
+    )
+
+
 def _run_smoke_test(db_path: Path) -> bool:
     """Calls each of the four cache-wired adapters (Open-Meteo, Nager.Date,
-    Frankfurter, and OSM geocoding) twice with identical, known inputs,
-    sharing one `ProviderCacheStore` pointed at `db_path` (a temporary file,
-    never the app's real provider cache). The first call is expected to
-    populate the cache from a live provider request; the second is expected
-    to be served from the cache. Returns True on PASS, False on FAIL. Never
-    asserts an exact weather value, holiday name, exchange rate, geocode
-    coordinate, OSM ID, or display name -- only structure and cache
-    behavior. OSM/Overpass POI search (attractions/restaurants/
-    accommodation) is not exercised here -- only geocoding.
+    Frankfurter, and OSM -- geocoding plus one Overpass POI search) with
+    identical, known inputs, sharing one `ProviderCacheStore` pointed at
+    `db_path` (a temporary file, never the app's real provider cache). The
+    first call is expected to populate the cache from a live provider
+    request; the second is expected to be served from the cache. Returns
+    True on PASS, False on FAIL. Never asserts an exact weather value,
+    holiday name, exchange rate, geocode coordinate, POI name, OSM ID, or
+    display name -- only structure and cache behavior. OSM/Overpass POI
+    coverage is limited to one `search_attractions` call -- never
+    `search_restaurants`, `search_accommodation_pois`, or
+    `search_must_visit_place`.
     """
     from app.models.common import DataStatus, GeoPoint, ProviderStatus
     from app.providers.currency.frankfurter_adapter import FrankfurterCurrencyAdapter
@@ -330,9 +478,12 @@ def _run_smoke_test(db_path: Path) -> bool:
     currency_second = currency_adapter.get_exchange_rate(_KNOWN_BASE_CURRENCY, _KNOWN_DESTINATION)
     _report("frankfurter", currency_first, currency_second)
 
-    # --- OpenStreetMap/Nominatim geocoding only (Step 164F) -- never
-    # Overpass POI search, which is not cache-wired and not smoke-tested. ---
+    # --- OpenStreetMap/Nominatim geocoding (Step 164F) ---
     _run_osm_geocode_check(db_path, store, checks)
+
+    # --- OpenStreetMap/Overpass POI search -- one small category search
+    # only (Step 164H). Never restaurants, accommodation, or must-visit. ---
+    _run_osm_poi_check(db_path, store, checks)
 
     no_secrets = not any(
         _cache_rows_contain_secret_markers(db_path, source) for source in _EXPECTED_SOURCES
