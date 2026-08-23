@@ -179,6 +179,38 @@ class Settings(BaseSettings):
         ge=0,
     )
 
+    # Routing provider skeleton (Step 165A, docs/12_provider_architecture.md
+    # section 31, docs/13_llm_reasoning_pipeline.md section 54). "not_connected"
+    # (default) and "osrm" are the only supported values -- see
+    # backend/app/providers/routing/factory.py. Not wired into
+    # ProviderGateway, PlanningOrchestrator, ExperiencePlannerService, or
+    # PlanValidatorService yet.
+    routing_provider: str = Field(default="not_connected", alias="ROUTING_PROVIDER")
+
+    # `osrm_base_url` is deliberately unset by default -- a conservative
+    # choice matching `anthropic_api_key`/`groq_api_key` above, so no OSRM
+    # instance (public demo or self-hosted) is silently used without an
+    # explicit developer choice. `OSRMRoutingAdapter.get_route` returns an
+    # honest `not_connected` result when this is unset, even if
+    # `routing_provider="osrm"` is also set. A real deployment might set
+    # this to a self-hosted OSRM instance or the public OSRM demo server
+    # (https://router.project-osrm.org) -- never assumed here.
+    osrm_base_url: str | None = Field(default=None, alias="OSRM_BASE_URL")
+    osrm_timeout_seconds: float = Field(default=15.0, alias="OSRM_TIMEOUT_SECONDS", ge=0.0)
+    osrm_profile: str = Field(default="driving", alias="OSRM_PROFILE")
+
+    # OSRM route cache TTL (Step 165C, docs/12_provider_architecture.md
+    # "Provider Cache Foundation" section). Only `OSRMRoutingAdapter` reads
+    # this. 24 hours is shorter than the geocode TTL because route
+    # conditions (e.g. road network changes) can shift, but a route is
+    # still reasonably stable within a day; it stays configurable. Must be
+    # non-negative, matching the other provider cache TTL settings.
+    osrm_route_cache_ttl_seconds: int = Field(
+        default=86400,
+        alias="OSRM_ROUTE_CACHE_TTL_SECONDS",
+        ge=0,
+    )
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

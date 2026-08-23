@@ -26,6 +26,7 @@ from app.models.common import (
     UnavailableDataItem,
     ValidationSeverity,
 )
+from app.models.routing import RouteFeasibilityReport
 
 
 def _new_id(prefix: str) -> str:
@@ -1061,6 +1062,21 @@ class PlanningState(BaseModel):
     # AI/LLM call, and never consumed by experience_plan scheduling yet.
     # Stays None until a destination context has been generated.
     candidate_quality_report: CandidateQualityReport | None = None
+    # Route feasibility for consecutive scheduled experiences within each
+    # day (Step 165E, docs/12_provider_architecture.md section 35,
+    # docs/14_backend_architecture.md section 35). Computed by
+    # RouteFeasibilityService directly inside
+    # PlanningOrchestrator.run_experience_plan_stage, after experience_plan
+    # exists and before validation runs -- never a provider or AI/LLM call
+    # from a stage service itself. Stays None until an experience_plan has
+    # been generated. Every leg's distance/duration is provider-backed only
+    # (via ProviderGateway.get_route, Step 165B/165C) -- never a
+    # straight-line/haversine estimate presented as route data, and never a
+    # guessed feasibility judgement. This does not reorder or drop
+    # scheduled experiences -- see RouteFeasibilityReport's own docstring
+    # for the not-yet-implemented route-aware-scheduling boundary
+    # (Section 166).
+    route_feasibility_report: RouteFeasibilityReport | None = None
     # Validated artifact storage only (Step 160C, docs/13_llm_reasoning_
     # pipeline.md section 36, docs/14_backend_architecture.md section 25)
     # for the future AI candidate proposal / grounding flow (Steps

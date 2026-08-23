@@ -1464,3 +1464,326 @@ whole test session. `backend/app/tests/conftest.py` now has an autouse
 `_reset_in_memory_repositories` fixture, that points every cache-wired
 adapter module's `get_provider_cache_store` at a fresh, throwaway,
 per-test store instead.
+
+---
+
+## 31. OSRM Routing Provider Skeleton (Step 165A)
+
+Step 165A adds a backend routing provider **contract and skeleton
+adapter** for point-to-point route data (distance, duration) between two
+coordinates, matching the `RoutesProvider` concept sketched in section 11
+above. **This is a skeleton only, not wired into planning.** As of this
+step:
+
+- No file under `backend/app/services/` (including `PlanningOrchestrator`,
+  `ExperiencePlannerService`, `PlanValidatorService`) imports or calls
+  anything in this subsystem.
+- `ProviderGateway` (`backend/app/providers/gateway.py`) is unchanged --
+  its `routes` slot still defaults to the generic `RoutesProvider()` base
+  interface from `app.providers.base` (always `not_connected`), exactly as
+  before this step. The new OSRM subsystem is a separate module tree, the
+  same way the AI candidate-proposal subsystem (sections 28-29 of
+  docs/13_llm_reasoning_pipeline.md) was built standalone for many steps
+  before ever being wired in.
+- No `ProviderCoverage`/`provider_status` field changes -- nothing writes
+  to either yet.
+- No caching -- `ProviderCacheStore` (Step 164A) is not used by this
+  subsystem.
+- **No fake route time, distance, or geometry is ever produced.** Missing
+  or unusable route data is always reported `not_connected`,
+  `unavailable`, or `failed` -- never guessed, and never backfilled from
+  `haversine_distance_km` (a straight-line estimate used elsewhere in this
+  codebase, e.g. `OpenStreetMapPlacesAdapter`'s containment checks, and
+  explicitly documented there as "not a route, walking, or travel-time
+  distance").
+
+### 31.1 Contract models
+
+`backend/app/models/routing.py` defines the contract, mirroring the
+`AICandidateProposalRequest`/`AICandidateProposalResult` pattern
+(docs/13_llm_reasoning_pipeline.md section 28) rather than the generic
+`ProviderResponse[T]` envelope every other real provider adapter in this
+codebase returns -- a routing caller almost always wants exactly one
+point-to-point result, not a list, so `status` lives directly on the
+result:
+
+```python
+class RoutingProfile(str, Enum):
+    DRIVING = "driving"
+    WALKING = "walking"
+    CYCLING = "cycling"
+
+class RouteRequest(BaseModel):
+    origin_lat: float       # -90..90, same bounds as GeoPoint
+    origin_lon: float       # -180..180
+    destination_lat: float
+    destination_lon: float
+    profile: RoutingProfile = RoutingProfile.DRIVING
+
+class RouteResult(BaseModel):
+    provider: str
+    status: ProviderStatus  # not_connected | unavailable | failed | success
+    distance_meters: float | None = None
+    duration_seconds: float | None = None
+    geometry: str | None = None   # not populated by this step
+    source: str
+    confidence: float = 0.0
+    message: str | None = None
+```
+
+`RouteRequest` takes coordinates only -- never a free-text address; a
+caller resolves real coordinates via a `PlacesProvider` first (the same
+pattern `WeatherProvider`/`HolidayProvider`/`CurrencyProvider` already
+follow), and out-of-range latitude/longitude is rejected by pydantic
+validation, matching `GeoPoint`'s own bounds. `distance_meters`/
+`duration_seconds` on `RouteResult` are `None` whenever the provider
+didn't return a usable value -- never a guess.
+
+### 31.2 Provider boundary and adapters
+
+`backend/app/providers/routing/` follows the `abc.ABC` provider-boundary
+pattern already used for `AICandidateProposalProvider` (not the
+`app.providers.base` interfaces, which default to an honest
+`not_connected` response) -- every concrete adapter must explicitly
+implement `get_route`, with no silent default to fall back on:
+
+- `base.py` -- `RoutingProvider(ABC)`, one abstract method, `get_route(request: RouteRequest) -> RouteResult`.
+- `not_connected_adapter.py` -- `NotConnectedRoutingProvider`, the default. `get_route` never calls a network service and always returns an honest `not_connected` `RouteResult` -- empty distance/duration, zero confidence.
+- `osrm_adapter.py` -- `OSRMRoutingAdapter`, the first real (non-`not_connected`) adapter. Calls an OSRM-compatible route service (`GET {base_url}/route/v1/{profile}/{origin_lon},{origin_lat};{destination_lon},{destination_lat}?overview=false`) via `httpx`.
+- `factory.py` -- `get_routing_provider(provider_name=None)`, config-gated selection mirroring `get_ai_candidate_proposal_provider` (docs/13_llm_reasoning_pipeline.md section 38): `"not_connected"` (default) and `"osrm"` are the only supported names; an unsupported/unrecognized name falls back to `NotConnectedRoutingProvider` rather than raising or guessing.
+
+### 31.3 OSRM adapter behavior
+
+- **If `Settings.osrm_base_url` is unset (the default), `get_route` returns
+  `not_connected` without making any network call at all** -- no public
+  demo or self-hosted OSRM instance is assumed.
+- On a real call, only `code == "Ok"` with a non-empty `routes` list is
+  treated as usable. `distance_meters`/`duration_seconds` are read
+  directly from the first route's own `distance`/`duration` fields (OSRM
+  already returns meters/seconds, so no unit conversion is invented) --
+  both stay `None`, and the result is `unavailable`, if the route entry
+  supplies neither.
+- `NoRoute` (or any other non-`"Ok"` `code`), an empty `routes` list, a
+  non-dict top-level response, or a non-dict first route entry are all
+  reported `unavailable` -- an honest "the provider was reached but had
+  nothing usable," never a guess.
+- A request-level failure (network error, timeout, non-2xx status, or a
+  response body that isn't valid JSON) is reported `failed`.
+- `geometry` is never parsed by this step -- the request always asks for
+  `overview=false`, so no geometry payload is fetched or discarded.
+- No raw route payload is ever logged; a request failure logs only the
+  exception, matching the existing pattern in every other real adapter in
+  this codebase.
+
+### 31.4 Config
+
+```text
+ROUTING_PROVIDER          default "not_connected"; "osrm" also supported
+OSRM_BASE_URL              default unset (None) -- conservative by design
+OSRM_TIMEOUT_SECONDS       default 15.0
+OSRM_PROFILE                default "driving"
+```
+
+`osrm_base_url` defaults to `None` rather than a public OSRM demo
+URL -- a deliberately conservative choice (mirroring `anthropic_api_key`/
+`groq_api_key` defaulting to `None`) so no OSRM instance, public or
+self-hosted, is silently used without an explicit developer choice.
+`OSRMRoutingAdapter` stays `not_connected` even if `ROUTING_PROVIDER=osrm`
+is set but `OSRM_BASE_URL` is not.
+
+---
+
+## 32. Routing Provider Exposed Through ProviderGateway (Step 165B)
+
+Step 165B wires the Step 165A routing provider factory into
+`ProviderGateway` (`backend/app/providers/gateway.py`) -- the single
+central access point every other provider already goes through
+(docs/14_backend_architecture.md section 18). **This is exposure only, not
+consumption:** the routing lookup is not called by `PlanningOrchestrator`,
+`ExperiencePlannerService`, or `PlanValidatorService`. Scheduling and
+validation behavior are completely unchanged by this step.
+
+### 32.1 What changed
+
+- `ProviderGateway.__init__` gained a new optional `routing: RoutingProvider
+  | None = None` constructor parameter, defaulting to
+  `app.providers.routing.factory.get_routing_provider()` -- the exact same
+  factory Step 165A already built and tested. This is additive and
+  backward compatible: every existing `ProviderGateway(...)` call site
+  (including the pre-existing `routes=` parameter for the unrelated,
+  still-unused `app.providers.base.RoutesProvider` stub) is unaffected.
+- `ProviderGateway.get_route(request: RouteRequest) -> RouteResult` is a
+  new method that delegates entirely to `self.routing.get_route(request)`.
+  The gateway adds, guesses, or backfills nothing -- it is a pure
+  pass-through, and it never falls back to a straight-line (haversine)
+  distance when a route is unavailable.
+- With the default configuration (`Settings.routing_provider=
+  "not_connected"`), `provider_gateway.get_route(...)` returns an honest
+  `not_connected` `RouteResult` -- no network call, no fabricated distance
+  or duration -- exactly like calling
+  `NotConnectedRoutingProvider().get_route(...)` directly would.
+
+### 32.2 What did not change
+
+- `ProviderGateway.routes` (the pre-existing, generic `RoutesProvider`
+  stub attribute) is completely untouched -- still always `not_connected`,
+  still unrelated to the new `routing` attribute. The two coexist
+  deliberately; a future step may consolidate them, but this step does
+  not.
+- `ProviderGateway.default_provider_coverage()` and `ProviderCoverage`'s
+  existing `routes` field are unchanged -- this step adds no new coverage
+  metadata, active or inactive, since nothing in the coverage-tracking
+  path (`DestinationContextService`, `StayTransportService`,
+  `ExperiencePlannerService`) reads `ProviderGateway.routing`/`get_route`
+  at all yet.
+- No caching -- `ProviderGateway.get_route` never reads from or writes to
+  `ProviderCacheStore`.
+- No file under `backend/app/services/` was touched by this step --
+  confirmed by dedicated tests that `PlanningOrchestrator`,
+  `ExperiencePlannerService`, and `PlanValidatorService`'s source contains
+  no reference to `osrm`, `RoutingProvider`, `get_routing_provider`,
+  `gateway.routing`, or `gateway.get_route`.
+
+### 32.3 Design notes
+
+The gateway itself never knows an OSRM base URL, timeout, or profile
+default -- those stay entirely inside `app.providers.routing.factory`/
+`OSRMRoutingAdapter` (section 31), matching the existing pattern where
+`ProviderGateway` never knows an Overpass URL, Nominatim URL, or any other
+adapter-specific config either. Dependency injection is fully supported
+for tests: `ProviderGateway(routing=<any RoutingProvider>)` lets a test
+substitute a fake, in-memory `RoutingProvider` and assert the gateway
+delegates to it correctly, without needing a real or fake HTTP layer at
+all.
+
+## 33. OSRM Route Cache Wiring (Step 165C)
+
+Step 165C wires `OSRMRoutingAdapter` (section 31) to the Step 164A
+`ProviderCacheStore` foundation, mirroring the cache-wiring pattern already
+used for Open-Meteo (section 27), Nager.Date (section 28), Frankfurter
+(section 26), OSM geocoding (section 29), and OSM/Overpass POI search
+(section 30). Only `osrm_adapter.py` was touched -- `ProviderGateway`
+needed no change, since it already delegates `get_route` straight through
+to whatever `RoutingProvider` it holds (section 32).
+
+**Cache key.** The query hash (`make_query_hash`, source label
+`"osrm_route"`) is derived only from the normalized route request:
+`origin_lat`, `origin_lon`, `destination_lat`, `destination_lon`, and the
+*resolved* `profile` string (the request's `profile` if set, else
+`Settings.osrm_profile`) -- the exact same values that get sent to OSRM.
+`RouteRequest` has no route-options field today, so there is nothing
+further to add to the key. The raw coordinate query text and the request
+URL are never stored -- only the opaque hash.
+
+**What is cached.** Only a `RouteResult` with `status == SUCCESS` is
+cached -- `not_connected`, `unavailable`, `failed`, `NoRoute`, and
+malformed responses are never written to the cache. The cached payload
+holds only the normalized route fields (`distance_meters`,
+`duration_seconds`, `geometry`, `confidence`) -- no API key, prompt, raw
+LLM response, or user trip data, and cache metadata is always empty for
+this source.
+
+**Cache hit/miss behavior.** A cache hit returns a `RouteResult` with the
+identical shape a live OSRM call would produce (only `message` is
+relabeled to note it came from cache) -- it never fabricates a route
+duration or distance. An expired entry is treated exactly like a miss and
+triggers a fresh OSRM call, which then refreshes the cache entry. A broken
+cache read falls back to the live OSRM HTTP path rather than failing the
+request; a broken cache write still returns the live route result that was
+just computed. TTL is `Settings.osrm_route_cache_ttl_seconds` (default
+86400 seconds / 24 hours, env var `OSRM_ROUTE_CACHE_TTL_SECONDS`) --
+shorter than the geocode TTL since road conditions can shift, but still
+configurable.
+
+**Dependency injection.** `OSRMRoutingAdapter.__init__` gained an optional
+`cache_store: ProviderCacheStore | None = None` parameter for tests,
+exactly like the other cache-wired adapters. When not injected and
+`Settings.provider_cache_enabled` is true, the store is lazily resolved
+via the process-wide `get_provider_cache_store(settings.resolved_provider_cache_path())`
+singleton on first use. When `provider_cache_enabled` is false, the cache
+is skipped entirely and every call goes straight to HTTP.
+
+Routing is still not consumed by scheduling or validation as of this step
+-- this step only changes how `OSRMRoutingAdapter` itself answers a
+repeated route lookup, nothing about when or whether that lookup happens.
+(Step 165E, section 35 below, is the step that starts consuming routing
+for feasibility reporting -- still not scheduling.)
+
+## 34. Manual Live Smoke Coverage for OSRM Route Cache (Step 165D)
+
+`backend/scripts/manual_provider_cache_smoke.py` (docs/21_manual_provider_cache_smoke.md)
+now also covers `OSRMRoutingAdapter` (section 31) and its route cache
+(section 33), alongside its existing Open-Meteo/Nager.Date/Frankfurter/OSM
+coverage. This is manual-only: never run by pytest, `python -m compileall`,
+or CI -- only by a human with `RUN_LIVE_PROVIDER_CACHE_SMOKE=true` set.
+
+The script calls `OSRMRoutingAdapter.get_route` twice for one small, fixed
+origin/destination pair near the same known Lisbon destination the script
+already uses, against a real OSRM instance (the public OSRM demo server by
+default, or `OSRM_BASE_URL` if set), sharing the script's one temporary
+`ProviderCacheStore`. It checks only structure: the first call reached OSRM
+and returned `status=success` with a positive numeric `distance_meters`
+and `duration_seconds`; the second, identical call returned the same
+values (proving cache reuse) and a cache row exists under source
+`"osrm_route"`. **It never asserts an exact distance, duration, or
+geometry** -- the route cache does not fabricate route duration or
+distance, cached or live, and this script's job is only to confirm live
+OSRM parsing and cache reuse actually work, not to pin a specific route's
+values. It does not validate every route, profile, or destination pair,
+and a PASS does not mean route data is used in itinerary scheduling or
+validation -- it still isn't, as of this step.
+
+## 35. Route Feasibility for Scheduled Experiences (Step 165E)
+
+Step 165E is the first step that consumes real routing data: provider-backed
+routing (Step 165B, cache-backed when configured, Step 165C) now feeds
+itinerary **feasibility checks** between consecutive scheduled experiences
+within each day. **This is not full route-aware scheduling yet** -- that
+is Section 166's job. This step never reorders, adds, or drops a scheduled
+experience; it only reports, honestly, whether a real route exists between
+experiences the `ExperiencePlannerService` (straight-line/haversine
+proximity, Step 156C) already scheduled.
+
+`RouteFeasibilityService` (`backend/app/services/route_feasibility_service.py`)
+runs inside `PlanningOrchestrator.run_experience_plan_stage`, after
+`experience_plan` exists and before `PlanValidatorService` runs. For every
+pair of consecutive experiences within the same day, it calls
+`ProviderGateway.get_route` (the same Step 165B/165C call path -- cache-backed
+OSRM when `Settings.routing_provider="osrm"` and `Settings.osrm_base_url`
+are configured, otherwise the default `not_connected` provider) and builds a
+`RouteLegFeasibility` (`backend/app/models/routing.py`):
+
+- **Cache-backed OSRM duration/distance is used only when the provider
+  returns `RouteResult.status == success`.** A successful leg is reported
+  `feasibility_status=feasible` with the provider's real
+  `distance_meters`/`duration_seconds` -- never a fabricated value, and
+  never a straight-line/haversine estimate presented as route data.
+- A leg where either experience is missing coordinates is
+  `feasibility_status=unavailable` (`status=unavailable`) without ever
+  calling the routing provider for it -- not guessed, not computed some
+  other way.
+- A leg where the routing provider is `not_connected`/`unavailable`/
+  `failed` is `feasibility_status=needs_review`, matching the provider's
+  own honest status -- never upgraded to `feasible`.
+- If a real schedule time gap between two experiences is known (their
+  `end_time`/`start_time`), a successful route whose duration clearly
+  exceeds that gap is also `needs_review` -- but no threshold is invented
+  when no schedule timestamps exist, which is the case for every plan this
+  app currently generates (`ExperienceItem.start_time`/`end_time` stay
+  unset, Step 156).
+
+All legs across the plan roll up into one `RouteFeasibilityReport`
+(`PlanningState.route_feasibility_report`), whose `status` is an honest
+aggregate (`success` only when every leg succeeded, `partial` when some
+did, `not_connected`/`failed`/`unavailable` otherwise) and whose
+`route_data_source` names the actual provider used, or `"not_connected"`.
+This report also updates `ProviderCoverage.routes` honestly -- `"success"`
+only when `RouteFeasibilityReport.status == success`, never upgraded
+otherwise.
+
+`PlanValidatorService` consumes this report (when present) to replace its
+previous blanket "route ordering/timing/feasibility checks are not
+implemented yet" warning with a message that names what was actually
+found -- but the plan's `readiness_status` never becomes `ready` from this
+alone; route timing, opening-hours, and full route-aware scheduling remain
+Section 166's job.

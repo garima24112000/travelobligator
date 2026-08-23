@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.models.common import DataStatus, ReadinessStatus, ValidationSeverity
+from app.models.common import DataStatus, ProviderStatus, ReadinessStatus, ValidationSeverity
 from app.models.planning_state import (
     DailyPlan,
     PlanningStage,
@@ -8,6 +8,7 @@ from app.models.planning_state import (
     ValidationIssue,
     ValidationReport,
 )
+from app.models.routing import RouteFeasibilityReport, RouteFeasibilityStatus
 from app.services.base import PlanningStageService
 from app.utils.geo import haversine_distance_km
 
@@ -107,20 +108,7 @@ class PlanValidatorService(PlanningStageService):
 
         if has_scheduled_experiences:
             warnings.append(
-                ValidationIssue(
-                    severity=ValidationSeverity.WARNING,
-                    category="feasibility",
-                    message=(
-                        "Attractions have been scheduled into days, but route ordering, "
-                        "timing, opening-hours, and feasibility checks are not implemented "
-                        "yet, so this plan needs review before it can be considered ready."
-                    ),
-                    affected_section="experience_plan",
-                    suggested_fix=(
-                        "Implement route/timing feasibility validation before marking "
-                        "plans ready."
-                    ),
-                )
+                _build_feasibility_warning(planning_state.route_feasibility_report)
             )
         elif candidate_pois_count > 0:
             critical_issues.append(
@@ -348,6 +336,94 @@ def _format_budget_amount(value: float) -> str:
     if value == int(value):
         return str(int(value))
     return f"{value:.2f}".rstrip("0").rstrip(".")
+
+
+_NO_ROUTE_FEASIBILITY_DATA_MESSAGE = (
+    "Attractions have been scheduled into days, but route ordering, timing, "
+    "opening-hours, and feasibility checks are not implemented yet, so this plan "
+    "needs review before it can be considered ready."
+)
+_NO_ROUTE_FEASIBILITY_DATA_SUGGESTED_FIX = (
+    "Implement route/timing feasibility validation before marking plans ready."
+)
+_ROUTE_AWARE_SCHEDULING_SUGGESTED_FIX = (
+    "Route ordering, timing, opening-hours, and full route-aware scheduling "
+    "(Section 166) are still not implemented -- implement those before marking "
+    "plans ready."
+)
+
+
+def _build_feasibility_warning(route_feasibility_report: RouteFeasibilityReport | None) -> ValidationIssue:
+    """Deterministic review warning about scheduled-experience feasibility
+    (Step 165E), built purely from `planning_state.route_feasibility_report`
+    -- no provider call of its own (route lookups already happened in
+    `RouteFeasibilityService`, before validation runs). Always a `WARNING`,
+    never a critical issue, and this never marks the plan ready by itself --
+    full route-aware scheduling/timing/opening-hours validation is Section
+    166's job, not this step's.
+
+    When no report is available, or it has no legs (e.g. every day has at
+    most one scheduled experience), this falls back to the original,
+    unconditional "not implemented yet" wording -- exactly the message this
+    plan showed before Step 165E, never claiming route data exists when it
+    doesn't.
+
+    When the report has legs, the message honestly reflects what was
+    actually found: legs with a real provider-backed route
+    (`feasibility_status=feasible`) are named as such, using
+    `route_data_source` (never inventing which provider was used); legs
+    that could not be route-checked (routing not connected/unavailable/
+    failed, or missing coordinates) are named separately, without claiming
+    a route-unavailable state for the feasible legs. Readiness never
+    escalates to `ready` from this warning alone, whether or not any leg
+    succeeded -- consuming route data here is feasibility *reporting*, not
+    proof the whole itinerary is route-validated.
+    """
+    if route_feasibility_report is None or not route_feasibility_report.legs:
+        return ValidationIssue(
+            severity=ValidationSeverity.WARNING,
+            category="feasibility",
+            message=_NO_ROUTE_FEASIBILITY_DATA_MESSAGE,
+            affected_section="experience_plan",
+            suggested_fix=_NO_ROUTE_FEASIBILITY_DATA_SUGGESTED_FIX,
+        )
+
+    legs = route_feasibility_report.legs
+    feasible_legs = [leg for leg in legs if leg.feasibility_status == RouteFeasibilityStatus.FEASIBLE]
+    other_legs = [leg for leg in legs if leg.feasibility_status != RouteFeasibilityStatus.FEASIBLE]
+
+    if not feasible_legs:
+        message = _NO_ROUTE_FEASIBILITY_DATA_MESSAGE
+        if any(leg.status == ProviderStatus.NOT_CONNECTED for leg in legs):
+            message += " No routing provider is connected."
+        return ValidationIssue(
+            severity=ValidationSeverity.WARNING,
+            category="feasibility",
+            message=message,
+            affected_section="experience_plan",
+            suggested_fix=_NO_ROUTE_FEASIBILITY_DATA_SUGGESTED_FIX,
+        )
+
+    message = (
+        f"{len(feasible_legs)} of {len(legs)} scheduled leg(s) have a provider-backed "
+        f"route (via {route_feasibility_report.route_data_source}) with a real distance "
+        "and duration. Route timing, opening-hours, and full route-aware scheduling are "
+        "still not implemented, so this plan still needs review before it can be "
+        "considered ready."
+    )
+    if other_legs:
+        message += (
+            f" {len(other_legs)} leg(s) could not be route-checked (routing "
+            "unavailable/not connected, or missing coordinates)."
+        )
+
+    return ValidationIssue(
+        severity=ValidationSeverity.WARNING,
+        category="feasibility",
+        message=message,
+        affected_section="experience_plan",
+        suggested_fix=_ROUTE_AWARE_SCHEDULING_SUGGESTED_FIX,
+    )
 
 
 _HIGH_PRECIPITATION_PROBABILITY_THRESHOLD = 50

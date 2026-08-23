@@ -157,8 +157,9 @@ def _isolate_provider_cache_store(monkeypatch: pytest.MonkeyPatch):
     `get_provider_cache_store` is a process-wide singleton keyed by
     resolved path (`backend/app/storage/provider_cache_store.py`). Any real
     provider adapter (`OpenMeteoWeatherAdapter`, `NagerDateHolidaysAdapter`,
-    `FrankfurterCurrencyAdapter`, `OpenStreetMapPlacesAdapter`) constructed
-    without an explicit `cache_store` -- e.g. a test that monkeypatches
+    `FrankfurterCurrencyAdapter`, `OpenStreetMapPlacesAdapter`,
+    `OSRMRoutingAdapter`) constructed without an explicit `cache_store` --
+    e.g. a test that monkeypatches
     `provider_gateway.places` with a real `OpenStreetMapPlacesAdapter()` to
     exercise its real containment/normalization logic against a fake HTTP
     client -- would otherwise lazily resolve and share the *same* real
@@ -182,6 +183,7 @@ def _isolate_provider_cache_store(monkeypatch: pytest.MonkeyPatch):
     import app.providers.currency.frankfurter_adapter as frankfurter_adapter_module
     import app.providers.holidays.nager_date_adapter as nager_date_adapter_module
     import app.providers.places.openstreetmap_adapter as openstreetmap_adapter_module
+    import app.providers.routing.osrm_adapter as osrm_adapter_module
     import app.providers.weather.open_meteo_adapter as open_meteo_adapter_module
 
     isolation_dir = Path(tempfile.mkdtemp(prefix="travelobligator_test_provider_cache_"))
@@ -191,6 +193,7 @@ def _isolate_provider_cache_store(monkeypatch: pytest.MonkeyPatch):
         open_meteo_adapter_module,
         nager_date_adapter_module,
         frankfurter_adapter_module,
+        osrm_adapter_module,
     ):
         monkeypatch.setattr(adapter_module, "get_provider_cache_store", lambda path: fresh_store)
 

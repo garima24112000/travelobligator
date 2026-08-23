@@ -15,6 +15,7 @@ from app.models.providers import (
     NormalizedPlace,
     ProviderResponse,
 )
+from app.models.routing import RouteRequest, RouteResult
 from app.providers.base import (
     CurrencyProvider,
     HolidayProvider,
@@ -25,6 +26,7 @@ from app.providers.base import (
     unavailable_response,
 )
 from app.providers.gateway import provider_gateway
+from app.providers.routing import RoutingProvider
 
 
 def assert_api_response_shape(body: dict[str, Any]) -> None:
@@ -5901,3 +5903,230 @@ def test_pending_feedback_summary_does_not_add_fake_travel_facts(
     serialized = json.dumps(summary).lower()
     for forbidden_field in ("price", "rating", "availability", "booking_url", "hotel"):
         assert forbidden_field not in serialized
+
+
+# ---------------------------------------------------------------------------
+# Step 165E: route feasibility fed by real provider-backed routing data
+# (docs/12_provider_architecture.md section 35). Every test here uses either
+# the default not_connected routing provider or an injected in-memory fake
+# -- never a real OSRM/network call.
+# ---------------------------------------------------------------------------
+
+
+class _FakeSuccessRoutingProvider(RoutingProvider):
+    """Deterministic test double standing in for a configured, connected
+    OSRM adapter -- never a real network call."""
+
+    provider_name = "fake_osrm_test_double"
+
+    def __init__(self) -> None:
+        self.calls: list[RouteRequest] = []
+
+    def get_route(self, request: RouteRequest) -> RouteResult:
+        self.calls.append(request)
+        return RouteResult(
+            provider=self.provider_name,
+            status=ProviderStatus.SUCCESS,
+            distance_meters=850.0,
+            duration_seconds=420.0,
+            geometry=None,
+            source=self.provider_name,
+            confidence=0.8,
+            message="Fake route for test purposes only.",
+        )
+
+
+def _create_and_generate_with_geo_ordering_places(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> str:
+    monkeypatch.setattr(provider_gateway, "places", _GeoOrderingTestPlacesProvider())
+    create_response = client.post(
+        "/trips",
+        json={
+            "destination_scope": "single_city",
+            "primary_destination": "Testville, Testland",
+            "origin_city": "Home City",
+            "start_date": "2026-08-10",
+            "end_date": "2026-08-10",
+            "travelers_count": 2,
+            "travel_group_type": "couple",
+            "pace": "balanced",
+        },
+    )
+    assert create_response.status_code == 201
+    trip_id = create_response.json()["data"]["trip_id"]
+    generate_response = client.post(f"/trips/{trip_id}/generate")
+    assert generate_response.status_code == 200
+    return trip_id
+
+
+def test_default_generate_with_routing_not_connected_still_succeeds(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.providers.routing import NotConnectedRoutingProvider
+
+    monkeypatch.setattr(provider_gateway, "routing", NotConnectedRoutingProvider())
+    trip_id = _create_and_generate_with_geo_ordering_places(client, monkeypatch)
+
+    response = client.get(f"/trips/{trip_id}")
+    assert response.status_code == 200
+    planning_state = response.json()["data"]["planning_state"]
+
+    assert planning_state["route_feasibility_report"] is not None
+    report = planning_state["route_feasibility_report"]
+    assert report["status"] == "not_connected"
+    assert len(report["legs"]) >= 1
+    for leg in report["legs"]:
+        assert leg["status"] == "not_connected"
+        assert leg["feasibility_status"] == "needs_review"
+        # No route distance/duration is ever fabricated when not connected.
+        assert leg["distance_meters"] is None
+        assert leg["duration_seconds"] is None
+
+    assert planning_state["provider_coverage"]["routes"] == "not_connected"
+
+
+def test_default_generate_does_not_invent_route_distance_or_duration(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.providers.routing import NotConnectedRoutingProvider
+
+    monkeypatch.setattr(provider_gateway, "routing", NotConnectedRoutingProvider())
+    trip_id = _create_and_generate_with_geo_ordering_places(client, monkeypatch)
+
+    response = client.get(f"/trips/{trip_id}")
+    report = response.json()["data"]["planning_state"]["route_feasibility_report"]
+
+    for leg in report["legs"]:
+        assert leg["distance_meters"] is None
+        assert leg["duration_seconds"] is None
+
+
+def test_injected_successful_routing_provider_creates_provider_backed_legs(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake_routing = _FakeSuccessRoutingProvider()
+    monkeypatch.setattr(provider_gateway, "routing", fake_routing)
+    trip_id = _create_and_generate_with_geo_ordering_places(client, monkeypatch)
+
+    assert len(fake_routing.calls) >= 1
+
+    response = client.get(f"/trips/{trip_id}")
+    planning_state = response.json()["data"]["planning_state"]
+    report = planning_state["route_feasibility_report"]
+
+    assert report["status"] == "success"
+    assert report["route_data_source"] == fake_routing.provider_name
+    assert len(report["legs"]) >= 1
+    for leg in report["legs"]:
+        assert leg["status"] == "success"
+        assert leg["feasibility_status"] == "feasible"
+        assert leg["distance_meters"] == 850.0
+        assert leg["duration_seconds"] == 420.0
+
+    assert planning_state["provider_coverage"]["routes"] == "success"
+
+    validation_report = planning_state["validation_report"]
+    feasibility_warnings = [
+        warning for warning in validation_report["warnings"] if warning["category"] == "feasibility"
+    ]
+    assert len(feasibility_warnings) == 1
+    assert "provider-backed" in feasibility_warnings[0]["message"]
+    # Never claims the plan is ready -- full route-aware scheduling
+    # (Section 166) is still not implemented.
+    assert validation_report["readiness_status"] != "ready"
+
+
+def test_scheduling_order_is_unchanged_by_route_feasibility_checks(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Injecting a successful routing provider must not reorder scheduled
+    experiences -- route-aware scheduling is Section 166's job, not this
+    step's. Scheduled order must stay exactly the straight-line
+    nearest-neighbor order Step 156C already produces."""
+    fake_routing = _FakeSuccessRoutingProvider()
+    monkeypatch.setattr(provider_gateway, "routing", fake_routing)
+    trip_id = _create_and_generate_with_geo_ordering_places(client, monkeypatch)
+
+    response = client.get(f"/trips/{trip_id}/experience-plan")
+    assert response.status_code == 200
+    day_plan = response.json()["data"]["experience_plan"]["daily_plans"][0]
+    scheduled_names = [experience["name"] for experience in day_plan["experiences"]]
+
+    assert scheduled_names == ["Anchor Point", "Near Point", "Far Point"]
+    for experience in day_plan["experiences"]:
+        assert experience["start_time"] is None
+        assert experience["end_time"] is None
+
+
+def test_route_feasibility_report_never_fabricates_data_for_coordinate_less_candidates(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class _MissingCoordinatesPlacesProvider(PlacesProvider):
+        provider_name = "openstreetmap_places"
+
+        def search_attractions(
+            self, destination: str, filters: dict[str, Any] | None = None
+        ) -> ProviderResponse[Any]:
+            places = [
+                _geo_place("test/nogeoa", "No Coordinates A", "landmark", None),
+                _geo_place("test/nogeob", "No Coordinates B", "landmark", None),
+            ]
+            return ProviderResponse[list[NormalizedPlace]](
+                provider_name=self.provider_name,
+                provider_type=self.provider_type,
+                status=ProviderStatus.SUCCESS,
+                data_status=DataStatus.LIVE,
+                data=places,
+                confidence=0.65,
+                message="Test fixture data; not a real provider call.",
+            )
+
+        def search_restaurants(
+            self, area: str, filters: dict[str, Any] | None = None
+        ) -> ProviderResponse[Any]:
+            return unavailable_response(
+                self.provider_name, self.provider_type, unavailable_fields=["restaurants"]
+            )
+
+        def search_accommodation_pois(
+            self, destination: str, filters: dict[str, Any] | None = None
+        ) -> ProviderResponse[Any]:
+            return unavailable_response(
+                self.provider_name, self.provider_type, unavailable_fields=["accommodation_pois"]
+            )
+
+    fake_routing = _FakeSuccessRoutingProvider()
+    monkeypatch.setattr(provider_gateway, "routing", fake_routing)
+    monkeypatch.setattr(provider_gateway, "places", _MissingCoordinatesPlacesProvider())
+
+    create_response = client.post(
+        "/trips",
+        json={
+            "destination_scope": "single_city",
+            "primary_destination": "Testville, Testland",
+            "origin_city": "Home City",
+            "start_date": "2026-08-10",
+            "end_date": "2026-08-10",
+            "travelers_count": 2,
+            "travel_group_type": "couple",
+            "pace": "balanced",
+        },
+    )
+    trip_id = create_response.json()["data"]["trip_id"]
+    generate_response = client.post(f"/trips/{trip_id}/generate")
+    assert generate_response.status_code == 200
+
+    # Coordinate-less candidates are excluded from scheduling entirely by
+    # candidate quality (Step 156E trust-over-fullness, missing coordinates
+    # is a severe reject reason) before route feasibility ever runs, so no
+    # leg is even attempted here and the routing provider is never called
+    # -- confirmed at the unit level for a leg that *is* scheduled but
+    # missing a coordinate in
+    # test_route_feasibility_service.py::test_missing_coordinates_leg_is_unavailable_and_provider_never_called.
+    assert fake_routing.calls == []
+
+    response = client.get(f"/trips/{trip_id}")
+    report = response.json()["data"]["planning_state"]["route_feasibility_report"]
+    assert report["legs"] == []
+    assert report["status"] == "not_connected"

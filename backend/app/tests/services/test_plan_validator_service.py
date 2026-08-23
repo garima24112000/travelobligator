@@ -2,12 +2,14 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.models.common import ProviderStatus
 from app.models.planning_state import (
     DestinationContext,
     PlanningState,
     TravelGroupType,
     TripRequest,
 )
+from app.models.routing import RouteFeasibilityReport, RouteFeasibilityStatus, RouteLegFeasibility
 from app.services.candidate_quality_service import CandidateQualityService
 from app.services.experience_planner_service import ExperiencePlannerService
 from app.services.plan_validator_service import PlanValidatorService
@@ -232,3 +234,148 @@ def test_validation_report_has_no_forbidden_factual_fields() -> None:
     report_dump = planning_state.validation_report.model_dump(mode="json")
 
     _assert_no_forbidden_fields(report_dump)
+
+
+# ---------------------------------------------------------------------------
+# Step 165E: PlanValidatorService consumes planning_state.route_feasibility_report.
+# Route lookups already happened elsewhere (RouteFeasibilityService, run by
+# PlanningOrchestrator before validation) -- these tests set the report
+# directly and never call a provider or network from the validator itself.
+# ---------------------------------------------------------------------------
+
+
+def _feasibility_warning(planning_state: PlanningState) -> Any:
+    matches = [
+        warning
+        for warning in planning_state.validation_report.warnings
+        if warning.category == "feasibility"
+    ]
+    assert len(matches) == 1
+    return matches[0]
+
+
+def _two_candidate_planning_state() -> PlanningState:
+    candidates = [
+        _place("p1", "Belem Tower", "attraction", lat=38.6916, lng=-9.2160),
+        _place("p2", "Lisbon Cathedral", "attraction", lat=38.7095, lng=-9.1332),
+    ]
+    return _planning_state(candidate_pois=candidates)
+
+
+def test_no_route_feasibility_report_falls_back_to_original_not_implemented_warning() -> None:
+    planning_state = _two_candidate_planning_state()
+    ExperiencePlannerService().run(planning_state)
+    assert planning_state.route_feasibility_report is None
+
+    PlanValidatorService().run(planning_state)
+
+    warning = _feasibility_warning(planning_state)
+    assert "not implemented" in warning.message
+    assert planning_state.validation_report.readiness_status.value == "needs_review"
+
+
+def test_successful_route_data_replaces_blanket_warning_with_provider_backed_message() -> None:
+    planning_state = _two_candidate_planning_state()
+    ExperiencePlannerService().run(planning_state)
+    scheduled = planning_state.experience_plan.daily_plans[0].experiences
+    assert len(scheduled) == 2
+
+    planning_state.route_feasibility_report = RouteFeasibilityReport(
+        status=ProviderStatus.SUCCESS,
+        provider="osrm",
+        route_data_source="osrm",
+        legs=[
+            RouteLegFeasibility(
+                from_experience_id=scheduled[0].experience_id,
+                from_experience_name=scheduled[0].name,
+                to_experience_id=scheduled[1].experience_id,
+                to_experience_name=scheduled[1].name,
+                provider="osrm",
+                status=ProviderStatus.SUCCESS,
+                distance_meters=1200.0,
+                duration_seconds=600.0,
+                feasibility_status=RouteFeasibilityStatus.FEASIBLE,
+                message="A provider-backed route was found for this leg.",
+            )
+        ],
+    )
+
+    PlanValidatorService().run(planning_state)
+
+    warning = _feasibility_warning(planning_state)
+    # The blanket fallback wording ("...checks are not implemented yet, so
+    # this plan needs review...") is gone -- replaced by a message that
+    # actually describes the provider-backed route data found.
+    assert "checks are not implemented yet" not in warning.message
+    assert "provider-backed" in warning.message
+    assert "osrm" in warning.message
+    # Still never claims the plan is ready -- full route-aware scheduling
+    # (Section 166) is still not implemented.
+    assert planning_state.validation_report.readiness_status.value == "needs_review"
+
+
+def test_not_connected_routing_keeps_needs_review_and_names_no_provider_connected() -> None:
+    planning_state = _two_candidate_planning_state()
+    ExperiencePlannerService().run(planning_state)
+    scheduled = planning_state.experience_plan.daily_plans[0].experiences
+
+    planning_state.route_feasibility_report = RouteFeasibilityReport(
+        status=ProviderStatus.NOT_CONNECTED,
+        provider="not_connected",
+        route_data_source="not_connected",
+        legs=[
+            RouteLegFeasibility(
+                from_experience_id=scheduled[0].experience_id,
+                from_experience_name=scheduled[0].name,
+                to_experience_id=scheduled[1].experience_id,
+                to_experience_name=scheduled[1].name,
+                provider="not_connected",
+                status=ProviderStatus.NOT_CONNECTED,
+                distance_meters=None,
+                duration_seconds=None,
+                feasibility_status=RouteFeasibilityStatus.NEEDS_REVIEW,
+                message="No routing provider is connected, so this leg's route feasibility could not be checked.",
+            )
+        ],
+    )
+
+    PlanValidatorService().run(planning_state)
+
+    warning = _feasibility_warning(planning_state)
+    assert "No routing provider is connected" in warning.message
+    assert "provider-backed" not in warning.message
+    assert planning_state.validation_report.readiness_status.value == "needs_review"
+
+
+def test_route_feasibility_warning_never_fabricates_distance_or_duration() -> None:
+    planning_state = _two_candidate_planning_state()
+    ExperiencePlannerService().run(planning_state)
+    scheduled = planning_state.experience_plan.daily_plans[0].experiences
+
+    planning_state.route_feasibility_report = RouteFeasibilityReport(
+        status=ProviderStatus.SUCCESS,
+        provider="osrm",
+        route_data_source="osrm",
+        legs=[
+            RouteLegFeasibility(
+                from_experience_id=scheduled[0].experience_id,
+                from_experience_name=scheduled[0].name,
+                to_experience_id=scheduled[1].experience_id,
+                to_experience_name=scheduled[1].name,
+                provider="osrm",
+                status=ProviderStatus.SUCCESS,
+                distance_meters=1200.0,
+                duration_seconds=600.0,
+                feasibility_status=RouteFeasibilityStatus.FEASIBLE,
+                message="A provider-backed route was found for this leg.",
+            )
+        ],
+    )
+
+    PlanValidatorService().run(planning_state)
+
+    warning = _feasibility_warning(planning_state)
+    # The warning message summarizes leg counts, never a specific
+    # distance/duration figure.
+    assert "1200" not in warning.message
+    assert "600" not in warning.message

@@ -6,6 +6,7 @@ from app.core.config import get_settings
 from app.core.errors import trip_not_found_error
 from app.models.ai_candidate_proposal import AICandidateProposalBatch
 from app.models.candidate_grounding import CandidateGroundingBatch
+from app.models.common import ProviderStatus
 from app.models.planning_state import (
     GENERATION_STAGE_KEYS,
     GenerationProgress,
@@ -29,6 +30,7 @@ from app.services.feedback_service import FeedbackService
 from app.services.plan_diff_preview_service import PlanDiffPreviewService
 from app.services.plan_validator_service import PlanValidatorService
 from app.services.regeneration_readiness_service import RegenerationReadinessService
+from app.services.route_feasibility_service import RouteFeasibilityService
 from app.services.stay_transport_service import StayTransportService
 from app.services.traveler_profile_service import TravelerProfileService
 from app.services.trip_strategy_service import TripStrategyService
@@ -38,6 +40,20 @@ _READINESS_TO_PIPELINE_STATUS = {
     "ready": PipelineStatus.VALIDATED,
     "needs_review": PipelineStatus.NEEDS_REVIEW,
     "blocked": PipelineStatus.BLOCKED,
+}
+
+# Maps RouteFeasibilityReport.status (Step 165E) onto the existing
+# ProviderCoverage.routes string field -- honest reporting only. "success"
+# is set only when every scheduled leg's RouteResult.status == success;
+# anything else (partial/not_connected/failed/unavailable) is reported
+# exactly as such, never upgraded to imply route data is available when it
+# isn't.
+_ROUTE_STATUS_TO_COVERAGE_VALUE = {
+    ProviderStatus.SUCCESS: "success",
+    ProviderStatus.PARTIAL: "partial",
+    ProviderStatus.NOT_CONNECTED: "not_connected",
+    ProviderStatus.FAILED: "failed",
+    ProviderStatus.UNAVAILABLE: "unavailable",
 }
 
 # Human-readable labels for GENERATION_STAGE_KEYS (Step 163B). Purely
@@ -79,6 +95,7 @@ class PlanningOrchestrator:
         stay_transport_service: StayTransportService | None = None,
         experience_planner_service: ExperiencePlannerService | None = None,
         plan_validator_service: PlanValidatorService | None = None,
+        route_feasibility_service: RouteFeasibilityService | None = None,
         feedback_service: FeedbackService | None = None,
         versioning_service: VersioningService | None = None,
         plan_diff_preview_service: PlanDiffPreviewService | None = None,
@@ -98,6 +115,7 @@ class PlanningOrchestrator:
             experience_planner_service or ExperiencePlannerService()
         )
         self.plan_validator_service = plan_validator_service or PlanValidatorService()
+        self.route_feasibility_service = route_feasibility_service or RouteFeasibilityService()
         self.feedback_service = feedback_service or FeedbackService()
         self.versioning_service = versioning_service or VersioningService()
         self.plan_diff_preview_service = plan_diff_preview_service or PlanDiffPreviewService()
@@ -276,6 +294,19 @@ class PlanningOrchestrator:
 
     def run_experience_plan_stage(self, planning_state: PlanningState) -> PlanningState:
         planning_state = self.experience_planner_service.run(planning_state)
+        # Step 165E: route feasibility for consecutive scheduled experiences
+        # within each day, computed after experience_plan exists and before
+        # PlanValidatorService runs. Never reorders/drops a scheduled
+        # experience -- see RouteFeasibilityReport's docstring for the
+        # route-aware-scheduling boundary (Section 166). Saved alongside
+        # experience_plan by generate_full_plan's existing
+        # save-after-each-stage cadence; no extra save call needed here.
+        planning_state.route_feasibility_report = self.route_feasibility_service.build_report(
+            planning_state
+        )
+        planning_state.provider_coverage.routes = _ROUTE_STATUS_TO_COVERAGE_VALUE.get(
+            planning_state.route_feasibility_report.status, "not_connected"
+        )
         planning_state.set_pipeline_status(PipelineStatus.EXPERIENCE_PLAN_CREATED)
         return planning_state
 

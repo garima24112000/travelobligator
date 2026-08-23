@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""MANUAL-ONLY dev smoke test -- Step 164D.1, extended in Steps 164F/164H.
+"""MANUAL-ONLY dev smoke test -- Step 164D.1, extended in Steps 164F/164H/165D.
 
 This script is not part of the application runtime and is never imported by
 `app.main`, any service, or the automated test suite. It exists purely so a
-developer can, by hand, confirm that the four provider-cache-wired
-adapters -- Open-Meteo (Step 164B), Nager.Date (Step 164C), Frankfurter
-(Step 164D), and OpenStreetMap/Nominatim (geocoding: Step 164E; Overpass POI
-search: Step 164G) -- still work against their real public APIs, and that
-the `ProviderCacheStore` foundation (Step 164A) actually populates and is
-read back correctly for each of them.
+developer can, by hand, confirm that the provider-cache-wired adapters --
+Open-Meteo (Step 164B), Nager.Date (Step 164C), Frankfurter (Step 164D),
+OpenStreetMap/Nominatim (geocoding: Step 164E; Overpass POI search: Step
+164G), and OSRM routing (Step 165D) -- still work against their real public
+APIs, and that the `ProviderCacheStore` foundation (Step 164A) actually
+populates and is read back correctly for each of them.
 
 **OSM coverage is geocoding plus one small, real POI search.** It calls
 `resolve_coordinates` (geocoding) and `search_attractions` (a single,
@@ -19,12 +19,25 @@ claims or asserts a rating, price, opening hours, availability, booking
 link, or route time -- `NormalizedPlace` never carries any of those fields,
 cached or live.
 
+**OSRM coverage is one tiny, fixed route lookup, called twice (Step
+165D).** It calls `OSRMRoutingAdapter.get_route` for one small, stable
+origin/destination pair, sharing the same temporary `ProviderCacheStore`
+as every other provider above. It only checks structure -- `status`,
+whether `distance_meters`/`duration_seconds` are positive numbers, and
+whether the cache was actually used on the second call -- never an exact
+distance, duration, or geometry. This does not validate every route,
+profile, or destination pair, and it does not mean route data is consumed
+by scheduling or validation anywhere in the app (it still isn't, as of
+this step).
+
 WARNING: running this script with the required env var set makes real
-network calls to Open-Meteo, Nager.Date, Frankfurter, Nominatim, and
-Overpass -- five free, keyless public APIs (no API key is required or read
-by this script). It is never invoked by pytest, by `python -m compileall`,
-by CI, or by normal `uvicorn`/app startup -- it only runs when a human
-explicitly executes this file.
+network calls to Open-Meteo, Nager.Date, Frankfurter, Nominatim, Overpass,
+and an OSRM routing instance (the public OSRM demo server at
+https://router.project-osrm.org by default, or `OSRM_BASE_URL` if set) --
+six free, keyless public services (no API key is required or read by this
+script). It is never invoked by pytest, by `python -m compileall`, by CI,
+or by normal `uvicorn`/app startup -- it only runs when a human explicitly
+executes this file.
 
 No Groq, Anthropic, Kiwi/MCP, or scraping call is made anywhere in this
 script -- only the providers above.
@@ -32,6 +45,13 @@ script -- only the providers above.
 Required environment variable (or this script exits without calling
 anything):
     RUN_LIVE_PROVIDER_CACHE_SMOKE=true
+
+Optional environment variable (Step 165D):
+    OSRM_BASE_URL=<your own OSRM instance>
+    Defaults to the public OSRM demo server (https://router.project-osrm.org)
+    when unset -- used only for this manual smoke context. This never
+    changes `Settings.osrm_base_url`'s app-wide default, which stays unset
+    unless a developer configures it separately for real use.
 
 Run from the repo root:
     RUN_LIVE_PROVIDER_CACHE_SMOKE=true \\
@@ -43,11 +63,12 @@ and does not mean.
 Output safety: this script only ever prints a short per-provider summary
 (provider name, live_path_ok, cache_path_ok, status, cache_row_count) plus a
 final PASS/FAIL line. It never prints a full weather/holiday/currency/
-geocode/POI payload, a raw query, a raw Overpass query string, an API URL
-with its query string, or any secret, and it never writes to the app's real
-provider cache (`Settings.provider_cache_path`) or trip storage -- it always
-uses its own temporary, clearly-named `ProviderCacheStore` file that is
-deleted when the script exits.
+geocode/POI/route payload, a raw query, a raw Overpass query string, a raw
+route/coordinate URL, an API URL with its query string, or any secret, and
+it never writes to the app's real provider cache
+(`Settings.provider_cache_path`) or trip storage -- it always uses its own
+temporary, clearly-named `ProviderCacheStore` file that is deleted when the
+script exits.
 """
 
 from __future__ import annotations
@@ -86,6 +107,7 @@ _KNOWN_BASE_CURRENCY = "USD"
 
 _OSM_GEOCODE_SOURCE = "openstreetmap_geocode"
 _OSM_POI_SOURCE = "openstreetmap_poi"
+_OSRM_ROUTE_SOURCE = "osrm_route"
 
 _EXPECTED_SOURCES = (
     "open_meteo",
@@ -93,7 +115,20 @@ _EXPECTED_SOURCES = (
     "frankfurter",
     _OSM_GEOCODE_SOURCE,
     _OSM_POI_SOURCE,
+    _OSRM_ROUTE_SOURCE,
 )
+
+# A tiny, stable, real-world driving route near the same known Lisbon
+# destination already used above -- short enough to be a fast, respectful
+# request against the public OSRM demo server. Never asserted for an exact
+# distance/duration/geometry -- only structural success (Step 165D).
+_OSRM_DESTINATION_LATITUDE = 38.7169
+_OSRM_DESTINATION_LONGITUDE = -9.1399
+
+# Used only for this manual smoke context -- Settings.osrm_base_url stays
+# unset by default everywhere else in the app (conservative by design, see
+# docs/12_provider_architecture.md section 31).
+_DEFAULT_OSRM_BASE_URL = "https://router.project-osrm.org"
 
 # Checked against stored query_hash/payload_json/metadata_json text as a
 # defense-in-depth assertion -- none of these providers require an API key,
@@ -207,6 +242,125 @@ def _poi_cache_rows_contain_forbidden_claims(db_path: Path, source: str) -> bool
         ).fetchall()
     combined = " ".join(str(row[0]) for row in rows).lower()
     return any(needle in combined for needle in _FORBIDDEN_POI_CLAIM_SUBSTRINGS)
+
+
+def _resolve_osrm_base_url() -> str:
+    """Reads `OSRM_BASE_URL` from env, or falls back to the public OSRM
+    demo routing server -- used only for this manual smoke context, never
+    as an app-wide default (`Settings.osrm_base_url` stays unset/None by
+    default everywhere else)."""
+    value = os.environ.get("OSRM_BASE_URL", "").strip()
+    return value or _DEFAULT_OSRM_BASE_URL
+
+
+def _osrm_cache_rows_leak_raw_route_text(db_path: Path, source: str) -> bool:
+    """True if the stored `query_hash`/`metadata_json` for `source` contains
+    a raw coordinate value or a route URL fragment -- which should never
+    happen, since `query_hash` is always an opaque SHA-256 digest and
+    `OSRMRoutingAdapter` never passes `metadata=` to
+    `ProviderCacheStore.set`."""
+    needles = (
+        str(_KNOWN_LATITUDE),
+        str(_KNOWN_LONGITUDE),
+        str(_OSRM_DESTINATION_LATITUDE),
+        str(_OSRM_DESTINATION_LONGITUDE),
+        "route/v1",
+        "http://",
+        "https://",
+    )
+    with sqlite3.connect(db_path) as conn:
+        rows = conn.execute(
+            "SELECT query_hash, metadata_json FROM provider_cache WHERE source = ?",
+            (source,),
+        ).fetchall()
+    combined = " ".join(" ".join(str(value) for value in row) for row in rows).lower()
+    return any(needle.lower() in combined for needle in needles)
+
+
+def _run_osrm_route_check(db_path: Path, store: Any, checks: list[tuple[str, bool]]) -> None:
+    """Real OSRM routing + route-cache check (Step 165D). Calls
+    `OSRMRoutingAdapter.get_route` twice for one small, fixed
+    origin/destination pair near the same known Lisbon destination already
+    used above, against a real OSRM instance -- by default the public OSRM
+    demo server, or `OSRM_BASE_URL` if set. Only `osrm_adapter.get_settings`
+    is temporarily monkeypatched (to supply the base URL this manual
+    context needs -- `Settings.osrm_base_url` stays unset/None everywhere
+    else in the app); it is restored immediately after, in a `finally`
+    block, and no other adapter/module is touched.
+
+    Never asserts an exact distance, duration, or geometry -- only that a
+    real route was found (`status=success`) with a positive numeric
+    distance and duration, and that the second, identical call was served
+    from cache (same values as the first, with no additional live call
+    needed -- proven the same way the other cache-wired adapters prove it,
+    via `data_status`/a call counter, except here directly via the
+    `OSRMRoutingAdapter.get_route` contract: a cache hit and a live call
+    return the identical normalized shape, so equal values plus a cache row
+    is the observable proof of reuse).
+    """
+    from app.core.config import Settings
+    from app.models.common import ProviderStatus
+    from app.models.routing import RouteRequest, RoutingProfile
+    from app.providers.routing import osrm_adapter
+    from app.providers.routing.osrm_adapter import OSRMRoutingAdapter
+
+    base_url = _resolve_osrm_base_url()
+    smoke_settings = Settings(_env_file=None, osrm_base_url=base_url, provider_cache_enabled=True)
+    real_get_settings = osrm_adapter.get_settings
+    osrm_adapter.get_settings = lambda: smoke_settings
+    try:
+        request = RouteRequest(
+            origin_lat=_KNOWN_LATITUDE,
+            origin_lon=_KNOWN_LONGITUDE,
+            destination_lat=_OSRM_DESTINATION_LATITUDE,
+            destination_lon=_OSRM_DESTINATION_LONGITUDE,
+            profile=RoutingProfile.DRIVING,
+        )
+        first_result = OSRMRoutingAdapter(cache_store=store).get_route(request)
+        second_result = OSRMRoutingAdapter(cache_store=store).get_route(request)
+    finally:
+        osrm_adapter.get_settings = real_get_settings
+
+    def _is_structurally_valid(result: Any) -> bool:
+        return (
+            result.status == ProviderStatus.SUCCESS
+            and isinstance(result.distance_meters, (int, float))
+            and result.distance_meters > 0
+            and isinstance(result.duration_seconds, (int, float))
+            and result.duration_seconds > 0
+        )
+
+    live_path_ok = _is_structurally_valid(first_result)
+    cache_path_ok = (
+        live_path_ok
+        and _is_structurally_valid(second_result)
+        and second_result.distance_meters == first_result.distance_meters
+        and second_result.duration_seconds == first_result.duration_seconds
+    )
+    row_count = _cache_row_count(db_path, _OSRM_ROUTE_SOURCE)
+    status_label = first_result.status.value if live_path_ok else "failed"
+
+    print(
+        f"provider={_OSRM_ROUTE_SOURCE} live_path_ok={live_path_ok} "
+        f"cache_path_ok={cache_path_ok} status={status_label} "
+        f"cache_row_count={row_count}"
+    )
+
+    checks.append((f"{_OSRM_ROUTE_SOURCE} live path ok", live_path_ok))
+    checks.append((f"{_OSRM_ROUTE_SOURCE} cache path ok", cache_path_ok))
+    checks.append((f"{_OSRM_ROUTE_SOURCE} has at least one cache row", row_count >= 1))
+    checks.append(
+        (
+            f"{_OSRM_ROUTE_SOURCE} cache metadata is empty (no raw text smuggled in)",
+            _metadata_is_empty_for_every_row(db_path, _OSRM_ROUTE_SOURCE),
+        )
+    )
+    checks.append(
+        (
+            f"{_OSRM_ROUTE_SOURCE} query_hash/metadata contain no raw coordinate/route URL text",
+            not _osrm_cache_rows_leak_raw_route_text(db_path, _OSRM_ROUTE_SOURCE),
+        )
+    )
 
 
 def _run_osm_geocode_check(
@@ -408,18 +562,20 @@ def _run_osm_poi_check(db_path: Path, store: Any, checks: list[tuple[str, bool]]
 
 
 def _run_smoke_test(db_path: Path) -> bool:
-    """Calls each of the four cache-wired adapters (Open-Meteo, Nager.Date,
-    Frankfurter, and OSM -- geocoding plus one Overpass POI search) with
-    identical, known inputs, sharing one `ProviderCacheStore` pointed at
-    `db_path` (a temporary file, never the app's real provider cache). The
-    first call is expected to populate the cache from a live provider
-    request; the second is expected to be served from the cache. Returns
-    True on PASS, False on FAIL. Never asserts an exact weather value,
-    holiday name, exchange rate, geocode coordinate, POI name, OSM ID, or
-    display name -- only structure and cache behavior. OSM/Overpass POI
-    coverage is limited to one `search_attractions` call -- never
-    `search_restaurants`, `search_accommodation_pois`, or
-    `search_must_visit_place`.
+    """Calls each of the cache-wired adapters (Open-Meteo, Nager.Date,
+    Frankfurter, OSM -- geocoding plus one Overpass POI search -- and OSRM
+    routing) with identical, known inputs, sharing one `ProviderCacheStore`
+    pointed at `db_path` (a temporary file, never the app's real provider
+    cache). The first call is expected to populate the cache from a live
+    provider request; the second is expected to be served from the cache.
+    Returns True on PASS, False on FAIL. Never asserts an exact weather
+    value, holiday name, exchange rate, geocode coordinate, POI name, OSM
+    ID, display name, route distance, route duration, or route geometry --
+    only structure and cache behavior. OSM/Overpass POI coverage is limited
+    to one `search_attractions` call -- never `search_restaurants`,
+    `search_accommodation_pois`, or `search_must_visit_place`. OSRM
+    coverage is limited to one fixed origin/destination pair -- it does not
+    validate every route, profile, or destination.
     """
     from app.models.common import DataStatus, GeoPoint, ProviderStatus
     from app.providers.currency.frankfurter_adapter import FrankfurterCurrencyAdapter
@@ -484,6 +640,10 @@ def _run_smoke_test(db_path: Path) -> bool:
     # --- OpenStreetMap/Overpass POI search -- one small category search
     # only (Step 164H). Never restaurants, accommodation, or must-visit. ---
     _run_osm_poi_check(db_path, store, checks)
+
+    # --- OSRM routing -- one tiny, fixed route lookup, called twice
+    # (Step 165D). ---
+    _run_osrm_route_check(db_path, store, checks)
 
     no_secrets = not any(
         _cache_rows_contain_secret_markers(db_path, source) for source in _EXPECTED_SOURCES

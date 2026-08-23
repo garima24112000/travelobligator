@@ -853,6 +853,58 @@ pre-existing `_reset_in_memory_repositories` fixture, giving every test a
 fresh, throwaway provider cache store -- a test suite fix, not a
 production behavior change.
 
+**Routing provider skeleton (Step 165A) -- originally separate from this
+cache, now partly wired to it (Step 165C, below).**
+`backend/app/providers/routing/` adds a `RoutingProvider` contract
+(`backend/app/models/routing.py`'s `RouteRequest`/`RouteResult`) and two
+adapters: `NotConnectedRoutingProvider` (the default,
+`Settings.routing_provider="not_connected"`) and `OSRMRoutingAdapter`
+(selected via `routing_provider="osrm"`, but itself still `not_connected`
+unless `Settings.osrm_base_url` is also explicitly set -- conservative by
+design).
+
+**`ProviderGateway` has routing lookup capability (Step 165B) -- but
+planning behavior is unchanged until a later Section 165 step.**
+`ProviderGateway` (section 18) gained a `routing` attribute (defaulting to
+`app.providers.routing.factory.get_routing_provider()`) and a
+`get_route(request: RouteRequest) -> RouteResult` method that delegates to
+it -- exposure through the gateway only, matching how every other provider
+is accessed. `ProviderGateway.routes` (the older, generic, always-
+`not_connected` `RoutesProvider()` base interface) is untouched and
+remains separate. **`PlanningOrchestrator`, `ExperiencePlannerService`, and
+`PlanValidatorService` still do not call `get_route` or reference
+`routing` at all** -- confirmed by dedicated tests -- so scheduling,
+validation, and provider coverage behavior are exactly as before this
+step. See docs/12_provider_architecture.md sections 31-32 and
+docs/13_llm_reasoning_pipeline.md sections 54-55 for the full design.
+
+**OSRM route cache (Step 165C).** `OSRMRoutingAdapter` now reads through
+and writes to this same `ProviderCacheStore`, under source label
+`"osrm_route"`, keyed by a hash of the normalized route request
+(origin/destination coordinates + resolved profile) and TTL-governed by
+`Settings.osrm_route_cache_ttl_seconds` (default 24 hours). Only a
+successful, usable route is cached; `not_connected`/`unavailable`/`failed`
+results never are. Exactly like every other cache-wired adapter, cache
+failure is non-fatal -- a broken read falls back to a live OSRM call, and a
+broken write still returns the live result. `ProviderGateway` needed no
+change since it already delegates through to whichever `RoutingProvider`
+it holds. Route data is still not used in itinerary planning -- this is
+purely about how a repeated identical route lookup is answered, not about
+introducing routing into scheduling or validation. See
+docs/12_provider_architecture.md section 33 and
+docs/13_llm_reasoning_pipeline.md section 56.
+
+**Manual live smoke coverage for OSRM route cache (Step 165D).**
+`backend/scripts/manual_provider_cache_smoke.py` (docs/21_manual_provider_cache_smoke.md)
+now also calls the real `OSRMRoutingAdapter` twice for one small, fixed
+Lisbon-area route, confirming a live OSRM response parses and the route
+cache is populated/reused -- structural checks only (`status=success`,
+positive numeric distance/duration, a cache row present), never an exact
+distance/duration/geometry value. This is manual-only, exactly like the
+rest of that script: never run by pytest, `python -m compileall`, or CI.
+Route data is still not used in itinerary planning -- this manual check
+only confirms the adapter and its cache work when called directly.
+
 Responsibilities (intended once wired in a future step):
 
 - cache allowed provider responses
@@ -1581,6 +1633,7 @@ destination_context
 validation_report (readiness_status or any other field)
 provider_coverage
 route_feasibility_context
+route_feasibility_report
 feedback_history
 pending_feedback_summary
 user_locks
@@ -1592,3 +1645,36 @@ regeneration_readiness
 Until a real regeneration engine is connected, `POST /trips/{trip_id}/generate`
 remains the only endpoint that produces or changes a full plan.
 - API routes coordinate requests; they do not contain planning logic.
+
+## 35. Route Feasibility for Scheduled Experiences (Step 165E)
+
+`RouteFeasibilityService` (`backend/app/services/route_feasibility_service.py`,
+docs/12_provider_architecture.md section 35,
+docs/13_llm_reasoning_pipeline.md section 58) runs inside
+`PlanningOrchestrator.run_experience_plan_stage`, immediately after
+`ExperiencePlannerService.run` and before `PlanValidatorService.run`. It
+builds `PlanningState.route_feasibility_report` by calling
+`ProviderGateway.get_route` for every consecutive pair of scheduled
+experiences within each day -- the same routing call path Step 165B
+exposed and Step 165C cache-backs, never a provider adapter directly.
+
+**Default routing remains `not_connected` unless configured.**
+`Settings.routing_provider` still defaults to `"not_connected"`, so a
+default deployment's `route_feasibility_report` honestly reports every leg
+(and the report as a whole) `not_connected`, with no network call --
+`/generate` succeeds exactly as it did before this step, just with this
+additional honest report attached. `ProviderCoverage.routes` is updated to
+match (`"not_connected"` by default; `"success"` only when
+`RouteFeasibilityReport.status == success`, never upgraded otherwise).
+
+**Unavailable routing remains `needs_review`.** Whenever a leg's routing
+provider call is `not_connected`/`unavailable`/`failed`, or a leg is
+`unavailable` because one of its experiences is missing coordinates,
+`PlanValidatorService`'s feasibility warning keeps its existing
+needs-review framing -- it never claims a route was checked when it
+wasn't, and `readiness_status` never reaches `ready` from this alone.
+
+This is feasibility *reporting* only: it never reorders, adds, or drops a
+scheduled experience, and `ExperiencePlannerService`'s straight-line/
+haversine scheduling (Step 156C) is untouched. Full route-aware scheduling
+is Section 166's job, not this step's.

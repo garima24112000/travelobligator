@@ -4,6 +4,7 @@ from typing import Any
 
 from app.models.common import ProviderCoverage, ProviderStatusEntry
 from app.models.providers import ProviderResponse
+from app.models.routing import RouteRequest, RouteResult
 from app.providers.base import (
     AccommodationProvider,
     AIReasoningProvider,
@@ -18,6 +19,8 @@ from app.providers.base import (
 from app.providers.currency.frankfurter_adapter import FrankfurterCurrencyAdapter
 from app.providers.holidays.nager_date_adapter import NagerDateHolidaysAdapter
 from app.providers.places.openstreetmap_adapter import OpenStreetMapPlacesAdapter
+from app.providers.routing.base import RoutingProvider
+from app.providers.routing.factory import get_routing_provider
 from app.providers.weather.open_meteo_adapter import OpenMeteoWeatherAdapter
 
 
@@ -34,6 +37,19 @@ class ProviderGateway:
     `holiday` (Nager.Date-backed), and `currency` (Frankfurter-backed),
     which default to real adapters. Further real adapters can be injected
     later without changing calling code.
+
+    `routing` (Step 165B, docs/12_provider_architecture.md section 31) is
+    separate from the pre-existing, still-unused `routes` slot above (the
+    generic `app.providers.base.RoutesProvider` stub interface, untouched
+    by this step). `routing` defaults to whatever
+    `app.providers.routing.factory.get_routing_provider()` resolves from
+    `Settings.routing_provider` (`"not_connected"` by default, so this
+    gateway makes no network call by default either) -- the gateway itself
+    never knows an OSRM base URL, timeout, or profile default; those stay
+    entirely inside the factory/adapter. **Not consumed by
+    `PlanningOrchestrator`, `ExperiencePlannerService`, or
+    `PlanValidatorService` yet** -- `get_route` exists on this gateway so a
+    future step has one place to call, but nothing calls it yet.
     """
 
     def __init__(
@@ -47,6 +63,7 @@ class ProviderGateway:
         holiday: HolidayProvider | None = None,
         currency: CurrencyProvider | None = None,
         ai_reasoning: AIReasoningProvider | None = None,
+        routing: RoutingProvider | None = None,
     ) -> None:
         self.places = places or OpenStreetMapPlacesAdapter()
         self.routes = routes or RoutesProvider()
@@ -57,6 +74,23 @@ class ProviderGateway:
         self.holiday = holiday or NagerDateHolidaysAdapter()
         self.currency = currency or FrankfurterCurrencyAdapter()
         self.ai_reasoning = ai_reasoning or AIReasoningProvider()
+        self.routing = routing or get_routing_provider()
+
+    def get_route(self, request: RouteRequest) -> RouteResult:
+        """Look up a point-to-point route through the configured routing
+        provider (Step 165B). Delegates entirely to `self.routing` -- the
+        gateway does not add, guess, or backfill any distance/duration
+        itself, and never falls back to a straight-line (haversine)
+        estimate. With the default `not_connected` routing provider (no
+        `OSRM_BASE_URL` configured), this returns an honest `not_connected`
+        `RouteResult` without any network call.
+
+        Not called by `PlanningOrchestrator`, `ExperiencePlannerService`,
+        or `PlanValidatorService` yet -- this method exists so a future
+        step has one place to request route data through, matching how
+        every other provider slot is used through this gateway.
+        """
+        return self.routing.get_route(request)
 
     @staticmethod
     def to_status_entry(response: ProviderResponse[Any]) -> ProviderStatusEntry:

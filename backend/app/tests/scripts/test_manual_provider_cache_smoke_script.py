@@ -43,6 +43,7 @@ _EXPECTED_SOURCES = (
     "frankfurter",
     "openstreetmap_geocode",
     "openstreetmap_poi",
+    "osrm_route",
 )
 
 
@@ -229,12 +230,13 @@ def test_manual_smoke_script_module_imports_cleanly_without_network() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 7. Script checks all five expected providers, including OSM geocoding
-#    (Step 164F) and OSM/Overpass POI search (Step 164H).
+# 7. Script checks all six expected providers, including OSM geocoding
+#    (Step 164F), OSM/Overpass POI search (Step 164H), and OSRM routing
+#    (Step 165D).
 # ---------------------------------------------------------------------------
 
 
-def test_manual_smoke_script_checks_five_expected_providers() -> None:
+def test_manual_smoke_script_checks_six_expected_providers() -> None:
     source = _SCRIPT_PATH.read_text()
     for provider_source in _EXPECTED_SOURCES:
         assert provider_source in source
@@ -242,6 +244,7 @@ def test_manual_smoke_script_checks_five_expected_providers() -> None:
     assert "nager_date_adapter" in source
     assert "frankfurter_adapter" in source
     assert "openstreetmap_adapter" in source
+    assert "osrm_adapter" in source
 
 
 def test_manual_smoke_script_includes_osm_geocoding_coverage() -> None:
@@ -275,6 +278,33 @@ def test_manual_smoke_script_limits_overpass_calls_to_search_attractions() -> No
         "._query_overpass(",
     ):
         assert disallowed_call not in source, f"Unexpected Overpass/POI call: {disallowed_call}"
+
+
+def test_manual_smoke_script_includes_osrm_route_coverage() -> None:
+    """Step 165D: the script calls `OSRMRoutingAdapter.get_route` and
+    checks cache rows for source `"osrm_route"`."""
+    source = _SCRIPT_PATH.read_text()
+    assert "osrm_route" in source
+    assert "OSRMRoutingAdapter" in source
+    assert ".get_route(" in source
+
+
+def test_manual_smoke_script_osrm_check_does_not_assert_exact_route_values() -> None:
+    """Step 165D: only structural checks (status, positive numeric
+    distance/duration, cache reuse) are allowed for OSRM -- never a
+    hardcoded exact distance/duration/geometry value asserted against a
+    live response."""
+    source = _SCRIPT_PATH.read_text()
+    assert "distance_meters > 0" in source
+    assert "duration_seconds > 0" in source
+
+
+def test_manual_smoke_script_documents_osrm_base_url_env_var() -> None:
+    """Step 165D: OSRM_BASE_URL is optional and documented, defaulting to
+    the public OSRM demo server when unset."""
+    source = _SCRIPT_PATH.read_text()
+    assert "OSRM_BASE_URL" in source
+    assert "router.project-osrm.org" in source
 
 
 # ---------------------------------------------------------------------------
@@ -319,6 +349,28 @@ def test_manual_smoke_script_does_not_print_raw_overpass_query_text() -> None:
         assert "tag_filters" not in printed_source
         assert "known_destination" not in printed_source
         assert "overpass_url" not in printed_source
+
+
+def test_manual_smoke_script_does_not_print_raw_route_url_or_coordinates() -> None:
+    """Step 165D: no `print()` call may reference a raw OSRM route
+    URL/base URL or a raw coordinate query string -- only the safe summary
+    fields (provider name, live_path_ok, cache_path_ok, status,
+    cache_row_count)."""
+    source = _SCRIPT_PATH.read_text()
+    tree = ast.parse(source)
+
+    for node in ast.walk(tree):
+        if not (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "print"
+        ):
+            continue
+        printed_source = (ast.get_source_segment(source, node) or "").lower()
+        assert "base_url" not in printed_source
+        assert "route/v1" not in printed_source
+        assert "osrm_destination_latitude" not in printed_source
+        assert "osrm_destination_longitude" not in printed_source
 
 
 # ---------------------------------------------------------------------------
@@ -426,6 +478,37 @@ def test_manual_smoke_doc_clarifies_poi_smoke_excludes_commercial_claims() -> No
     text = _DOC_PATH.read_text().lower()
     for claim in ("rating", "price", "opening hours", "booking", "availability", "route time"):
         assert claim in text, f"doc does not mention excluded claim: {claim!r}"
+
+
+# ---------------------------------------------------------------------------
+# 13. Docs clarify OSRM routing/cache smoke scope (Step 165D): manual-only,
+#     structural-only, does not validate every route, and does not mean
+#     route data is used in itinerary scheduling.
+# ---------------------------------------------------------------------------
+
+
+def test_manual_smoke_doc_mentions_osrm_route_coverage() -> None:
+    text = _DOC_PATH.read_text().lower()
+    assert "osrm_route" in text
+    assert "osrm" in text
+
+
+def test_manual_smoke_doc_clarifies_osrm_smoke_is_structural_only() -> None:
+    text = _DOC_PATH.read_text().lower()
+    assert "structural" in text
+    assert "osrm" in text
+
+
+def test_manual_smoke_doc_clarifies_osrm_pass_does_not_cover_every_route_forever() -> None:
+    text = _DOC_PATH.read_text().lower()
+    assert "does not mean" in text
+    assert "forever" in text
+
+
+def test_manual_smoke_doc_clarifies_osrm_smoke_not_used_in_scheduling() -> None:
+    text = _DOC_PATH.read_text().lower()
+    assert "scheduling" in text
+    assert "not" in text and "osrm" in text
 
 
 # ---------------------------------------------------------------------------
