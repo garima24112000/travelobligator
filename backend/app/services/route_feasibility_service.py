@@ -1,18 +1,23 @@
 from __future__ import annotations
 
+import logging
 from datetime import date, datetime, timezone
 from datetime import time as time_of_day
 
 from app.models.common import ProviderStatus
 from app.models.planning_state import ExperienceItem, PlanningState
 from app.models.routing import (
+    MovementDataProvenance,
     RouteFeasibilityReport,
     RouteFeasibilityStatus,
     RouteLegFeasibility,
     RouteRequest,
     RouteResult,
+    movement_data_provenance_from_status,
 )
 from app.providers.gateway import ProviderGateway, provider_gateway
+
+logger = logging.getLogger(__name__)
 
 # Deterministic provider infrastructure, not AI reasoning (Step 165E,
 # docs/12_provider_architecture.md section 35,
@@ -35,6 +40,9 @@ _MISSING_COORDINATES_MESSAGE = (
     "feasibility is not computable."
 )
 _FAILED_MESSAGE = "The routing provider request failed for this leg."
+_UNEXPECTED_FAILURE_MESSAGE = (
+    "The routing provider request failed unexpectedly for this leg."
+)
 _SUCCESS_MESSAGE = "A provider-backed route was found for this leg."
 _TIME_GAP_EXCEEDED_MESSAGE_TEMPLATE = (
     "A provider-backed route was found for this leg, but its duration "
@@ -119,6 +127,13 @@ class RouteFeasibilityService:
     `routing_provider="not_connected"` configuration, every leg (and the
     report as a whole) honestly reports `not_connected` without any network
     call.
+
+    Step 166D hardening: every `get_route` call goes through
+    `_safe_get_route`, so an unexpected exception from the routing provider
+    (as opposed to an honest `failed`/`unavailable` `RouteResult`, which
+    every real adapter already returns on its own failure) can never crash
+    this leg, this report, or generation as a whole -- it is treated
+    exactly like a `failed` result instead.
     """
 
     def __init__(self, gateway: ProviderGateway | None = None) -> None:
@@ -148,6 +163,7 @@ class RouteFeasibilityService:
             provider=provider_name,
             route_data_source=route_data_source,
             generated_at=_utc_now(),
+            movement_data_provenance=movement_data_provenance_from_status(report_status),
         )
 
     def _build_leg(
@@ -175,6 +191,7 @@ class RouteFeasibilityService:
                 duration_seconds=None,
                 feasibility_status=RouteFeasibilityStatus.UNAVAILABLE,
                 message=_MISSING_COORDINATES_MESSAGE,
+                movement_data_provenance=MovementDataProvenance.NOT_COMPUTABLE,
             )
 
         request = RouteRequest(
@@ -183,7 +200,7 @@ class RouteFeasibilityService:
             destination_lat=to_point.lat,
             destination_lon=to_point.lng,
         )
-        result = self.gateway.get_route(request)
+        result = _safe_get_route(self.gateway, request)
         feasibility_status, message = _feasibility_from_result(result, from_experience, to_experience)
 
         return RouteLegFeasibility(
@@ -201,6 +218,43 @@ class RouteFeasibilityService:
             duration_seconds=result.duration_seconds,
             feasibility_status=feasibility_status,
             message=message,
+            movement_data_provenance=movement_data_provenance_from_status(result.status),
+        )
+
+
+def _safe_get_route(gateway: ProviderGateway, request: RouteRequest) -> RouteResult:
+    """Calls `gateway.get_route(request)`, but never lets an unexpected
+    exception from that call escape (Step 166D hardening). Every real
+    routing adapter already converts its own failure modes (network
+    error, timeout, malformed response) into an honest
+    `RouteResult(status=failed/unavailable/not_connected)` without
+    raising -- this is a second line of defense for a genuinely
+    unexpected bug (a misbehaving adapter, a test double, a future
+    provider) so a single leg's failure can never crash the whole
+    `RouteFeasibilityReport`, and by extension the whole generation run.
+
+    On an exception, this returns an honest `status=failed` `RouteResult`
+    with a generic, safe message -- never the raw exception text or any
+    provider payload, and never a straight-line/haversine estimate
+    substituted in its place. The exception itself is only ever logged
+    server-side (never shown to a caller).
+    """
+    try:
+        return gateway.get_route(request)
+    except Exception:
+        logger.warning(
+            "ProviderGateway.get_route raised unexpectedly; treating this leg as failed.",
+            exc_info=True,
+        )
+        provider_name = getattr(gateway.routing, "provider_name", "routing_provider")
+        return RouteResult(
+            provider=provider_name,
+            status=ProviderStatus.FAILED,
+            distance_meters=None,
+            duration_seconds=None,
+            source=provider_name,
+            confidence=0.0,
+            message=_UNEXPECTED_FAILURE_MESSAGE,
         )
 
 

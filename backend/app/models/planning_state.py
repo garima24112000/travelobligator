@@ -26,7 +26,11 @@ from app.models.common import (
     UnavailableDataItem,
     ValidationSeverity,
 )
-from app.models.routing import RouteFeasibilityReport
+from app.models.routing import (
+    RouteAwareSequencingReport,
+    RouteFeasibilityReport,
+    TravelTimeBufferReport,
+)
 
 
 def _new_id(prefix: str) -> str:
@@ -1077,6 +1081,41 @@ class PlanningState(BaseModel):
     # for the not-yet-implemented route-aware-scheduling boundary
     # (Section 166).
     route_feasibility_report: RouteFeasibilityReport | None = None
+    # Shadow/report-only route-aware day-sequencing suggestions (Step 166A,
+    # docs/12_provider_architecture.md, docs/13_llm_reasoning_pipeline.md,
+    # docs/14_backend_architecture.md). Computed by
+    # RouteAwareSequencingService directly inside
+    # PlanningOrchestrator.run_experience_plan_stage, after
+    # route_feasibility_report is built and before validation runs -- never
+    # a provider or AI/LLM call from a stage service itself. Stays None
+    # until an experience_plan has been generated. Every suggestion's
+    # duration/distance is provider-backed only (via
+    # ProviderGateway.get_route) -- never a straight-line/haversine
+    # estimate presented as route data, and never a guessed improvement.
+    # `is_shadow_only` stays True and `applied_to_itinerary` stays False,
+    # always: this never reorders, adds, or drops a scheduled experience,
+    # and ExperiencePlannerService's actual scheduled order is completely
+    # untouched by this field's existence. Full route-aware scheduling
+    # that changes itinerary order is a later Section 166 step, not this
+    # one.
+    route_aware_sequencing_report: RouteAwareSequencingReport | None = None
+    # Travel-time buffer reporting for consecutive scheduled experiences
+    # (Step 166C, docs/12_provider_architecture.md,
+    # docs/13_llm_reasoning_pipeline.md, docs/14_backend_architecture.md).
+    # Computed by TravelTimeBufferService directly inside
+    # PlanningOrchestrator.run_experience_plan_stage, after
+    # route_feasibility_report and any Step 166B config-gated route-aware-
+    # scheduling application, so it always reflects the final scheduled
+    # order for this generation run -- never a provider or AI/LLM call
+    # from a stage service itself. Stays None until an experience_plan has
+    # been generated. Every buffer's duration/distance is provider-backed
+    # only (via ProviderGateway.get_route) -- never a straight-line/
+    # haversine estimate, and `recommended_buffer_seconds` is never
+    # anything but an exact restatement of a real successful route
+    # duration, never an invented padding/safety margin. This never
+    # reorders, adds, or drops a scheduled experience, and never invents a
+    # schedule timestamp where none exists.
+    travel_time_buffer_report: TravelTimeBufferReport | None = None
     # Validated artifact storage only (Step 160C, docs/13_llm_reasoning_
     # pipeline.md section 36, docs/14_backend_architecture.md section 25)
     # for the future AI candidate proposal / grounding flow (Steps

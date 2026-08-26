@@ -7,6 +7,7 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
+from app.core.config import get_settings
 from app.models.common import DataStatus, GeoPoint, ProviderStatus
 from app.models.providers import (
     NormalizedDailyWeather,
@@ -27,6 +28,7 @@ from app.providers.base import (
 )
 from app.providers.gateway import provider_gateway
 from app.providers.routing import RoutingProvider
+from app.services.planning_orchestrator import planning_orchestrator
 
 
 def assert_api_response_shape(body: dict[str, Any]) -> None:
@@ -132,6 +134,47 @@ def test_generate_trip_plan(client: TestClient, created_trip_id: str) -> None:
     # AICandidateProposalBatch or CandidateGroundingBatch during generation.
     assert planning_state["ai_candidate_proposal_batch"] is None
     assert planning_state["candidate_grounding_batch"] is None
+    # Step 166A: default routing_provider stays "not_connected", so this
+    # shadow/report-only sequencing report honestly reports not_connected
+    # (or, if no day has 2+ scheduled experiences, not_connected with no
+    # suggestions) -- generation itself still succeeds exactly as before
+    # this step, and the report never claims to have been applied.
+    sequencing_report = planning_state["route_aware_sequencing_report"]
+    assert sequencing_report is not None
+    assert sequencing_report["status"] in {"not_connected", "unavailable"}
+    assert sequencing_report["is_shadow_only"] is True
+    assert sequencing_report["applied_to_itinerary"] is False
+    # Step 166E: movement-data provenance never claims provider-backed
+    # data exists when routing is not_connected/unavailable, and never
+    # claims something was applied (which requires status==success in the
+    # first place, impossible here since routing isn't connected).
+    assert sequencing_report["movement_data_provenance"] in {"not_connected", "unavailable"}
+    for suggestion in sequencing_report["suggestions"]:
+        assert suggestion["route_duration_seconds"] is None
+        assert suggestion["route_distance_meters"] is None
+        assert suggestion["movement_data_provenance"] != "provider_backed"
+        assert suggestion["movement_data_provenance"] != "not_applied"
+    # Step 166C: default routing_provider stays "not_connected", so this
+    # travel-time buffer report honestly reports not_connected (or, if no
+    # day has 2+ scheduled experiences, not_connected with no buffers) --
+    # generation itself still succeeds exactly as before this step, and no
+    # duration/distance/buffer figure is ever fabricated.
+    buffer_report = planning_state["travel_time_buffer_report"]
+    assert buffer_report is not None
+    assert buffer_report["status"] in {"not_connected", "unavailable"}
+    assert buffer_report["uses_provider_backed_routes"] is True
+    assert buffer_report["movement_data_provenance"] in {"not_connected", "unavailable"}
+    for buffer in buffer_report["buffers"]:
+        assert buffer["route_duration_seconds"] is None
+        assert buffer["route_distance_meters"] is None
+        assert buffer["recommended_buffer_seconds"] is None
+        assert buffer["movement_data_provenance"] != "provider_backed"
+    # Step 166E: route feasibility movement-data provenance likewise never
+    # claims provider-backed data when routing isn't connected.
+    feasibility_report = planning_state["route_feasibility_report"]
+    assert feasibility_report["movement_data_provenance"] in {"not_connected", "unavailable"}
+    for leg in feasibility_report["legs"]:
+        assert leg["movement_data_provenance"] != "provider_backed"
 
 
 def test_destination_context_after_generate(
@@ -183,6 +226,562 @@ def test_experience_plan_after_generate(client: TestClient, generated_trip_id: s
         assert experience["estimated_duration_minutes"] is None
 
     assert body["data"]["validation_report"]["readiness_status"] == "needs_review"
+
+
+def test_route_aware_sequencing_report_matches_scheduled_order_and_never_applied(
+    client: TestClient, generated_trip_id: str
+) -> None:
+    """Step 166A: the sequencing report's `original_order` for each day must
+    exactly match that day's real scheduled experience order, proving this
+    shadow/report-only step reads the itinerary honestly without reordering
+    it. `provider_coverage`/`validation_report`/regeneration behavior are
+    all untouched by this new field.
+    """
+    experience_response = client.get(f"/trips/{generated_trip_id}/experience-plan")
+    assert experience_response.status_code == 200
+    daily_plans = experience_response.json()["data"]["experience_plan"]["daily_plans"]
+
+    trip_response = client.get(f"/trips/{generated_trip_id}")
+    assert trip_response.status_code == 200
+    planning_state = trip_response.json()["data"]["planning_state"]
+    sequencing_report = planning_state["route_aware_sequencing_report"]
+    assert sequencing_report is not None
+
+    scheduled_ids_by_day = {
+        day_plan["day_number"]: [experience["experience_id"] for experience in day_plan["experiences"]]
+        for day_plan in daily_plans
+    }
+    for suggestion in sequencing_report["suggestions"]:
+        assert suggestion["original_order"] == scheduled_ids_by_day[suggestion["day_index"]]
+        assert set(suggestion["suggested_order"]) == set(suggestion["original_order"])
+
+    # This field is additive only -- provider_coverage/validation stay
+    # driven entirely by route_feasibility_report, exactly as before.
+    validation_report = planning_state["validation_report"]
+    assert validation_report["readiness_status"] == "needs_review"
+    coverage_response = client.get(f"/trips/{generated_trip_id}/provider-coverage")
+    assert coverage_response.status_code == 200
+    assert coverage_response.json()["data"]["provider_coverage"]["routes"] == "not_connected"
+
+
+class _RouteAwareApplicationTestPlacesProvider(PlacesProvider):
+    """Test-only double with three attractions on the equator (lng 0, 1, 2),
+    used to prove Step 166B's config-gated application path. Provider
+    order is already geographically sorted, so `ExperiencePlannerService`'s
+    own straight-line (haversine) nearest-neighbor scheduling produces
+    `[Alpha, Beta, Gamma]` -- the paired `_CustomDurationRoutingProvider`
+    below then supplies real route durations that make a *different* order
+    genuinely faster, so any observed reorder can only come from real
+    route-aware sequencing being applied, never from scheduling alone.
+    """
+
+    provider_name = "openstreetmap_places"
+
+    def search_attractions(
+        self, destination: str, filters: dict[str, Any] | None = None
+    ) -> ProviderResponse[Any]:
+        places = [
+            NormalizedPlace(
+                place_id=place_id,
+                name=name,
+                category="landmark",
+                coordinates=GeoPoint(lat=0.0, lng=lng),
+                source=self.provider_name,
+                data_status=DataStatus.LIVE,
+                confidence=0.6,
+            )
+            for place_id, name, lng in (
+                ("test/routeaware/alpha", "Alpha", 0.0),
+                ("test/routeaware/beta", "Beta", 1.0),
+                ("test/routeaware/gamma", "Gamma", 2.0),
+            )
+        ]
+        return ProviderResponse[list[NormalizedPlace]](
+            provider_name=self.provider_name,
+            provider_type=self.provider_type,
+            status=ProviderStatus.SUCCESS,
+            data_status=DataStatus.LIVE,
+            data=places,
+            confidence=0.65,
+            message="Test fixture data; not a real provider call.",
+        )
+
+    def search_restaurants(
+        self, area: str, filters: dict[str, Any] | None = None
+    ) -> ProviderResponse[Any]:
+        return unavailable_response(
+            self.provider_name, self.provider_type, unavailable_fields=["restaurants"]
+        )
+
+    def search_accommodation_pois(
+        self, destination: str, filters: dict[str, Any] | None = None
+    ) -> ProviderResponse[Any]:
+        return unavailable_response(
+            self.provider_name, self.provider_type, unavailable_fields=["accommodation_pois"]
+        )
+
+
+class _CustomDurationRoutingProvider(RoutingProvider):
+    """Deterministic test double returning a fixed, real-looking duration
+    per (unordered) longitude pair -- deliberately *not* proportional to
+    straight-line distance, so Alpha->Gamma is faster than Alpha->Beta even
+    though Gamma is geographically farther. This is what makes a
+    route-aware reorder genuinely beneficial (and therefore a legitimate
+    thing to apply), never a fabricated/haversine-derived value.
+    """
+
+    provider_name = "custom_duration_routing_provider"
+
+    def __init__(self, duration_seconds_by_lng_pair: dict[frozenset[float], float]) -> None:
+        self._durations = duration_seconds_by_lng_pair
+
+    def get_route(self, request: RouteRequest) -> RouteResult:
+        key = frozenset({round(request.origin_lon, 4), round(request.destination_lon, 4)})
+        duration = self._durations.get(key)
+        if duration is None:
+            return RouteResult(
+                provider=self.provider_name,
+                status=ProviderStatus.UNAVAILABLE,
+                source=self.provider_name,
+                message="No fixture route defined for this pair.",
+            )
+        return RouteResult(
+            provider=self.provider_name,
+            status=ProviderStatus.SUCCESS,
+            distance_meters=duration * 100.0,
+            duration_seconds=duration,
+            geometry=None,
+            source=self.provider_name,
+            confidence=0.9,
+            message="Fake route for test purposes only.",
+        )
+
+
+_ROUTE_AWARE_DURATIONS = {
+    frozenset({0.0, 1.0}): 1000.0,  # Alpha <-> Beta
+    frozenset({0.0, 2.0}): 100.0,  # Alpha <-> Gamma (fast shortcut)
+    frozenset({1.0, 2.0}): 1000.0,  # Beta <-> Gamma
+}
+
+
+def _create_route_aware_single_day_trip(client: TestClient) -> str:
+    create_response = client.post(
+        "/trips",
+        json={
+            "destination_scope": "single_city",
+            "primary_destination": "Testville, Testland",
+            "origin_city": "Home City",
+            "start_date": "2026-08-10",
+            "end_date": "2026-08-10",
+            "travelers_count": 2,
+            "travel_group_type": "couple",
+            "pace": "balanced",
+        },
+    )
+    assert create_response.status_code == 201
+    return create_response.json()["data"]["trip_id"]
+
+
+def test_route_aware_scheduling_disabled_by_default_preserves_order_even_with_favorable_route_data(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Step 166B, requirement 1: even when real, provider-backed route data
+    would make a reorder genuinely faster, the default
+    (route_aware_scheduling_enabled=False) must never apply it."""
+    monkeypatch.setattr(provider_gateway, "places", _RouteAwareApplicationTestPlacesProvider())
+    monkeypatch.setattr(
+        provider_gateway, "routing", _CustomDurationRoutingProvider(_ROUTE_AWARE_DURATIONS)
+    )
+    assert get_settings().route_aware_scheduling_enabled is False
+
+    trip_id = _create_route_aware_single_day_trip(client)
+    generate_response = client.post(f"/trips/{trip_id}/generate")
+    assert generate_response.status_code == 200
+
+    experience_response = client.get(f"/trips/{trip_id}/experience-plan")
+    day_plan = experience_response.json()["data"]["experience_plan"]["daily_plans"][0]
+    scheduled_names = [experience["name"] for experience in day_plan["experiences"]]
+    # ExperiencePlannerService's own haversine ordering, untouched.
+    assert scheduled_names == ["Alpha", "Beta", "Gamma"]
+
+    trip_response = client.get(f"/trips/{trip_id}")
+    report = trip_response.json()["data"]["planning_state"]["route_aware_sequencing_report"]
+    # The report itself still honestly shows a beneficial suggestion exists...
+    assert report["suggestions"][0]["status"] == "success"
+    assert report["suggestions"][0]["improvement_seconds"] == 900.0
+    assert report["suggestions"][0]["applied"] is False
+    # ...but it was never applied, because the config gate is off. Step
+    # 166E: real, provider-backed data exists (`status == success`), but
+    # movement-data provenance still honestly says `not_applied`, never
+    # `provider_backed` -- provider-backed data existing and data actually
+    # being applied are two different things.
+    assert report["suggestions"][0]["movement_data_provenance"] == "not_applied"
+    assert report["is_shadow_only"] is True
+    assert report["applied_to_itinerary"] is False
+
+
+def test_route_aware_scheduling_enabled_applies_successful_provider_backed_suggestion(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Step 166B, requirements 4/5/9/10: with the config gate on and real,
+    successful route data, the scheduled order can change to match the
+    suggestion -- with no experience added/removed, no fabricated route
+    duration/distance, and no haversine estimate standing in for one."""
+    monkeypatch.setattr(provider_gateway, "places", _RouteAwareApplicationTestPlacesProvider())
+    monkeypatch.setattr(
+        provider_gateway, "routing", _CustomDurationRoutingProvider(_ROUTE_AWARE_DURATIONS)
+    )
+    monkeypatch.setenv("ROUTE_AWARE_SCHEDULING_ENABLED", "true")
+    get_settings.cache_clear()
+
+    trip_id = _create_route_aware_single_day_trip(client)
+    generate_response = client.post(f"/trips/{trip_id}/generate")
+    assert generate_response.status_code == 200
+
+    experience_response = client.get(f"/trips/{trip_id}/experience-plan")
+    day_plan = experience_response.json()["data"]["experience_plan"]["daily_plans"][0]
+    scheduled_names = [experience["name"] for experience in day_plan["experiences"]]
+
+    # Route-aware nearest-next (Alpha -> Gamma -> Beta, via the fast
+    # Alpha<->Gamma shortcut) replaces the haversine order
+    # (Alpha -> Beta -> Gamma).
+    assert scheduled_names == ["Alpha", "Gamma", "Beta"]
+    # No experience was added or removed.
+    assert set(scheduled_names) == {"Alpha", "Beta", "Gamma"}
+    assert len(scheduled_names) == 3
+
+    trip_response = client.get(f"/trips/{trip_id}")
+    planning_state = trip_response.json()["data"]["planning_state"]
+    report = planning_state["route_aware_sequencing_report"]
+    suggestion = report["suggestions"][0]
+    assert suggestion["status"] == "success"
+    assert suggestion["applied"] is True
+    # Step 166E: movement-data provenance flips from `not_applied` to
+    # `provider_backed` once actually applied.
+    assert suggestion["movement_data_provenance"] == "provider_backed"
+    assert report["is_shadow_only"] is False
+    assert report["applied_to_itinerary"] is True
+    # Every duration/distance figure traces back to a real, successful
+    # RouteResult -- 100s Alpha->Gamma + 1000s Gamma->Beta = 1100s.
+    assert suggestion["route_duration_seconds"] == 1100.0
+    assert suggestion["route_distance_meters"] == 110_000.0
+    assert suggestion["improvement_seconds"] == 900.0
+
+    # Route feasibility is recomputed against the new order, not stale.
+    feasibility_legs = planning_state["route_feasibility_report"]["legs"]
+    assert [leg["from_experience_name"] for leg in feasibility_legs] == ["Alpha", "Gamma"]
+    assert [leg["to_experience_name"] for leg in feasibility_legs] == ["Gamma", "Beta"]
+
+    # PlanValidatorService stays honest -- still needs_review, never a
+    # false "ready" claim, and regeneration is still refused.
+    assert planning_state["validation_report"]["readiness_status"] == "needs_review"
+    regenerate_response = client.post(f"/trips/{trip_id}/regenerate")
+    assert regenerate_response.status_code == 409
+    assert regenerate_response.json()["errors"][0]["code"] == "REGENERATION_NOT_AVAILABLE"
+
+
+def test_route_aware_scheduling_enabled_does_not_apply_not_connected_suggestion(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Step 166B, requirement 6: enabling the config gate must not apply a
+    suggestion when the routing provider is not connected -- the default
+    provider stays not_connected in this test, only the flag is flipped."""
+    monkeypatch.setenv("ROUTE_AWARE_SCHEDULING_ENABLED", "true")
+    get_settings.cache_clear()
+
+    trip_id = _create_route_aware_single_day_trip(client)
+    generate_response = client.post(f"/trips/{trip_id}/generate")
+    assert generate_response.status_code == 200
+
+    experience_response = client.get(f"/trips/{trip_id}/experience-plan")
+    day_plan = experience_response.json()["data"]["experience_plan"]["daily_plans"][0]
+    # Default deterministic test places provider (conftest.py) schedules
+    # its own fixture attractions -- what matters is that nothing crashed
+    # and the schedule was left untouched by the (unusable) sequencing report.
+    assert day_plan["experiences"] is not None
+
+    trip_response = client.get(f"/trips/{trip_id}")
+    report = trip_response.json()["data"]["planning_state"]["route_aware_sequencing_report"]
+    assert report["status"] in {"not_connected", "unavailable"}
+    assert report["is_shadow_only"] is True
+    assert report["applied_to_itinerary"] is False
+    for suggestion in report["suggestions"]:
+        assert suggestion["applied"] is False
+
+
+def test_route_aware_scheduling_enabled_does_not_apply_partial_suggestion(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Step 166B, requirement 6: a day where only some route lookups
+    succeeded (partial) must never be applied, even with the config gate on."""
+    partial_failure_provider = _CustomDurationRoutingProvider(
+        {frozenset({0.0, 2.0}): 100.0, frozenset({1.0, 2.0}): 1000.0}
+    )  # Alpha<->Beta pair deliberately missing, so the day's *original*
+    # consecutive-order duration can't be fully summed even though a
+    # nearest-next candidate reorder (via Alpha<->Gamma) can be.
+    monkeypatch.setattr(provider_gateway, "places", _RouteAwareApplicationTestPlacesProvider())
+    monkeypatch.setattr(provider_gateway, "routing", partial_failure_provider)
+    monkeypatch.setenv("ROUTE_AWARE_SCHEDULING_ENABLED", "true")
+    get_settings.cache_clear()
+
+    trip_id = _create_route_aware_single_day_trip(client)
+    generate_response = client.post(f"/trips/{trip_id}/generate")
+    assert generate_response.status_code == 200
+
+    experience_response = client.get(f"/trips/{trip_id}/experience-plan")
+    day_plan = experience_response.json()["data"]["experience_plan"]["daily_plans"][0]
+    scheduled_names = [experience["name"] for experience in day_plan["experiences"]]
+    assert scheduled_names == ["Alpha", "Beta", "Gamma"]
+
+    trip_response = client.get(f"/trips/{trip_id}")
+    report = trip_response.json()["data"]["planning_state"]["route_aware_sequencing_report"]
+    suggestion = report["suggestions"][0]
+    assert suggestion["status"] == "partial"
+    assert suggestion["applied"] is False
+    assert suggestion["route_duration_seconds"] is None
+    assert suggestion["route_distance_meters"] is None
+    assert report["is_shadow_only"] is True
+    assert report["applied_to_itinerary"] is False
+
+
+def test_travel_time_buffer_report_reflects_final_order_after_route_aware_scheduling_applied(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Step 166C, requirement 4: the travel-time buffer report must reflect
+    this run's *final* scheduled order -- after Step 166B's config-gated
+    route-aware-scheduling application has already reordered the day."""
+    monkeypatch.setattr(provider_gateway, "places", _RouteAwareApplicationTestPlacesProvider())
+    monkeypatch.setattr(
+        provider_gateway, "routing", _CustomDurationRoutingProvider(_ROUTE_AWARE_DURATIONS)
+    )
+    monkeypatch.setenv("ROUTE_AWARE_SCHEDULING_ENABLED", "true")
+    get_settings.cache_clear()
+
+    trip_id = _create_route_aware_single_day_trip(client)
+    generate_response = client.post(f"/trips/{trip_id}/generate")
+    assert generate_response.status_code == 200
+
+    experience_response = client.get(f"/trips/{trip_id}/experience-plan")
+    day_plan = experience_response.json()["data"]["experience_plan"]["daily_plans"][0]
+    scheduled_names = [experience["name"] for experience in day_plan["experiences"]]
+    # Reordered by Step 166B to Alpha -> Gamma -> Beta (see the 166B test
+    # above for the full duration/improvement math).
+    assert scheduled_names == ["Alpha", "Gamma", "Beta"]
+
+    trip_response = client.get(f"/trips/{trip_id}")
+    planning_state = trip_response.json()["data"]["planning_state"]
+    buffer_report = planning_state["travel_time_buffer_report"]
+    assert buffer_report["status"] == "success"
+    assert buffer_report["uses_provider_backed_routes"] is True
+
+    buffers = buffer_report["buffers"]
+    assert [buffer["from_experience_name"] for buffer in buffers] == ["Alpha", "Gamma"]
+    assert [buffer["to_experience_name"] for buffer in buffers] == ["Gamma", "Beta"]
+    # Real, provider-backed durations only -- Alpha<->Gamma is the fast
+    # shortcut (100s), Gamma<->Beta is the slow leg (1000s); the
+    # recommended buffer is always an exact restatement of the duration.
+    assert buffers[0]["route_duration_seconds"] == 100.0
+    assert buffers[0]["recommended_buffer_seconds"] == 100.0
+    assert buffers[1]["route_duration_seconds"] == 1000.0
+    assert buffers[1]["recommended_buffer_seconds"] == 1000.0
+    # Step 166E: movement-data provenance says provider_backed only
+    # because RouteResult.status == success for both legs.
+    assert buffer_report["movement_data_provenance"] == "provider_backed"
+    assert buffers[0]["movement_data_provenance"] == "provider_backed"
+    assert buffers[1]["movement_data_provenance"] == "provider_backed"
+    # No schedule timestamps exist yet, so sufficiency is never guessed.
+    for buffer in buffers:
+        assert buffer["available_gap_seconds"] is None
+        assert buffer["buffer_status"] == "not_computable"
+
+    # Validator stays honest -- no fabricated sufficiency warning, still
+    # needs_review, and regeneration is still refused.
+    assert planning_state["validation_report"]["readiness_status"] == "needs_review"
+    assert not any(
+        warning["category"] == "travel_time_buffer"
+        for warning in planning_state["validation_report"]["warnings"]
+    )
+    regenerate_response = client.post(f"/trips/{trip_id}/regenerate")
+    assert regenerate_response.status_code == 409
+    assert regenerate_response.json()["errors"][0]["code"] == "REGENERATION_NOT_AVAILABLE"
+
+
+def test_travel_time_buffer_report_reflects_unchanged_order_when_scheduling_disabled(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Step 166C, requirement 12: with route-aware scheduling disabled by
+    default, the buffer report must reflect the *original*, unmodified
+    schedule -- even though real, favorable route data exists."""
+    monkeypatch.setattr(provider_gateway, "places", _RouteAwareApplicationTestPlacesProvider())
+    monkeypatch.setattr(
+        provider_gateway, "routing", _CustomDurationRoutingProvider(_ROUTE_AWARE_DURATIONS)
+    )
+    assert get_settings().route_aware_scheduling_enabled is False
+
+    trip_id = _create_route_aware_single_day_trip(client)
+    generate_response = client.post(f"/trips/{trip_id}/generate")
+    assert generate_response.status_code == 200
+
+    trip_response = client.get(f"/trips/{trip_id}")
+    planning_state = trip_response.json()["data"]["planning_state"]
+    buffer_report = planning_state["travel_time_buffer_report"]
+    buffers = buffer_report["buffers"]
+    # Unchanged haversine order: Alpha -> Beta -> Gamma.
+    assert [buffer["from_experience_name"] for buffer in buffers] == ["Alpha", "Beta"]
+    assert [buffer["to_experience_name"] for buffer in buffers] == ["Beta", "Gamma"]
+    assert buffers[0]["route_duration_seconds"] == 1000.0
+    assert buffers[1]["route_duration_seconds"] == 1000.0
+
+
+# ---------------------------------------------------------------------------
+# Step 166D hardening: an unexpected exception from any of the three
+# route-dependent stage services must never crash /generate -- it must be
+# contained and stored as an honest failed/unavailable report instead.
+# ---------------------------------------------------------------------------
+
+
+def _raise_unexpectedly(*args, **kwargs):
+    raise RuntimeError("Simulated unexpected failure for test purposes only.")
+
+
+def test_route_feasibility_computation_failure_does_not_crash_generation(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        planning_orchestrator.route_feasibility_service, "build_report", _raise_unexpectedly
+    )
+
+    create_response = client.post(
+        "/trips",
+        json={
+            "destination_scope": "single_city",
+            "primary_destination": "Testville, Testland",
+            "origin_city": "Home City",
+            "start_date": "2026-08-10",
+            "end_date": "2026-08-12",
+            "travelers_count": 2,
+            "travel_group_type": "couple",
+        },
+    )
+    assert create_response.status_code == 201
+    trip_id = create_response.json()["data"]["trip_id"]
+
+    generate_response = client.post(f"/trips/{trip_id}/generate")
+    assert generate_response.status_code == 200
+    planning_state = generate_response.json()["data"]["planning_state"]
+
+    assert planning_state["route_feasibility_report"]["status"] == "failed"
+    assert planning_state["route_feasibility_report"]["legs"] == []
+    assert planning_state["validation_report"]["readiness_status"] == "needs_review"
+    # Generation continued past this failure -- later stages still ran.
+    assert planning_state["route_aware_sequencing_report"] is not None
+    assert planning_state["travel_time_buffer_report"] is not None
+
+
+def test_route_aware_sequencing_computation_failure_does_not_crash_generation(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        planning_orchestrator.route_aware_sequencing_service, "build_report", _raise_unexpectedly
+    )
+
+    create_response = client.post(
+        "/trips",
+        json={
+            "destination_scope": "single_city",
+            "primary_destination": "Testville, Testland",
+            "origin_city": "Home City",
+            "start_date": "2026-08-10",
+            "end_date": "2026-08-12",
+            "travelers_count": 2,
+            "travel_group_type": "couple",
+        },
+    )
+    assert create_response.status_code == 201
+    trip_id = create_response.json()["data"]["trip_id"]
+
+    generate_response = client.post(f"/trips/{trip_id}/generate")
+    assert generate_response.status_code == 200
+    planning_state = generate_response.json()["data"]["planning_state"]
+
+    sequencing_report = planning_state["route_aware_sequencing_report"]
+    assert sequencing_report["status"] == "failed"
+    assert sequencing_report["suggestions"] == []
+    assert sequencing_report["is_shadow_only"] is True
+    assert sequencing_report["applied_to_itinerary"] is False
+    assert planning_state["validation_report"]["readiness_status"] == "needs_review"
+    assert planning_state["travel_time_buffer_report"] is not None
+
+
+def test_travel_time_buffer_computation_failure_does_not_crash_generation(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        planning_orchestrator.travel_time_buffer_service, "build_report", _raise_unexpectedly
+    )
+
+    create_response = client.post(
+        "/trips",
+        json={
+            "destination_scope": "single_city",
+            "primary_destination": "Testville, Testland",
+            "origin_city": "Home City",
+            "start_date": "2026-08-10",
+            "end_date": "2026-08-12",
+            "travelers_count": 2,
+            "travel_group_type": "couple",
+        },
+    )
+    assert create_response.status_code == 201
+    trip_id = create_response.json()["data"]["trip_id"]
+
+    generate_response = client.post(f"/trips/{trip_id}/generate")
+    assert generate_response.status_code == 200
+    planning_state = generate_response.json()["data"]["planning_state"]
+
+    buffer_report = planning_state["travel_time_buffer_report"]
+    assert buffer_report["status"] == "failed"
+    assert buffer_report["buffers"] == []
+    assert buffer_report["uses_provider_backed_routes"] is True
+    assert planning_state["validation_report"]["readiness_status"] == "needs_review"
+
+
+def test_route_aware_scheduling_apply_failure_does_not_crash_generation(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Even with the config gate enabled, an unexpected exception from
+    apply_report itself must never crash generation or leave the schedule
+    partially modified."""
+    monkeypatch.setattr(
+        planning_orchestrator.route_aware_sequencing_service, "apply_report", _raise_unexpectedly
+    )
+    monkeypatch.setenv("ROUTE_AWARE_SCHEDULING_ENABLED", "true")
+    get_settings.cache_clear()
+
+    create_response = client.post(
+        "/trips",
+        json={
+            "destination_scope": "single_city",
+            "primary_destination": "Testville, Testland",
+            "origin_city": "Home City",
+            "start_date": "2026-08-10",
+            "end_date": "2026-08-12",
+            "travelers_count": 2,
+            "travel_group_type": "couple",
+        },
+    )
+    assert create_response.status_code == 201
+    trip_id = create_response.json()["data"]["trip_id"]
+
+    generate_response = client.post(f"/trips/{trip_id}/generate")
+    assert generate_response.status_code == 200
+    planning_state = generate_response.json()["data"]["planning_state"]
+
+    sequencing_report = planning_state["route_aware_sequencing_report"]
+    # apply_report itself failed, so nothing was applied.
+    assert sequencing_report["is_shadow_only"] is True
+    assert sequencing_report["applied_to_itinerary"] is False
+    assert planning_state["validation_report"]["readiness_status"] == "needs_review"
 
 
 def test_validation_report_after_generate(client: TestClient, generated_trip_id: str) -> None:
@@ -254,6 +853,49 @@ def test_provider_coverage_after_generate(client: TestClient, generated_trip_id:
     body = response.json()
     assert_api_response_shape(body)
     assert body["data"]["provider_coverage"]["places"] == "success"
+
+
+def test_provider_coverage_routes_never_claims_success_without_provider_backed_route_data(
+    client: TestClient, generated_trip_id: str
+) -> None:
+    """Step 166E, provider-coverage guidance: `provider_coverage.routes`
+    must never say `success` unless `route_feasibility_report.status ==
+    success` actually holds -- with the default not_connected routing
+    provider, it must stay honest."""
+    response = client.get(f"/trips/{generated_trip_id}/provider-coverage")
+    assert response.status_code == 200
+    coverage = response.json()["data"]["provider_coverage"]
+    assert coverage["routes"] in {"not_connected", "unavailable", "partial", "failed"}
+    assert coverage["routes"] != "success"
+
+
+def test_provider_coverage_routes_reflects_provider_backed_success_honestly(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When real, successful route data does exist, `provider_coverage.
+    routes` reports `success` -- but only because
+    `route_feasibility_report.status == success` genuinely holds, never
+    upgraded independently of it."""
+    monkeypatch.setattr(provider_gateway, "places", _RouteAwareApplicationTestPlacesProvider())
+    monkeypatch.setattr(
+        provider_gateway, "routing", _CustomDurationRoutingProvider(_ROUTE_AWARE_DURATIONS)
+    )
+
+    trip_id = _create_route_aware_single_day_trip(client)
+    generate_response = client.post(f"/trips/{trip_id}/generate")
+    assert generate_response.status_code == 200
+
+    trip_response = client.get(f"/trips/{trip_id}")
+    planning_state = trip_response.json()["data"]["planning_state"]
+    assert planning_state["route_feasibility_report"]["status"] == "success"
+    assert (
+        planning_state["route_feasibility_report"]["movement_data_provenance"]
+        == "provider_backed"
+    )
+
+    coverage_response = client.get(f"/trips/{trip_id}/provider-coverage")
+    assert coverage_response.status_code == 200
+    assert coverage_response.json()["data"]["provider_coverage"]["routes"] == "success"
 
 
 class _MixedFieldStatusTestPlacesProvider(PlacesProvider):

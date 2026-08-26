@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 
 from app.core.config import get_settings
@@ -16,6 +17,12 @@ from app.models.planning_state import (
     PlanningState,
     TripRequest,
 )
+from app.models.routing import (
+    MovementDataProvenance,
+    RouteAwareSequencingReport,
+    RouteFeasibilityReport,
+    TravelTimeBufferReport,
+)
 from app.providers.gateway import provider_gateway
 from app.repositories.planning_state_repository import (
     PlanningStateRepository,
@@ -30,11 +37,15 @@ from app.services.feedback_service import FeedbackService
 from app.services.plan_diff_preview_service import PlanDiffPreviewService
 from app.services.plan_validator_service import PlanValidatorService
 from app.services.regeneration_readiness_service import RegenerationReadinessService
+from app.services.route_aware_sequencing_service import RouteAwareSequencingService
 from app.services.route_feasibility_service import RouteFeasibilityService
 from app.services.stay_transport_service import StayTransportService
+from app.services.travel_time_buffer_service import TravelTimeBufferService
 from app.services.traveler_profile_service import TravelerProfileService
 from app.services.trip_strategy_service import TripStrategyService
 from app.services.versioning_service import VersioningService
+
+logger = logging.getLogger(__name__)
 
 _READINESS_TO_PIPELINE_STATUS = {
     "ready": PipelineStatus.VALIDATED,
@@ -76,6 +87,51 @@ def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+# Step 166D hardening: safe fallback reports for when
+# RouteFeasibilityService/RouteAwareSequencingService/TravelTimeBufferService
+# raise an unexpected exception (as opposed to an honest non-`success`
+# `RouteResult`, which every real routing adapter already returns on its
+# own failure). Each stage service already contains an exception from its
+# own `ProviderGateway.get_route` call (see each service's own
+# `_safe_get_route` helper); these fallbacks are a second line of defense
+# for a genuinely unexpected bug elsewhere in a service's `build_report`/
+# `apply_report` (e.g. constructing the report object itself), so
+# `generate_full_plan` never fails just because route-dependent reporting
+# did. Every fallback is `status=failed`, empty, and carries no raw
+# exception text or provider payload -- never a fabricated leg,
+# suggestion, or buffer.
+def _failed_route_feasibility_report(provider_name: str) -> RouteFeasibilityReport:
+    return RouteFeasibilityReport(
+        status=ProviderStatus.FAILED,
+        legs=[],
+        provider=provider_name,
+        route_data_source="not_connected",
+        generated_at=_utc_now(),
+        movement_data_provenance=MovementDataProvenance.FAILED,
+    )
+
+
+def _failed_route_aware_sequencing_report() -> RouteAwareSequencingReport:
+    return RouteAwareSequencingReport(
+        status=ProviderStatus.FAILED,
+        suggestions=[],
+        generated_at=_utc_now(),
+        is_shadow_only=True,
+        applied_to_itinerary=False,
+        movement_data_provenance=MovementDataProvenance.FAILED,
+    )
+
+
+def _failed_travel_time_buffer_report() -> TravelTimeBufferReport:
+    return TravelTimeBufferReport(
+        status=ProviderStatus.FAILED,
+        buffers=[],
+        generated_at=_utc_now(),
+        uses_provider_backed_routes=True,
+        movement_data_provenance=MovementDataProvenance.FAILED,
+    )
+
+
 class PlanningOrchestrator:
     """Controls the full planning pipeline (docs/14_backend_architecture.md
     section 7).
@@ -96,6 +152,8 @@ class PlanningOrchestrator:
         experience_planner_service: ExperiencePlannerService | None = None,
         plan_validator_service: PlanValidatorService | None = None,
         route_feasibility_service: RouteFeasibilityService | None = None,
+        route_aware_sequencing_service: RouteAwareSequencingService | None = None,
+        travel_time_buffer_service: TravelTimeBufferService | None = None,
         feedback_service: FeedbackService | None = None,
         versioning_service: VersioningService | None = None,
         plan_diff_preview_service: PlanDiffPreviewService | None = None,
@@ -116,6 +174,12 @@ class PlanningOrchestrator:
         )
         self.plan_validator_service = plan_validator_service or PlanValidatorService()
         self.route_feasibility_service = route_feasibility_service or RouteFeasibilityService()
+        self.route_aware_sequencing_service = (
+            route_aware_sequencing_service or RouteAwareSequencingService()
+        )
+        self.travel_time_buffer_service = (
+            travel_time_buffer_service or TravelTimeBufferService()
+        )
         self.feedback_service = feedback_service or FeedbackService()
         self.versioning_service = versioning_service or VersioningService()
         self.plan_diff_preview_service = plan_diff_preview_service or PlanDiffPreviewService()
@@ -292,6 +356,33 @@ class PlanningOrchestrator:
         planning_state.set_pipeline_status(PipelineStatus.STAY_TRANSPORT_CREATED)
         return planning_state
 
+    def _build_route_feasibility_report_safe(self, planning_state: PlanningState) -> None:
+        """Builds and stores `route_feasibility_report` plus the derived
+        `ProviderCoverage.routes` value (Step 165E), failing safe (Step
+        166D hardening): an unexpected exception from
+        `RouteFeasibilityService.build_report` is never allowed to crash
+        generation. On such a failure, a safe `status=failed` report with
+        no legs is stored instead -- never a fabricated leg, and never raw
+        exception text or a provider payload in any stored field.
+        """
+        try:
+            planning_state.route_feasibility_report = self.route_feasibility_service.build_report(
+                planning_state
+            )
+        except Exception:
+            logger.warning(
+                "RouteFeasibilityService.build_report failed unexpectedly; storing a "
+                "failed report so generation can continue.",
+                exc_info=True,
+            )
+            provider_name = getattr(
+                self.route_feasibility_service.gateway.routing, "provider_name", "routing_provider"
+            )
+            planning_state.route_feasibility_report = _failed_route_feasibility_report(provider_name)
+        planning_state.provider_coverage.routes = _ROUTE_STATUS_TO_COVERAGE_VALUE.get(
+            planning_state.route_feasibility_report.status, "not_connected"
+        )
+
     def run_experience_plan_stage(self, planning_state: PlanningState) -> PlanningState:
         planning_state = self.experience_planner_service.run(planning_state)
         # Step 165E: route feasibility for consecutive scheduled experiences
@@ -301,12 +392,82 @@ class PlanningOrchestrator:
         # route-aware-scheduling boundary (Section 166). Saved alongside
         # experience_plan by generate_full_plan's existing
         # save-after-each-stage cadence; no extra save call needed here.
-        planning_state.route_feasibility_report = self.route_feasibility_service.build_report(
-            planning_state
-        )
-        planning_state.provider_coverage.routes = _ROUTE_STATUS_TO_COVERAGE_VALUE.get(
-            planning_state.route_feasibility_report.status, "not_connected"
-        )
+        self._build_route_feasibility_report_safe(planning_state)
+
+        # Step 166A: shadow/report-only route-aware day-sequencing
+        # suggestions, computed after route_feasibility_report and before
+        # PlanValidatorService runs. Never reorders/drops a scheduled
+        # experience and never fed back into ExperiencePlannerService --
+        # see RouteAwareSequencingReport's own docstring
+        # (is_shadow_only=True, applied_to_itinerary=False, always). Fails
+        # safe (Step 166D): an unexpected exception is never allowed to
+        # crash generation.
+        try:
+            planning_state.route_aware_sequencing_report = (
+                self.route_aware_sequencing_service.build_report(planning_state)
+            )
+        except Exception:
+            logger.warning(
+                "RouteAwareSequencingService.build_report failed unexpectedly; storing a "
+                "failed report so generation can continue.",
+                exc_info=True,
+            )
+            planning_state.route_aware_sequencing_report = _failed_route_aware_sequencing_report()
+
+        # Step 166B: config-gated application of the above report onto the
+        # real schedule. Disabled by default (Settings.
+        # route_aware_scheduling_enabled=False) -- when disabled, this is a
+        # pure no-op and the scheduled itinerary order stays exactly as
+        # ExperiencePlannerService left it. When enabled,
+        # RouteAwareSequencingService.apply_report only ever reorders a day
+        # whose suggestion is provider-backed, successful, and past the
+        # configured minimum real improvement -- see its own docstring for
+        # the full safety contract. Fails safe (Step 166D): an unexpected
+        # exception here leaves the scheduled order exactly as it was and
+        # never crashes generation.
+        settings = get_settings()
+        if settings.route_aware_scheduling_enabled:
+            try:
+                applied = self.route_aware_sequencing_service.apply_report(
+                    planning_state,
+                    planning_state.route_aware_sequencing_report,
+                    settings.route_aware_scheduling_min_improvement_seconds,
+                )
+            except Exception:
+                logger.warning(
+                    "RouteAwareSequencingService.apply_report failed unexpectedly; "
+                    "leaving the scheduled order unchanged.",
+                    exc_info=True,
+                )
+                applied = False
+            if applied:
+                # Keep route_feasibility_report consistent with the
+                # now-reordered schedule rather than leaving it stale --
+                # legs are built from consecutive scheduled pairs, which
+                # just changed for at least one day.
+                self._build_route_feasibility_report_safe(planning_state)
+
+        # Step 166C: provider-backed travel-time buffer reporting for
+        # consecutive scheduled experiences, computed after
+        # route_feasibility_report and after any Step 166B config-gated
+        # route-aware-scheduling application above -- so buffers always
+        # reflect this run's final scheduled order. Never reorders/drops a
+        # scheduled experience, never inserts a fake travel segment, and
+        # never fabricates a duration/distance/buffer -- see
+        # TravelTimeBufferReport's own docstring. Fails safe (Step 166D):
+        # an unexpected exception is never allowed to crash generation.
+        try:
+            planning_state.travel_time_buffer_report = self.travel_time_buffer_service.build_report(
+                planning_state
+            )
+        except Exception:
+            logger.warning(
+                "TravelTimeBufferService.build_report failed unexpectedly; storing a "
+                "failed report so generation can continue.",
+                exc_info=True,
+            )
+            planning_state.travel_time_buffer_report = _failed_travel_time_buffer_report()
+
         planning_state.set_pipeline_status(PipelineStatus.EXPERIENCE_PLAN_CREATED)
         return planning_state
 

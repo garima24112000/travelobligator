@@ -211,6 +211,33 @@ class Settings(BaseSettings):
         ge=0,
     )
 
+    # Config gate for RouteAwareSequencingService.apply_report (Step 166B,
+    # docs/12_provider_architecture.md, docs/13_llm_reasoning_pipeline.md,
+    # docs/14_backend_architecture.md). Default is False so normal
+    # generation is completely unaffected -- when disabled,
+    # PlanningOrchestrator never calls apply_report, and
+    # route_aware_sequencing_report stays exactly as Step 166A left it
+    # (is_shadow_only=True, applied_to_itinerary=False, scheduled
+    # itinerary order unchanged).
+    route_aware_scheduling_enabled: bool = Field(
+        default=False,
+        alias="ROUTE_AWARE_SCHEDULING_ENABLED",
+    )
+
+    # Minimum real, provider-backed improvement (in seconds) a day's
+    # route-aware sequencing suggestion must show before it is ever
+    # applied, even when route_aware_scheduling_enabled is True.
+    # Conservative default of 0.0 combined with a strict "greater than"
+    # comparison in RouteAwareSequencingService.apply_report means only a
+    # suggestion with a genuinely positive real improvement is ever
+    # applied -- a suggestion with zero or negative improvement never
+    # changes the schedule. Must be non-negative.
+    route_aware_scheduling_min_improvement_seconds: float = Field(
+        default=0.0,
+        alias="ROUTE_AWARE_SCHEDULING_MIN_IMPROVEMENT_SECONDS",
+        ge=0.0,
+    )
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

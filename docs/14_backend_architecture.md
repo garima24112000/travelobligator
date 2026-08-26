@@ -1678,3 +1678,210 @@ This is feasibility *reporting* only: it never reorders, adds, or drops a
 scheduled experience, and `ExperiencePlannerService`'s straight-line/
 haversine scheduling (Step 156C) is untouched. Full route-aware scheduling
 is Section 166's job, not this step's.
+
+## 36. Route-Aware Day Sequencing, Shadow/Report-Only (Step 166A)
+
+`RouteAwareSequencingService`
+(`backend/app/services/route_aware_sequencing_service.py`,
+docs/12_provider_architecture.md,
+docs/13_llm_reasoning_pipeline.md section 59) runs inside
+`PlanningOrchestrator.run_experience_plan_stage`, immediately after
+`RouteFeasibilityService.build_report` (section 35 above) and before
+`PlanValidatorService.run`. It builds `PlanningState.route_aware_
+sequencing_report` (a `RouteAwareSequencingReport`) by calling
+`ProviderGateway.get_route` for every pair of coordinate-backed
+experiences within each scheduled day that has two or more experiences --
+the same routing call path Step 165B exposed and Step 165C cache-backs.
+
+**Not applied to scheduling.** `RouteAwareSequencingReport.is_shadow_only`
+stays `True` and `applied_to_itinerary` stays `False`, always. This step
+never reorders, adds, or drops a scheduled experience --
+`ExperiencePlannerService`'s actual scheduled order
+(`ExperiencePlan.daily_plans[*].experiences`) is completely untouched, and
+the suggested order is not fed back into `ExperiencePlannerService`,
+`PlanValidatorService`, or `ProviderCoverage` by this step.
+
+**Default routing remains `not_connected` unless configured**, exactly as
+for `route_feasibility_report` (section 35): with
+`Settings.routing_provider="not_connected"`, every day suggestion (and the
+report as a whole) honestly reports `not_connected`, with no network call
+-- `/generate` succeeds exactly as it did before this step. A day with
+fewer than two coordinate-backed experiences is `unavailable` without ever
+calling the provider; a day where some (but not all) needed route lookups
+succeeded is `partial`, with no duration/distance total reported --
+`route_duration_seconds`/`route_distance_meters`/`improvement_seconds` are
+only ever populated when every route lookup a day's suggestion depends on
+returned a real, successful route.
+
+This is a shadow/report-only step: it does not change
+`PlanValidatorService`'s behavior or `ProviderCoverage.routes`, both of
+which remain driven solely by `route_feasibility_report`, exactly as after
+Step 165E. Full route-aware scheduling that actually changes itinerary
+order remains a later Section 166 step, not this one.
+
+## 37. Config-Gated Route-Aware Scheduling Application (Step 166B)
+
+`RouteAwareSequencingService.apply_report` (Step 166B,
+docs/12_provider_architecture.md,
+docs/13_llm_reasoning_pipeline.md section 60) is called by
+`PlanningOrchestrator.run_experience_plan_stage`, right after building
+`route_aware_sequencing_report` (section 36 above), and **only when
+`Settings.route_aware_scheduling_enabled` is `True`**. This setting
+defaults to `False`, so this application path is completely inert by
+default -- `PlanningOrchestrator` never calls `apply_report`, and the
+scheduled itinerary order stays exactly as `ExperiencePlannerService` left
+it.
+
+When enabled, `apply_report` reorders a day's real scheduled experiences
+only when its suggestion is `success`, its real improvement exceeds
+`Settings.route_aware_scheduling_min_improvement_seconds` (default
+`0.0`), the day's current experience IDs still match the suggestion's
+`original_order`, and `suggested_order` is a verified exact permutation
+of those IDs. It never adds, removes, or duplicates an experience, and it
+never changes any experience field other than order. When at least one
+day is actually reordered, `route_aware_sequencing_report.is_shadow_only`
+flips to `False` and `applied_to_itinerary` flips to `True`; otherwise
+both stay exactly as Step 166A set them.
+
+If any day was reordered, `PlanningOrchestrator` immediately recomputes
+`route_feasibility_report` (and `ProviderCoverage.routes`) against the
+new order, so `PlanValidatorService` never describes a stale schedule.
+`PlanValidatorService` itself, `provider_coverage` for every other field,
+and regeneration-refusal behavior are otherwise unaffected by this step.
+
+## 38. Provider-Backed Travel-Time Buffer Reporting (Step 166C)
+
+`TravelTimeBufferService` (`backend/app/services/travel_time_buffer_service.py`,
+docs/12_provider_architecture.md,
+docs/13_llm_reasoning_pipeline.md section 61) runs inside
+`PlanningOrchestrator.run_experience_plan_stage`, immediately after
+`route_feasibility_report` is built and after any Step 166B config-gated
+route-aware-scheduling application (section 37 above) -- so
+`PlanningState.travel_time_buffer_report` always reflects this run's
+*final* scheduled order, whether or not a reorder happened. It builds a
+`TravelTimeBuffer` for every consecutive pair of scheduled experiences
+within each day by calling `ProviderGateway.get_route` (the same Step
+165B/165C call path RouteFeasibilityService/RouteAwareSequencingService
+already use).
+
+Each buffer's `recommended_buffer_seconds` is never anything but an exact
+restatement of a real, successful `RouteResult.duration_seconds` -- no
+invented padding, no straight-line (haversine) substitute. A leg missing
+a coordinate is `not_computable` without calling the provider; a leg
+whose provider call is `not_connected`/`unavailable`/`failed` mirrors
+that status with no duration/distance/buffer populated. Since this app's
+scheduling does not currently populate `ExperienceItem.start_time`/
+`end_time`, `available_gap_seconds` stays `None` and
+`buffer_status=not_computable` for essentially every plan generated
+today, even when a real duration exists -- sufficiency is never guessed.
+
+`PlanValidatorService` consumes this report to add one non-blocking
+`WARNING` per leg whose `buffer_status == insufficient` (a real duration
+exceeding a real known gap); a `sufficient`, `not_computable`, or
+`unavailable` leg never produces this warning. This never changes
+`provider_coverage`, regeneration-refusal behavior, or Step 166B's config
+defaults.
+
+## 39. Hardened Unavailable-Routing Fallback Behavior (Step 166D)
+
+Step 166D hardens fallback behavior across Sections 165E/166A-166C
+rather than adding a new report or endpoint. Route fallback statuses are
+documented here as the single shared vocabulary every route-dependent
+report already uses:
+
+| Status | Meaning | Appears in |
+|---|---|---|
+| `success` | A real, provider-backed duration/distance exists for this leg/day. | all three reports |
+| `partial` | Some legs/days succeeded, others didn't. | all three reports (report-level aggregate) |
+| `unavailable` | The routing provider responded but returned no usable route (or, for `route_feasibility_report`/`route_aware_sequencing_report`, coordinates are missing). | all three reports |
+| `not_connected` | No routing provider is configured at all. | all three reports |
+| `not_computable` | A required input (coordinates, or a schedule gap) is missing, so no duration/sufficiency judgement is even attempted. | `travel_time_buffer_report` (per leg `status`), and `buffer_status` specifically for "duration known, no gap known" |
+| `failed` | The provider request failed, or an unexpected exception was safely contained. | all three reports |
+
+**Generation remains safe when routing is unavailable.** Each of
+`RouteFeasibilityService`, `RouteAwareSequencingService`, and
+`TravelTimeBufferService` wraps its own `ProviderGateway.get_route` call
+in a self-contained `_safe_get_route` helper: a genuinely unexpected
+exception (as opposed to an honest non-`success` `RouteResult`, which
+every real adapter already returns on its own) is converted into a
+`status=failed` result with a generic message, never raw exception text
+or a provider payload. `RouteAwareSequencingService.apply_report`
+additionally contains an unexpected error applying one day's suggestion
+without aborting other, still-safe days, and never leaves a day
+partially reordered.
+
+As a second line of defense, `PlanningOrchestrator.
+run_experience_plan_stage` wraps every `build_report`/`apply_report`
+call for these three services in its own try/except. If one still
+raises unexpectedly, the orchestrator stores an honest, empty
+`status=failed` report (`_failed_route_feasibility_report`/
+`_failed_route_aware_sequencing_report`/
+`_failed_travel_time_buffer_report`) and generation continues to
+`PlanValidatorService` and beyond -- `/generate` never fails just
+because route-dependent reporting did.
+
+`PlanValidatorService` was also hardened: the travel-time-buffer warning
+path is now deduplicated by `(from_experience_id, to_experience_id)`, so
+a report can never produce more than one warning about the same leg.
+Nothing about `RouteAwareSequencingService.apply_report`'s existing
+safety contract changed -- it already refused every non-`success`
+suggestion, and this step adds regression tests, not new logic, to lock
+that in.
+
+## 40. Movement-Data Provenance and Final Section 166 Integration (Step 166E)
+
+Step 166E is the final Section 166 step. It adds a shared
+`MovementDataProvenance` field (`provider_backed`/`not_connected`/
+`unavailable`/`not_computable`/`failed`/`not_applied`,
+`backend/app/models/routing.py`) to every route-dependent model, and
+locks in the complete route-aware planning flow with integration tests
+-- no new report, no new endpoint, no behavior change beyond that
+labeling.
+
+**Final Section 166 route-aware planning flow**, all inside
+`PlanningOrchestrator.run_experience_plan_stage`, in this fixed order:
+
+1. `RouteFeasibilityService.build_report` -- route feasibility for
+   consecutive scheduled pairs (Step 165E).
+2. `RouteAwareSequencingService.build_report` -- shadow-only day
+   sequencing suggestions (Step 166A).
+3. `RouteAwareSequencingService.apply_report` -- **only** when
+   `Settings.route_aware_scheduling_enabled` is `True` (default `False`)
+   -- config-gated application onto the real schedule (Step 166B). If
+   this reorders at least one day, `route_feasibility_report` is
+   recomputed against the new order immediately.
+4. `TravelTimeBufferService.build_report` -- travel-time buffers using
+   this run's *final* scheduled order, whether or not step 3 reordered
+   anything (Step 166C).
+5. `PlanValidatorService.run` -- consumes `route_feasibility_report`/
+   `travel_time_buffer_report` (Step 165E/166C consumption, Step 166D
+   dedup hardening).
+
+**Safe failure behavior at every one of steps 1-4**: each service
+contains an unexpected routing-provider exception itself
+(`_safe_get_route`, Step 166D), and `PlanningOrchestrator` wraps every
+one of these four calls in its own try/except as a second line of
+defense, storing an honest empty `status=failed` report
+(`movement_data_provenance=failed`) if a call still raises unexpectedly.
+`/generate` never fails, and no raw exception text or provider payload
+is ever stored in a user-facing field.
+
+**Movement-data provenance sits alongside every existing status field**,
+never replacing it: `RouteLegFeasibility.status`,
+`RouteAwareSequenceSuggestion.status`, and `TravelTimeBuffer.status`/
+`buffer_status` are all unchanged in meaning and values. The new
+`movement_data_provenance` field (and its report-level counterpart on
+all three parent reports) is purely additive, computed via the shared
+`movement_data_provenance_from_status` helper (and, for sequencing
+suggestions specifically, `route_aware_suggestion_provenance`, which
+adds the `not_applied` distinction). `RouteAwareSequenceSuggestion.
+movement_data_provenance` starts as `not_applied` for every `success`
+suggestion and only ever flips to `provider_backed` inside
+`apply_report`, in lockstep with `applied`/`message` -- so it can never
+imply a reorder happened when the config gate was off or the suggestion
+was otherwise rejected.
+
+`ProviderCoverage.routes` (already wired since Step 165E) continues to
+report honestly off `route_feasibility_report.status` alone -- `success`
+only when that status is genuinely `success`, confirmed by a dedicated
+regression test.

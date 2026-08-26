@@ -9,7 +9,15 @@ from app.models.planning_state import (
     TravelGroupType,
     TripRequest,
 )
-from app.models.routing import RouteFeasibilityReport, RouteFeasibilityStatus, RouteLegFeasibility
+from app.models.routing import (
+    BufferSufficiencyStatus,
+    RouteFeasibilityReport,
+    RouteFeasibilityStatus,
+    RouteLegFeasibility,
+    TravelTimeBuffer,
+    TravelTimeBufferReport,
+    TravelTimeBufferStatus,
+)
 from app.services.candidate_quality_service import CandidateQualityService
 from app.services.experience_planner_service import ExperiencePlannerService
 from app.services.plan_validator_service import PlanValidatorService
@@ -379,3 +387,264 @@ def test_route_feasibility_warning_never_fabricates_distance_or_duration() -> No
     # distance/duration figure.
     assert "1200" not in warning.message
     assert "600" not in warning.message
+
+
+# ---------------------------------------------------------------------------
+# Step 166C: PlanValidatorService consumes planning_state.travel_time_buffer_report.
+# Route lookups already happened elsewhere (TravelTimeBufferService, run by
+# PlanningOrchestrator before validation) -- these tests set the report
+# directly and never call a provider or network from the validator itself.
+# ---------------------------------------------------------------------------
+
+
+def _travel_time_buffer_warnings(planning_state: PlanningState) -> list[Any]:
+    return [
+        warning
+        for warning in planning_state.validation_report.warnings
+        if warning.category == "travel_time_buffer"
+    ]
+
+
+def test_insufficient_buffer_produces_a_needs_review_warning() -> None:
+    planning_state = _two_candidate_planning_state()
+    ExperiencePlannerService().run(planning_state)
+    scheduled = planning_state.experience_plan.daily_plans[0].experiences
+
+    planning_state.travel_time_buffer_report = TravelTimeBufferReport(
+        status=ProviderStatus.SUCCESS,
+        buffers=[
+            TravelTimeBuffer(
+                from_experience_id=scheduled[0].experience_id,
+                from_experience_name=scheduled[0].name,
+                to_experience_id=scheduled[1].experience_id,
+                to_experience_name=scheduled[1].name,
+                provider="osrm",
+                status=TravelTimeBufferStatus.SUCCESS,
+                route_duration_seconds=900.0,
+                route_distance_meters=1500.0,
+                recommended_buffer_seconds=900.0,
+                available_gap_seconds=300.0,
+                buffer_status=BufferSufficiencyStatus.INSUFFICIENT,
+                message="A provider-backed travel duration exceeds the scheduled gap.",
+            )
+        ],
+    )
+
+    PlanValidatorService().run(planning_state)
+
+    buffer_warnings = _travel_time_buffer_warnings(planning_state)
+    assert len(buffer_warnings) == 1
+    message = buffer_warnings[0].message
+    assert scheduled[0].name in message
+    assert scheduled[1].name in message
+    assert "900" in message
+    assert "300" in message
+    # Never a critical issue, never claims the plan is ready.
+    assert planning_state.validation_report.readiness_status.value == "needs_review"
+    assert not any(
+        issue.category == "travel_time_buffer"
+        for issue in planning_state.validation_report.critical_issues
+    )
+
+
+def test_sufficient_buffer_produces_no_warning_for_that_leg() -> None:
+    planning_state = _two_candidate_planning_state()
+    ExperiencePlannerService().run(planning_state)
+    scheduled = planning_state.experience_plan.daily_plans[0].experiences
+
+    planning_state.travel_time_buffer_report = TravelTimeBufferReport(
+        status=ProviderStatus.SUCCESS,
+        buffers=[
+            TravelTimeBuffer(
+                from_experience_id=scheduled[0].experience_id,
+                from_experience_name=scheduled[0].name,
+                to_experience_id=scheduled[1].experience_id,
+                to_experience_name=scheduled[1].name,
+                provider="osrm",
+                status=TravelTimeBufferStatus.SUCCESS,
+                route_duration_seconds=300.0,
+                route_distance_meters=500.0,
+                recommended_buffer_seconds=300.0,
+                available_gap_seconds=1200.0,
+                buffer_status=BufferSufficiencyStatus.SUFFICIENT,
+                message="A provider-backed travel duration fits within the scheduled gap.",
+            )
+        ],
+    )
+
+    PlanValidatorService().run(planning_state)
+
+    assert _travel_time_buffer_warnings(planning_state) == []
+    assert planning_state.validation_report.readiness_status.value == "needs_review"
+
+
+def test_not_computable_buffer_never_invents_sufficiency() -> None:
+    """No schedule timestamps exist (the case for every plan this app
+    currently generates) -- the validator must never guess sufficiency
+    either way."""
+    planning_state = _two_candidate_planning_state()
+    ExperiencePlannerService().run(planning_state)
+    scheduled = planning_state.experience_plan.daily_plans[0].experiences
+
+    planning_state.travel_time_buffer_report = TravelTimeBufferReport(
+        status=ProviderStatus.SUCCESS,
+        buffers=[
+            TravelTimeBuffer(
+                from_experience_id=scheduled[0].experience_id,
+                from_experience_name=scheduled[0].name,
+                to_experience_id=scheduled[1].experience_id,
+                to_experience_name=scheduled[1].name,
+                provider="osrm",
+                status=TravelTimeBufferStatus.SUCCESS,
+                route_duration_seconds=900.0,
+                route_distance_meters=1500.0,
+                recommended_buffer_seconds=900.0,
+                available_gap_seconds=None,
+                buffer_status=BufferSufficiencyStatus.NOT_COMPUTABLE,
+                message="No schedule timestamps exist for these experiences.",
+            )
+        ],
+    )
+
+    PlanValidatorService().run(planning_state)
+
+    assert _travel_time_buffer_warnings(planning_state) == []
+    assert planning_state.validation_report.readiness_status.value == "needs_review"
+
+
+def test_unavailable_buffer_keeps_needs_review_without_new_warning() -> None:
+    planning_state = _two_candidate_planning_state()
+    ExperiencePlannerService().run(planning_state)
+    scheduled = planning_state.experience_plan.daily_plans[0].experiences
+
+    planning_state.travel_time_buffer_report = TravelTimeBufferReport(
+        status=ProviderStatus.NOT_CONNECTED,
+        buffers=[
+            TravelTimeBuffer(
+                from_experience_id=scheduled[0].experience_id,
+                from_experience_name=scheduled[0].name,
+                to_experience_id=scheduled[1].experience_id,
+                to_experience_name=scheduled[1].name,
+                provider="not_connected",
+                status=TravelTimeBufferStatus.NOT_CONNECTED,
+                route_duration_seconds=None,
+                route_distance_meters=None,
+                recommended_buffer_seconds=None,
+                available_gap_seconds=None,
+                buffer_status=BufferSufficiencyStatus.UNAVAILABLE,
+                message="No routing provider is connected.",
+            )
+        ],
+    )
+
+    PlanValidatorService().run(planning_state)
+
+    assert _travel_time_buffer_warnings(planning_state) == []
+    # No critical issue is ever created just because routing is
+    # unavailable/not connected.
+    assert planning_state.validation_report.readiness_status.value == "needs_review"
+    assert planning_state.validation_report.critical_issues == []
+
+
+def test_no_travel_time_buffer_report_produces_no_warning() -> None:
+    planning_state = _two_candidate_planning_state()
+    ExperiencePlannerService().run(planning_state)
+    assert planning_state.travel_time_buffer_report is None
+
+    PlanValidatorService().run(planning_state)
+
+    assert _travel_time_buffer_warnings(planning_state) == []
+    assert planning_state.validation_report.readiness_status.value == "needs_review"
+
+
+# ---------------------------------------------------------------------------
+# Step 166D hardening: no duplicate/conflicting warnings for the same leg,
+# and the validator never claims route timing was checked when it wasn't.
+# ---------------------------------------------------------------------------
+
+
+def test_duplicate_insufficient_buffer_entries_for_same_leg_produce_one_warning() -> None:
+    """Defensive: TravelTimeBufferService itself never produces two buffer
+    entries for the same leg, but the validator must never emit more than
+    one warning about the same leg even if a report somehow did."""
+    planning_state = _two_candidate_planning_state()
+    ExperiencePlannerService().run(planning_state)
+    scheduled = planning_state.experience_plan.daily_plans[0].experiences
+
+    duplicate_buffer = TravelTimeBuffer(
+        from_experience_id=scheduled[0].experience_id,
+        from_experience_name=scheduled[0].name,
+        to_experience_id=scheduled[1].experience_id,
+        to_experience_name=scheduled[1].name,
+        provider="osrm",
+        status=TravelTimeBufferStatus.SUCCESS,
+        route_duration_seconds=900.0,
+        route_distance_meters=1500.0,
+        recommended_buffer_seconds=900.0,
+        available_gap_seconds=300.0,
+        buffer_status=BufferSufficiencyStatus.INSUFFICIENT,
+        message="A provider-backed travel duration exceeds the scheduled gap.",
+    )
+    planning_state.travel_time_buffer_report = TravelTimeBufferReport(
+        status=ProviderStatus.SUCCESS,
+        buffers=[duplicate_buffer, duplicate_buffer.model_copy()],
+    )
+
+    PlanValidatorService().run(planning_state)
+
+    assert len(_travel_time_buffer_warnings(planning_state)) == 1
+
+
+def test_multiple_non_feasible_legs_produce_exactly_one_feasibility_warning() -> None:
+    """The blanket feasibility warning is a single, aggregate WARNING --
+    never one per leg -- so multiple non-feasible legs never produce
+    duplicate/conflicting feasibility warnings."""
+    planning_state = _two_candidate_planning_state()
+    ExperiencePlannerService().run(planning_state)
+    scheduled = planning_state.experience_plan.daily_plans[0].experiences
+
+    planning_state.route_feasibility_report = RouteFeasibilityReport(
+        status=ProviderStatus.NOT_CONNECTED,
+        provider="not_connected",
+        route_data_source="not_connected",
+        legs=[
+            RouteLegFeasibility(
+                from_experience_id=scheduled[0].experience_id,
+                from_experience_name=scheduled[0].name,
+                to_experience_id=scheduled[1].experience_id,
+                to_experience_name=scheduled[1].name,
+                provider="not_connected",
+                status=ProviderStatus.NOT_CONNECTED,
+                feasibility_status=RouteFeasibilityStatus.NEEDS_REVIEW,
+                message="No routing provider is connected.",
+            )
+        ],
+    )
+
+    PlanValidatorService().run(planning_state)
+
+    feasibility_warnings = [
+        warning
+        for warning in planning_state.validation_report.warnings
+        if warning.category == "feasibility"
+    ]
+    assert len(feasibility_warnings) == 1
+
+
+def test_validator_never_claims_route_timing_was_checked_when_unavailable() -> None:
+    planning_state = _two_candidate_planning_state()
+    ExperiencePlannerService().run(planning_state)
+    assert planning_state.route_feasibility_report is None
+    assert planning_state.travel_time_buffer_report is None
+
+    PlanValidatorService().run(planning_state)
+
+    feasibility_warning = _feasibility_warning(planning_state)
+    # Must explicitly deny that timing/feasibility checks happened -- never
+    # an affirmative "checked" claim standing alone.
+    assert "not implemented yet" in feasibility_warning.message
+    assert "needs review" in feasibility_warning.message
+    assert planning_state.validation_report.readiness_status.value != "ready"
+    # No blocking failure is ever created just because routing/timing data
+    # is unavailable.
+    assert planning_state.validation_report.critical_issues == []

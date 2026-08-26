@@ -10,20 +10,22 @@ from app.models.planning_state import (
     TripRequest,
 )
 from app.models.routing import (
+    BufferSufficiencyStatus,
     MovementDataProvenance,
-    RouteFeasibilityStatus,
     RouteRequest,
     RouteResult,
+    TravelTimeBufferStatus,
 )
 from app.providers.gateway import ProviderGateway
 from app.providers.routing import NotConnectedRoutingProvider, RoutingProvider
-from app.services.route_feasibility_service import RouteFeasibilityService
+from app.services.travel_time_buffer_service import TravelTimeBufferService
 
-# Step 165E: RouteFeasibilityService tests. Every test here injects a
+# Step 166C: TravelTimeBufferService tests. Every test here injects a
 # ProviderGateway with either the default NotConnectedRoutingProvider or a
 # deterministic in-memory fake RoutingProvider double -- never a real OSRM
-# instance, matching backend/app/tests/providers/test_osrm_adapter.py and
-# test_provider_gateway_routing.py's own no-network guarantee.
+# instance, matching test_route_feasibility_service.py's own no-network
+# guarantee. This service never reorders/drops a scheduled experience and
+# never fabricates a duration/distance/buffer.
 
 
 class _FakeRoutingProvider(RoutingProvider):
@@ -63,16 +65,25 @@ class _AssertNeverCalledRoutingProvider(RoutingProvider):
         raise AssertionError("Routing provider must not be called for an incomplete leg.")
 
 
-def _experience(name: str, *, lat: float | None, lng: float | None) -> ExperienceItem:
+def _experience(
+    name: str,
+    *,
+    lat: float | None,
+    lng: float | None,
+    start_time: str | None = None,
+    end_time: str | None = None,
+) -> ExperienceItem:
     coordinates = GeoPoint(lat=lat, lng=lng) if lat is not None and lng is not None else None
-    return ExperienceItem(name=name, category="attraction", coordinates=coordinates)
+    return ExperienceItem(
+        name=name,
+        category="attraction",
+        coordinates=coordinates,
+        start_time=start_time,
+        end_time=end_time,
+    )
 
 
 def _planning_state_with_experiences(*experience_rows: list[ExperienceItem]) -> PlanningState:
-    """Builds a PlanningState with one DailyPlan per row of experiences,
-    bypassing ExperiencePlannerService entirely for precise control over
-    scheduled order and coordinates.
-    """
     trip_request = TripRequest(
         primary_destination="Testville, Testland",
         start_date="2026-08-10",
@@ -90,13 +101,13 @@ def _planning_state_with_experiences(*experience_rows: list[ExperienceItem]) -> 
 
 
 # ---------------------------------------------------------------------------
-# Default/not-connected behavior -- no network call, honest needs_review.
+# Default/not-connected behavior -- no network call, honest not_connected.
 # ---------------------------------------------------------------------------
 
 
-def test_not_connected_routing_provider_produces_needs_review_legs_without_network() -> None:
+def test_not_connected_routing_provider_produces_not_connected_buffer_without_network() -> None:
     gateway = ProviderGateway(routing=NotConnectedRoutingProvider())
-    service = RouteFeasibilityService(gateway=gateway)
+    service = TravelTimeBufferService(gateway=gateway)
     planning_state = _planning_state_with_experiences(
         [
             _experience("A", lat=38.7223, lng=-9.1393),
@@ -107,27 +118,28 @@ def test_not_connected_routing_provider_produces_needs_review_legs_without_netwo
     report = service.build_report(planning_state)
 
     assert report.status == ProviderStatus.NOT_CONNECTED
-    assert len(report.legs) == 1
-    leg = report.legs[0]
-    assert leg.status == ProviderStatus.NOT_CONNECTED
-    assert leg.feasibility_status == RouteFeasibilityStatus.NEEDS_REVIEW
-    assert leg.distance_meters is None
-    assert leg.duration_seconds is None
-    assert report.route_data_source == "not_connected"
+    assert len(report.buffers) == 1
+    buffer = report.buffers[0]
+    assert buffer.status == TravelTimeBufferStatus.NOT_CONNECTED
+    assert buffer.buffer_status == BufferSufficiencyStatus.UNAVAILABLE
+    assert buffer.route_duration_seconds is None
+    assert buffer.route_distance_meters is None
+    assert buffer.recommended_buffer_seconds is None
+    assert report.uses_provider_backed_routes is True
 
 
-def test_empty_experience_plan_produces_not_connected_report_with_no_legs() -> None:
+def test_empty_experience_plan_produces_not_connected_report_with_no_buffers() -> None:
     gateway = ProviderGateway(routing=NotConnectedRoutingProvider())
-    service = RouteFeasibilityService(gateway=gateway)
+    service = TravelTimeBufferService(gateway=gateway)
     planning_state = _planning_state_with_experiences([])
 
     report = service.build_report(planning_state)
 
     assert report.status == ProviderStatus.NOT_CONNECTED
-    assert report.legs == []
+    assert report.buffers == []
 
 
-def test_no_experience_plan_at_all_produces_not_connected_report_with_no_legs() -> None:
+def test_no_experience_plan_at_all_produces_not_connected_report_with_no_buffers() -> None:
     trip_request = TripRequest(
         primary_destination="Testville, Testland",
         start_date="2026-08-10",
@@ -136,12 +148,12 @@ def test_no_experience_plan_at_all_produces_not_connected_report_with_no_legs() 
         travel_group_type=TravelGroupType.COUPLE,
     )
     planning_state = PlanningState(trip_request=trip_request)
-    service = RouteFeasibilityService(gateway=ProviderGateway(routing=NotConnectedRoutingProvider()))
+    service = TravelTimeBufferService(gateway=ProviderGateway(routing=NotConnectedRoutingProvider()))
 
     report = service.build_report(planning_state)
 
     assert report.status == ProviderStatus.NOT_CONNECTED
-    assert report.legs == []
+    assert report.buffers == []
 
 
 # ---------------------------------------------------------------------------
@@ -149,9 +161,9 @@ def test_no_experience_plan_at_all_produces_not_connected_report_with_no_legs() 
 # ---------------------------------------------------------------------------
 
 
-def test_missing_coordinates_leg_is_unavailable_and_provider_never_called() -> None:
+def test_missing_coordinates_leg_is_not_computable_and_provider_never_called() -> None:
     gateway = ProviderGateway(routing=_AssertNeverCalledRoutingProvider())
-    service = RouteFeasibilityService(gateway=gateway)
+    service = TravelTimeBufferService(gateway=gateway)
     planning_state = _planning_state_with_experiences(
         [
             _experience("A", lat=38.7223, lng=-9.1393),
@@ -161,26 +173,25 @@ def test_missing_coordinates_leg_is_unavailable_and_provider_never_called() -> N
 
     report = service.build_report(planning_state)
 
-    assert len(report.legs) == 1
-    leg = report.legs[0]
-    assert leg.status == ProviderStatus.UNAVAILABLE
-    assert leg.feasibility_status == RouteFeasibilityStatus.UNAVAILABLE
-    assert leg.distance_meters is None
-    assert leg.duration_seconds is None
-    assert leg.to_lat is None
-    assert leg.to_lon is None
-    assert leg.from_lat == 38.7223
+    assert len(report.buffers) == 1
+    buffer = report.buffers[0]
+    assert buffer.status == TravelTimeBufferStatus.NOT_COMPUTABLE
+    assert buffer.buffer_status == BufferSufficiencyStatus.UNAVAILABLE
+    assert buffer.route_duration_seconds is None
+    assert buffer.route_distance_meters is None
+    assert buffer.recommended_buffer_seconds is None
 
 
 # ---------------------------------------------------------------------------
-# Successful, provider-backed routing -- real distance/duration, feasible.
+# Successful, provider-backed routing -- real duration/distance, buffer
+# recommendation mirrors it exactly.
 # ---------------------------------------------------------------------------
 
 
-def test_successful_routing_provider_creates_feasible_legs_with_distance_and_duration() -> None:
+def test_successful_routing_provider_creates_buffer_with_duration_and_recommendation() -> None:
     fake_provider = _FakeRoutingProvider()
     gateway = ProviderGateway(routing=fake_provider)
-    service = RouteFeasibilityService(gateway=gateway)
+    service = TravelTimeBufferService(gateway=gateway)
     planning_state = _planning_state_with_experiences(
         [
             _experience("A", lat=38.7223, lng=-9.1393),
@@ -191,21 +202,23 @@ def test_successful_routing_provider_creates_feasible_legs_with_distance_and_dur
     report = service.build_report(planning_state)
 
     assert report.status == ProviderStatus.SUCCESS
-    assert report.route_data_source == fake_provider.provider_name
     assert len(fake_provider.calls) == 1
-    leg = report.legs[0]
-    assert leg.status == ProviderStatus.SUCCESS
-    assert leg.feasibility_status == RouteFeasibilityStatus.FEASIBLE
-    assert leg.distance_meters == 1500.0
-    assert leg.duration_seconds == 900.0
-    assert leg.provider == fake_provider.provider_name
-    assert leg.from_experience_name == "A"
-    assert leg.to_experience_name == "B"
+    buffer = report.buffers[0]
+    assert buffer.status == TravelTimeBufferStatus.SUCCESS
+    assert buffer.route_duration_seconds == 900.0
+    assert buffer.route_distance_meters == 1500.0
+    # recommended_buffer_seconds is never anything but an exact restatement.
+    assert buffer.recommended_buffer_seconds == buffer.route_duration_seconds == 900.0
+    assert buffer.provider == fake_provider.provider_name
+    # No schedule timestamps exist on these fixtures -- sufficiency is
+    # never guessed.
+    assert buffer.available_gap_seconds is None
+    assert buffer.buffer_status == BufferSufficiencyStatus.NOT_COMPUTABLE
 
 
 def test_legs_built_for_every_consecutive_pair_within_a_day() -> None:
     fake_provider = _FakeRoutingProvider()
-    service = RouteFeasibilityService(gateway=ProviderGateway(routing=fake_provider))
+    service = TravelTimeBufferService(gateway=ProviderGateway(routing=fake_provider))
     planning_state = _planning_state_with_experiences(
         [
             _experience("A", lat=0.0, lng=0.0),
@@ -216,59 +229,139 @@ def test_legs_built_for_every_consecutive_pair_within_a_day() -> None:
 
     report = service.build_report(planning_state)
 
-    assert len(report.legs) == 2
-    assert [leg.from_experience_name for leg in report.legs] == ["A", "B"]
-    assert [leg.to_experience_name for leg in report.legs] == ["B", "C"]
+    assert len(report.buffers) == 2
+    assert [buffer.from_experience_name for buffer in report.buffers] == ["A", "B"]
+    assert [buffer.to_experience_name for buffer in report.buffers] == ["B", "C"]
     assert len(fake_provider.calls) == 2
 
 
 # ---------------------------------------------------------------------------
-# Aggregate status is honest, never optimistic.
+# Failed/unavailable route results never become a fabricated duration.
 # ---------------------------------------------------------------------------
 
 
-def test_aggregate_status_is_partial_when_some_legs_succeed_and_others_do_not() -> None:
-    fake_provider = _FakeRoutingProvider()
-    service = RouteFeasibilityService(gateway=ProviderGateway(routing=fake_provider))
+def test_failed_route_result_never_becomes_a_buffer_duration() -> None:
+    failed_result = RouteResult(
+        provider="fake_routing_provider",
+        status=ProviderStatus.FAILED,
+        distance_meters=None,
+        duration_seconds=None,
+        source="fake_routing_provider",
+        message="Simulated failure.",
+    )
+    fake_provider = _FakeRoutingProvider(result=failed_result)
+    service = TravelTimeBufferService(gateway=ProviderGateway(routing=fake_provider))
     planning_state = _planning_state_with_experiences(
         [
             _experience("A", lat=0.0, lng=0.0),
             _experience("B", lat=0.0, lng=1.0),
-            _experience("C", lat=None, lng=None),
         ]
     )
 
     report = service.build_report(planning_state)
 
-    assert len(report.legs) == 2
-    assert report.legs[0].status == ProviderStatus.SUCCESS
-    assert report.legs[1].status == ProviderStatus.UNAVAILABLE
-    assert report.status == ProviderStatus.PARTIAL
+    buffer = report.buffers[0]
+    assert buffer.status == TravelTimeBufferStatus.FAILED
+    assert buffer.buffer_status == BufferSufficiencyStatus.UNAVAILABLE
+    assert buffer.route_duration_seconds is None
+    assert buffer.route_distance_meters is None
+    assert buffer.recommended_buffer_seconds is None
+    assert report.status == ProviderStatus.FAILED
 
 
-def test_aggregate_status_is_unavailable_when_no_leg_succeeds_and_none_failed() -> None:
-    service = RouteFeasibilityService(gateway=ProviderGateway(routing=_AssertNeverCalledRoutingProvider()))
+def test_unavailable_route_result_never_becomes_a_buffer_duration() -> None:
+    unavailable_result = RouteResult(
+        provider="fake_routing_provider",
+        status=ProviderStatus.UNAVAILABLE,
+        distance_meters=None,
+        duration_seconds=None,
+        source="fake_routing_provider",
+        message="No usable route found.",
+    )
+    fake_provider = _FakeRoutingProvider(result=unavailable_result)
+    service = TravelTimeBufferService(gateway=ProviderGateway(routing=fake_provider))
     planning_state = _planning_state_with_experiences(
         [
-            _experience("A", lat=None, lng=None),
+            _experience("A", lat=0.0, lng=0.0),
             _experience("B", lat=0.0, lng=1.0),
         ]
     )
 
     report = service.build_report(planning_state)
 
-    assert report.legs[0].status == ProviderStatus.UNAVAILABLE
-    assert report.status == ProviderStatus.UNAVAILABLE
+    buffer = report.buffers[0]
+    assert buffer.status == TravelTimeBufferStatus.UNAVAILABLE
+    assert buffer.buffer_status == BufferSufficiencyStatus.UNAVAILABLE
+    assert buffer.route_duration_seconds is None
+    assert buffer.recommended_buffer_seconds is None
 
 
 # ---------------------------------------------------------------------------
-# Never reorders/drops scheduled experiences -- feasibility reporting only.
+# Real schedule timestamps -- sufficient/insufficient buffer verdicts,
+# never guessed when timestamps don't exist.
 # ---------------------------------------------------------------------------
 
 
-def test_route_feasibility_never_reorders_or_drops_scheduled_experiences() -> None:
+def test_real_gap_shorter_than_duration_is_insufficient() -> None:
+    fake_provider = _FakeRoutingProvider(
+        result=RouteResult(
+            provider="fake_routing_provider",
+            status=ProviderStatus.SUCCESS,
+            distance_meters=1500.0,
+            duration_seconds=900.0,
+            source="fake_routing_provider",
+        )
+    )
+    service = TravelTimeBufferService(gateway=ProviderGateway(routing=fake_provider))
+    planning_state = _planning_state_with_experiences(
+        [
+            _experience("A", lat=0.0, lng=0.0, end_time="10:00"),
+            _experience("B", lat=0.0, lng=1.0, start_time="10:05"),  # 300s gap < 900s duration
+        ]
+    )
+
+    report = service.build_report(planning_state)
+
+    buffer = report.buffers[0]
+    assert buffer.available_gap_seconds == 300.0
+    assert buffer.route_duration_seconds == 900.0
+    assert buffer.buffer_status == BufferSufficiencyStatus.INSUFFICIENT
+
+
+def test_real_gap_at_least_duration_is_sufficient() -> None:
+    fake_provider = _FakeRoutingProvider(
+        result=RouteResult(
+            provider="fake_routing_provider",
+            status=ProviderStatus.SUCCESS,
+            distance_meters=1500.0,
+            duration_seconds=900.0,
+            source="fake_routing_provider",
+        )
+    )
+    service = TravelTimeBufferService(gateway=ProviderGateway(routing=fake_provider))
+    planning_state = _planning_state_with_experiences(
+        [
+            _experience("A", lat=0.0, lng=0.0, end_time="10:00"),
+            _experience("B", lat=0.0, lng=1.0, start_time="10:20"),  # 1200s gap >= 900s duration
+        ]
+    )
+
+    report = service.build_report(planning_state)
+
+    buffer = report.buffers[0]
+    assert buffer.available_gap_seconds == 1200.0
+    assert buffer.route_duration_seconds == 900.0
+    assert buffer.buffer_status == BufferSufficiencyStatus.SUFFICIENT
+
+
+# ---------------------------------------------------------------------------
+# Never reorders/drops scheduled experiences -- reporting only.
+# ---------------------------------------------------------------------------
+
+
+def test_travel_time_buffer_never_reorders_or_drops_scheduled_experiences() -> None:
     fake_provider = _FakeRoutingProvider()
-    service = RouteFeasibilityService(gateway=ProviderGateway(routing=fake_provider))
+    service = TravelTimeBufferService(gateway=ProviderGateway(routing=fake_provider))
     planning_state = _planning_state_with_experiences(
         [
             _experience("C", lat=0.0, lng=2.0),
@@ -287,16 +380,56 @@ def test_route_feasibility_never_reorders_or_drops_scheduled_experiences() -> No
     ] == original_order == ["C", "A", "B"]
 
 
+def test_build_report_does_not_mutate_input_plan() -> None:
+    fake_provider = _FakeRoutingProvider()
+    service = TravelTimeBufferService(gateway=ProviderGateway(routing=fake_provider))
+    planning_state = _planning_state_with_experiences(
+        [
+            _experience("A", lat=0.0, lng=0.0),
+            _experience("B", lat=0.0, lng=1.0),
+        ]
+    )
+    before = planning_state.model_copy(deep=True)
+
+    service.build_report(planning_state)
+
+    assert planning_state.experience_plan == before.experience_plan
+    assert planning_state.travel_time_buffer_report is None
+
+
+# ---------------------------------------------------------------------------
+# Aggregate status is honest, never optimistic.
+# ---------------------------------------------------------------------------
+
+
+def test_aggregate_status_is_partial_when_some_legs_succeed_and_others_do_not() -> None:
+    fake_provider = _FakeRoutingProvider()
+    service = TravelTimeBufferService(gateway=ProviderGateway(routing=fake_provider))
+    planning_state = _planning_state_with_experiences(
+        [
+            _experience("A", lat=0.0, lng=0.0),
+            _experience("B", lat=0.0, lng=1.0),
+            _experience("C", lat=None, lng=None),
+        ]
+    )
+
+    report = service.build_report(planning_state)
+
+    assert len(report.buffers) == 2
+    assert report.buffers[0].status == TravelTimeBufferStatus.SUCCESS
+    assert report.buffers[1].status == TravelTimeBufferStatus.NOT_COMPUTABLE
+    assert report.status == ProviderStatus.PARTIAL
+
+
 # ---------------------------------------------------------------------------
 # Step 166D hardening: an unexpected exception from the routing provider
-# is contained per-leg (never crashes the report or generation), and is
-# always treated as an honest `failed` status -- never fabricated data.
+# is contained per-leg (never crashes the report or generation).
 # ---------------------------------------------------------------------------
 
 
 class _RaisingRoutingProvider(RoutingProvider):
     """Deterministic test double that raises instead of returning a
-    `RouteResult` -- proves `RouteFeasibilityService` contains this
+    `RouteResult` -- proves `TravelTimeBufferService` contains this
     exception itself rather than letting it crash the whole report."""
 
     provider_name = "raising_routing_provider"
@@ -307,7 +440,7 @@ class _RaisingRoutingProvider(RoutingProvider):
 
 def test_raising_routing_provider_is_contained_and_reported_as_failed() -> None:
     gateway = ProviderGateway(routing=_RaisingRoutingProvider())
-    service = RouteFeasibilityService(gateway=gateway)
+    service = TravelTimeBufferService(gateway=gateway)
     planning_state = _planning_state_with_experiences(
         [
             _experience("A", lat=0.0, lng=0.0),
@@ -318,15 +451,16 @@ def test_raising_routing_provider_is_contained_and_reported_as_failed() -> None:
     # Must not raise.
     report = service.build_report(planning_state)
 
-    leg = report.legs[0]
-    assert leg.status == ProviderStatus.FAILED
-    assert leg.distance_meters is None
-    assert leg.duration_seconds is None
-    assert leg.feasibility_status == RouteFeasibilityStatus.NEEDS_REVIEW
+    buffer = report.buffers[0]
+    assert buffer.status == TravelTimeBufferStatus.FAILED
+    assert buffer.buffer_status == BufferSufficiencyStatus.UNAVAILABLE
+    assert buffer.route_duration_seconds is None
+    assert buffer.route_distance_meters is None
+    assert buffer.recommended_buffer_seconds is None
     assert report.status == ProviderStatus.FAILED
     # The raw exception text is never stored in a user-facing message.
-    assert "RuntimeError" not in (leg.message or "")
-    assert "Simulated unexpected provider failure" not in (leg.message or "")
+    assert "RuntimeError" not in (buffer.message or "")
+    assert "Simulated unexpected provider failure" not in (buffer.message or "")
 
 
 # ---------------------------------------------------------------------------
@@ -336,7 +470,7 @@ def test_raising_routing_provider_is_contained_and_reported_as_failed() -> None:
 
 def test_movement_data_provenance_is_provider_backed_on_success() -> None:
     fake_provider = _FakeRoutingProvider()
-    service = RouteFeasibilityService(gateway=ProviderGateway(routing=fake_provider))
+    service = TravelTimeBufferService(gateway=ProviderGateway(routing=fake_provider))
     planning_state = _planning_state_with_experiences(
         [
             _experience("A", lat=38.7223, lng=-9.1393),
@@ -346,13 +480,13 @@ def test_movement_data_provenance_is_provider_backed_on_success() -> None:
 
     report = service.build_report(planning_state)
 
-    assert report.legs[0].movement_data_provenance == MovementDataProvenance.PROVIDER_BACKED
+    assert report.buffers[0].movement_data_provenance == MovementDataProvenance.PROVIDER_BACKED
     assert report.movement_data_provenance == MovementDataProvenance.PROVIDER_BACKED
 
 
 def test_movement_data_provenance_is_not_connected_without_network() -> None:
     gateway = ProviderGateway(routing=NotConnectedRoutingProvider())
-    service = RouteFeasibilityService(gateway=gateway)
+    service = TravelTimeBufferService(gateway=gateway)
     planning_state = _planning_state_with_experiences(
         [
             _experience("A", lat=38.7223, lng=-9.1393),
@@ -362,13 +496,13 @@ def test_movement_data_provenance_is_not_connected_without_network() -> None:
 
     report = service.build_report(planning_state)
 
-    assert report.legs[0].movement_data_provenance == MovementDataProvenance.NOT_CONNECTED
+    assert report.buffers[0].movement_data_provenance == MovementDataProvenance.NOT_CONNECTED
     assert report.movement_data_provenance == MovementDataProvenance.NOT_CONNECTED
 
 
 def test_movement_data_provenance_is_not_computable_for_missing_coordinates() -> None:
     gateway = ProviderGateway(routing=_AssertNeverCalledRoutingProvider())
-    service = RouteFeasibilityService(gateway=gateway)
+    service = TravelTimeBufferService(gateway=gateway)
     planning_state = _planning_state_with_experiences(
         [
             _experience("A", lat=38.7223, lng=-9.1393),
@@ -378,25 +512,15 @@ def test_movement_data_provenance_is_not_computable_for_missing_coordinates() ->
 
     report = service.build_report(planning_state)
 
-    leg = report.legs[0]
-    assert leg.movement_data_provenance == MovementDataProvenance.NOT_COMPUTABLE
-    # Distinct from `unavailable`, even though `status` uses the same
-    # ProviderStatus.UNAVAILABLE value for both -- see the leg's own
-    # docstring/model comment for why this distinction matters.
-    assert leg.status == ProviderStatus.UNAVAILABLE
+    buffer = report.buffers[0]
+    assert buffer.movement_data_provenance == MovementDataProvenance.NOT_COMPUTABLE
+    assert buffer.status == TravelTimeBufferStatus.NOT_COMPUTABLE
+    assert buffer.recommended_buffer_seconds is None
 
 
-def test_movement_data_provenance_is_unavailable_when_provider_returns_no_route() -> None:
-    unavailable_result = RouteResult(
-        provider="fake_routing_provider",
-        status=ProviderStatus.UNAVAILABLE,
-        distance_meters=None,
-        duration_seconds=None,
-        source="fake_routing_provider",
-        message="No usable route found.",
-    )
-    fake_provider = _FakeRoutingProvider(result=unavailable_result)
-    service = RouteFeasibilityService(gateway=ProviderGateway(routing=fake_provider))
+def test_movement_data_provenance_is_failed_for_raising_provider() -> None:
+    gateway = ProviderGateway(routing=_RaisingRoutingProvider())
+    service = TravelTimeBufferService(gateway=gateway)
     planning_state = _planning_state_with_experiences(
         [
             _experience("A", lat=0.0, lng=0.0),
@@ -406,48 +530,20 @@ def test_movement_data_provenance_is_unavailable_when_provider_returns_no_route(
 
     report = service.build_report(planning_state)
 
-    leg = report.legs[0]
-    # A real provider response of "unavailable" is distinct from the
-    # missing-coordinates case, but shares the same coarse provenance
-    # label -- both mean no real route data exists for this leg.
-    assert leg.movement_data_provenance == MovementDataProvenance.UNAVAILABLE
-    assert leg.status == ProviderStatus.UNAVAILABLE
-
-
-def test_movement_data_provenance_is_failed_when_provider_request_fails() -> None:
-    failed_result = RouteResult(
-        provider="fake_routing_provider",
-        status=ProviderStatus.FAILED,
-        distance_meters=None,
-        duration_seconds=None,
-        source="fake_routing_provider",
-        message="Simulated failure.",
-    )
-    fake_provider = _FakeRoutingProvider(result=failed_result)
-    service = RouteFeasibilityService(gateway=ProviderGateway(routing=fake_provider))
-    planning_state = _planning_state_with_experiences(
-        [
-            _experience("A", lat=0.0, lng=0.0),
-            _experience("B", lat=0.0, lng=1.0),
-        ]
-    )
-
-    report = service.build_report(planning_state)
-
-    assert report.legs[0].movement_data_provenance == MovementDataProvenance.FAILED
+    assert report.buffers[0].movement_data_provenance == MovementDataProvenance.FAILED
     assert report.movement_data_provenance == MovementDataProvenance.FAILED
 
 
 # ---------------------------------------------------------------------------
-# No disallowed vendor import, no direct network client.
+# No disallowed vendor import, no direct network client, no haversine.
 # ---------------------------------------------------------------------------
 
 
-def test_route_feasibility_service_module_has_no_disallowed_imports() -> None:
+def test_travel_time_buffer_service_module_has_no_disallowed_imports() -> None:
     import ast
     import inspect
 
-    from app.services import route_feasibility_service as module
+    from app.services import travel_time_buffer_service as module
 
     source = inspect.getsource(module)
     tree = ast.parse(source)
@@ -476,15 +572,18 @@ def test_route_feasibility_service_module_has_no_disallowed_imports() -> None:
         for disallowed in disallowed_substrings:
             assert disallowed not in lowered, f"Disallowed import found: {name}"
 
+    assert "app.utils.geo" not in source
+    assert "haversine_distance_km(" not in source
 
-def test_route_feasibility_service_only_reaches_routing_through_the_gateway() -> None:
+
+def test_travel_time_buffer_service_only_reaches_routing_through_the_gateway() -> None:
     """Must never import an adapter (OSRM or otherwise) directly -- only
     `ProviderGateway`, matching the "call providers through the gateway"
     rule (docs/12_provider_architecture.md, docs/14_backend_architecture.md
     section 18)."""
     import inspect
 
-    from app.services import route_feasibility_service as module
+    from app.services import travel_time_buffer_service as module
 
     source = inspect.getsource(module)
     assert "osrm_adapter" not in source

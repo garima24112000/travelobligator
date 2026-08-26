@@ -8,7 +8,12 @@ from app.models.planning_state import (
     ValidationIssue,
     ValidationReport,
 )
-from app.models.routing import RouteFeasibilityReport, RouteFeasibilityStatus
+from app.models.routing import (
+    BufferSufficiencyStatus,
+    RouteFeasibilityReport,
+    RouteFeasibilityStatus,
+    TravelTimeBufferReport,
+)
 from app.services.base import PlanningStageService
 from app.utils.geo import haversine_distance_km
 
@@ -86,6 +91,21 @@ class PlanValidatorService(PlanningStageService):
       connected, no warning is added. This never blocks the plan or marks
       it ready by itself -- it only adds a warning, and it does not modify
       `daily_plans`.
+    * If `planning_state.travel_time_buffer_report` (Step 166C) has a leg
+      whose `buffer_status == insufficient` -- a real, successful,
+      provider-backed travel duration between two consecutive scheduled
+      experiences that exceeds a real, known schedule gap between them --
+      a `category="travel_time_buffer"` `WARNING` names both experiences
+      and the real duration/gap figures. A leg whose buffer is
+      `sufficient` never gets a warning (nothing to review). A leg whose
+      buffer is `not_computable` (no schedule gap known, e.g. no schedule
+      timestamps exist yet) or `unavailable` (no real route duration at
+      all: routing not connected/unavailable/failed, or missing
+      coordinates) also never gets a warning here -- sufficiency is never
+      guessed either way, and the existing feasibility warning above
+      already covers "route timing is not implemented/checked" honestly.
+      This is always a `WARNING`, never a critical issue, so it never
+      blocks the plan by itself, and it does not modify `daily_plans`.
     """
 
     def run(self, planning_state: PlanningState) -> PlanningState:
@@ -109,6 +129,9 @@ class PlanValidatorService(PlanningStageService):
         if has_scheduled_experiences:
             warnings.append(
                 _build_feasibility_warning(planning_state.route_feasibility_report)
+            )
+            warnings.extend(
+                _build_travel_time_buffer_warnings(planning_state.travel_time_buffer_report)
             )
         elif candidate_pois_count > 0:
             critical_issues.append(
@@ -557,6 +580,75 @@ def _build_holiday_warning(planning_state: PlanningState) -> ValidationIssue | N
             "plan as holiday-checked."
         ),
     )
+
+
+_INSUFFICIENT_BUFFER_MESSAGE_TEMPLATE = (
+    'The {gap:.0f}s gap scheduled between "{from_name}" and "{to_name}" is shorter '
+    "than the provider-backed travel time between them ({duration:.0f}s via "
+    "{provider}) -- this leg needs review before the schedule can be trusted."
+)
+_INSUFFICIENT_BUFFER_SUGGESTED_FIX = (
+    "Adjust the schedule to allow at least the provider-backed travel time "
+    "between these experiences, or re-run route-aware sequencing."
+)
+
+
+def _build_travel_time_buffer_warnings(
+    travel_time_buffer_report: TravelTimeBufferReport | None,
+) -> list[ValidationIssue]:
+    """Deterministic review warnings built purely from
+    `planning_state.travel_time_buffer_report` (Step 166C) -- no provider
+    call of its own (route lookups already happened in
+    `TravelTimeBufferService`, before validation runs). Only ever adds a
+    `WARNING`, one per leg whose `buffer_status == insufficient` -- i.e.
+    where a real, provider-backed schedule gap is known and a real,
+    provider-backed travel duration exceeds it.
+
+    A leg with no known gap (`buffer_status == not_computable`, e.g. no
+    schedule timestamps exist yet -- the case for every plan this app
+    currently generates) or no usable route data
+    (`buffer_status == unavailable`) never produces a warning here, since
+    sufficiency can't be honestly judged either way; that case stays
+    covered by the existing blanket feasibility warning instead. A
+    `sufficient` leg never produces a warning either, since there is
+    nothing to review. This never invents a schedule timestamp, gap, or
+    duration, and never blocks the plan (never a critical issue).
+
+    Step 166D hardening: deduplicated by
+    `(from_experience_id, to_experience_id)` -- if `travel_time_buffer_report`
+    ever contained more than one buffer entry for the exact same leg (which
+    `TravelTimeBufferService` itself never produces, but this guards
+    against it defensively), only one warning is ever raised for it,
+    never a duplicate/conflicting pair of warnings about the same leg.
+    """
+    if travel_time_buffer_report is None:
+        return []
+
+    warnings: list[ValidationIssue] = []
+    seen_legs: set[tuple[str, str]] = set()
+    for buffer in travel_time_buffer_report.buffers:
+        if buffer.buffer_status != BufferSufficiencyStatus.INSUFFICIENT:
+            continue
+        leg_key = (buffer.from_experience_id, buffer.to_experience_id)
+        if leg_key in seen_legs:
+            continue
+        seen_legs.add(leg_key)
+        warnings.append(
+            ValidationIssue(
+                severity=ValidationSeverity.WARNING,
+                category="travel_time_buffer",
+                message=_INSUFFICIENT_BUFFER_MESSAGE_TEMPLATE.format(
+                    from_name=buffer.from_experience_name,
+                    to_name=buffer.to_experience_name,
+                    gap=buffer.available_gap_seconds,
+                    duration=buffer.route_duration_seconds,
+                    provider=buffer.provider,
+                ),
+                affected_section="experience_plan",
+                suggested_fix=_INSUFFICIENT_BUFFER_SUGGESTED_FIX,
+            )
+        )
+    return warnings
 
 
 def _day_geographic_spread_km(day: DailyPlan) -> float | None:
