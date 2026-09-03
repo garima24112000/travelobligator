@@ -7,6 +7,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from app.models.accommodation import AccommodationSearchResult
 from app.models.ai_candidate_proposal import AICandidateProposalBatch
 from app.models.candidate_grounding import CandidateGroundingBatch
 from app.models.candidate_quality import CandidateQualityReport
@@ -1116,6 +1117,24 @@ class PlanningState(BaseModel):
     # reorders, adds, or drops a scheduled experience, and never invents a
     # schedule timestamp where none exists.
     travel_time_buffer_report: TravelTimeBufferReport | None = None
+    # Bookable accommodation inventory report (Step 167D,
+    # docs/12_provider_architecture.md, docs/13_llm_reasoning_pipeline.md,
+    # docs/14_backend_architecture.md). Computed by
+    # AccommodationInventoryService directly inside
+    # PlanningOrchestrator.run_stay_transport_stage -- never a stage
+    # service calling a provider adapter directly, and never an AI/LLM
+    # call. Stays None until a stay_transport stage has run. Built via
+    # `ProviderGateway.search_accommodations` (Step 167C) only -- with the
+    # default `not_connected` accommodation provider, this always reports
+    # `status=not_connected` with an empty `offers` list, and never a
+    # network call. This is deliberately a separate, bookable-inventory
+    # concept from `DestinationContext.candidate_accommodation_pois`
+    # (open-data OSM location candidates) -- an OSM accommodation POI is
+    # never converted into a bookable offer here, and no price,
+    # availability, rating, amenity, cancellation policy, or booking link
+    # is ever fabricated when the provider is not connected or returns no
+    # offers.
+    accommodation_inventory_report: AccommodationSearchResult | None = None
     # Validated artifact storage only (Step 160C, docs/13_llm_reasoning_
     # pipeline.md section 36, docs/14_backend_architecture.md section 25)
     # for the future AI candidate proposal / grounding flow (Steps

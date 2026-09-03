@@ -1021,6 +1021,21 @@ alongside it, and must never infer or imply provider connectivity from the
 label itself — only `provider_status`/`provider_coverage` say that. An
 unrecognized `provider_name` displays as-is.
 
+The same friendly-label rule applies to the raw `provider_coverage` field
+keys shown in the coverage grid (Step 167E): `accommodations` displays as
+"Accommodation-like location candidates (open data)" and `hotel_prices`
+displays as "Bookable lodging inventory", each with the raw field key
+still shown alongside it. These two labels are deliberately worded to
+keep the two concepts visibly distinct — an open-data accommodation-like
+location candidate (`accommodations`) is never a hotel price, rating,
+availability, amenity, or booking link, and only `hotel_prices` could ever
+represent those, from an official lodging inventory provider. When
+`hotel_prices` is `not_connected`, `unavailable`, or `failed`, the card
+adds an explanatory note: "No official lodging inventory provider is
+connected yet. Prices, ratings, availability, amenities, and booking
+links are unavailable unless returned by an official provider." An
+unrecognized field key displays as-is.
+
 ### 28.3 Unavailable Data Cards
 
 Each entry in `unavailable_data` is rendered as its own card with three
@@ -1042,6 +1057,10 @@ OpenStreetMap places do not provide ratings, prices, reviews, opening
 hours, or booking availability unless those fields are explicitly
 returned by the backend.
 Route timing is unavailable unless a route provider is connected.
+Open-data accommodation-like places are location candidates only, not
+bookable hotel inventory. Bookable lodging prices, availability, ratings,
+amenities, and booking links are unavailable unless returned by an
+official lodging inventory provider.
 ```
 
 ### 28.5 Rendering Rule
@@ -1453,3 +1472,85 @@ state allowed to change as a result of clicking the button:
   `version_history`, `plan_diff_preview`, `regeneration_readiness`, and
   every itinerary field stay exactly as they were before the click.
 - The user should always know what the system knows, what it assumes, and what it could not verify.
+
+## 39. Bookable Accommodation Inventory Panel
+
+Component:
+
+```text
+AccommodationInventorySection
+```
+
+(`frontend/app/page.tsx`, Step 167E, docs/12_provider_architecture.md
+section 44/45, docs/14_backend_architecture.md section 44)
+
+Data source: `trip.planning_state.accommodation_inventory_report`, part of
+the already-fetched `GET /trips/{trip_id}` response consumed by
+`loadPlanResult` (no new API call is added). Backed by
+`AccommodationInventoryReport`/`AccommodationOffer` in
+`frontend/lib/types.ts`, mirroring the backend's
+`AccommodationSearchResult`/`AccommodationOffer` (Step 167D).
+
+Rendered directly after `ProviderCoverageSection` and directly before the
+"Destination candidate accommodation POIs" candidate list, so the two
+concepts sit visibly side by side.
+
+### 39.1 Status line
+
+Always shown, regardless of status:
+
+```text
+Bookable lodging inventory: Not connected
+```
+
+(`Connected`/`Unavailable`/`Failed` for the other possible
+`AccommodationSearchStatus` values.) This never says "checked" or
+"available" when the status is anything other than a `success` result
+that actually carries at least one offer.
+
+### 39.2 Not-connected / unavailable / failed state
+
+Whenever `report` is `null`, or `status` is not `success`, or `status` is
+`success` with zero offers, the panel shows exactly this note instead of
+any offer list:
+
+```text
+No official lodging inventory provider is connected yet. Prices,
+ratings, availability, amenities, and booking links are unavailable
+unless returned by an official provider.
+```
+
+This is the only path today, since no real lodging provider is
+connected (Step 167B's `not_connected` default).
+
+### 39.3 Connected-with-offers state (not reachable today, but implemented honestly)
+
+If `status === "success"` and `offers.length > 0`, each offer renders only
+the fields actually present on it — `property_name`, `provider`,
+optionally `source_name`, and, only when non-null, `nightly_price_amount`
++ `currency`, `rating`, `availability_status`, and `booking_url`. No
+field is ever filled in with a placeholder, an estimate, or a value
+copied from an unrelated OSM POI. This path cannot be exercised in the
+current deployment (no real adapter exists yet), but the rendering logic
+never fabricates a value if it ever is.
+
+### 39.4 Rendering rule
+
+The panel renders only fields already present on the backend-returned
+`AccommodationInventoryReport`. It never fabricates a property, price,
+availability, rating, amenity, cancellation policy, or booking link, and
+it never converts an OSM accommodation-like location candidate
+(`CandidatePoi`/`AccommodationSuggestion`, rendered separately by
+`CandidatePoiSection`/`AccommodationSuggestionCard`/
+`StayAreaAccommodationCard`) into a bookable offer. A closing line always
+restates the boundary: "Open-data accommodation-like places are location
+candidates only, not bookable hotel inventory."
+
+### 39.5 TODO
+
+Once a real accommodation inventory provider is connected
+(`Settings.accommodation_provider` set to something other than
+`"not_connected"`), verify this panel's connected-with-offers rendering
+(39.3) against real provider data before treating it as production-ready
+UI — it has only been exercised against an in-process fake provider in
+backend tests so far, never a real adapter's actual response shape.

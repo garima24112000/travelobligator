@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 
 from app.core.config import get_settings
 from app.core.errors import trip_not_found_error
+from app.models.accommodation import AccommodationSearchResult, AccommodationSearchStatus
 from app.models.ai_candidate_proposal import AICandidateProposalBatch
 from app.models.candidate_grounding import CandidateGroundingBatch
 from app.models.common import ProviderStatus
@@ -29,6 +30,7 @@ from app.repositories.planning_state_repository import (
     planning_state_repository,
 )
 from app.repositories.trip_repository import TripRepository, trip_repository
+from app.services.accommodation_inventory_service import AccommodationInventoryService
 from app.services.ai_candidate_discovery_service import AICandidateDiscoveryService
 from app.services.candidate_quality_service import CandidateQualityService
 from app.services.destination_context_service import DestinationContextService
@@ -66,6 +68,30 @@ _ROUTE_STATUS_TO_COVERAGE_VALUE = {
     ProviderStatus.FAILED: "failed",
     ProviderStatus.UNAVAILABLE: "unavailable",
 }
+
+# Maps AccommodationSearchResult.status (Step 167D) onto the existing
+# ProviderCoverage.hotel_prices string field -- honest reporting only.
+# `hotel_prices` (not `accommodations`) is used deliberately: `accommodations`
+# already carries the OSM-backed accommodation-location-candidate coverage
+# value ("open_poi_available"/"not_connected", set by StayTransportService/
+# DestinationContextService via ProviderCoverageService) -- an OSM POI is
+# never a bookable offer, so this bookable-inventory result is never
+# written to that same field. "success" is only ever set when the provider
+# both reported success *and* returned at least one real offer -- a
+# `success` result with zero offers is reported "unavailable" instead,
+# never upgraded to imply bookable inventory exists when it doesn't.
+_ACCOMMODATION_STATUS_TO_COVERAGE_VALUE = {
+    AccommodationSearchStatus.SUCCESS: "success",
+    AccommodationSearchStatus.NOT_CONNECTED: "not_connected",
+    AccommodationSearchStatus.FAILED: "failed",
+    AccommodationSearchStatus.UNAVAILABLE: "unavailable",
+}
+
+
+def _accommodation_coverage_value(result: AccommodationSearchResult) -> str:
+    if result.status == AccommodationSearchStatus.SUCCESS and not result.offers:
+        return "unavailable"
+    return _ACCOMMODATION_STATUS_TO_COVERAGE_VALUE.get(result.status, "not_connected")
 
 # Human-readable labels for GENERATION_STAGE_KEYS (Step 163B). Purely
 # cosmetic text for `GenerationProgress.current_stage_label` -- never a
@@ -132,6 +158,15 @@ def _failed_travel_time_buffer_report() -> TravelTimeBufferReport:
     )
 
 
+def _failed_accommodation_inventory_result(provider_name: str) -> AccommodationSearchResult:
+    return AccommodationSearchResult(
+        provider=provider_name,
+        status=AccommodationSearchStatus.FAILED,
+        offers=[],
+        message="Accommodation inventory computation failed unexpectedly.",
+    )
+
+
 class PlanningOrchestrator:
     """Controls the full planning pipeline (docs/14_backend_architecture.md
     section 7).
@@ -149,6 +184,7 @@ class PlanningOrchestrator:
         candidate_quality_service: CandidateQualityService | None = None,
         trip_strategy_service: TripStrategyService | None = None,
         stay_transport_service: StayTransportService | None = None,
+        accommodation_inventory_service: AccommodationInventoryService | None = None,
         experience_planner_service: ExperiencePlannerService | None = None,
         plan_validator_service: PlanValidatorService | None = None,
         route_feasibility_service: RouteFeasibilityService | None = None,
@@ -169,6 +205,9 @@ class PlanningOrchestrator:
         self.candidate_quality_service = candidate_quality_service or CandidateQualityService()
         self.trip_strategy_service = trip_strategy_service or TripStrategyService()
         self.stay_transport_service = stay_transport_service or StayTransportService()
+        self.accommodation_inventory_service = (
+            accommodation_inventory_service or AccommodationInventoryService()
+        )
         self.experience_planner_service = (
             experience_planner_service or ExperiencePlannerService()
         )
@@ -351,8 +390,51 @@ class PlanningOrchestrator:
         planning_state.set_pipeline_status(PipelineStatus.STRATEGY_CREATED)
         return planning_state
 
+    def _build_accommodation_inventory_report_safe(self, planning_state: PlanningState) -> None:
+        """Builds and stores `accommodation_inventory_report` plus the
+        derived `ProviderCoverage.hotel_prices` value (Step 167D), failing
+        safe (mirroring Step 166D's route-report hardening): an unexpected
+        exception from `AccommodationInventoryService.build_report` is
+        never allowed to crash generation. On such a failure, a safe
+        `status=failed` result with no offers is stored instead -- never a
+        fabricated property/price/rating/availability/booking link, and
+        never raw exception text or a provider payload in any stored
+        field.
+        """
+        try:
+            planning_state.accommodation_inventory_report = (
+                self.accommodation_inventory_service.build_report(planning_state)
+            )
+        except Exception:
+            logger.warning(
+                "AccommodationInventoryService.build_report failed unexpectedly; storing a "
+                "failed result so generation can continue.",
+                exc_info=True,
+            )
+            provider_name = getattr(
+                self.accommodation_inventory_service.gateway.accommodation_inventory,
+                "provider_name",
+                "accommodation_inventory_provider",
+            )
+            planning_state.accommodation_inventory_report = _failed_accommodation_inventory_result(
+                provider_name
+            )
+        planning_state.provider_coverage.hotel_prices = _accommodation_coverage_value(
+            planning_state.accommodation_inventory_report
+        )
+
     def run_stay_transport_stage(self, planning_state: PlanningState) -> PlanningState:
         planning_state = self.stay_transport_service.run(planning_state)
+        # Step 167D: bookable accommodation inventory report, computed
+        # after StayTransportService (which still cannot recommend a real
+        # stay area/accommodation option without a connected provider) and
+        # before ExperiencePlannerService/PlanValidatorService run. Never
+        # schedules lodging into the itinerary and never adds hotel
+        # recommendation logic -- this only records an honest inventory
+        # status. Saved alongside stay_transport by generate_full_plan's
+        # existing save-after-each-stage cadence; no extra save call
+        # needed here.
+        self._build_accommodation_inventory_report_safe(planning_state)
         planning_state.set_pipeline_status(PipelineStatus.STAY_TRANSPORT_CREATED)
         return planning_state
 

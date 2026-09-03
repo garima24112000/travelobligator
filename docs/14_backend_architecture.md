@@ -1885,3 +1885,127 @@ was otherwise rejected.
 report honestly off `route_feasibility_report.status` alone -- `success`
 only when that status is genuinely `success`, confirmed by a dedicated
 regression test.
+
+---
+
+## 41. Accommodation Provider Contract (Step 167A)
+
+`backend/app/models/accommodation.py` (`AccommodationSearchRequest`,
+`AccommodationOffer`, `AccommodationSearchResult`) and
+`backend/app/providers/accommodation/base.py`
+(`AccommodationInventoryProvider`, an `abc.ABC`) add a normalized
+contract for future real accommodation inventory providers (docs/12_
+provider_architecture.md section 41, docs/13_llm_reasoning_pipeline.md
+section 64) -- the accommodation-domain counterpart to the OSRM routing
+contract (Step 165A, section 35 above).
+
+**This is a contract only, exists but is not wired into planning yet.**
+`ProviderGateway.accommodation` still defaults to the pre-existing,
+always-`not_connected` `AccommodationProvider()` from `app.providers.base`
+(section 18 above); no stage service, `PlanningOrchestrator`,
+`ProviderCoverage`, or `provider_status` references this new contract.
+No concrete adapter (not-connected default, OSM-backed, or a real
+Booking/Expedia/Hotelbeds/Hostelworld/Amadeus/Vrbo/Airbnb integration)
+exists yet either. `AccommodationOffer` is deliberately kept distinct
+from the existing OSM-backed `DestinationContext.
+candidate_accommodation_pois`/`AccommodationSuggestion`/`StayAreaGuidance`
+data already flowing through the pipeline -- those remain open-data
+location candidates only, never bookable inventory.
+
+## 42. Accommodation Not-Connected Provider and Factory (Step 167B)
+
+`backend/app/providers/accommodation/not_connected_adapter.py`
+(`NotConnectedAccommodationProvider`) and `factory.py`
+(`get_accommodation_provider`) add the first concrete
+`AccommodationInventoryProvider` and a config-gated factory to select
+it (docs/12_provider_architecture.md section 42, docs/13_llm_reasoning_
+pipeline.md section 65) -- mirroring `NotConnectedRoutingProvider`/
+`get_routing_provider` (Step 165A/165B, section 35 above). A new
+`Settings.accommodation_provider` field (alias `ACCOMMODATION_PROVIDER`,
+default `"not_connected"`) gates the factory's selection.
+
+**Still not wired into planning.** `ProviderGateway.accommodation`
+remains the pre-existing, always-`not_connected` `AccommodationProvider()`
+from `app.providers.base`; neither `ProviderGateway` nor
+`PlanningOrchestrator` imports `app.providers.accommodation` or
+references `get_accommodation_provider`/`AccommodationInventoryProvider`.
+`NotConnectedAccommodationProvider.search_accommodations` always
+returns `status=not_connected` with an empty `offers` list, never
+calling a network service or inventing a property, price, availability,
+rating, amenity, cancellation policy, or booking link. The factory
+falls back to this same provider for any unrecognized
+`accommodation_provider` config value.
+
+## 43. Accommodation Lookup Exposed Through ProviderGateway (Step 167C)
+
+`ProviderGateway` (`backend/app/providers/gateway.py`) gains an
+`accommodation_inventory` constructor slot (defaulting to
+`get_accommodation_provider()`) and a `search_accommodations(request:
+AccommodationSearchRequest) -> AccommodationSearchResult` method
+(docs/12_provider_architecture.md section 43, docs/13_llm_reasoning_
+pipeline.md section 66) -- the accommodation-domain counterpart to
+`routing`/`get_route` (Step 165B, section 35 above). Existing
+`ProviderGateway()` construction with no arguments is unaffected; the
+pre-existing `accommodation` slot (`app.providers.base.
+AccommodationProvider` stub) is untouched and stays separate.
+
+**Not yet consumed by planning or validation.** No stage service
+(`PlanningOrchestrator`, `StayTransportService`, `PlanValidatorService`)
+calls `search_accommodations` or references `accommodation_inventory`
+-- itinerary scheduling, plan validation, and `ProviderCoverage`
+reporting are all unchanged by this step. The default remains
+`not_connected` with an empty `offers` list and no network call.
+
+## 44. Accommodation Inventory Report, Coverage, and Validation Clarity (Step 167D)
+
+`backend/app/services/accommodation_inventory_service.py`
+(`AccommodationInventoryService`) is a new stage-adjacent service, run
+by `PlanningOrchestrator.run_stay_transport_stage` right after
+`StayTransportService.run` (docs/12_provider_architecture.md section
+44, docs/13_llm_reasoning_pipeline.md section 67). It builds an
+`AccommodationSearchRequest` from `PlanningState.trip_request` and
+calls `ProviderGateway.search_accommodations` (Step 167C), storing the
+result on the new `PlanningState.accommodation_inventory_report`
+field. Exception-hardened like the Section 166 route reports: an
+unexpected exception is caught and converted to a `failed` result
+rather than crashing `generate_full_plan`.
+
+The result's status is mapped onto `ProviderCoverage.hotel_prices`
+(not `accommodations`, which already carries the OSM-backed
+accommodation-location-candidate coverage value) -- `success` is set
+only when the result actually carries a real offer.
+`PlanValidatorService` adds one non-blocking
+`category="accommodation_inventory"` `WARNING` explaining the current
+status in plain terms, never a critical issue.
+
+**Still not consumed by scheduling.** No lodging is scheduled into the
+itinerary, no hotel recommendation logic is added, and `StayTransportDecision.
+accommodation_recommendations` remains empty exactly as before this
+step -- this only makes the inventory status honest and visible.
+
+## 45. Final Accommodation Flow (Section 167, Steps 167A-167E)
+
+The complete, current accommodation inventory data flow, end to end:
+
+```text
+ProviderGateway.search_accommodations (Step 167C)
+  -> AccommodationInventoryService.build_report (Step 167D)
+  -> PlanningState.accommodation_inventory_report (Step 167D)
+  -> ProviderCoverage.hotel_prices (Step 167D, mapped in PlanningOrchestrator)
+  -> PlanValidatorService's non-blocking "accommodation_inventory" warning (Step 167D)
+  -> AccommodationInventorySection in frontend/app/page.tsx (Step 167E)
+```
+
+Every arrow above is a plain read of already-computed data -- no stage
+re-calls the provider, no stage re-derives a status from scratch, and no
+step upgrades a `not_connected`/`unavailable`/`failed` result into
+anything stronger. With the default `Settings.accommodation_provider =
+"not_connected"` (Step 167B), every link in this chain resolves to an
+honest "not connected"/empty-offers state, all the way to the rendered
+UI. `ProviderGateway.accommodation` (the pre-existing, generic
+`app.providers.base.AccommodationProvider` stub used by
+`StayTransportService`) and `DestinationContext.
+candidate_accommodation_pois`/`AccommodationSuggestion`/`StayAreaGuidance`
+(OSM-backed open-data location candidates, feeding `ProviderCoverage.
+accommodations`) remain two entirely separate flows, never merged with
+the chain above at any point.

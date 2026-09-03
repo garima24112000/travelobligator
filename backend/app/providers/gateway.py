@@ -2,9 +2,12 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.models.accommodation import AccommodationSearchRequest, AccommodationSearchResult
 from app.models.common import ProviderCoverage, ProviderStatusEntry
 from app.models.providers import ProviderResponse
 from app.models.routing import RouteRequest, RouteResult
+from app.providers.accommodation.base import AccommodationInventoryProvider
+from app.providers.accommodation.factory import get_accommodation_provider
 from app.providers.base import (
     AccommodationProvider,
     AIReasoningProvider,
@@ -50,6 +53,22 @@ class ProviderGateway:
     `PlanningOrchestrator`, `ExperiencePlannerService`, or
     `PlanValidatorService` yet** -- `get_route` exists on this gateway so a
     future step has one place to call, but nothing calls it yet.
+
+    `accommodation_inventory` (Step 167C, docs/12_provider_architecture.md
+    section 43) is separate from the pre-existing, still-unused
+    `accommodation` slot above (the generic `app.providers.base.
+    AccommodationProvider` stub interface, untouched by this step) --
+    mirroring how `routing` was kept distinct from `routes`.
+    `accommodation_inventory` defaults to whatever
+    `app.providers.accommodation.factory.get_accommodation_provider()`
+    resolves from `Settings.accommodation_provider` (`"not_connected"` by
+    default, so this gateway makes no network call by default either) --
+    the gateway itself has no lodging-provider-specific knowledge; that
+    stays entirely inside the factory/adapter. **Not consumed by
+    `PlanningOrchestrator`, `StayTransportService`, or
+    `PlanValidatorService` yet** -- `search_accommodations` exists on this
+    gateway so a future step has one place to call, but nothing calls it
+    yet.
     """
 
     def __init__(
@@ -64,6 +83,7 @@ class ProviderGateway:
         currency: CurrencyProvider | None = None,
         ai_reasoning: AIReasoningProvider | None = None,
         routing: RoutingProvider | None = None,
+        accommodation_inventory: AccommodationInventoryProvider | None = None,
     ) -> None:
         self.places = places or OpenStreetMapPlacesAdapter()
         self.routes = routes or RoutesProvider()
@@ -75,6 +95,7 @@ class ProviderGateway:
         self.currency = currency or FrankfurterCurrencyAdapter()
         self.ai_reasoning = ai_reasoning or AIReasoningProvider()
         self.routing = routing or get_routing_provider()
+        self.accommodation_inventory = accommodation_inventory or get_accommodation_provider()
 
     def get_route(self, request: RouteRequest) -> RouteResult:
         """Look up a point-to-point route through the configured routing
@@ -91,6 +112,28 @@ class ProviderGateway:
         every other provider slot is used through this gateway.
         """
         return self.routing.get_route(request)
+
+    def search_accommodations(
+        self, request: AccommodationSearchRequest
+    ) -> AccommodationSearchResult:
+        """Look up bookable accommodation inventory through the configured
+        accommodation inventory provider (Step 167C). Delegates entirely to
+        `self.accommodation_inventory` -- the gateway does not add, guess,
+        or backfill any property, price, availability, rating, amenity,
+        cancellation policy, or booking link itself, and never inspects
+        `request.destination` to invent anything. With the default
+        `not_connected` accommodation provider (`Settings.
+        accommodation_provider` unset/unrecognized), this returns an
+        honest `not_connected` `AccommodationSearchResult` with an empty
+        `offers` list, without any network call.
+
+        Not called by `PlanningOrchestrator`, `StayTransportService`, or
+        `PlanValidatorService` yet -- this method exists so a future step
+        has one place to request accommodation inventory through, matching
+        how `get_route` was added ahead of routing being consumed
+        (Step 165B).
+        """
+        return self.accommodation_inventory.search_accommodations(request)
 
     @staticmethod
     def to_status_entry(response: ProviderResponse[Any]) -> ProviderStatusEntry:

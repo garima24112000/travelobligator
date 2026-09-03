@@ -2,7 +2,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.models.common import ProviderStatus
+from app.models.accommodation import (
+    AccommodationOffer,
+    AccommodationSearchResult,
+    AccommodationSearchStatus,
+)
+from app.models.common import DataStatus, ProviderStatus
 from app.models.planning_state import (
     DestinationContext,
     PlanningState,
@@ -95,6 +100,14 @@ def _scheduled_names(planning_state: PlanningState) -> list[str]:
         experience.name
         for day_plan in planning_state.experience_plan.daily_plans
         for experience in day_plan.experiences
+    ]
+
+
+def _accommodation_inventory_warnings(planning_state: PlanningState) -> list[Any]:
+    return [
+        warning
+        for warning in planning_state.validation_report.warnings
+        if warning.category == "accommodation_inventory"
     ]
 
 
@@ -648,3 +661,136 @@ def test_validator_never_claims_route_timing_was_checked_when_unavailable() -> N
     # No blocking failure is ever created just because routing/timing data
     # is unavailable.
     assert planning_state.validation_report.critical_issues == []
+
+
+# ---------------------------------------------------------------------------
+# Step 167D: accommodation_inventory_report clarity in PlanValidatorService.
+# Every case here is a non-blocking WARNING -- missing/unconnected bookable
+# lodging inventory never produces a critical_issue and never blocks
+# generation by itself.
+# ---------------------------------------------------------------------------
+
+
+def test_accommodation_inventory_warning_when_report_missing() -> None:
+    """When accommodation_inventory_report hasn't been computed at all
+    (None), the validator still surfaces exactly one honest warning --
+    never silence, and never a claim that lodging was checked."""
+    planning_state = _planning_state()
+    assert planning_state.accommodation_inventory_report is None
+
+    PlanValidatorService().run(planning_state)
+
+    warnings = _accommodation_inventory_warnings(planning_state)
+    assert len(warnings) == 1
+    assert "no accommodation inventory provider is connected" in warnings[0].message.lower()
+    assert "could not be checked" in warnings[0].message.lower()
+    assert not any(
+        issue.category == "accommodation_inventory"
+        for issue in planning_state.validation_report.critical_issues
+    )
+
+
+def test_accommodation_inventory_warning_when_not_connected() -> None:
+    planning_state = _planning_state()
+    planning_state.accommodation_inventory_report = AccommodationSearchResult(
+        provider="accommodation_inventory_provider",
+        status=AccommodationSearchStatus.NOT_CONNECTED,
+        offers=[],
+        message="Accommodation inventory provider is not connected.",
+    )
+
+    PlanValidatorService().run(planning_state)
+
+    warnings = _accommodation_inventory_warnings(planning_state)
+    assert len(warnings) == 1
+    assert "no accommodation inventory provider is connected" in warnings[0].message.lower()
+    assert not any(
+        issue.category == "accommodation_inventory"
+        for issue in planning_state.validation_report.critical_issues
+    )
+
+
+def test_accommodation_inventory_warning_when_failed() -> None:
+    planning_state = _planning_state()
+    planning_state.accommodation_inventory_report = AccommodationSearchResult(
+        provider="accommodation_inventory_provider",
+        status=AccommodationSearchStatus.FAILED,
+        offers=[],
+        message="The accommodation inventory provider request failed unexpectedly.",
+    )
+
+    PlanValidatorService().run(planning_state)
+
+    warnings = _accommodation_inventory_warnings(planning_state)
+    assert len(warnings) == 1
+    assert "failed" in warnings[0].message.lower()
+    assert not any(
+        issue.category == "accommodation_inventory"
+        for issue in planning_state.validation_report.critical_issues
+    )
+
+
+def test_accommodation_inventory_warning_when_success_with_no_offers() -> None:
+    """A `success` status with zero offers is still reported as
+    unavailable -- never claims a hotel is bookable when none was found."""
+    planning_state = _planning_state()
+    planning_state.accommodation_inventory_report = AccommodationSearchResult(
+        provider="fake_accommodation_inventory_provider",
+        status=AccommodationSearchStatus.SUCCESS,
+        offers=[],
+        message="No properties matched this search.",
+    )
+
+    PlanValidatorService().run(planning_state)
+
+    warnings = _accommodation_inventory_warnings(planning_state)
+    assert len(warnings) == 1
+    assert "no bookable lodging offers" in warnings[0].message.lower()
+    assert not any(
+        issue.category == "accommodation_inventory"
+        for issue in planning_state.validation_report.critical_issues
+    )
+
+
+def test_accommodation_inventory_warning_when_success_with_offers() -> None:
+    """A real, provider-backed offer is named honestly, but never claimed
+    to have been reviewed for accuracy or scheduled into the itinerary."""
+    planning_state = _planning_state()
+    offer = AccommodationOffer(
+        provider="fake_accommodation_inventory_provider",
+        provider_property_id="prop_1",
+        property_name="Fake Property",
+        data_status=DataStatus.LIVE,
+    )
+    planning_state.accommodation_inventory_report = AccommodationSearchResult(
+        provider="fake_accommodation_inventory_provider",
+        status=AccommodationSearchStatus.SUCCESS,
+        offers=[offer],
+    )
+
+    PlanValidatorService().run(planning_state)
+
+    warnings = _accommodation_inventory_warnings(planning_state)
+    assert len(warnings) == 1
+    message_lower = warnings[0].message.lower()
+    assert "1 provider-backed bookable accommodation offer" in message_lower
+    assert "not scheduled into the itinerary" in message_lower
+    assert not any(
+        issue.category == "accommodation_inventory"
+        for issue in planning_state.validation_report.critical_issues
+    )
+
+
+def test_accommodation_inventory_warning_never_blocks_generation() -> None:
+    """Missing/unconnected accommodation inventory never contributes a
+    critical_issue on its own, regardless of scheduling outcome."""
+    planning_state = _two_candidate_planning_state()
+    _run_planner_then_validator(planning_state)
+
+    assert planning_state.accommodation_inventory_report is None
+    warnings = _accommodation_inventory_warnings(planning_state)
+    assert len(warnings) == 1
+    assert not any(
+        issue.category == "accommodation_inventory"
+        for issue in planning_state.validation_report.critical_issues
+    )

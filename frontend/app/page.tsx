@@ -21,6 +21,7 @@ import {
   submitTripFeedback,
 } from "@/lib/api";
 import type {
+  AccommodationInventoryReport,
   AccommodationSuggestion,
   CandidatePoi,
   ChecklistItemStatus,
@@ -90,6 +91,7 @@ type PlanResult = {
   planDiffPreview: PlanDiffPreview;
   regenerationReadiness: RegenerationReadiness;
   regenerationAttempts: RegenerationAttempt[];
+  accommodationInventoryReport: AccommodationInventoryReport | null;
 };
 
 function parseCommaList(value: string): string[] {
@@ -1414,6 +1416,36 @@ function ProviderStatusGroup({
   );
 }
 
+// Human-readable labels for known raw backend `provider_coverage` field
+// keys (Step 167E). Purely cosmetic -- the raw field key is always shown
+// alongside the friendly label, never replaced or hidden, and this mapping
+// never implies a provider is connected beyond what `provider_coverage`
+// actually says. `accommodations` (open-data location candidates, e.g.
+// OpenStreetMap) and `hotel_prices` (bookable lodging inventory from an
+// official provider) are deliberately labeled to keep those two concepts
+// visibly distinct -- an open-data location candidate is never a hotel
+// price, rating, availability, amenity, or booking link. Unknown field
+// keys fall back to the raw key unchanged.
+const PROVIDER_COVERAGE_FIELD_LABELS: Record<string, string> = {
+  accommodations: "Accommodation-like location candidates (open data)",
+  hotel_prices: "Bookable lodging inventory",
+};
+
+function providerCoverageFieldLabel(key: string): string {
+  return PROVIDER_COVERAGE_FIELD_LABELS[key] ?? key;
+}
+
+// Coverage values that mean "no official lodging inventory provider has
+// returned usable data" for the `hotel_prices` field -- shown with an
+// explanatory note so a bare status string like "not_connected" is never
+// left to imply prices/ratings/availability/amenities/booking links exist.
+const HOTEL_PRICES_NOT_CONNECTED_VALUES = new Set([
+  "not_connected",
+  "unavailable",
+  "failed",
+  null,
+]);
+
 /**
  * Provider transparency panel (Step 149, docs/16_frontend_architecture.md
  * section 28). Renders only backend-returned `ProviderCoverageData` fields
@@ -1426,6 +1458,8 @@ function ProviderCoverageSection({ coverage }: { coverage: ProviderCoverageData 
   const coverageEntries = Object.entries(coverage.provider_coverage).filter(
     ([, value]) => value !== null,
   );
+  const hotelPricesValue = coverage.provider_coverage.hotel_prices ?? null;
+  const hotelPricesNotConnected = HOTEL_PRICES_NOT_CONNECTED_VALUES.has(hotelPricesValue);
   const statusEntries = Object.entries(coverage.provider_status);
   const groupedStatus = groupProviderStatusByType(coverage.provider_status);
 
@@ -1476,9 +1510,19 @@ function ProviderCoverageSection({ coverage }: { coverage: ProviderCoverageData 
               className="rounded-lg border border-white/10 bg-slate-900/60 p-3 text-sm"
             >
               <dt className="text-[11px] uppercase tracking-wide text-slate-500">
-                {key}
+                {providerCoverageFieldLabel(key)}
               </dt>
+              <p className="font-mono text-[10px] text-slate-600">{key}</p>
               <dd className="mt-1 text-slate-200">{value}</dd>
+              {key === "hotel_prices" && hotelPricesNotConnected && (
+                <p className="mt-2 text-xs text-amber-300/90">
+                  No official lodging inventory provider is connected yet.
+                  Prices, ratings, availability, amenities, and booking links
+                  are unavailable unless returned by an official provider.
+                  Open-data accommodation-like places (see below) are
+                  location candidates only, not bookable hotel inventory.
+                </p>
+              )}
             </div>
           ))}
         </dl>
@@ -1518,6 +1562,13 @@ function ProviderCoverageSection({ coverage }: { coverage: ProviderCoverageData 
           <li>
             Route timing is unavailable unless a route provider is
             connected.
+          </li>
+          <li>
+            Open-data accommodation-like places are location candidates
+            only, not bookable hotel inventory. Bookable lodging prices,
+            availability, ratings, amenities, and booking links are
+            unavailable unless returned by an official lodging inventory
+            provider.
           </li>
         </ul>
       </div>
@@ -1570,6 +1621,101 @@ function ProviderCoverageSection({ coverage }: { coverage: ProviderCoverageData 
           </ul>
         </div>
       )}
+    </div>
+  );
+}
+
+function accommodationInventoryStatusLabel(status: string): string {
+  switch (status) {
+    case "success":
+      return "Connected";
+    case "unavailable":
+      return "Unavailable";
+    case "failed":
+      return "Failed";
+    case "not_connected":
+    default:
+      return "Not connected";
+  }
+}
+
+/**
+ * Bookable accommodation inventory panel (Step 167E,
+ * docs/16_frontend_architecture.md). Renders only backend-returned
+ * `AccommodationInventoryReport` fields -- it never invents a property,
+ * price, rating, availability, amenity, cancellation policy, or booking
+ * link, and it never upgrades a `not_connected`/`unavailable`/`failed`
+ * status into an implied "checked" claim. This is deliberately a separate
+ * concept from the open-data accommodation-like location candidates
+ * rendered elsewhere on this page (`CandidatePoiSection`,
+ * `AccommodationSuggestionCard`, `StayAreaAccommodationCard`) -- an OSM
+ * POI never appears here, and a real bookable offer here is never merged
+ * into those location-candidate lists.
+ */
+function AccommodationInventorySection({
+  report,
+}: {
+  report: AccommodationInventoryReport | null;
+}) {
+  const status = report?.status ?? "not_connected";
+  const offers = report?.offers ?? [];
+  const isConnectedWithOffers = status === "success" && offers.length > 0;
+
+  return (
+    <div className="rounded-2xl border border-white/10 bg-white/5 p-5">
+      <h2 className="text-lg font-semibold">Bookable lodging inventory</h2>
+      <p className="mt-2 text-sm text-slate-200">
+        Bookable lodging inventory: {accommodationInventoryStatusLabel(status)}
+      </p>
+
+      {!isConnectedWithOffers ? (
+        <p className="mt-2 text-xs text-amber-300/90">
+          No official lodging inventory provider is connected yet. Prices,
+          ratings, availability, amenities, and booking links are
+          unavailable unless returned by an official provider.
+        </p>
+      ) : (
+        <ul className="mt-3 flex flex-col gap-2">
+          {offers.map((offer, index) => (
+            <li
+              key={`${offer.provider_property_id}-${index}`}
+              className="rounded-lg border border-white/10 bg-slate-900/60 p-3 text-sm"
+            >
+              <p className="font-medium text-slate-100">
+                {offer.property_name}
+              </p>
+              <p className="mt-0.5 font-mono text-[11px] text-slate-500">
+                {offer.provider}
+                {offer.source_name ? ` · ${offer.source_name}` : ""}
+              </p>
+              {offer.nightly_price_amount !== null && offer.currency && (
+                <p className="mt-1 text-xs text-slate-300">
+                  {offer.nightly_price_amount} {offer.currency} / night
+                </p>
+              )}
+              {offer.rating !== null && (
+                <p className="mt-1 text-xs text-slate-300">
+                  Rating: {offer.rating}
+                </p>
+              )}
+              <p className="mt-1 text-xs text-slate-400">
+                Availability: {offer.availability_status}
+              </p>
+              {offer.booking_url && (
+                <p className="mt-1 break-all text-xs text-cyan-200">
+                  {offer.booking_url}
+                </p>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+
+      <p className="mt-3 text-xs text-slate-500">
+        Open-data accommodation-like places are location candidates only,
+        not bookable hotel inventory -- see the destination candidate
+        accommodation POIs below.
+      </p>
     </div>
   );
 }
@@ -2563,6 +2709,8 @@ async function loadPlanResult(tripId: string): Promise<PlanResult> {
     planDiffPreview: trip.planning_state.plan_diff_preview,
     regenerationReadiness: regenerationReadiness.regeneration_readiness,
     regenerationAttempts: regenerationAttempts.regeneration_attempts,
+    accommodationInventoryReport:
+      trip.planning_state.accommodation_inventory_report,
   };
 }
 
@@ -3602,6 +3750,10 @@ export default function Home() {
             />
 
             <ProviderCoverageSection coverage={result.providerCoverage} />
+
+            <AccommodationInventorySection
+              report={result.accommodationInventoryReport}
+            />
 
             <CandidatePoiSection
               title="Destination candidate attractions"

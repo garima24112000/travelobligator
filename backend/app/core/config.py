@@ -238,6 +238,17 @@ class Settings(BaseSettings):
         ge=0.0,
     )
 
+    # Config gate for get_accommodation_provider (Step 167B,
+    # docs/12_provider_architecture.md, docs/14_backend_architecture.md).
+    # "not_connected" is the only supported value today -- see
+    # backend/app/providers/accommodation/factory.py. An unsupported/
+    # unrecognized value falls back to "not_connected" rather than raising
+    # or fabricating lodging inventory. Not wired into ProviderGateway or
+    # PlanningOrchestrator yet.
+    accommodation_provider: str = Field(
+        default="not_connected", alias="ACCOMMODATION_PROVIDER"
+    )
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

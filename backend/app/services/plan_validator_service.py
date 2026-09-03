@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from app.models.accommodation import AccommodationSearchResult, AccommodationSearchStatus
 from app.models.common import DataStatus, ProviderStatus, ReadinessStatus, ValidationSeverity
 from app.models.planning_state import (
     DailyPlan,
@@ -332,6 +333,10 @@ class PlanValidatorService(PlanningStageService):
         if holiday_warning is not None:
             warnings.append(holiday_warning)
 
+        warnings.append(
+            _build_accommodation_inventory_warning(planning_state.accommodation_inventory_report)
+        )
+
         readiness_status = (
             ReadinessStatus.BLOCKED if critical_issues else ReadinessStatus.NEEDS_REVIEW
         )
@@ -579,6 +584,80 @@ def _build_holiday_warning(planning_state: PlanningState) -> ValidationIssue | N
             "hours, or crowd context around public holidays) before treating this "
             "plan as holiday-checked."
         ),
+    )
+
+
+_ACCOMMODATION_NOT_CONNECTED_MESSAGE = (
+    "No accommodation inventory provider is connected, so bookable lodging price, "
+    "availability, rating, and booking link data could not be checked. This is "
+    "separate from any OpenStreetMap accommodation-location candidates suggested "
+    "elsewhere in this plan, which are not bookable inventory."
+)
+_ACCOMMODATION_FAILED_MESSAGE = (
+    "The accommodation inventory provider request failed, so bookable lodging "
+    "price, availability, rating, and booking link data could not be checked."
+)
+_ACCOMMODATION_UNAVAILABLE_MESSAGE_TEMPLATE = (
+    "The accommodation inventory provider was checked, but no bookable lodging "
+    "offers were available ({detail}). No price, availability, rating, or booking "
+    "link data exists to review."
+)
+_ACCOMMODATION_SUCCESS_MESSAGE_TEMPLATE = (
+    "{count} provider-backed bookable accommodation offer(s) were found via "
+    "{provider}, but these have not been reviewed for price, availability, rating, "
+    "or booking-link accuracy, and they are not scheduled into the itinerary."
+)
+_ACCOMMODATION_SUGGESTED_FIX = (
+    "Connect a real accommodation inventory provider, or manually review bookable "
+    "lodging options for these dates, before treating lodging as checked."
+)
+
+
+def _build_accommodation_inventory_warning(
+    accommodation_inventory_report: AccommodationSearchResult | None,
+) -> ValidationIssue:
+    """Deterministic review warning built purely from
+    `planning_state.accommodation_inventory_report` (Step 167D) -- no
+    provider call of its own (the lookup already happened in
+    `AccommodationInventoryService`, before validation runs).
+
+    Always a `WARNING`, never a critical issue -- missing/unconnected
+    bookable lodging inventory never blocks generation by itself. When the
+    report is missing entirely (stage not yet run) or the provider is
+    `not_connected`, the message says so explicitly rather than implying
+    lodging was checked. A `success` result with real offers still never
+    claims those offers were reviewed for accuracy or scheduled into the
+    itinerary -- this app never schedules lodging into the itinerary and
+    never adds hotel recommendation logic. This is explicitly distinguished
+    from `DestinationContext.candidate_accommodation_pois` (open-data OSM
+    location candidates), which are never bookable inventory.
+    """
+    if (
+        accommodation_inventory_report is None
+        or accommodation_inventory_report.status == AccommodationSearchStatus.NOT_CONNECTED
+    ):
+        message = _ACCOMMODATION_NOT_CONNECTED_MESSAGE
+    elif accommodation_inventory_report.status == AccommodationSearchStatus.FAILED:
+        message = _ACCOMMODATION_FAILED_MESSAGE
+    elif (
+        accommodation_inventory_report.status == AccommodationSearchStatus.UNAVAILABLE
+        or not accommodation_inventory_report.offers
+    ):
+        message = _ACCOMMODATION_UNAVAILABLE_MESSAGE_TEMPLATE.format(
+            detail=accommodation_inventory_report.message or "no offers were returned"
+        )
+    else:
+        message = _ACCOMMODATION_SUCCESS_MESSAGE_TEMPLATE.format(
+            count=len(accommodation_inventory_report.offers),
+            provider=accommodation_inventory_report.provider,
+        )
+
+    return ValidationIssue(
+        severity=ValidationSeverity.WARNING,
+        category="accommodation_inventory",
+        message=message,
+        affected_section="stay_transport",
+        suggested_fix=_ACCOMMODATION_SUGGESTED_FIX,
     )
 
 

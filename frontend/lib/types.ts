@@ -184,6 +184,43 @@ export type AccommodationSuggestion = {
   why_suggested: string;
 };
 
+// Bookable accommodation inventory, from an official lodging provider only
+// (backend: app.models.accommodation.AccommodationOffer, Step 167D). This
+// is a wholly separate concept from `AccommodationSuggestion`/`CandidatePoi`
+// above (open-data OSM location candidates) -- those never carry a price,
+// availability, rating, amenity, or booking link, and this is the only
+// place one could ever legitimately appear. Every optional field here
+// stays `null`/empty unless a real provider actually returned it; the
+// frontend never fills one in.
+export type AccommodationOffer = {
+  provider: string;
+  provider_property_id: string;
+  property_name: string;
+  nightly_price_amount: number | null;
+  total_price_amount: number | null;
+  currency: string | null;
+  availability_status: string;
+  booking_url: string | null;
+  rating: number | null;
+  amenities: string[];
+  cancellation_policy: string | null;
+  source_name: string | null;
+};
+
+// Bookable accommodation inventory report for the whole trip (backend:
+// app.models.accommodation.AccommodationSearchResult /
+// PlanningState.accommodation_inventory_report, Step 167D). `offers` can
+// only be non-empty when `status === "success"` -- with the default
+// not_connected accommodation provider, this is always `status:
+// "not_connected"` with an empty `offers` list, and the frontend never
+// invents a different value client-side.
+export type AccommodationInventoryReport = {
+  provider: string;
+  status: "success" | "not_connected" | "unavailable" | "failed";
+  offers: AccommodationOffer[];
+  message: string | null;
+};
+
 export type DailyPlan = {
   day_plan_id: string;
   day_number: number;
@@ -519,8 +556,9 @@ export type GenerationProgressData = {
 
 // Full PlanningState is much larger than this; only feedback_history,
 // pending_feedback_summary, user_locks, version_history, plan_diff_preview,
-// regeneration_readiness, and regeneration_attempts are declared here since
-// that's the only part of it the frontend reads.
+// regeneration_readiness, regeneration_attempts, and
+// accommodation_inventory_report are declared here since that's the only
+// part of it the frontend reads.
 export type TripData = {
   trip_id: string;
   planning_state: {
@@ -531,5 +569,6 @@ export type TripData = {
     plan_diff_preview: PlanDiffPreview;
     regeneration_readiness: RegenerationReadiness;
     regeneration_attempts: RegenerationAttempt[];
+    accommodation_inventory_report: AccommodationInventoryReport | null;
   };
 };
