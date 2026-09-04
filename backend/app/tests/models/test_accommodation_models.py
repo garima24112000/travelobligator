@@ -13,6 +13,7 @@ from app.models.accommodation import (
     AccommodationSearchStatus,
 )
 from app.models.common import DataStatus
+from app.models.scraping import ScrapedDataConfidence, ScrapedDataProvenance
 
 # Model/contract tests for Step 167A's accommodation inventory foundation.
 # Never calls a real network service, never requires any lodging provider
@@ -285,3 +286,41 @@ def test_search_result_success_allows_empty_offers() -> None:
         message="No properties matched this search.",
     )
     assert result.offers == []
+
+
+# ---------------------------------------------------------------------------
+# 11. AccommodationOffer.scraped_provenance (Step 168B) stays None unless
+#     set, and is only ever valid alongside data_status=scraped_public_page.
+# ---------------------------------------------------------------------------
+
+
+def _scraped_provenance(**overrides: object) -> ScrapedDataProvenance:
+    fields: dict[str, object] = {
+        "source_id": "example_test_only_travel_blog",
+        "source_name": "Example Test-Only Travel Blog",
+        "confidence": ScrapedDataConfidence.EXPERIMENTAL,
+    }
+    fields.update(overrides)
+    return ScrapedDataProvenance(**fields)
+
+
+def test_offer_scraped_provenance_defaults_to_none() -> None:
+    offer = _offer()
+    assert offer.scraped_provenance is None
+
+
+def test_offer_accepts_scraped_provenance_with_matching_data_status() -> None:
+    offer = _offer(
+        data_status=DataStatus.SCRAPED_PUBLIC_PAGE,
+        scraped_provenance=_scraped_provenance(),
+    )
+    assert offer.scraped_provenance is not None
+    assert offer.scraped_provenance.official_provider is False
+
+
+def test_offer_rejects_scraped_provenance_with_official_looking_data_status() -> None:
+    """`scraped_provenance` can never be attached to an offer whose
+    `data_status` claims official-looking data (e.g. `live`) -- scraped
+    data must never be presented as official-provider data."""
+    with pytest.raises(ValidationError):
+        _offer(data_status=DataStatus.LIVE, scraped_provenance=_scraped_provenance())

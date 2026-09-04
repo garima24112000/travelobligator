@@ -75,13 +75,18 @@ def _planning_state(
 # ---------------------------------------------------------------------------
 
 
-def test_build_report_returns_not_connected_by_default() -> None:
+def test_build_report_returns_unavailable_by_default() -> None:
+    """As of Step 168F, the default `ProviderGateway.accommodation_inventory`
+    is `ScrapedAccommodationProvider` (config default `accommodation_
+    provider="scraped_local"`) -- with no local HTML file present at its
+    default path, it honestly reports `unavailable`, never a fabricated
+    offer."""
     service = AccommodationInventoryService()
     planning_state = _planning_state(_trip_request())
 
     result = service.build_report(planning_state)
 
-    assert result.status == AccommodationSearchStatus.NOT_CONNECTED
+    assert result.status == AccommodationSearchStatus.UNAVAILABLE
     assert result.offers == []
 
 
@@ -127,7 +132,7 @@ def test_build_report_no_network_call_by_default(monkeypatch: pytest.MonkeyPatch
 
     result = service.build_report(planning_state)
 
-    assert result.status == AccommodationSearchStatus.NOT_CONNECTED
+    assert result.status == AccommodationSearchStatus.UNAVAILABLE
 
 
 # ---------------------------------------------------------------------------

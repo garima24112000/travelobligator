@@ -73,7 +73,12 @@ def _orchestrator_with_gateway(gateway: ProviderGateway) -> PlanningOrchestrator
 # ---------------------------------------------------------------------------
 
 
-def test_run_stay_transport_stage_default_stores_not_connected() -> None:
+def test_run_stay_transport_stage_default_stores_unavailable() -> None:
+    """As of Step 168F, the default accommodation provider is
+    `ScrapedAccommodationProvider` (config default `accommodation_
+    provider="scraped_local"`) -- with no local HTML file present at its
+    default path, it honestly reports `unavailable`, never a fabricated
+    offer."""
     orchestrator = PlanningOrchestrator()
     planning_state = PlanningState(trip_request=_trip_request())
 
@@ -81,9 +86,9 @@ def test_run_stay_transport_stage_default_stores_not_connected() -> None:
 
     report = planning_state.accommodation_inventory_report
     assert report is not None
-    assert report.status == AccommodationSearchStatus.NOT_CONNECTED
+    assert report.status == AccommodationSearchStatus.UNAVAILABLE
     assert report.offers == []
-    assert planning_state.provider_coverage.hotel_prices == "not_connected"
+    assert planning_state.provider_coverage.hotel_prices == "unavailable"
 
 
 def test_default_generation_never_fabricates_offer_fields() -> None:
@@ -146,13 +151,13 @@ def test_injected_fake_provider_success_is_stored_unmodified() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_provider_coverage_hotel_prices_not_connected_by_default() -> None:
+def test_provider_coverage_hotel_prices_unavailable_by_default() -> None:
     orchestrator = PlanningOrchestrator()
     planning_state = PlanningState(trip_request=_trip_request())
 
     planning_state = orchestrator.run_stay_transport_stage(planning_state)
 
-    assert planning_state.provider_coverage.hotel_prices == "not_connected"
+    assert planning_state.provider_coverage.hotel_prices == "unavailable"
 
 
 def test_provider_coverage_hotel_prices_success_only_with_real_offers() -> None:

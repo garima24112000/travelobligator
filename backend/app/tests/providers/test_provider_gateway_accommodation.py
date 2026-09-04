@@ -12,16 +12,17 @@ from app.models.accommodation import (
 )
 from app.models.common import DataStatus
 from app.providers.accommodation.base import AccommodationInventoryProvider
-from app.providers.accommodation.not_connected_adapter import (
-    NotConnectedAccommodationProvider,
-)
+from app.providers.accommodation.scraped_adapter import ScrapedAccommodationProvider
 from app.providers.gateway import ProviderGateway
 
 # Tests for Step 167C: `ProviderGateway.accommodation_inventory` +
-# `ProviderGateway.search_accommodations`. Every test here uses either the
-# default not_connected accommodation provider or an injected fake -- none
-# makes a real network call, mirroring
-# backend/app/tests/providers/test_provider_gateway_routing.py.
+# `ProviderGateway.search_accommodations`. As of Step 168F, the default
+# accommodation provider is `ScrapedAccommodationProvider` (config default
+# `accommodation_provider="scraped_local"`), which -- with no local HTML
+# file present at its default path -- honestly reports `unavailable`
+# rather than `not_connected`. Every test here uses either that default
+# provider or an injected fake -- none makes a real network call,
+# mirroring backend/app/tests/providers/test_provider_gateway_routing.py.
 
 
 def _request(**overrides: object) -> AccommodationSearchRequest:
@@ -69,19 +70,21 @@ class _FakeAccommodationInventoryProvider(AccommodationInventoryProvider):
 
 
 # ---------------------------------------------------------------------------
-# 1/2/3. Provider gateway returns not_connected accommodation result by
-# default, with empty offers and no fabricated fields.
+# 1/2/3. Provider gateway returns an honest, non-fabricated accommodation
+# result by default (unavailable -- no local HTML file present at the
+# default scraped_local path -- Step 168F), with empty offers and no
+# fabricated fields.
 # ---------------------------------------------------------------------------
 
 
-def test_gateway_default_search_accommodations_returns_not_connected() -> None:
+def test_gateway_default_search_accommodations_returns_unavailable() -> None:
     gateway = ProviderGateway()
 
     result = gateway.search_accommodations(_request())
 
     assert isinstance(result, AccommodationSearchResult)
-    assert result.status == AccommodationSearchStatus.NOT_CONNECTED
-    assert isinstance(gateway.accommodation_inventory, NotConnectedAccommodationProvider)
+    assert result.status == AccommodationSearchStatus.UNAVAILABLE
+    assert isinstance(gateway.accommodation_inventory, ScrapedAccommodationProvider)
 
 
 def test_gateway_default_search_accommodations_returns_empty_offers() -> None:
@@ -104,7 +107,7 @@ def test_gateway_default_search_accommodations_never_fabricates_fields() -> None
 def test_gateway_default_accommodation_provider_name() -> None:
     gateway = ProviderGateway()
     result = gateway.search_accommodations(_request())
-    assert result.provider == "accommodation_inventory_provider"
+    assert result.provider == "scraped_accommodation_provider"
 
 
 # ---------------------------------------------------------------------------
@@ -173,7 +176,7 @@ def test_gateway_search_accommodations_makes_no_network_call_by_default(
     gateway = ProviderGateway()
     result = gateway.search_accommodations(_request())
 
-    assert result.status == AccommodationSearchStatus.NOT_CONNECTED
+    assert result.status == AccommodationSearchStatus.UNAVAILABLE
 
 
 # ---------------------------------------------------------------------------
@@ -204,10 +207,10 @@ def test_gateway_does_not_inspect_destination_to_invent_data() -> None:
     result_tokyo = gateway.search_accommodations(_request(destination="Tokyo, Japan"))
 
     assert result_lisbon.offers == result_tokyo.offers == []
-    assert result_lisbon.status == result_tokyo.status == AccommodationSearchStatus.NOT_CONNECTED
+    assert result_lisbon.status == result_tokyo.status == AccommodationSearchStatus.UNAVAILABLE
 
 
-def test_gateway_does_not_transform_not_connected_into_fake_offers() -> None:
+def test_gateway_does_not_transform_default_result_into_fake_offers() -> None:
     gateway = ProviderGateway()
     request = _request()
 

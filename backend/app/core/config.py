@@ -238,15 +238,95 @@ class Settings(BaseSettings):
         ge=0.0,
     )
 
-    # Config gate for get_accommodation_provider (Step 167B,
-    # docs/12_provider_architecture.md, docs/14_backend_architecture.md).
-    # "not_connected" is the only supported value today -- see
+    # Config gate for get_accommodation_provider (Step 167B, extended in
+    # Step 168C, default flipped in Step 168F). "not_connected" and
+    # "scraped_local" (default) are the only supported values today -- see
     # backend/app/providers/accommodation/factory.py. An unsupported/
     # unrecognized value falls back to "not_connected" rather than raising
     # or fabricating lodging inventory. Not wired into ProviderGateway or
     # PlanningOrchestrator yet.
     accommodation_provider: str = Field(
-        default="not_connected", alias="ACCOMMODATION_PROVIDER"
+        default="scraped_local", alias="ACCOMMODATION_PROVIDER"
+    )
+
+    # Scraping policy foundation (Step 168A, default flipped to enabled in
+    # Step 168F, docs/12_provider_architecture.md, docs/14_backend_architecture.md).
+    # Enabled by default so `ScrapedAccommodationProvider` (the default
+    # accommodation provider as of Step 168F) can actually run -- but this
+    # never causes a network call or fabricates data by itself.
+    # `ScrapingSourceRegistry` (backend/app/models/scraping.py) still only
+    # ever returns sources that are both explicitly `enabled=True` on
+    # their own `ScrapingSourcePolicy` and safe (not login-required/
+    # paywalled/captcha-expected, and `approved_for_personal_use=True`) --
+    # this app-wide flag is a second, coarser gate, never a substitute for
+    # per-source approval.
+    scraping_enabled: bool = Field(default=True, alias="SCRAPING_ENABLED")
+
+    # Config gate for the scraped-data accommodation provider slot (Step
+    # 168A, default flipped to enabled in Step 168F). Enabled by default
+    # alongside `scraping_enabled` and `accommodation_provider=
+    # "scraped_local"` so the default accommodation provider is
+    # `ScrapedAccommodationProvider` -- but with no local HTML file at
+    # `scraped_accommodation_html_path` present, that provider still
+    # returns an honest `unavailable` result, never a fabricated one (see
+    # `ScrapedAccommodationProvider.search_accommodations`).
+    scraped_accommodation_provider_enabled: bool = Field(
+        default=True, alias="SCRAPED_ACCOMMODATION_PROVIDER_ENABLED"
+    )
+
+    # Conservative default per-source rate limit (seconds), for a future
+    # scraper to fall back on when a `ScrapingSourcePolicy` doesn't specify
+    # its own. Not read by any code path yet -- Step 168A only defines the
+    # policy/registry/provenance contract, not a live scraper. Must be
+    # non-negative, matching the other cache/rate-limit-style settings.
+    scraping_default_rate_limit_seconds: int = Field(
+        default=10, alias="SCRAPING_DEFAULT_RATE_LIMIT_SECONDS", ge=0
+    )
+
+    # Config for the manual/local scraped accommodation provider (Step
+    # 168C, default path added in Step 168F,
+    # docs/12_provider_architecture.md, docs/14_backend_architecture.md,
+    # backend/app/providers/accommodation/scraped_adapter.py). This
+    # provider never fetches a live website: `scraped_accommodation_
+    # html_path` must point at a local file the developer/operator
+    # supplies themselves (e.g. by manually saving a page from a browser).
+    # The default path is relative to the backend project root (mirroring
+    # `local_storage_path`/`provider_cache_path` above) and is not created
+    # automatically -- when no file exists there, `ScrapedAccommodationProvider`
+    # honestly reports `unavailable` with empty offers, never a fabricated
+    # or placeholder offer.
+    scraped_accommodation_html_path: str | None = Field(
+        default=".data/manual_scrapes/accommodations.html",
+        alias="SCRAPED_ACCOMMODATION_HTML_PATH",
+    )
+    scraped_accommodation_source_id: str = Field(
+        default="manual_local_scraped_accommodation",
+        alias="SCRAPED_ACCOMMODATION_SOURCE_ID",
+    )
+    scraped_accommodation_source_name: str = Field(
+        default="Manual local scraped accommodation source",
+        alias="SCRAPED_ACCOMMODATION_SOURCE_NAME",
+    )
+    scraped_accommodation_base_url: str | None = Field(
+        default=None, alias="SCRAPED_ACCOMMODATION_BASE_URL"
+    )
+
+    # Cache for the local/manual scraped accommodation provider (Step
+    # 168D, docs/12_provider_architecture.md, docs/14_backend_architecture.md,
+    # "Provider Cache Foundation" section). Separate from the global
+    # `provider_cache_enabled` flag so the experimental scraped path can be
+    # toggled independently of every real provider's cache. Caches only
+    # the normalized `AccommodationSearchResult` payload -- never the raw
+    # HTML file content. Enabled by default because caching itself never
+    # causes a network call or changes what data is returned, only how
+    # often the local file is re-read/re-parsed; the cache key includes
+    # the file's mtime/size, so an edited local file is never served stale
+    # cached data.
+    scraped_accommodation_cache_enabled: bool = Field(
+        default=True, alias="SCRAPED_ACCOMMODATION_CACHE_ENABLED"
+    )
+    scraped_accommodation_cache_ttl_seconds: int = Field(
+        default=3600, alias="SCRAPED_ACCOMMODATION_CACHE_TTL_SECONDS", ge=0
     )
 
     model_config = SettingsConfigDict(
@@ -280,6 +360,23 @@ class Settings(BaseSettings):
         regardless of where the app was started from.
         """
         path = Path(self.provider_cache_path)
+        return path if path.is_absolute() else _BACKEND_ROOT / path
+
+    def resolved_scraped_accommodation_html_path(self) -> Path | None:
+        """Local, manually-supplied scraped-accommodation HTML file path
+        (Step 168C, default path added in Step 168F) -- never a live
+        website URL. Mirrors `resolved_local_storage_path`/
+        `resolved_provider_cache_path`: a relative value (including the
+        default) resolves against the backend project root, not the
+        process's current working directory, so the default path finds
+        the same file regardless of where the app was started from.
+        Returns `None` when unset (`scraped_accommodation_html_path=None`,
+        e.g. explicitly cleared via config) -- callers must not assume a
+        file exists at the resolved path either way.
+        """
+        if self.scraped_accommodation_html_path is None:
+            return None
+        path = Path(self.scraped_accommodation_html_path)
         return path if path.is_absolute() else _BACKEND_ROOT / path
 
 

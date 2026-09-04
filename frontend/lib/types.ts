@@ -184,14 +184,38 @@ export type AccommodationSuggestion = {
   why_suggested: string;
 };
 
-// Bookable accommodation inventory, from an official lodging provider only
-// (backend: app.models.accommodation.AccommodationOffer, Step 167D). This
-// is a wholly separate concept from `AccommodationSuggestion`/`CandidatePoi`
-// above (open-data OSM location candidates) -- those never carry a price,
-// availability, rating, amenity, or booking link, and this is the only
-// place one could ever legitimately appear. Every optional field here
-// stays `null`/empty unless a real provider actually returned it; the
-// frontend never fills one in.
+// Provenance for one scraped (not official-provider) accommodation offer
+// (backend: app.models.scraping.ScrapedDataProvenance, Step 168B/168E).
+// `official_provider` is always `false` here -- the backend's own type
+// (`Literal[False]`) makes any other value impossible to serialize.
+// Present on an `AccommodationOffer` only when that offer came from
+// `ScrapedAccommodationProvider` (Step 168C), never from an official
+// lodging provider.
+export type ScrapedAccommodationProvenance = {
+  source_id: string;
+  source_name: string;
+  source_type: string;
+  provenance: string;
+  confidence: "experimental" | "fragile";
+  fetched_at: string | null;
+  parser_version: string | null;
+  source_url: string | null;
+  extraction_method: string;
+  official_provider: false;
+};
+
+// Bookable accommodation inventory offer (backend:
+// app.models.accommodation.AccommodationOffer). This is a wholly separate
+// concept from `AccommodationSuggestion`/`CandidatePoi` above (open-data
+// OSM location candidates) -- those never carry a price, availability,
+// rating, amenity, or booking link, and this is the only place one could
+// ever legitimately appear. Every optional field here stays `null`/empty
+// unless a real provider actually returned it; the frontend never fills
+// one in. `scraped_provenance` (Step 168E) is set only when this offer
+// came from the scraped/experimental path (`ScrapedAccommodationProvider`,
+// disabled by default) rather than an official, connected lodging
+// provider -- when present, this offer must be labeled as scraped/
+// experimental/fragile and never presented as official-provider data.
 export type AccommodationOffer = {
   provider: string;
   provider_property_id: string;
@@ -205,6 +229,8 @@ export type AccommodationOffer = {
   amenities: string[];
   cancellation_policy: string | null;
   source_name: string | null;
+  data_status: string;
+  scraped_provenance: ScrapedAccommodationProvenance | null;
 };
 
 // Bookable accommodation inventory report for the whole trip (backend:

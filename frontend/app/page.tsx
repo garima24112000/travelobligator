@@ -44,6 +44,7 @@ import type {
   RegenerationReadiness,
   RestaurantSuggestion,
   RouteFeasibilityContext,
+  ScrapedAccommodationProvenance,
   StayAreaGuidance,
   TripRequestInput,
   TripSummary,
@@ -1639,18 +1640,71 @@ function accommodationInventoryStatusLabel(status: string): string {
   }
 }
 
+// Human-readable label for a scraped offer's confidence (Step 168E) --
+// only ever "experimental" or "fragile" per `ScrapedAccommodationProvenance`;
+// an unrecognized value displays as-is rather than being hidden.
+function scrapedConfidenceLabel(confidence: string): string {
+  switch (confidence) {
+    case "experimental":
+      return "Experimental";
+    case "fragile":
+      return "Fragile";
+    default:
+      return confidence;
+  }
+}
+
 /**
- * Bookable accommodation inventory panel (Step 167E,
- * docs/16_frontend_architecture.md). Renders only backend-returned
- * `AccommodationInventoryReport` fields -- it never invents a property,
- * price, rating, availability, amenity, cancellation policy, or booking
- * link, and it never upgrades a `not_connected`/`unavailable`/`failed`
- * status into an implied "checked" claim. This is deliberately a separate
- * concept from the open-data accommodation-like location candidates
- * rendered elsewhere on this page (`CandidatePoiSection`,
- * `AccommodationSuggestionCard`, `StayAreaAccommodationCard`) -- an OSM
- * POI never appears here, and a real bookable offer here is never merged
- * into those location-candidate lists.
+ * One scraped offer's provenance badge (Step 168E,
+ * docs/16_frontend_architecture.md section 39.7). Renders only fields
+ * already present on the backend-returned `ScrapedAccommodationProvenance`
+ * -- parser/source metadata is shown only when the backend actually
+ * returned it. This never implies official verification: the badge itself
+ * is the opposite claim ("not official-provider data").
+ */
+function ScrapedProvenanceBadge({
+  provenance,
+}: {
+  provenance: ScrapedAccommodationProvenance;
+}) {
+  return (
+    <div className="mt-2 rounded-md border border-amber-300/30 bg-amber-950/20 p-2 text-[11px] text-amber-200/90">
+      <p className="font-semibold uppercase tracking-wide">
+        Scraped public page · {scrapedConfidenceLabel(provenance.confidence)}
+      </p>
+      <p className="mt-1 text-amber-200/80">
+        This is not official-provider data. It has not been verified for
+        price, availability, rating, or booking-link accuracy.
+      </p>
+      <p className="mt-1 text-amber-300/70">
+        Source: {provenance.source_name}
+        {provenance.source_url ? ` · ${provenance.source_url}` : ""}
+      </p>
+      {provenance.parser_version && (
+        <p className="mt-0.5 font-mono text-amber-300/60">
+          Parser: {provenance.parser_version}
+        </p>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Bookable accommodation inventory panel (Step 167E, extended in Step
+ * 168E for scraped-data labeling, docs/16_frontend_architecture.md).
+ * Renders only backend-returned `AccommodationInventoryReport` fields --
+ * it never invents a property, price, rating, availability, amenity,
+ * cancellation policy, or booking link, and it never upgrades a
+ * `not_connected`/`unavailable`/`failed` status into an implied "checked"
+ * claim. This is deliberately a separate concept from the open-data
+ * accommodation-like location candidates rendered elsewhere on this page
+ * (`CandidatePoiSection`, `AccommodationSuggestionCard`,
+ * `StayAreaAccommodationCard`) -- an OSM POI never appears here, and a
+ * real bookable offer here is never merged into those location-candidate
+ * lists. When an offer carries `scraped_provenance` (Step 168C's
+ * disabled-by-default local/manual scraped provider), it is visibly
+ * labeled "Scraped public page" with its experimental/fragile confidence
+ * -- never presented as if it were official, verified provider data.
  */
 function AccommodationInventorySection({
   report,
@@ -1705,6 +1759,9 @@ function AccommodationInventorySection({
                 <p className="mt-1 break-all text-xs text-cyan-200">
                   {offer.booking_url}
                 </p>
+              )}
+              {offer.scraped_provenance && (
+                <ScrapedProvenanceBadge provenance={offer.scraped_provenance} />
               )}
             </li>
           ))}

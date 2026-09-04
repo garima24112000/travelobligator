@@ -8,20 +8,22 @@ import pytest
 from app.core.config import Settings
 from app.providers.accommodation import (
     NotConnectedAccommodationProvider,
+    ScrapedAccommodationProvider,
     get_accommodation_provider,
 )
 from app.providers.accommodation import factory as factory_module
 
-# Safety tests for the Step 167B accommodation provider factory. Mirrors
+# Safety tests for the Step 167B accommodation provider factory
+# (default flipped to "scraped_local" in Step 168F). Mirrors
 # test_routing_factory.py. Never calls a real network service.
 
 
 # ---------------------------------------------------------------------------
-# Factory returns NotConnectedAccommodationProvider by default.
+# Factory returns ScrapedAccommodationProvider by default (Step 168F).
 # ---------------------------------------------------------------------------
 
 
-def test_factory_returns_not_connected_provider_by_default(
+def test_factory_returns_scraped_local_provider_by_default(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("ACCOMMODATION_PROVIDER", raising=False)
@@ -29,7 +31,7 @@ def test_factory_returns_not_connected_provider_by_default(
 
     provider = get_accommodation_provider()
 
-    assert isinstance(provider, NotConnectedAccommodationProvider)
+    assert isinstance(provider, ScrapedAccommodationProvider)
 
 
 def test_factory_returns_not_connected_provider_for_explicit_name() -> None:
@@ -55,16 +57,16 @@ def test_factory_falls_back_to_not_connected_for_unsupported_names(
 
 
 # ---------------------------------------------------------------------------
-# Config default is "not_connected".
+# Config default is "scraped_local" (Step 168F).
 # ---------------------------------------------------------------------------
 
 
-def test_settings_default_accommodation_provider_is_not_connected(
+def test_settings_default_accommodation_provider_is_scraped_local(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("ACCOMMODATION_PROVIDER", raising=False)
     settings = Settings(_env_file=None)
-    assert settings.accommodation_provider == "not_connected"
+    assert settings.accommodation_provider == "scraped_local"
 
 
 def test_factory_uses_settings_when_no_provider_name_given(
@@ -186,16 +188,18 @@ def test_provider_gateway_wires_accommodation_factory() -> None:
     assert "def search_accommodations(" in source
 
 
-def test_provider_gateway_default_accommodation_provider_is_not_connected() -> None:
+def test_provider_gateway_default_accommodation_provider_is_scraped_local() -> None:
     """Constructing `ProviderGateway()` with no explicit
-    `accommodation_inventory=` must resolve the same conservative default
-    the factory itself uses -- confirming the gateway wiring didn't change
-    the underlying default."""
+    `accommodation_inventory=` must resolve the same default the factory
+    itself uses (Step 168F: `scraped_local`) -- confirming the gateway
+    wiring didn't change the underlying default. This still never
+    fabricates data: with no local HTML file present, the provider
+    reports `unavailable`, never a fake offer."""
     from app.providers.gateway import ProviderGateway
 
     gateway = ProviderGateway()
 
-    assert isinstance(gateway.accommodation_inventory, NotConnectedAccommodationProvider)
+    assert isinstance(gateway.accommodation_inventory, ScrapedAccommodationProvider)
 
 
 def test_planning_orchestrator_does_not_reference_accommodation_factory() -> None:

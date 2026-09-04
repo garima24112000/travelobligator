@@ -607,6 +607,13 @@ _ACCOMMODATION_SUCCESS_MESSAGE_TEMPLATE = (
     "{provider}, but these have not been reviewed for price, availability, rating, "
     "or booking-link accuracy, and they are not scheduled into the itinerary."
 )
+_ACCOMMODATION_SCRAPED_SUCCESS_MESSAGE_TEMPLATE = (
+    "{count} accommodation offer(s) were found via {provider}, but this data was "
+    "scraped from a public page (scraped_public_page/experimental/fragile) -- it "
+    "is not official-provider data and has not been verified for price, "
+    "availability, rating, or booking-link accuracy. It is not scheduled into the "
+    "itinerary and needs manual review before being trusted."
+)
 _ACCOMMODATION_SUGGESTED_FIX = (
     "Connect a real accommodation inventory provider, or manually review bookable "
     "lodging options for these dates, before treating lodging as checked."
@@ -622,15 +629,22 @@ def _build_accommodation_inventory_warning(
     `AccommodationInventoryService`, before validation runs).
 
     Always a `WARNING`, never a critical issue -- missing/unconnected
-    bookable lodging inventory never blocks generation by itself. When the
-    report is missing entirely (stage not yet run) or the provider is
+    bookable lodging inventory never blocks generation by itself, and
+    neither does scraped (Step 168) lodging inventory. When the report is
+    missing entirely (stage not yet run) or the provider is
     `not_connected`, the message says so explicitly rather than implying
     lodging was checked. A `success` result with real offers still never
     claims those offers were reviewed for accuracy or scheduled into the
     itinerary -- this app never schedules lodging into the itinerary and
-    never adds hotel recommendation logic. This is explicitly distinguished
-    from `DestinationContext.candidate_accommodation_pois` (open-data OSM
-    location candidates), which are never bookable inventory.
+    never adds hotel recommendation logic. When any offer carries
+    `scraped_provenance` (Step 168C's disabled-by-default local/manual
+    scraped provider), the message explicitly calls out that this is
+    scraped_public_page/experimental/fragile data, not official-provider
+    data, and needs manual review -- it never claims official price/
+    availability/rating/booking-link verification for scraped data. This
+    is explicitly distinguished from `DestinationContext.
+    candidate_accommodation_pois` (open-data OSM location candidates),
+    which are never bookable inventory.
     """
     if (
         accommodation_inventory_report is None
@@ -647,8 +661,15 @@ def _build_accommodation_inventory_warning(
             detail=accommodation_inventory_report.message or "no offers were returned"
         )
     else:
-        message = _ACCOMMODATION_SUCCESS_MESSAGE_TEMPLATE.format(
-            count=len(accommodation_inventory_report.offers),
+        offers = accommodation_inventory_report.offers
+        is_scraped = any(offer.scraped_provenance is not None for offer in offers)
+        message_template = (
+            _ACCOMMODATION_SCRAPED_SUCCESS_MESSAGE_TEMPLATE
+            if is_scraped
+            else _ACCOMMODATION_SUCCESS_MESSAGE_TEMPLATE
+        )
+        message = message_template.format(
+            count=len(offers),
             provider=accommodation_inventory_report.provider,
         )
 

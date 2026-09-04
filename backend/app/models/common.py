@@ -19,6 +19,13 @@ class DataStatus(str, Enum):
     SCHEDULED = "scheduled"
     USER_PROVIDED = "user_provided"
     AI_INFERRED = "ai_inferred"
+    # Data extracted by a static HTML parser from an explicitly-approved
+    # public page (Step 168B, docs/12_provider_architecture.md section 46/47).
+    # Never official-provider data -- always paired with a
+    # `ScrapedDataProvenance` (confidence: experimental/fragile) on the
+    # item that carries it. See `app.models.accommodation.AccommodationOffer.
+    # scraped_provenance`.
+    SCRAPED_PUBLIC_PAGE = "scraped_public_page"
     UNAVAILABLE = "unavailable"
     FAILED = "failed"
     NOT_CONNECTED = "not_connected"

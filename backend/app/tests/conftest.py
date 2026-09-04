@@ -180,6 +180,7 @@ def _isolate_provider_cache_store(monkeypatch: pytest.MonkeyPatch):
     import shutil
     import tempfile
 
+    import app.providers.accommodation.scraped_adapter as scraped_accommodation_adapter_module
     import app.providers.currency.frankfurter_adapter as frankfurter_adapter_module
     import app.providers.holidays.nager_date_adapter as nager_date_adapter_module
     import app.providers.places.openstreetmap_adapter as openstreetmap_adapter_module
@@ -194,6 +195,7 @@ def _isolate_provider_cache_store(monkeypatch: pytest.MonkeyPatch):
         nager_date_adapter_module,
         frankfurter_adapter_module,
         osrm_adapter_module,
+        scraped_accommodation_adapter_module,
     ):
         monkeypatch.setattr(adapter_module, "get_provider_cache_store", lambda path: fresh_store)
 

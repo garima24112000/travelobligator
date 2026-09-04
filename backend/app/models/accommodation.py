@@ -6,6 +6,7 @@ from enum import Enum
 from pydantic import BaseModel, Field, model_validator
 
 from app.models.common import DataStatus
+from app.models.scraping import ScrapedDataProvenance
 
 
 def _utc_now() -> datetime:
@@ -83,6 +84,15 @@ class AccommodationOffer(BaseModel):
     and `cancellation_policy` all stay at their honest empty/`None`
     default unless a real adapter sets them; none is ever guessed,
     estimated, or backfilled from an OSM accommodation POI.
+
+    `scraped_provenance` (Step 168B, docs/12_provider_architecture.md
+    section 47) is populated only for an offer built by a static HTML
+    parser from an explicitly-approved public page, never for a real
+    booking-API-backed offer. When set, `data_status` must be
+    `DataStatus.SCRAPED_PUBLIC_PAGE` -- an offer can never carry scraped
+    provenance while claiming a `live`/`cached`/other official-looking
+    `data_status`, and `scraped_provenance.official_provider` is itself
+    structurally fixed to `False` (see `ScrapedDataProvenance`).
     """
 
     provider: str
@@ -109,6 +119,20 @@ class AccommodationOffer(BaseModel):
     source_name: str | None = None
     source_url: str | None = None
     fetched_at: datetime = Field(default_factory=_utc_now)
+    scraped_provenance: ScrapedDataProvenance | None = None
+
+    @model_validator(mode="after")
+    def validate_scraped_provenance_consistency(self) -> "AccommodationOffer":
+        if (
+            self.scraped_provenance is not None
+            and self.data_status != DataStatus.SCRAPED_PUBLIC_PAGE
+        ):
+            raise ValueError(
+                "AccommodationOffer.scraped_provenance can only be set when "
+                "data_status is DataStatus.SCRAPED_PUBLIC_PAGE -- scraped data "
+                "must never be presented under an official-looking data_status."
+            )
+        return self
 
 
 class AccommodationSearchResult(BaseModel):

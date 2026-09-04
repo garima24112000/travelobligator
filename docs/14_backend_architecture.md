@@ -2009,3 +2009,152 @@ candidate_accommodation_pois`/`AccommodationSuggestion`/`StayAreaGuidance`
 (OSM-backed open-data location candidates, feeding `ProviderCoverage.
 accommodations`) remain two entirely separate flows, never merged with
 the chain above at any point.
+
+## 46. Scraping Policy, Registry, and Provenance Foundation (Step 168A)
+
+`backend/app/models/scraping.py` adds the first Section 168 contract:
+`ScrapingSourcePolicy` (one approved-or-not-yet-approved scraping
+source), `ScrapedDataProvenance` (provenance metadata a future scraped
+item would carry), and `ScrapingSourceRegistry` (an in-memory holder
+whose `active_sources()` returns only explicitly-enabled, safe sources;
+its default instance starts empty) -- docs/12_provider_architecture.md
+section 46, docs/13_llm_reasoning_pipeline.md section 69. Three new
+config fields gate it: `Settings.scraping_enabled`, `Settings.
+scraped_accommodation_provider_enabled` (both default `False`), and
+`Settings.scraping_default_rate_limit_seconds` (default `10`, unread by
+any code path yet).
+
+**Not wired into planning yet.** `ProviderGateway` and
+`PlanningOrchestrator` do not import or reference anything in
+`backend/app/models/scraping.py` -- confirmed by dedicated
+source-inspection tests. No live scraper is implemented, no external
+HTML is parsed, and no website is called.
+
+## 47. Static Scraped Accommodation Parser Framework (Step 168B)
+
+`backend/app/providers/accommodation/scraped_parser.py`
+(`parse_scraped_accommodation_html`) adds a pure parsing function: given
+an already-provided HTML string plus a `ScrapingSourcePolicy` (section
+46), an `AccommodationSearchRequest`, and provenance metadata
+(`source_url`/`parser_version`), it returns an `AccommodationSearchResult`
+whose offers each carry a `scraped_provenance` (docs/12_provider_
+architecture.md section 47, docs/13_llm_reasoning_pipeline.md section
+70). Uses only the Python standard library `html.parser.HTMLParser` --
+no new dependency.
+
+`AccommodationOffer` gained one new optional field,
+`scraped_provenance: ScrapedDataProvenance | None`, and a validator
+tying it to `data_status == DataStatus.SCRAPED_PUBLIC_PAGE` (a new
+`DataStatus` member, `backend/app/models/common.py`) -- a scraped offer
+can never carry an official-looking `data_status`.
+
+**Still not wired into planning.** `ProviderGateway` and
+`PlanningOrchestrator` do not import or reference `scraped_parser` --
+confirmed by dedicated source-inspection tests. No live scraper adapter
+exists, and this function is never called outside its own tests.
+
+## 48. Config-Gated Scraped Accommodation Provider (Step 168C)
+
+`backend/app/providers/accommodation/scraped_adapter.py`
+(`ScrapedAccommodationProvider`) is the first concrete adapter to call
+the Step 168B parser (docs/12_provider_architecture.md section 48,
+docs/13_llm_reasoning_pipeline.md section 71), selectable via
+`get_accommodation_provider("scraped_local")`
+(`backend/app/providers/accommodation/factory.py`). Four new config
+fields support it: `Settings.scraped_accommodation_html_path` (default
+`None` at the time this step was written; changed to a fixed local path
+by Step 168F, section 51), `scraped_accommodation_source_id`,
+`scraped_accommodation_source_name`, and
+`scraped_accommodation_base_url`.
+
+**Originally not enabled by default; Step 168F later made it the
+default (section 51) -- but it still never fetches a live website.**
+Three independent gates (`scraping_enabled`, `scraped_accommodation_
+provider_enabled`, and selecting `"scraped_local"`) must all line up,
+and even then the provider only reads a local file path the
+developer/operator configured themselves -- `not_connected` when any
+gate is off, `unavailable` when the path is unset or the file doesn't
+exist, `failed` (never a raw exception) on an unexpected read/parse
+error. `ProviderGateway`'s default construction and
+`PlanningOrchestrator` are untouched.
+
+## 49. Scraped Accommodation Cache and Rate-Limit Guard (Step 168D)
+
+`ScrapedAccommodationProvider` now caches a successful parse in
+`ProviderCacheStore` (source `"scraped_accommodation"`), gated by new
+`Settings.scraped_accommodation_cache_enabled` (default `True`) and
+`scraped_accommodation_cache_ttl_seconds` (default `3600`) --
+docs/12_provider_architecture.md section 49, docs/13_llm_reasoning_
+pipeline.md section 72. The cache key covers the request fields, parser
+version, and the local file's own path/mtime/size, so an edited file is
+never served stale data. Only the normalized result is cached, never
+raw HTML; cache reads/writes never fail the provider.
+
+`backend/app/models/scraping.py` also gains `ScrapingRateLimitGuard`, a
+standalone, injectable-clock timing utility for a *future* live scraper
+adapter -- nothing calls it yet.
+
+At the time this step was written the provider was still disabled by
+default (Step 168F, section 51, later changed that); **live website
+fetching is still not implemented anywhere in this codebase** either way
+-- this step only changes how the local/manual path caches its own
+output.
+
+## 50. Final Scraped Accommodation Flow (Section 168, Steps 168A-168F)
+
+The complete, current scraped-accommodation data flow, end to end:
+
+```text
+SCRAPED_ACCOMMODATION_HTML_PATH (local file, manually supplied)
+  -> ScrapedAccommodationProvider.search_accommodations (Step 168C)
+  -> parse_scraped_accommodation_html (Step 168B, stdlib HTML parser only)
+  -> normalized AccommodationSearchResult / AccommodationOffer
+     (scraped_provenance, data_status=scraped_public_page)
+  -> ProviderCacheStore cache (Step 168D, normalized result only)
+  -> PlanningState.accommodation_inventory_report (Step 167D, via
+     AccommodationInventoryService / ProviderGateway.search_accommodations)
+  -> ProviderCoverage.hotel_prices (Step 167D; success only with real offers)
+  -> PlanValidatorService's non-blocking "accommodation_inventory" warning
+     (Step 167D, scraped-aware wording added in Step 168E)
+  -> GET /trips/{trip_id} (full PlanningState, including scraped_provenance)
+  -> AccommodationInventorySection / ScrapedProvenanceBadge in
+     frontend/app/page.tsx (Step 168E)
+```
+
+Every link is a plain read of already-computed data. **As of Step 168F
+(section 51), all three gates (`scraping_enabled`,
+`scraped_accommodation_provider_enabled`,
+`accommodation_provider="scraped_local"`) default to selecting this
+chain** -- with no local HTML file present at the default path, it
+reports `unavailable` with empty offers rather than `not_connected`
+(the app-level gates are satisfied; only the file is missing), and
+never a fabricated offer either way. Explicitly setting
+`accommodation_provider="not_connected"` (or either flag to `false`)
+still opts back out to the always-`not_connected`
+`NotConnectedAccommodationProvider`. **No live website fetching exists
+anywhere in this codebase** -- the only fetch this chain ever performs
+is a local filesystem read of a path the developer/operator configured
+(or left at its default).
+
+## 51. Scraped Accommodation Made the Default Provider (Step 168F)
+
+`Settings.accommodation_provider` defaults to `"scraped_local"`
+(previously `"not_connected"`), and `Settings.scraping_enabled`/
+`scraped_accommodation_provider_enabled` both default to `True`
+(previously `False`) -- docs/12_provider_architecture.md section 51.
+`Settings.scraped_accommodation_html_path` now defaults to
+`".data/manual_scrapes/accommodations.html"`, resolved against the
+backend project root by a new `Settings.resolved_scraped_
+accommodation_html_path()` method (mirroring `resolved_local_storage_
+path`/`resolved_provider_cache_path`).
+
+With no file at that default path -- the state of a fresh checkout --
+`ProviderGateway.accommodation_inventory` (a `ScrapedAccommodationProvider`
+by default now) reports `status=unavailable`/`offers=[]`, and
+`ProviderCoverage.hotel_prices` reports `"unavailable"` accordingly;
+generation still succeeds. Once an operator places a real file there,
+behavior is identical to the proven Step 168C/168E end-to-end flow
+(section 50). Explicitly setting `accommodation_provider="not_connected"`
+(or either scraping flag to `false`) still selects/produces the
+always-`not_connected` `NotConnectedAccommodationProvider` exactly as
+before this step.

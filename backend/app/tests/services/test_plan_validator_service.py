@@ -14,6 +14,7 @@ from app.models.planning_state import (
     TravelGroupType,
     TripRequest,
 )
+from app.models.scraping import ScrapedDataConfidence, ScrapedDataProvenance
 from app.models.routing import (
     BufferSufficiencyStatus,
     RouteFeasibilityReport,
@@ -775,6 +776,43 @@ def test_accommodation_inventory_warning_when_success_with_offers() -> None:
     message_lower = warnings[0].message.lower()
     assert "1 provider-backed bookable accommodation offer" in message_lower
     assert "not scheduled into the itinerary" in message_lower
+    assert not any(
+        issue.category == "accommodation_inventory"
+        for issue in planning_state.validation_report.critical_issues
+    )
+
+
+def test_accommodation_inventory_warning_for_scraped_offer_calls_out_non_official_status() -> None:
+    """Step 168E: when an offer carries `scraped_provenance`, the warning
+    must explicitly say this is scraped_public_page/experimental/fragile
+    data, not official-provider data, and must never claim official
+    price/availability/rating/booking-link verification for it."""
+    planning_state = _planning_state()
+    offer = AccommodationOffer(
+        provider="scraped:example_test_only_travel_blog",
+        provider_property_id="prop_1",
+        property_name="TEST_ONLY_SCRAPED_PROPERTY_ALPHA",
+        data_status=DataStatus.SCRAPED_PUBLIC_PAGE,
+        scraped_provenance=ScrapedDataProvenance(
+            source_id="example_test_only_travel_blog",
+            source_name="Example Test-Only Travel Blog",
+            confidence=ScrapedDataConfidence.EXPERIMENTAL,
+        ),
+    )
+    planning_state.accommodation_inventory_report = AccommodationSearchResult(
+        provider="scraped:example_test_only_travel_blog",
+        status=AccommodationSearchStatus.SUCCESS,
+        offers=[offer],
+    )
+
+    PlanValidatorService().run(planning_state)
+
+    warnings = _accommodation_inventory_warnings(planning_state)
+    assert len(warnings) == 1
+    message_lower = warnings[0].message.lower()
+    assert "scraped_public_page" in message_lower
+    assert "not official-provider data" in message_lower
+    assert "has not been verified" in message_lower
     assert not any(
         issue.category == "accommodation_inventory"
         for issue in planning_state.validation_report.critical_issues

@@ -2903,7 +2903,8 @@ Step 167B adds `NotConnectedAccommodationProvider` and
 `get_accommodation_provider` (`backend/app/providers/accommodation/
 not_connected_adapter.py` and `factory.py`, docs/12_provider_
 architecture.md section 42) plus one new config field,
-`Settings.accommodation_provider` (default `"not_connected"`). **This
+`Settings.accommodation_provider` (default `"not_connected"` at the
+time; changed to `"scraped_local"` by Step 168F, section 73). **This
 is deterministic provider infrastructure, not AI reasoning** -- no LLM
 call, no prompt, no model inference, exactly like the Step 165A/165B
 routing factory pair it mirrors (section 54).
@@ -3023,3 +3024,173 @@ client-side invention of any kind.
   connected, no fabricated travel data anywhere in the stack, and OSM
   accommodation-like location candidates kept visibly and structurally
   separate from bookable lodging inventory at every layer.
+
+## 69. Scraping Policy and Provenance Foundation (Step 168A)
+
+Step 168A adds `backend/app/models/scraping.py`
+(`ScrapingSourcePolicy`/`ScrapedDataProvenance`/`ScrapingSourceRegistry`,
+docs/12_provider_architecture.md section 46) -- the first step of
+Section 168, a separate contract-before-adapter foundation for scraping
+missing travel data from explicitly-approved public pages. **This is
+deterministic provider infrastructure, not AI reasoning** -- no LLM
+call, no prompt, no model inference, and no live scraper exists yet.
+
+- **Scraping was disabled by default when this step was written.**
+  `Settings.scraping_enabled` and `Settings.scraped_accommodation_
+  provider_enabled` both defaulted `False` here; Step 168F (section 73)
+  later flipped both to `True`. `ScrapingSourceRegistry`'s default
+  instance still starts with zero registered sources, so
+  `active_sources()` still returns an empty list out of the box --
+  registering an approved source is a separate, still-manual step from
+  the app-wide `scraping_enabled` flag. No source becomes active without
+  an explicit, per-source `enabled=True` that also passes every safety
+  check (not login-required, not paywalled, not captcha-expected, and
+  `approved_for_personal_use=True`).
+- **LLMs must not invent a missing scraped field, now or later.** This
+  step defines no scraped-item model with actual travel-fact fields
+  (price, rating, availability, amenities, booking link, opening hours,
+  route time, safety claim) -- only provenance metadata. When a future
+  step adds such a model, the same rule that already governs
+  `AccommodationOffer` applies: every optional fact field stays `None`/
+  empty unless a real, approved scrape actually returned it, and no AI
+  candidate-proposal or reasoning path may fill one in.
+- **Scraped data can never masquerade as official-provider data.**
+  `ScrapedDataProvenance.official_provider` is typed `Literal[False]` --
+  a structural guarantee, not just a default, matching the "no fake
+  official facts" rule this pipeline already enforces for provider data
+  everywhere else.
+- Not wired into `ProviderGateway`, `PlanningOrchestrator`, any stage
+  service, or the frontend -- confirmed by dedicated source-inspection
+  tests, mirroring the equivalent Step 167A-era checks for the
+  accommodation contract.
+
+## 70. Static HTML Parser Framework for Scraped Accommodation Data (Step 168B)
+
+Step 168B adds `parse_scraped_accommodation_html`
+(`backend/app/providers/accommodation/scraped_parser.py`,
+docs/12_provider_architecture.md section 47) -- a pure function
+transforming an already-provided HTML string into a normalized
+`AccommodationSearchResult`. **This is deterministic provider
+infrastructure, not AI reasoning** -- no LLM call, no prompt, no model
+inference, and no live scraper exists yet.
+
+- **LLMs must not fill a missing scraped field.** The parser itself
+  already enforces this structurally (a missing price/rating/
+  availability/booking-url/amenity stays `None`/`unknown`/empty), and no
+  AI candidate-proposal or reasoning path reads or writes anything this
+  module produces -- confirmed by dedicated source-inspection tests
+  showing `ProviderGateway`/`PlanningOrchestrator` don't reference this
+  module at all.
+- **Refusal-before-parsing is itself deterministic**, not a judgment
+  call: a `ScrapingSourcePolicy` that is unsafe, not enabled, or doesn't
+  allow lodging data is refused before a single byte of HTML is
+  examined, using the same `is_unsafe`/`enabled`/`allows_lodging` checks
+  Step 168A's registry already uses.
+- Uses only the Python standard library `html.parser.HTMLParser` -- no
+  new dependency, no `httpx`/`requests` call (the project's existing
+  `httpx` dependency, used by real provider adapters elsewhere, is not
+  imported here), no browser automation.
+
+## 71. Config-Gated Local/Manual Scraped Accommodation Provider (Step 168C)
+
+Step 168C adds `ScrapedAccommodationProvider`
+(`backend/app/providers/accommodation/scraped_adapter.py`,
+docs/12_provider_architecture.md section 48), the first concrete adapter
+to call the Step 168B parser. **This is deterministic provider
+infrastructure, not AI reasoning** -- no LLM call, no prompt, no model
+inference, and it reads only a manually-supplied local HTML file, never
+a live website.
+
+- **LLMs must not fill a missing scraped field here either.** The
+  adapter passes the file's raw contents straight to
+  `parse_scraped_accommodation_html` unmodified and returns whatever
+  that function returns unmodified -- no post-processing step exists
+  that could fill in a missing price/rating/availability/amenity, and
+  none may ever be added.
+- **Disabled by default at three independent layers**
+  (`scraping_enabled`, `scraped_accommodation_provider_enabled`,
+  `accommodation_provider="scraped_local"`) -- confirmed by tests
+  showing each layer alone, without the others, still yields
+  `not_connected`.
+- Not wired into `ProviderGateway`'s default construction or
+  `PlanningOrchestrator` -- selecting `"scraped_local"` through
+  `get_accommodation_provider` and injecting the result into
+  `ProviderGateway`/`AccommodationInventoryService` works today (both
+  already just delegate to whatever provider they're given), but no
+  default code path does so.
+
+## 72. Scraped Accommodation Cache, Rate-Limit Guard, and Provenance Hardening (Step 168D)
+
+Step 168D adds a cache layer to `ScrapedAccommodationProvider` and a
+standalone `ScrapingRateLimitGuard` (docs/12_provider_architecture.md
+section 49). **This is deterministic provider infrastructure, not AI
+reasoning** -- no LLM call, no prompt, no model inference, and no live
+fetching of any kind.
+
+- **LLMs must not fill a missing scraped field on a cache hit either.**
+  A cache hit reconstructs the exact `AccommodationSearchResult` the
+  original parse produced, byte-for-byte in field values -- there is no
+  post-cache-read processing step that could fill in a missing price/
+  rating/availability/amenity, and none may ever be added.
+- **The rate-limit guard makes no reasoning judgment either** -- it is a
+  pure timing utility (elapsed time vs. `rate_limit_seconds`), with no
+  branch that could be swapped for an AI-driven "should I wait" decision,
+  and it has no concept of source safety at all.
+- Confirmed by dedicated source-inspection tests that neither the cache
+  code nor the rate-limit guard imports `httpx`/`requests`/a browser
+  automation library, mirroring every prior Section 168 step's own
+  import-safety checks.
+
+## 73. End-to-End Scraped Accommodation Integration (Step 168E)
+
+Step 168E proves the `scraped_local` path
+end to end through `PlanningOrchestrator`/`ProviderCoverage`/
+`PlanValidatorService`/the API/the frontend (docs/12_provider_
+architecture.md section 50). **This is still deterministic provider
+infrastructure, not AI reasoning** -- no LLM call, no prompt, no model
+inference anywhere in this path, and no live website fetching is added.
+
+- **LLMs must not fill a missing scraped field anywhere in this
+  end-to-end chain** -- from the parser (Step 168B) through the cache
+  (Step 168D) through the API response through the frontend, a missing
+  price/rating/availability/amenity/booking-link stays `None`/`unknown`/
+  empty at every hop; nothing in this chain is an AI reasoning step that
+  could be tempted to fill one in.
+- **LLMs (and any future AI-adjacent reasoning path) must treat
+  `scraped_public_page` data as non-official and review-worthy, never
+  as a verified fact.** `PlanValidatorService`'s warning now says so
+  explicitly for scraped inventory ("not official-provider data...has
+  not been verified"); any future AI reasoning step that ever reads
+  `PlanningState.accommodation_inventory_report` must honor the same
+  distinction -- a `scraped_provenance`-carrying offer is never
+  equivalent to an official-provider-backed one, and must never be
+  presented, summarized, or reasoned about as if it were.
+- Confirmed unchanged: route-aware scheduling (Section 165/166),
+  regeneration refusal (`409 REGENERATION_NOT_AVAILABLE`), and
+  LangGraph's continued absence from `/generate` (existing import-level
+  tests in `test_generation_progress.py`/`test_planning_graph.py`) all
+  still hold with `scraped_local` explicitly enabled.
+
+## 74. Scraped Accommodation Made the Default Provider (Step 168F)
+
+Step 168F flips `Settings.accommodation_provider`'s default from
+`"not_connected"` to `"scraped_local"`, and `Settings.scraping_enabled`/
+`scraped_accommodation_provider_enabled` from `False` to `True`
+(docs/12_provider_architecture.md section 51). **This is still
+deterministic provider infrastructure, not AI reasoning** -- no LLM
+call, no prompt, no model inference, and still no live website fetching
+anywhere in this codebase.
+
+- **LLMs must not fill the gap when the default file is absent.** With
+  no file at the new default local path
+  (`.data/manual_scrapes/accommodations.html`), `ScrapedAccommodationProvider`
+  reports `status=unavailable` with `offers=[]` -- honest and empty, not
+  a prompt for any reasoning step to "helpfully" propose a plausible
+  hotel or price. No AI candidate-proposal or reasoning path reads or
+  writes this provider's output.
+- **LLMs must still treat any resulting `scraped_public_page` data as
+  non-official and review-worthy**, exactly as section 73 already
+  established -- this step changes only which provider is selected by
+  default, not the honesty contract on what it returns.
+- Confirmed unchanged: route-aware scheduling, regeneration refusal, and
+  LangGraph's continued absence from `/generate`.

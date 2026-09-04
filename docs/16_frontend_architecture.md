@@ -1554,3 +1554,125 @@ Once a real accommodation inventory provider is connected
 (39.3) against real provider data before treating it as production-ready
 UI — it has only been exercised against an in-process fake provider in
 backend tests so far, never a real adapter's actual response shape.
+
+### 39.6 TODO: future scraped-data labeling
+
+Section 168 (backend Step 168A, docs/12_provider_architecture.md section
+46) adds a backend-only scraping policy/provenance foundation --
+`ScrapingSourcePolicy`/`ScrapedDataProvenance`/`ScrapingSourceRegistry`.
+Nothing from it is wired into any API response yet, so there is no
+scraped data for the frontend to render today. **If a future step ever
+surfaces scraped data here, it must never be shown as if it were
+official provider-backed data (`AccommodationOffer` above,
+`WeatherContext`, `HolidayContext`, `CurrencyContext`, etc.) or as an
+OSM open-data location candidate.** It must instead be visibly and
+separately labeled with its own provenance -- e.g. "Scraped from a
+public page (experimental/fragile) — not verified" — carrying its
+source name/URL and confidence (`experimental`/`fragile`) the same way
+`AccommodationInventorySection` already carries its own source/status,
+and it must never be merged into the same list or card as a
+provider-backed or open-data fact.
+
+Backend Step 168B (docs/12_provider_architecture.md section 47) adds a
+static HTML parser (`parse_scraped_accommodation_html`) that can produce
+an `AccommodationOffer` carrying `scraped_provenance`
+(`data_status: "scraped_public_page"`, `confidence:
+"experimental"/"fragile"`, `official_provider: false`) -- still nothing
+the frontend receives today, since it isn't wired into `ProviderGateway`
+or any API response yet. Whenever a future step does surface such an
+offer, the UI must render it with visible labeling drawn directly from
+`scraped_provenance` (its source name, `source_url`, and
+`experimental`/`fragile` confidence) rather than folding it into
+`AccommodationInventorySection`'s existing "Connected" success path
+unlabeled -- a reader must always be able to tell a scraped, unverified
+offer apart from one returned by an official, connected lodging
+provider.
+
+Backend Step 168C (docs/12_provider_architecture.md section 48) adds a
+concrete, disabled-by-default `ScrapedAccommodationProvider` that can
+produce exactly such an offer from a manually-supplied local HTML file
+-- still nothing the frontend receives today (not wired into
+`ProviderGateway`'s default construction). The labeling rule above is
+unchanged and now has a real, if not-yet-connected, source: whenever any
+scraped lodging data is ever surfaced here, it must show
+`data_status: "scraped_public_page"` and its `scraped_provenance`'s
+`experimental`/`fragile` confidence visibly, never presented as if it
+came from a connected official provider.
+
+Backend Step 168D adds a cache in front of that provider (docs/12_
+provider_architecture.md section 49) so a repeated request can be
+served from a prior parse instead of re-reading the local file. A
+cached offer carries the exact same `data_status: "scraped_public_page"`
+and `scraped_provenance` as the original parse -- if this data is ever
+surfaced to the frontend, whether served fresh or from cache must make
+no difference to how it's labeled: it must always show as
+`scraped_public_page`/`experimental`/`fragile`, never as a fresher or
+more official-looking result just because it came from cache.
+
+### 39.7 Scraped Accommodation Display Rules (Step 168E)
+
+Step 168E implements the labeling the section above called for.
+`AccommodationInventorySection` now renders a `ScrapedProvenanceBadge`
+for any offer carrying `scraped_provenance` (backend: `AccommodationOffer.
+scraped_provenance`, Step 168B/168C -- `ScrapedAccommodationProvider`,
+still disabled by default):
+
+```text
+SCRAPED PUBLIC PAGE · EXPERIMENTAL
+This is not official-provider data. It has not been verified for
+price, availability, rating, or booking-link accuracy.
+Source: Example Test-Only Travel Blog · https://example.test/...
+Parser: scraped_accommodation_provider_v1
+```
+
+Rules, all backend-data-driven -- nothing here is invented client-side:
+
+- **Status line is unaffected by provenance.** `not_connected`/
+  `unavailable`/`failed` still render exactly as Step 167E left them
+  ("No official lodging inventory provider is connected yet...");
+  scraped labeling only ever appears on a `success` result's individual
+  offers.
+- **The badge shows exactly four things**: the fixed label "Scraped
+  public page", the confidence (`experimental` or `fragile`, whatever
+  the backend returned -- an unrecognized value displays as-is), a fixed
+  "not official-provider data...not verified" sentence, and the
+  `source_name`/`source_url`/`parser_version` fields *only when the
+  backend actually returned them* (`parser_version` is conditionally
+  rendered; `source_url` is appended only when present).
+- **Never implies official verification.** The badge's own wording is
+  the explicit opposite claim; no other part of the offer card is
+  altered by the presence of `scraped_provenance`.
+- **Missing fields still never render as present** -- `nightly_price_
+  amount`/`rating`/`booking_url` use the exact same `!== null`/truthy
+  guards regardless of whether the offer is scraped or (hypothetically)
+  official; a scraped offer missing a price still shows no price line at
+  all, never a placeholder or a zero.
+- **`booking_url` is rendered only if the backend actually returned
+  one** -- unchanged from Step 167E, and this holds equally for a
+  scraped offer: the parser never invents a booking link, so this branch
+  simply doesn't fire for most scraped fixtures.
+- **OSM accommodation-like location candidates remain fully separate.**
+  `CandidatePoiSection`/`AccommodationSuggestionCard`/
+  `StayAreaAccommodationCard` are untouched by this step and continue to
+  render only open-data location candidates, never a price/rating/
+  availability/booking link, scraped or otherwise -- the closing line in
+  `AccommodationInventorySection` ("Open-data accommodation-like places
+  are location candidates only, not bookable hotel inventory") still
+  applies unchanged.
+
+### 39.8 Default Provider Change Requires No Frontend Change (Step 168F)
+
+Backend Step 168F (docs/12_provider_architecture.md section 51) made
+`scraped_local` the default accommodation provider. This required no
+frontend code change: `AccommodationInventorySection`'s existing status
+handling already treated `not_connected`/`unavailable`/`failed`
+identically (the `isConnectedWithOffers` check and the
+`HOTEL_PRICES_NOT_CONNECTED_VALUES` set in `ProviderCoverageSection`
+both already include `"unavailable"`), so a fresh installation with no
+local HTML file present still renders the same honest "No official
+lodging inventory provider is connected yet..." message it always did
+-- it now reflects `status: "unavailable"` under the hood rather than
+`"not_connected"`, a distinction the UI was already designed not to
+care about. Once a real local file is configured and parsed, the
+existing `ScrapedProvenanceBadge` labeling (section 39.7) applies
+exactly as already documented.
