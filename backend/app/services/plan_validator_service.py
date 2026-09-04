@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from app.models.accommodation import AccommodationSearchResult, AccommodationSearchStatus
 from app.models.common import DataStatus, ProviderStatus, ReadinessStatus, ValidationSeverity
+from app.models.flight import FlightSearchResult, FlightSearchStatus
 from app.models.planning_state import (
     DailyPlan,
     PlanningStage,
@@ -335,6 +336,10 @@ class PlanValidatorService(PlanningStageService):
 
         warnings.append(
             _build_accommodation_inventory_warning(planning_state.accommodation_inventory_report)
+        )
+
+        warnings.append(
+            _build_flight_inventory_warning(planning_state.flight_inventory_report)
         )
 
         readiness_status = (
@@ -679,6 +684,102 @@ def _build_accommodation_inventory_warning(
         message=message,
         affected_section="stay_transport",
         suggested_fix=_ACCOMMODATION_SUGGESTED_FIX,
+    )
+
+
+_FLIGHT_NOT_CONNECTED_MESSAGE = (
+    "No flight inventory provider is connected, so airline, flight number, "
+    "schedule, price, availability, baggage, and booking link data could not "
+    "be checked."
+)
+_FLIGHT_FAILED_MESSAGE = (
+    "The flight inventory provider request failed, so airline, flight "
+    "number, schedule, price, availability, baggage, and booking link data "
+    "could not be checked."
+)
+_FLIGHT_UNAVAILABLE_MESSAGE_TEMPLATE = (
+    "The flight inventory provider was checked, but no flight offers were "
+    "available ({detail}). No airline, flight number, schedule, price, "
+    "availability, baggage, or booking link data exists to review."
+)
+_FLIGHT_SUCCESS_MESSAGE_TEMPLATE = (
+    "{count} provider-backed flight offer(s) were found via {provider}, but "
+    "these have not been reviewed for schedule, price, availability, "
+    "baggage-policy, or booking-link accuracy, and they are not scheduled "
+    "into the itinerary."
+)
+_FLIGHT_SCRAPED_SUCCESS_MESSAGE_TEMPLATE = (
+    "{count} flight offer(s) were found via {provider}, but this data was "
+    "scraped from a public page (scraped_public_page/experimental/fragile) "
+    "-- it is not official-provider data and has not been verified for "
+    "schedule, price, availability, baggage-policy, or booking-link "
+    "accuracy. It is not scheduled into the itinerary and needs manual "
+    "review before being trusted."
+)
+_FLIGHT_SUGGESTED_FIX = (
+    "Connect a real flight inventory provider, or manually review flight "
+    "options for these dates, before treating flights as checked."
+)
+
+
+def _build_flight_inventory_warning(
+    flight_inventory_report: FlightSearchResult | None,
+) -> ValidationIssue:
+    """Deterministic review warning built purely from
+    `planning_state.flight_inventory_report` (Step 169E) -- no provider
+    call of its own (the lookup already happened in
+    `FlightInventoryService`, before validation runs). Mirrors
+    `_build_accommodation_inventory_warning` exactly.
+
+    Always a `WARNING`, never a critical issue -- missing/unconnected
+    flight inventory never blocks generation by itself, and neither does
+    scraped (Step 169C/169D) flight inventory. When the report is missing
+    entirely (stage not yet run) or the provider is `not_connected`, the
+    message says so explicitly rather than implying flights were checked.
+    A `success` result with real offers still never claims those offers
+    were reviewed for accuracy or scheduled into the itinerary -- this app
+    never schedules a flight into the itinerary as a daily experience and
+    never adds flight recommendation logic. When any offer carries
+    `scraped_provenance` (Step 169D's default local/manual scraped
+    provider), the message explicitly calls out that this is
+    scraped_public_page/experimental/fragile data, not official-provider
+    data, and needs manual review -- it never claims official schedule/
+    price/availability/baggage/booking-link verification for scraped
+    data.
+    """
+    if (
+        flight_inventory_report is None
+        or flight_inventory_report.status == FlightSearchStatus.NOT_CONNECTED
+    ):
+        message = _FLIGHT_NOT_CONNECTED_MESSAGE
+    elif flight_inventory_report.status == FlightSearchStatus.FAILED:
+        message = _FLIGHT_FAILED_MESSAGE
+    elif (
+        flight_inventory_report.status == FlightSearchStatus.UNAVAILABLE
+        or not flight_inventory_report.offers
+    ):
+        message = _FLIGHT_UNAVAILABLE_MESSAGE_TEMPLATE.format(
+            detail=flight_inventory_report.message or "no offers were returned"
+        )
+    else:
+        offers = flight_inventory_report.offers
+        is_scraped = any(offer.scraped_provenance is not None for offer in offers)
+        message_template = (
+            _FLIGHT_SCRAPED_SUCCESS_MESSAGE_TEMPLATE
+            if is_scraped
+            else _FLIGHT_SUCCESS_MESSAGE_TEMPLATE
+        )
+        message = message_template.format(
+            count=len(offers),
+            provider=flight_inventory_report.provider,
+        )
+
+    return ValidationIssue(
+        severity=ValidationSeverity.WARNING,
+        category="flight_inventory",
+        message=message,
+        affected_section="stay_transport",
+        suggested_fix=_FLIGHT_SUGGESTED_FIX,
     )
 
 

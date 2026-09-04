@@ -31,6 +31,8 @@ import type {
   ExperienceItem,
   FeedbackChangePreview,
   FeedbackEvent,
+  FlightInventoryReport,
+  FlightSegment,
   GenerationProgress,
   GeoPoint,
   HolidayContext,
@@ -45,6 +47,7 @@ import type {
   RestaurantSuggestion,
   RouteFeasibilityContext,
   ScrapedAccommodationProvenance,
+  ScrapedFlightProvenance,
   StayAreaGuidance,
   TripRequestInput,
   TripSummary,
@@ -93,6 +96,7 @@ type PlanResult = {
   regenerationReadiness: RegenerationReadiness;
   regenerationAttempts: RegenerationAttempt[];
   accommodationInventoryReport: AccommodationInventoryReport | null;
+  flightInventoryReport: FlightInventoryReport | null;
 };
 
 function parseCommaList(value: string): string[] {
@@ -1777,6 +1781,219 @@ function AccommodationInventorySection({
   );
 }
 
+// Human-readable label for the flight inventory report's status (Step
+// 169E, docs/16_frontend_architecture.md). Distinguishes a scraped
+// success (never official-provider data) from a hypothetical future
+// official-provider success, mirroring accommodationInventoryStatusLabel's
+// status set but with wording specific to flights.
+function flightInventoryStatusLabel(
+  status: string,
+  hasScrapedOffers: boolean,
+): string {
+  switch (status) {
+    case "success":
+      return hasScrapedOffers
+        ? "Available from scraped public page"
+        : "Connected";
+    case "unavailable":
+      return "Unavailable";
+    case "failed":
+      return "Failed";
+    case "not_connected":
+    default:
+      return "Not connected";
+  }
+}
+
+/**
+ * One scraped flight offer's provenance badge (Step 169E,
+ * docs/16_frontend_architecture.md). Structurally identical to
+ * `ScrapedProvenanceBadge` -- kept separate only because it's typed
+ * against `ScrapedFlightProvenance` rather than
+ * `ScrapedAccommodationProvenance`, mirroring the backend's own separate
+ * models. Renders parser/source metadata only when the backend actually
+ * returned it. This never implies official verification: the badge
+ * itself is the opposite claim ("not official-provider data").
+ */
+function ScrapedFlightProvenanceBadge({
+  provenance,
+}: {
+  provenance: ScrapedFlightProvenance;
+}) {
+  return (
+    <div className="mt-2 rounded-md border border-amber-300/30 bg-amber-950/20 p-2 text-[11px] text-amber-200/90">
+      <p className="font-semibold uppercase tracking-wide">
+        Scraped public page · {scrapedConfidenceLabel(provenance.confidence)}
+      </p>
+      <p className="mt-1 text-amber-200/80">
+        This is not official-provider data. It has not been verified for
+        schedule, price, availability, baggage-policy, or booking-link
+        accuracy.
+      </p>
+      <p className="mt-1 text-amber-300/70">
+        Source: {provenance.source_name}
+        {provenance.source_url ? ` · ${provenance.source_url}` : ""}
+      </p>
+      {provenance.parser_version && (
+        <p className="mt-0.5 font-mono text-amber-300/60">
+          Parser: {provenance.parser_version}
+        </p>
+      )}
+    </div>
+  );
+}
+
+/**
+ * One flight offer's outbound/return segment summary line -- renders only
+ * fields the backend actually returned (Step 169E). A missing airport,
+ * carrier, flight number, time, or duration stays hidden entirely rather
+ * than shown as a placeholder/zero/"unknown" value standing in for a real
+ * fact.
+ */
+function FlightSegmentSummary({ segment }: { segment: FlightSegment }) {
+  const route =
+    segment.origin_airport && segment.destination_airport
+      ? `${segment.origin_airport} → ${segment.destination_airport}`
+      : segment.origin_airport || segment.destination_airport;
+  const carrier = [segment.carrier_name, segment.flight_number]
+    .filter(Boolean)
+    .join(" ");
+
+  return (
+    <p className="mt-1 text-xs text-slate-300">
+      {route && <span>{route}</span>}
+      {carrier && <span>{route ? " · " : ""}{carrier}</span>}
+      {segment.departure_time && (
+        <span className="ml-1 text-slate-500">
+          dep {segment.departure_time}
+        </span>
+      )}
+      {segment.arrival_time && (
+        <span className="ml-1 text-slate-500">
+          arr {segment.arrival_time}
+        </span>
+      )}
+      {segment.duration_minutes !== null && (
+        <span className="ml-1 text-slate-500">
+          ({segment.duration_minutes} min)
+        </span>
+      )}
+      {!route && !carrier && !segment.departure_time && !segment.arrival_time && (
+        <span className="text-slate-500">Segment details unavailable</span>
+      )}
+    </p>
+  );
+}
+
+/**
+ * Bookable flight inventory panel (Step 169E,
+ * docs/16_frontend_architecture.md). Renders only backend-returned
+ * `FlightInventoryReport` fields -- it never invents an airline, flight
+ * number, airport, departure/arrival time, duration, price, availability,
+ * baggage policy, cancellation policy, or booking link, and it never
+ * upgrades a `not_connected`/`unavailable`/`failed` status into an
+ * implied "checked" claim. Flights are never scheduled into daily
+ * itinerary experiences -- this panel is inventory reporting only. When
+ * an offer carries `scraped_provenance` (the default `scraped_local`
+ * provider, Step 169D), it is visibly labeled "Scraped public page" with
+ * its experimental/fragile confidence -- never presented as if it were
+ * official, verified provider data.
+ */
+function FlightInventorySection({
+  report,
+}: {
+  report: FlightInventoryReport | null;
+}) {
+  const status = report?.status ?? "not_connected";
+  const offers = report?.offers ?? [];
+  const isConnectedWithOffers = status === "success" && offers.length > 0;
+  const hasScrapedOffers = offers.some((offer) => offer.scraped_provenance !== null);
+
+  return (
+    <div className="rounded-2xl border border-white/10 bg-white/5 p-5">
+      <h2 className="text-lg font-semibold">Flight inventory</h2>
+      <p className="mt-2 text-sm text-slate-200">
+        Flight inventory: {flightInventoryStatusLabel(status, hasScrapedOffers)}
+      </p>
+
+      {!isConnectedWithOffers ? (
+        <p className="mt-2 text-xs text-amber-300/90">
+          No official flight inventory provider is connected yet. Airlines,
+          flight numbers, schedules, prices, availability, baggage
+          policies, and booking links are unavailable unless returned by
+          an official provider or a scraped public page.
+        </p>
+      ) : (
+        <ul className="mt-3 flex flex-col gap-2">
+          {offers.map((offer, index) => (
+            <li
+              key={`${offer.offer_id}-${index}`}
+              className="rounded-lg border border-white/10 bg-slate-900/60 p-3 text-sm"
+            >
+              <p className="font-mono text-[11px] text-slate-500">
+                {offer.offer_id}
+                {offer.source_name ? ` · ${offer.source_name}` : ""}
+              </p>
+              {offer.outbound_segments.map((segment, segmentIndex) => (
+                <FlightSegmentSummary
+                  key={`outbound-${segmentIndex}`}
+                  segment={segment}
+                />
+              ))}
+              {offer.return_segments.length > 0 && (
+                <p className="mt-2 text-[11px] uppercase tracking-wide text-slate-500">
+                  Return
+                </p>
+              )}
+              {offer.return_segments.map((segment, segmentIndex) => (
+                <FlightSegmentSummary
+                  key={`return-${segmentIndex}`}
+                  segment={segment}
+                />
+              ))}
+              {offer.total_price_amount !== null && offer.currency && (
+                <p className="mt-1 text-xs text-slate-300">
+                  {offer.total_price_amount} {offer.currency}
+                </p>
+              )}
+              {offer.availability_status && (
+                <p className="mt-1 text-xs text-slate-400">
+                  Availability: {offer.availability_status}
+                </p>
+              )}
+              {offer.baggage_policy && (
+                <p className="mt-1 text-xs text-slate-400">
+                  Baggage: {offer.baggage_policy}
+                </p>
+              )}
+              {offer.cancellation_policy && (
+                <p className="mt-1 text-xs text-slate-400">
+                  Cancellation: {offer.cancellation_policy}
+                </p>
+              )}
+              {offer.booking_url && (
+                <p className="mt-1 break-all text-xs text-cyan-200">
+                  {offer.booking_url}
+                </p>
+              )}
+              {offer.scraped_provenance && (
+                <ScrapedFlightProvenanceBadge
+                  provenance={offer.scraped_provenance}
+                />
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+
+      <p className="mt-3 text-xs text-slate-500">
+        Flight offers are inventory reporting only -- they are never
+        scheduled into the day-by-day itinerary below.
+      </p>
+    </div>
+  );
+}
+
 function changePreviewRegenerationLabel(
   wouldRequireRegeneration: boolean | null,
 ): string {
@@ -2768,6 +2985,7 @@ async function loadPlanResult(tripId: string): Promise<PlanResult> {
     regenerationAttempts: regenerationAttempts.regeneration_attempts,
     accommodationInventoryReport:
       trip.planning_state.accommodation_inventory_report,
+    flightInventoryReport: trip.planning_state.flight_inventory_report,
   };
 }
 
@@ -3811,6 +4029,8 @@ export default function Home() {
             <AccommodationInventorySection
               report={result.accommodationInventoryReport}
             />
+
+            <FlightInventorySection report={result.flightInventoryReport} />
 
             <CandidatePoiSection
               title="Destination candidate attractions"

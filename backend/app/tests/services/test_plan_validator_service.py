@@ -8,6 +8,12 @@ from app.models.accommodation import (
     AccommodationSearchStatus,
 )
 from app.models.common import DataStatus, ProviderStatus
+from app.models.flight import (
+    FlightOffer,
+    FlightSearchResult,
+    FlightSearchStatus,
+    FlightSegment,
+)
 from app.models.planning_state import (
     DestinationContext,
     PlanningState,
@@ -109,6 +115,14 @@ def _accommodation_inventory_warnings(planning_state: PlanningState) -> list[Any
         warning
         for warning in planning_state.validation_report.warnings
         if warning.category == "accommodation_inventory"
+    ]
+
+
+def _flight_inventory_warnings(planning_state: PlanningState) -> list[Any]:
+    return [
+        warning
+        for warning in planning_state.validation_report.warnings
+        if warning.category == "flight_inventory"
     ]
 
 
@@ -832,3 +846,223 @@ def test_accommodation_inventory_warning_never_blocks_generation() -> None:
         issue.category == "accommodation_inventory"
         for issue in planning_state.validation_report.critical_issues
     )
+
+
+# ---------------------------------------------------------------------------
+# Step 169E: flight_inventory_report clarity in PlanValidatorService.
+# Every case here is a non-blocking WARNING -- missing/unconnected flight
+# inventory never produces a critical_issue and never blocks generation by
+# itself. Mirrors the accommodation_inventory test block above exactly.
+# ---------------------------------------------------------------------------
+
+
+def test_flight_inventory_warning_when_report_missing() -> None:
+    """When flight_inventory_report hasn't been computed at all (None),
+    the validator still surfaces exactly one honest warning -- never
+    silence, and never a claim that flights were checked."""
+    planning_state = _planning_state()
+    assert planning_state.flight_inventory_report is None
+
+    PlanValidatorService().run(planning_state)
+
+    warnings = _flight_inventory_warnings(planning_state)
+    assert len(warnings) == 1
+    assert "no flight inventory provider is connected" in warnings[0].message.lower()
+    assert "could not be checked" in warnings[0].message.lower()
+    assert not any(
+        issue.category == "flight_inventory"
+        for issue in planning_state.validation_report.critical_issues
+    )
+
+
+def test_flight_inventory_warning_when_not_connected() -> None:
+    planning_state = _planning_state()
+    planning_state.flight_inventory_report = FlightSearchResult(
+        provider="flight_inventory_provider",
+        status=FlightSearchStatus.NOT_CONNECTED,
+        offers=[],
+        message="Flight inventory provider is not connected.",
+        destination="Lisbon, Portugal",
+        departure_date="2026-08-10",
+    )
+
+    PlanValidatorService().run(planning_state)
+
+    warnings = _flight_inventory_warnings(planning_state)
+    assert len(warnings) == 1
+    assert "no flight inventory provider is connected" in warnings[0].message.lower()
+    assert not any(
+        issue.category == "flight_inventory"
+        for issue in planning_state.validation_report.critical_issues
+    )
+
+
+def test_flight_inventory_warning_when_failed() -> None:
+    planning_state = _planning_state()
+    planning_state.flight_inventory_report = FlightSearchResult(
+        provider="flight_inventory_provider",
+        status=FlightSearchStatus.FAILED,
+        offers=[],
+        message="The flight inventory provider request failed unexpectedly.",
+        destination="Lisbon, Portugal",
+        departure_date="2026-08-10",
+    )
+
+    PlanValidatorService().run(planning_state)
+
+    warnings = _flight_inventory_warnings(planning_state)
+    assert len(warnings) == 1
+    assert "failed" in warnings[0].message.lower()
+    assert not any(
+        issue.category == "flight_inventory"
+        for issue in planning_state.validation_report.critical_issues
+    )
+
+
+def test_flight_inventory_warning_when_success_with_no_offers() -> None:
+    """A `success` status with zero offers is still reported as
+    unavailable -- never claims a flight is bookable when none was
+    found."""
+    planning_state = _planning_state()
+    planning_state.flight_inventory_report = FlightSearchResult(
+        provider="fake_flight_inventory_provider",
+        status=FlightSearchStatus.SUCCESS,
+        offers=[],
+        message="No flights matched this search.",
+        destination="Lisbon, Portugal",
+        departure_date="2026-08-10",
+    )
+
+    PlanValidatorService().run(planning_state)
+
+    warnings = _flight_inventory_warnings(planning_state)
+    assert len(warnings) == 1
+    assert "no flight offers" in warnings[0].message.lower()
+    assert not any(
+        issue.category == "flight_inventory"
+        for issue in planning_state.validation_report.critical_issues
+    )
+
+
+def test_flight_inventory_warning_when_success_with_offers() -> None:
+    """A real, provider-backed offer is named honestly, but never claimed
+    to have been reviewed for accuracy or scheduled into the itinerary."""
+    planning_state = _planning_state()
+    segment = FlightSegment(
+        origin_airport="TST",
+        destination_airport="DMO",
+        carrier_name="TEST_ONLY_AIRLINE_ALPHA",
+        flight_number="TEST_ONLY_FLIGHT_123",
+        data_status=DataStatus.LIVE,
+    )
+    offer = FlightOffer(
+        offer_id="TEST_ONLY_FLIGHT_OFFER_ALPHA",
+        provider="fake_flight_inventory_provider",
+        data_status=DataStatus.LIVE,
+        outbound_segments=[segment],
+    )
+    planning_state.flight_inventory_report = FlightSearchResult(
+        provider="fake_flight_inventory_provider",
+        status=FlightSearchStatus.SUCCESS,
+        offers=[offer],
+        destination="Lisbon, Portugal",
+        departure_date="2026-08-10",
+    )
+
+    PlanValidatorService().run(planning_state)
+
+    warnings = _flight_inventory_warnings(planning_state)
+    assert len(warnings) == 1
+    message_lower = warnings[0].message.lower()
+    assert "1 provider-backed flight offer" in message_lower
+    assert "not scheduled into the itinerary" in message_lower
+    assert not any(
+        issue.category == "flight_inventory"
+        for issue in planning_state.validation_report.critical_issues
+    )
+
+
+def test_flight_inventory_warning_for_scraped_offer_calls_out_non_official_status() -> None:
+    """When an offer carries `scraped_provenance`, the warning must
+    explicitly say this is scraped_public_page/experimental/fragile data,
+    not official-provider data, and must never claim official schedule/
+    price/availability/baggage/booking-link verification for it."""
+    planning_state = _planning_state()
+    segment = FlightSegment(
+        origin_airport="TST",
+        destination_airport="DMO",
+        data_status=DataStatus.SCRAPED_PUBLIC_PAGE,
+    )
+    offer = FlightOffer(
+        offer_id="TEST_ONLY_FLIGHT_OFFER_ALPHA",
+        provider="scraped:example_test_only_flight_search_page",
+        data_status=DataStatus.SCRAPED_PUBLIC_PAGE,
+        outbound_segments=[segment],
+        scraped_provenance=ScrapedDataProvenance(
+            source_id="example_test_only_flight_search_page",
+            source_name="Example Test-Only Flight Search Page",
+            confidence=ScrapedDataConfidence.EXPERIMENTAL,
+        ),
+    )
+    planning_state.flight_inventory_report = FlightSearchResult(
+        provider="scraped:example_test_only_flight_search_page",
+        status=FlightSearchStatus.SUCCESS,
+        offers=[offer],
+        destination="Lisbon, Portugal",
+        departure_date="2026-08-10",
+    )
+
+    PlanValidatorService().run(planning_state)
+
+    warnings = _flight_inventory_warnings(planning_state)
+    assert len(warnings) == 1
+    message_lower = warnings[0].message.lower()
+    assert "scraped_public_page" in message_lower
+    assert "not official-provider data" in message_lower
+    assert "has not been verified" in message_lower
+    assert not any(
+        issue.category == "flight_inventory"
+        for issue in planning_state.validation_report.critical_issues
+    )
+
+
+def test_flight_inventory_warning_never_blocks_generation() -> None:
+    """Missing/unconnected flight inventory never contributes a
+    critical_issue on its own, regardless of scheduling outcome."""
+    planning_state = _two_candidate_planning_state()
+    _run_planner_then_validator(planning_state)
+
+    assert planning_state.flight_inventory_report is None
+    warnings = _flight_inventory_warnings(planning_state)
+    assert len(warnings) == 1
+    assert not any(
+        issue.category == "flight_inventory"
+        for issue in planning_state.validation_report.critical_issues
+    )
+
+
+def test_flight_offers_never_appear_in_scheduled_daily_experiences() -> None:
+    """A scraped flight offer must never be scheduled as a daily itinerary
+    experience -- flights are inventory reporting only."""
+    planning_state = _two_candidate_planning_state()
+    segment = FlightSegment(
+        origin_airport="TST",
+        destination_airport="DMO",
+        data_status=DataStatus.SCRAPED_PUBLIC_PAGE,
+    )
+    offer = FlightOffer(
+        offer_id="TEST_ONLY_FLIGHT_OFFER_ALPHA",
+        provider="scraped:example_test_only_flight_search_page",
+        data_status=DataStatus.SCRAPED_PUBLIC_PAGE,
+        outbound_segments=[segment],
+    )
+    planning_state.flight_inventory_report = FlightSearchResult(
+        provider="scraped:example_test_only_flight_search_page",
+        status=FlightSearchStatus.SUCCESS,
+        offers=[offer],
+        destination="Lisbon, Portugal",
+        departure_date="2026-08-10",
+    )
+    _run_planner_then_validator(planning_state)
+
+    assert "TEST_ONLY_FLIGHT_OFFER_ALPHA" not in _scheduled_names(planning_state)

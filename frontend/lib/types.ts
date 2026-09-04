@@ -247,6 +247,85 @@ export type AccommodationInventoryReport = {
   message: string | null;
 };
 
+// Provenance for one scraped (not official-provider) flight offer
+// (backend: app.models.scraping.ScrapedDataProvenance, Step 169C/169D).
+// `official_provider` is always `false` here -- the backend's own type
+// (`Literal[False]`) makes any other value impossible to serialize.
+// Present on a `FlightOffer` only when that offer came from
+// `ScrapedLocalFlightProvider` (Step 169D), never from an official
+// flight provider. Structurally identical to
+// `ScrapedAccommodationProvenance` -- kept as a separate type only to
+// mirror the backend's own separate `FlightOffer`/`AccommodationOffer`
+// models.
+export type ScrapedFlightProvenance = {
+  source_id: string;
+  source_name: string;
+  source_type: string;
+  provenance: string;
+  confidence: "experimental" | "fragile";
+  fetched_at: string | null;
+  parser_version: string | null;
+  source_url: string | null;
+  extraction_method: string;
+  official_provider: false;
+};
+
+// One flight leg (backend: app.models.flight.FlightSegment). Every
+// optional field stays `null` unless a real provider/parser actually
+// returned it; the frontend never fills one in.
+export type FlightSegment = {
+  origin_airport: string | null;
+  destination_airport: string | null;
+  departure_time: string | null;
+  arrival_time: string | null;
+  carrier_name: string | null;
+  carrier_code: string | null;
+  flight_number: string | null;
+  duration_minutes: number | null;
+  data_status: string;
+};
+
+// Bookable flight inventory offer (backend: app.models.flight.FlightOffer,
+// Step 169A). Every optional field here stays `null`/empty unless a real
+// provider actually returned it; the frontend never fills one in.
+// `scraped_provenance` (Step 169D) is set only when this offer came from
+// the scraped/experimental path (`ScrapedLocalFlightProvider`, the
+// default flight provider) rather than an official, connected flight
+// provider -- when present, this offer must be labeled as scraped/
+// experimental/fragile and never presented as official-provider data.
+export type FlightOffer = {
+  offer_id: string;
+  provider: string;
+  data_status: string;
+  outbound_segments: FlightSegment[];
+  return_segments: FlightSegment[];
+  total_price_amount: number | null;
+  currency: string | null;
+  booking_url: string | null;
+  availability_status: string | null;
+  baggage_policy: string | null;
+  cancellation_policy: string | null;
+  source_name: string | null;
+  source_url: string | null;
+  scraped_provenance: ScrapedFlightProvenance | null;
+};
+
+// Bookable flight inventory report for the whole trip (backend:
+// app.models.flight.FlightSearchResult /
+// PlanningState.flight_inventory_report, Step 169E). `offers` can only be
+// non-empty when `status === "success"` -- with the default
+// `scraped_local` flight provider and no local HTML file present, this is
+// always `status: "unavailable"` with an empty `offers` list, and the
+// frontend never invents a different value client-side. Flights are never
+// scheduled into daily itinerary experiences -- this report is inventory
+// reporting only.
+export type FlightInventoryReport = {
+  provider: string;
+  status: "success" | "not_connected" | "unavailable" | "failed";
+  offers: FlightOffer[];
+  message: string | null;
+};
+
 export type DailyPlan = {
   day_plan_id: string;
   day_number: number;
@@ -582,9 +661,9 @@ export type GenerationProgressData = {
 
 // Full PlanningState is much larger than this; only feedback_history,
 // pending_feedback_summary, user_locks, version_history, plan_diff_preview,
-// regeneration_readiness, regeneration_attempts, and
-// accommodation_inventory_report are declared here since that's the only
-// part of it the frontend reads.
+// regeneration_readiness, regeneration_attempts,
+// accommodation_inventory_report, and flight_inventory_report are
+// declared here since that's the only part of it the frontend reads.
 export type TripData = {
   trip_id: string;
   planning_state: {
@@ -596,5 +675,6 @@ export type TripData = {
     regeneration_readiness: RegenerationReadiness;
     regeneration_attempts: RegenerationAttempt[];
     accommodation_inventory_report: AccommodationInventoryReport | null;
+    flight_inventory_report: FlightInventoryReport | null;
   };
 };

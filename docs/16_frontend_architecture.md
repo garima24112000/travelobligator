@@ -1676,3 +1676,112 @@ lodging inventory provider is connected yet..." message it always did
 care about. Once a real local file is configured and parsed, the
 existing `ScrapedProvenanceBadge` labeling (section 39.7) applies
 exactly as already documented.
+
+### 39.9 Future Flight Inventory UI Note (Step 169A)
+
+Backend Step 169A (docs/12_provider_architecture.md section 52) added a
+flight inventory model/provider contract (`FlightSearchRequest`/
+`FlightOffer`/`FlightSearchResult`, `FlightInventoryProvider`) with no
+adapter, no `ProviderGateway` wiring, and no API exposure -- there is
+nothing for the frontend to render yet, and no frontend file changed for
+this step. Noted here only so a future flight inventory panel is built
+with the same distinctions `AccommodationInventorySection` already makes
+(sections 39.6-39.8): it must distinguish **unavailable** (no flight
+provider connected, or a connected provider found nothing), **scraped**
+(`FlightOffer.scraped_provenance` set, `data_status=scraped_public_page`
+-- rendered with the same "not official-provider data...not verified"
+badge treatment as `ScrapedProvenanceBadge`, never implying verification),
+and **official** (a real future flight API integration, once one exists)
+data, and must never render a fabricated price, schedule, or booking link
+for a missing field.
+
+Backend Step 169B (docs/12_provider_architecture.md section 53) added
+flight provider config, a `NotConnectedFlightProvider`, and a
+`ScrapedLocalFlightProvider` *stub* (no parser yet, so it never returns
+a real offer either) plus a `get_flight_provider` factory -- still no
+API exposure, no `ProviderGateway` wiring, and no frontend file changed
+for this step either. The same three-way distinction from 39.9 still
+applies once a flight panel exists: **unavailable** (not connected, or a
+connected provider found nothing -- which, as of Step 169B, is the only
+outcome `ScrapedLocalFlightProvider` can actually produce, since its
+parser doesn't exist yet), **scraped** (honestly labeled non-official,
+review-worthy), and **official** data must never be blurred together in
+the UI.
+
+Backend Step 169C (docs/12_provider_architecture.md section 54) added
+the flight HTML parser itself (`parse_scraped_flight_html`) -- still no
+API exposure, still not wired into `ScrapedLocalFlightProvider` (that's
+Step 169D), and no frontend file changed. Restating the labeling
+requirement now that a real parser exists: once a scraped flight offer
+does reach the frontend (Step 169D or later), it must render with the
+same explicit, clearly-labeled treatment `ScrapedProvenanceBadge`
+already gives accommodation offers (section 39.7) -- a fixed
+"Scraped public page · Experimental/Fragile" badge and a "not
+official-provider data...not verified" sentence, never blended into the
+surrounding UI as if it were a confirmed, bookable flight.
+
+Backend Step 169D (docs/12_provider_architecture.md section 55) wired
+`ScrapedLocalFlightProvider` to actually parse a configured local file
+and cache the normalized result -- still no API exposure and no
+frontend file changed. This makes the labeling requirement concrete
+rather than hypothetical: a real `FlightSearchResult` with real
+`scraped_public_page` offers can now exist (given a manually-supplied
+local file), whether served from a fresh parse or a cache hit -- both
+carry identical provenance (section 55's cache round-trip guarantee), so
+a future flight panel must label them identically too. Whenever flight
+data does reach the frontend, cached scraped flight data must be labeled
+`scraped_public_page`/`experimental`/`fragile` exactly like a
+freshly-parsed one -- a cache hit is never a signal of higher trust.
+
+### 39.10 Flight Inventory Panel (Step 169E, final Section 169 step)
+
+`FlightInventorySection` (`frontend/app/page.tsx`) is the flight
+equivalent of `AccommodationInventorySection` (sections 39.6-39.9),
+rendering `PlanningState.flight_inventory_report`
+(`FlightInventoryReport`, `frontend/lib/types.ts`) now that the backend
+actually populates it end to end (docs/12_provider_architecture.md
+section 56). Display rules, all backend-data-driven -- nothing here is
+invented client-side:
+
+- **Status line** reads "Flight inventory: {label}" where the label is
+  `flightInventoryStatusLabel(status, hasScrapedOffers)` --
+  "Unavailable"/"Failed"/"Not connected" for those statuses, and for
+  `success` either "Available from scraped public page" (when any
+  offer carries `scraped_provenance`) or "Connected" (a hypothetical
+  future official-provider success). `not_connected`/`unavailable`/
+  `failed` all render the same honest "No official flight inventory
+  provider is connected yet..." explanatory line -- the UI does not
+  distinguish them further, mirroring `AccommodationInventorySection`'s
+  own `isConnectedWithOffers` collapsing of those three statuses.
+- **Missing fields stay hidden entirely, never a placeholder.** Each
+  optional offer/segment field (carrier name/code, flight number,
+  origin/destination airport, departure/arrival time, duration, total
+  price + currency, availability status, baggage policy, cancellation
+  policy, booking URL) is rendered only behind an explicit
+  `!== null`/truthy guard -- a missing field produces no line, never a
+  placeholder, a zero, or an "unknown" stand-in for a real fact.
+- **`ScrapedFlightProvenanceBadge`** renders for any offer with
+  `scraped_provenance` set: a fixed "Scraped public page ·
+  {Experimental/Fragile}" label, a fixed "not official-provider
+  data...not verified" sentence, and `source_name`/`source_url`/
+  `parser_version` only when the backend actually returned them --
+  structurally identical to `ScrapedProvenanceBadge` (accommodation),
+  kept as a separate component only to stay type-matched to
+  `ScrapedFlightProvenance` vs. `ScrapedAccommodationProvenance`. This
+  never implies official verification unless a future official flight
+  provider replaces the scraped path entirely and `scraped_provenance`
+  is genuinely absent from that offer.
+- **`booking_url` is rendered only if the backend actually returned
+  one**, mirroring the accommodation panel exactly.
+- **Never shown as an itinerary day-card entry.** `FlightInventorySection`
+  is a standalone panel among the "Data sources and candidates" section,
+  rendered immediately after `AccommodationInventorySection` -- no
+  `DailyPlan`/`ExperienceItem`-rendering component reads
+  `flight_inventory_report`, and a flight offer is never merged into a
+  day's scheduled experiences.
+- **Accommodation and OSM labels are unchanged.** This step touches only
+  the new `FlightInventorySection` plus the new type imports it needs --
+  `AccommodationInventorySection`, `ScrapedProvenanceBadge`,
+  `CandidatePoiSection`, and every OSM-candidate-rendering component are
+  untouched.
+exactly as already documented.

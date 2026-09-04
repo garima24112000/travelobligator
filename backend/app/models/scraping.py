@@ -71,6 +71,13 @@ class ScrapingSourcePolicy(BaseModel):
     allows_lodging: bool = False
     allows_restaurants: bool = False
     allows_attractions: bool = False
+    # Step 169C -- gates the flight parser (`app.providers.flights.
+    # scraped_parser.parse_scraped_flight_html`) the same way
+    # `allows_lodging` gates the accommodation parser. Defaults to
+    # `False`, matching every other `allows_*` flag: no existing source
+    # policy silently gains flight-scraping permission just because this
+    # field was added.
+    allows_flights: bool = False
 
     requires_login: bool = False
     paywalled: bool = False

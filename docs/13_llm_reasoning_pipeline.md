@@ -3194,3 +3194,184 @@ anywhere in this codebase.
   default, not the honesty contract on what it returns.
 - Confirmed unchanged: route-aware scheduling, regeneration refusal, and
   LangGraph's continued absence from `/generate`.
+
+## 75. Flight Provider Contract Foundation (Step 169A)
+
+Step 169A adds `backend/app/models/flight.py` (`FlightSearchRequest`/
+`FlightSegment`/`FlightOffer`/`FlightSearchResult`) and
+`backend/app/providers/flights/base.py` (`FlightInventoryProvider`)
+(docs/12_provider_architecture.md section 52). **These are deterministic
+provider infrastructure -- a data contract and an interface -- not AI
+reasoning.** No LLM call, no prompt, no model inference exists in either
+module, and no live flight provider or scraper is connected.
+
+- **LLMs must not invent any missing flight field.** `FlightSegment`'s
+  airports, carrier name/code, flight number, departure/arrival time, and
+  duration, and `FlightOffer`'s price, currency, booking URL, availability
+  status, baggage policy, and cancellation policy all stay `None` unless a
+  real future adapter supplies them -- exactly the same rule already
+  applied to `AccommodationOffer` (section 68) and to every other
+  provider-fact field in this document (section 4). No AI reasoning step
+  exists that reads or writes these models yet, so there is nothing to
+  guard against calling them today, but the rule is stated here so a
+  future flight-aware reasoning stage inherits it explicitly rather than
+  needing to rediscover it.
+- **A future scraped flight offer must be labeled the same way a scraped
+  accommodation offer already is** -- `scraped_public_page`/
+  `experimental`/`fragile` via `FlightOffer.scraped_provenance`, never
+  presented as official-provider data, and any future AI reasoning step
+  that ever reads flight inventory must treat a
+  `scraped_provenance`-carrying offer as non-official and review-worthy,
+  mirroring section 73's rule for scraped accommodation data.
+- Not wired into `ProviderGateway`, `PlanningOrchestrator`,
+  `TripStrategyService`, `StayTransportService`, `PlanValidatorService`,
+  the AI candidate-proposal subsystem, or any AI reasoning contract model
+  (`ai_reasoning.py`, `ai_candidate_proposal.py`) -- nothing in the app's
+  AI-adjacent code currently constructs a `FlightSearchRequest` or
+  consumes a `FlightSearchResult`.
+- Confirmed unchanged: route-aware scheduling, regeneration refusal, and
+  LangGraph's continued absence from `/generate`; no Groq/Anthropic/
+  Kiwi/MCP call exists anywhere in the new modules.
+
+## 76. Flight Provider Config, Not-Connected Adapter, Scraped-Local Stub, and Factory (Step 169B)
+
+Step 169B adds flight provider config (`Settings.flight_provider`,
+default `"scraped_local"`), `NotConnectedFlightProvider`,
+`ScrapedLocalFlightProvider` (a stub -- no parser yet), and
+`get_flight_provider` (docs/12_provider_architecture.md section 53).
+**Flight provider selection is deterministic provider infrastructure,
+not AI reasoning.** No LLM call, no prompt, no model inference exists in
+any of these modules.
+
+- **LLMs must not invent a missing flight field here either.**
+  `NotConnectedFlightProvider` always returns `offers=[]`; `Scraped
+  LocalFlightProvider`, even when a local file exists, returns
+  `offers=[]` with an honest "parsing is not implemented yet" message
+  rather than a filled-in guess -- there is no post-lookup step in
+  either adapter that could fill in a missing airline/flight number/
+  airport/time/duration/price/availability/baggage policy/cancellation
+  policy/booking link, and none may ever be added.
+- **The factory's fallback-to-`not_connected` behavior is not an AI
+  judgment call either** -- `get_flight_provider` is a plain dict lookup
+  (`_SUPPORTED_PROVIDERS.get(name, NotConnectedFlightProvider)`), with no
+  branch that could be swapped for an AI-driven provider choice.
+- Not wired into `ProviderGateway`, `PlanningOrchestrator`,
+  `TripStrategyService`, `StayTransportService`, `PlanValidatorService`,
+  or any AI reasoning contract model -- confirmed by dedicated tests
+  (`test_provider_gateway_does_not_reference_flight_factory`,
+  `test_planning_orchestrator_does_not_reference_flight_factory` in
+  `backend/app/tests/providers/test_flight_factory.py`).
+- Confirmed by dedicated import-safety tests that none of
+  `backend/app/providers/flights/{factory,not_connected_adapter,
+  scraped_adapter}.py` imports `httpx`/`requests`/a browser-automation
+  library/Groq/Anthropic/Kiwi/MCP -- mirroring every prior Section 167/168
+  provider-selection step's own import-safety checks.
+
+## 77. Static Flight HTML Parser (Step 169C)
+
+Step 169C adds `backend/app/providers/flights/scraped_parser.py`'s
+`parse_scraped_flight_html`, the flight equivalent of the Step 168B
+accommodation parser (docs/12_provider_architecture.md section 54).
+**This is deterministic provider infrastructure -- a stdlib HTML walk
+plus pydantic validation -- not AI reasoning.** No LLM call, no prompt,
+no model inference exists anywhere in this module, and it never fetches
+a live website; it only transforms an already-provided HTML string.
+
+- **LLMs must not fill any missing scraped flight field.** A field class
+  absent from the HTML (origin/destination airport, departure/arrival
+  time, carrier name/code, flight number, duration, price, currency,
+  availability status, baggage policy, cancellation policy, booking URL)
+  stays `None`/empty on the resulting `FlightSegment`/`FlightOffer` --
+  there is no post-parse step in this module, or anywhere downstream
+  today, that could fill one in. This mirrors section 68's rule for
+  scraped accommodation data exactly, extended to flights.
+- **Parsed flight data must be treated as non-official and
+  review-worthy**, the same way section 73 already established for
+  scraped accommodation data -- every parsed `FlightOffer` carries
+  `data_status=scraped_public_page` and `scraped_provenance.
+  official_provider=False`; any future AI reasoning step that ever reads
+  flight inventory must never present, summarize, or reason about a
+  scraped flight offer as if it were official-provider data.
+- Not wired into `ScrapedLocalFlightProvider`, `ProviderGateway`,
+  `PlanningOrchestrator`, or any AI reasoning/candidate-proposal contract
+  model -- nothing in the app's AI-adjacent code, or the flight provider
+  itself, currently calls `parse_scraped_flight_html` outside this
+  subsystem's own tests (wiring the provider is Step 169D).
+- Confirmed by dedicated import-safety tests that
+  `scraped_parser.py` imports no `httpx`/`requests`/a browser-automation
+  library/Groq/Anthropic/Kiwi/MCP.
+
+## 78. Scraped Local Flight Provider Wired to the Parser and Cache (Step 169D)
+
+Step 169D wires `ScrapedLocalFlightProvider`
+(`backend/app/providers/flights/scraped_adapter.py`) to
+`parse_scraped_flight_html` (section 77) and a `ProviderCacheStore`-backed
+cache (docs/12_provider_architecture.md section 55). **Scraped flight
+parsing and caching are deterministic provider infrastructure -- a local
+file read, a stdlib HTML walk, pydantic validation, and a SQLite
+key/value cache -- not AI reasoning.** No LLM call, no prompt, no model
+inference exists anywhere in this flow.
+
+- **LLMs must not fill any missing scraped flight field, on a fresh
+  parse or a cache hit.** A field absent from the source HTML stays
+  `None`/empty at every hop -- through the parser, through the cache
+  round-trip (`FlightSearchResult.model_validate(entry.payload)`), and
+  out of `ScrapedLocalFlightProvider.search_flights`'s return value.
+  There is no post-parse or post-cache-read step anywhere in this
+  provider that could fill one in, mirroring section 71's rule for
+  cached scraped accommodation data exactly.
+- **LLMs must treat `scraped_public_page` flight data as non-official
+  and review-worthy**, on a fresh parse or a cache hit alike -- every
+  returned `FlightOffer` carries `data_status=scraped_public_page` and
+  `scraped_provenance.official_provider=False` regardless of whether it
+  came from a fresh parse or the cache; any future AI reasoning step
+  that ever reads flight inventory must never present, summarize, or
+  reason about it as if it were official-provider data, mirroring
+  section 73's rule for scraped accommodation data.
+- Not wired into `ProviderGateway`, `PlanningOrchestrator`, or any AI
+  reasoning/candidate-proposal contract model -- nothing in the app's
+  AI-adjacent code calls `ScrapedLocalFlightProvider.search_flights`
+  outside this subsystem's own tests.
+- Confirmed by a dedicated import-safety test that `scraped_adapter.py`
+  imports no `requests`/a browser-automation library/Groq/Anthropic/
+  Kiwi/MCP (it does import the stdlib-only `scraped_parser` and the
+  existing `ProviderCacheStore`, both already covered by their own
+  import-safety tests).
+
+## 79. Flight Inventory Wired Through the Full App (Step 169E, final Section 169 step)
+
+Step 169E wires `ProviderGateway.search_flights`,
+`FlightInventoryService`, `PlanningState.flight_inventory_report`,
+`ProviderCoverage.flights`, `PlanValidatorService`'s non-blocking
+`flight_inventory` warning, and frontend display
+(docs/12_provider_architecture.md section 56). **Every piece of this is
+deterministic provider infrastructure -- gateway delegation, request
+mapping from existing trip fields, pydantic-validated reporting, string
+coverage mapping, template-based warning text, and React rendering of
+already-validated backend fields -- not AI reasoning.** No LLM call, no
+prompt, no model inference exists anywhere in this flow.
+
+- **LLMs must not fill any missing flight field, at any point in this
+  flow.** `FlightInventoryService` never invents an `origin` when
+  `TripRequest.origin_city` is unset; `FlightInventoryProvider`
+  implementations never invent an airline/flight number/airport/time/
+  duration/price/availability/baggage policy/cancellation policy/
+  booking link; and the frontend never renders a missing field as if
+  present. There is no post-lookup, post-report, or post-render step
+  anywhere in this chain that could fill one in, mirroring every prior
+  Section 167/168/169 step's rule.
+- **LLMs must treat `scraped_public_page` flight data as non-official
+  and review-worthy**, exactly as sections 73/78 already established for
+  scraped accommodation/flight data -- `PlanValidatorService`'s
+  `flight_inventory` warning says so explicitly for any offer carrying
+  `scraped_provenance`, and any future AI reasoning step that ever reads
+  `PlanningState.flight_inventory_report` must honor the same
+  distinction. This is also enforced client-side:
+  `ScrapedFlightProvenanceBadge` always renders the "not
+  official-provider data...not verified" sentence alongside any scraped
+  offer, and a flight offer is never scheduled into a day card in the
+  itinerary.
+- Confirmed unchanged: route-aware scheduling (Section 165/166),
+  regeneration refusal (`409 REGENERATION_NOT_AVAILABLE`), and
+  LangGraph's continued absence from `/generate` all still hold with
+  `scraped_local` flight inventory explicitly enabled and populated.

@@ -329,6 +329,78 @@ class Settings(BaseSettings):
         default=3600, alias="SCRAPED_ACCOMMODATION_CACHE_TTL_SECONDS", ge=0
     )
 
+    # Config gate for get_flight_provider (Step 169B,
+    # docs/12_provider_architecture.md, docs/14_backend_architecture.md).
+    # "not_connected" and "scraped_local" (default) are the only supported
+    # values today -- see backend/app/providers/flights/factory.py. An
+    # unsupported/unrecognized value falls back to "not_connected" rather
+    # than raising or fabricating flight inventory. Default matches
+    # accommodation's Step 168F decision: flight scraping is on by
+    # default, the same way accommodation scraping is -- but this never
+    # itself causes a network call or fabricates data. Not wired into
+    # ProviderGateway or PlanningOrchestrator yet.
+    flight_provider: str = Field(default="scraped_local", alias="FLIGHT_PROVIDER")
+
+    # Config gate for the scraped-data flight provider slot (Step 169B),
+    # mirroring `scraped_accommodation_provider_enabled`. Enabled by
+    # default alongside `scraping_enabled` and
+    # `flight_provider="scraped_local"` so the default flight provider is
+    # `ScrapedLocalFlightProvider` -- but with no flight HTML parser
+    # implemented yet (Step 169C) and no local HTML file present, that
+    # provider still returns an honest `unavailable` result, never a
+    # fabricated one (see `ScrapedLocalFlightProvider.search_flights`).
+    scraped_flight_provider_enabled: bool = Field(
+        default=True, alias="SCRAPED_FLIGHT_PROVIDER_ENABLED"
+    )
+
+    # Config for the manual/local scraped flight provider (Step 169B,
+    # parser added in Step 169C, provider wired to the parser+cache in
+    # Step 169D, docs/12_provider_architecture.md,
+    # docs/14_backend_architecture.md,
+    # backend/app/providers/flights/scraped_adapter.py). This provider
+    # never fetches a live website: `scraped_flight_html_path` must point
+    # at a local file the developer/operator supplies themselves (e.g. by
+    # manually saving a page from a browser). The default path is
+    # relative to the backend project root (mirroring
+    # `scraped_accommodation_html_path` above) and is not created
+    # automatically -- when no file exists there, `ScrapedLocalFlightProvider`
+    # honestly reports `unavailable` with empty offers, never a fabricated
+    # or placeholder offer. As of Step 169D, when a file does exist, it is
+    # read and parsed via `parse_scraped_flight_html` (Step 169C).
+    scraped_flight_html_path: str | None = Field(
+        default=".data/manual_scrapes/flights.html",
+        alias="SCRAPED_FLIGHT_HTML_PATH",
+    )
+    scraped_flight_source_id: str = Field(
+        default="manual_local_scraped_flight",
+        alias="SCRAPED_FLIGHT_SOURCE_ID",
+    )
+    scraped_flight_source_name: str = Field(
+        default="Manual local scraped flight source",
+        alias="SCRAPED_FLIGHT_SOURCE_NAME",
+    )
+    scraped_flight_base_url: str | None = Field(default=None, alias="SCRAPED_FLIGHT_BASE_URL")
+
+    # Cache for the local/manual scraped flight provider (Step 169D,
+    # docs/12_provider_architecture.md, docs/14_backend_architecture.md,
+    # "Provider Cache Foundation" section), mirroring
+    # `scraped_accommodation_cache_enabled`/`scraped_accommodation_cache_
+    # ttl_seconds` (Step 168D). Separate from the global
+    # `provider_cache_enabled` flag so the experimental scraped-flight path
+    # can be toggled independently of every real provider's cache. Caches
+    # only the normalized `FlightSearchResult` payload -- never the raw
+    # HTML file content. Enabled by default because caching itself never
+    # causes a network call or changes what data is returned, only how
+    # often the local file is re-read/re-parsed; the cache key includes
+    # the file's mtime/size, so an edited local file is never served stale
+    # cached data.
+    scraped_flight_cache_enabled: bool = Field(
+        default=True, alias="SCRAPED_FLIGHT_CACHE_ENABLED"
+    )
+    scraped_flight_cache_ttl_seconds: int = Field(
+        default=3600, alias="SCRAPED_FLIGHT_CACHE_TTL_SECONDS", ge=0
+    )
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
@@ -377,6 +449,23 @@ class Settings(BaseSettings):
         if self.scraped_accommodation_html_path is None:
             return None
         path = Path(self.scraped_accommodation_html_path)
+        return path if path.is_absolute() else _BACKEND_ROOT / path
+
+    def resolved_scraped_flight_html_path(self) -> Path | None:
+        """Local, manually-supplied scraped-flight HTML file path (Step
+        169B) -- never a live website URL. Mirrors
+        `resolved_scraped_accommodation_html_path`: a relative value
+        (including the default) resolves against the backend project
+        root, not the process's current working directory, so the
+        default path finds the same file regardless of where the app was
+        started from. Returns `None` when unset
+        (`scraped_flight_html_path=None`, e.g. explicitly cleared via
+        config) -- callers must not assume a file exists at the resolved
+        path either way.
+        """
+        if self.scraped_flight_html_path is None:
+            return None
+        path = Path(self.scraped_flight_html_path)
         return path if path.is_absolute() else _BACKEND_ROOT / path
 
 

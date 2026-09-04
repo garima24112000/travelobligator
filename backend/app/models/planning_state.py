@@ -11,6 +11,7 @@ from app.models.accommodation import AccommodationSearchResult
 from app.models.ai_candidate_proposal import AICandidateProposalBatch
 from app.models.candidate_grounding import CandidateGroundingBatch
 from app.models.candidate_quality import CandidateQualityReport
+from app.models.flight import FlightSearchResult
 from app.models.common import (
     AccommodationType,
     ChecklistItemStatus,
@@ -1135,6 +1136,27 @@ class PlanningState(BaseModel):
     # is ever fabricated when the provider is not connected or returns no
     # offers.
     accommodation_inventory_report: AccommodationSearchResult | None = None
+    # Bookable flight inventory report (Step 169E,
+    # docs/12_provider_architecture.md, docs/13_llm_reasoning_pipeline.md,
+    # docs/14_backend_architecture.md). Computed by
+    # FlightInventoryService directly inside
+    # PlanningOrchestrator.run_stay_transport_stage, alongside
+    # accommodation_inventory_report -- never a stage service calling a
+    # provider adapter directly, and never an AI/LLM call. Stays None
+    # until a stay_transport stage has run. Built via
+    # `ProviderGateway.search_flights` (Step 169E) only -- with the
+    # default `scraped_local` flight provider and no local HTML file
+    # present at `Settings.scraped_flight_html_path`'s default location,
+    # this always reports `status=unavailable` with an empty `offers`
+    # list, and never a network call. No flight is ever scheduled into
+    # the itinerary as a daily experience, and no airline, flight number,
+    # airport, departure/arrival time, duration, price, availability,
+    # baggage policy, cancellation policy, or booking link is ever
+    # fabricated when the provider finds no local file or returns no
+    # offers. When an offer carries `scraped_provenance`, it is
+    # `scraped_public_page`/`experimental`/`fragile` data, never
+    # official-provider data.
+    flight_inventory_report: FlightSearchResult | None = None
     # Validated artifact storage only (Step 160C, docs/13_llm_reasoning_
     # pipeline.md section 36, docs/14_backend_architecture.md section 25)
     # for the future AI candidate proposal / grounding flow (Steps

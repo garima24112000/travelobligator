@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 from app.core.config import get_settings
 from app.core.errors import trip_not_found_error
@@ -9,6 +9,7 @@ from app.models.accommodation import AccommodationSearchResult, AccommodationSea
 from app.models.ai_candidate_proposal import AICandidateProposalBatch
 from app.models.candidate_grounding import CandidateGroundingBatch
 from app.models.common import ProviderStatus
+from app.models.flight import FlightSearchResult, FlightSearchStatus
 from app.models.planning_state import (
     GENERATION_STAGE_KEYS,
     GenerationProgress,
@@ -36,6 +37,7 @@ from app.services.candidate_quality_service import CandidateQualityService
 from app.services.destination_context_service import DestinationContextService
 from app.services.experience_planner_service import ExperiencePlannerService
 from app.services.feedback_service import FeedbackService
+from app.services.flight_inventory_service import FlightInventoryService
 from app.services.plan_diff_preview_service import PlanDiffPreviewService
 from app.services.plan_validator_service import PlanValidatorService
 from app.services.regeneration_readiness_service import RegenerationReadinessService
@@ -92,6 +94,31 @@ def _accommodation_coverage_value(result: AccommodationSearchResult) -> str:
     if result.status == AccommodationSearchStatus.SUCCESS and not result.offers:
         return "unavailable"
     return _ACCOMMODATION_STATUS_TO_COVERAGE_VALUE.get(result.status, "not_connected")
+
+
+# Maps FlightSearchResult.status (Step 169E) onto the existing
+# ProviderCoverage.flights string field -- honest reporting only,
+# mirroring _ACCOMMODATION_STATUS_TO_COVERAGE_VALUE/
+# _accommodation_coverage_value exactly. "success" is only ever set when
+# the provider both reported success *and* returned at least one real
+# offer -- a `success` result with zero offers is reported "unavailable"
+# instead, never upgraded to imply bookable flight inventory exists when
+# it doesn't. Scraped (`scraped_public_page`) offers still count as
+# "success" here -- this coverage field only tracks whether inventory was
+# found, not whether it is official-provider data; that distinction is
+# surfaced separately by PlanValidatorService's flight inventory warning.
+_FLIGHT_STATUS_TO_COVERAGE_VALUE = {
+    FlightSearchStatus.SUCCESS: "success",
+    FlightSearchStatus.NOT_CONNECTED: "not_connected",
+    FlightSearchStatus.FAILED: "failed",
+    FlightSearchStatus.UNAVAILABLE: "unavailable",
+}
+
+
+def _flight_coverage_value(result: FlightSearchResult) -> str:
+    if result.status == FlightSearchStatus.SUCCESS and not result.offers:
+        return "unavailable"
+    return _FLIGHT_STATUS_TO_COVERAGE_VALUE.get(result.status, "not_connected")
 
 # Human-readable labels for GENERATION_STAGE_KEYS (Step 163B). Purely
 # cosmetic text for `GenerationProgress.current_stage_label` -- never a
@@ -167,6 +194,19 @@ def _failed_accommodation_inventory_result(provider_name: str) -> AccommodationS
     )
 
 
+def _failed_flight_inventory_result(
+    provider_name: str, destination: str, departure_date: date
+) -> FlightSearchResult:
+    return FlightSearchResult(
+        provider=provider_name,
+        status=FlightSearchStatus.FAILED,
+        offers=[],
+        message="Flight inventory computation failed unexpectedly.",
+        destination=destination,
+        departure_date=departure_date,
+    )
+
+
 class PlanningOrchestrator:
     """Controls the full planning pipeline (docs/14_backend_architecture.md
     section 7).
@@ -185,6 +225,7 @@ class PlanningOrchestrator:
         trip_strategy_service: TripStrategyService | None = None,
         stay_transport_service: StayTransportService | None = None,
         accommodation_inventory_service: AccommodationInventoryService | None = None,
+        flight_inventory_service: FlightInventoryService | None = None,
         experience_planner_service: ExperiencePlannerService | None = None,
         plan_validator_service: PlanValidatorService | None = None,
         route_feasibility_service: RouteFeasibilityService | None = None,
@@ -208,6 +249,7 @@ class PlanningOrchestrator:
         self.accommodation_inventory_service = (
             accommodation_inventory_service or AccommodationInventoryService()
         )
+        self.flight_inventory_service = flight_inventory_service or FlightInventoryService()
         self.experience_planner_service = (
             experience_planner_service or ExperiencePlannerService()
         )
@@ -423,6 +465,42 @@ class PlanningOrchestrator:
             planning_state.accommodation_inventory_report
         )
 
+    def _build_flight_inventory_report_safe(self, planning_state: PlanningState) -> None:
+        """Builds and stores `flight_inventory_report` plus the derived
+        `ProviderCoverage.flights` value (Step 169E), failing safe
+        (mirroring `_build_accommodation_inventory_report_safe`): an
+        unexpected exception from `FlightInventoryService.build_report` is
+        never allowed to crash generation. On such a failure, a safe
+        `status=failed` result with no offers is stored instead -- never a
+        fabricated airline/flight number/airport/time/duration/price/
+        availability/baggage policy/cancellation policy/booking link, and
+        never raw exception text or a provider payload in any stored
+        field.
+        """
+        try:
+            planning_state.flight_inventory_report = self.flight_inventory_service.build_report(
+                planning_state
+            )
+        except Exception:
+            logger.warning(
+                "FlightInventoryService.build_report failed unexpectedly; storing a "
+                "failed result so generation can continue.",
+                exc_info=True,
+            )
+            provider_name = getattr(
+                self.flight_inventory_service.gateway.flight_inventory,
+                "provider_name",
+                "flight_inventory_provider",
+            )
+            planning_state.flight_inventory_report = _failed_flight_inventory_result(
+                provider_name,
+                planning_state.trip_request.primary_destination,
+                planning_state.trip_request.start_date,
+            )
+        planning_state.provider_coverage.flights = _flight_coverage_value(
+            planning_state.flight_inventory_report
+        )
+
     def run_stay_transport_stage(self, planning_state: PlanningState) -> PlanningState:
         planning_state = self.stay_transport_service.run(planning_state)
         # Step 167D: bookable accommodation inventory report, computed
@@ -435,6 +513,12 @@ class PlanningOrchestrator:
         # existing save-after-each-stage cadence; no extra save call
         # needed here.
         self._build_accommodation_inventory_report_safe(planning_state)
+        # Step 169E: bookable flight inventory report, computed right
+        # alongside accommodation_inventory_report for the same reasons --
+        # never schedules a flight into the itinerary as a daily
+        # experience and never adds flight recommendation logic, only
+        # records an honest inventory status.
+        self._build_flight_inventory_report_safe(planning_state)
         planning_state.set_pipeline_status(PipelineStatus.STAY_TRANSPORT_CREATED)
         return planning_state
 

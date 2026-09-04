@@ -2672,3 +2672,423 @@ unchanged; no Groq/Anthropic/Kiwi/MCP call exists anywhere in this
 path; and no `requests`/`httpx`/browser-automation dependency was added
 -- confirmed by the same import-safety tests every prior Section 168
 step already used.
+
+---
+
+## 52. Flight Provider Contract Foundation (Step 169A)
+
+Step 169A adds the equivalent contract-only foundation for flights that
+Section 167 (167A) added for accommodation, and nothing more:
+
+- `backend/app/models/flight.py` defines `FlightSearchRequest`,
+  `FlightSegment`, `FlightOffer`, `FlightSearchResult`, and
+  `FlightSearchStatus` (`success`/`not_connected`/`unavailable`/`failed`,
+  mirroring `AccommodationSearchStatus`).
+- `backend/app/providers/flights/base.py` defines `FlightInventoryProvider`,
+  an `abc.ABC` with one abstract method, `search_flights(request:
+  FlightSearchRequest) -> FlightSearchResult` -- mirroring
+  `AccommodationInventoryProvider` (section 43). Deliberately named and
+  kept separate from the pre-existing, still-unused `app.providers.base.
+  FlightProvider` stub interface (used by `ProviderGateway`'s `flight`
+  slot), the same way `AccommodationInventoryProvider` was kept separate
+  from `app.providers.base.AccommodationProvider`.
+
+**No live flight provider is connected.** No Amadeus/Duffel/Kiwi/Google
+Flights (or any other) integration exists, is called, or is implied by
+this step. **No flight scraping is implemented yet either** -- there is
+no flight equivalent of `parse_scraped_accommodation_html` (section 47)
+or `ScrapedAccommodationProvider` (section 48) yet, and no local flight
+HTML file path is configured.
+
+**Not wired into `ProviderGateway` or `PlanningOrchestrator`.**
+`ProviderGateway`'s constructor and `flight` slot are untouched; no
+factory, no adapter selection, and no `Settings.flight_provider`-style
+config field exists yet. `TripStrategyService`, `StayTransportService`,
+and `PlanValidatorService` do not reference `FlightSearchRequest`/
+`FlightSearchResult`/`FlightInventoryProvider` at all. Nothing in the app
+currently constructs a `FlightSearchRequest` or consumes a
+`FlightSearchResult` outside this subsystem's own tests.
+
+**Future scraped flight data must be labeled `scraped_public_page`/
+`experimental`/`fragile`.** `FlightOffer.scraped_provenance` reuses the
+exact same `ScrapedDataProvenance` model accommodation offers use
+(section 46) -- a future scraped flight offer must carry
+`data_status=DataStatus.SCRAPED_PUBLIC_PAGE` to set it, structurally
+barred from ever claiming `official_provider=true`, and a future official
+API-backed flight offer (once one exists) must stay on a genuinely
+separate `data_status` (`live`/`cached`/etc.) and must never carry
+`scraped_provenance` -- enforced by the same
+`validate_scraped_provenance_consistency` pattern
+`AccommodationOffer` already uses.
+
+**No fake airlines, flights, prices, or booking links are created.**
+Every optional fact field on `FlightSegment` (airports, carrier name/code,
+flight number, departure/arrival time, duration) and `FlightOffer`
+(price, currency, booking URL, availability status, baggage policy,
+cancellation policy) stays `None` unless a real future adapter supplies
+it -- there is no default value anywhere in this module that could be
+mistaken for a real flight fact. `FlightSearchResult.offers` may only be
+non-empty when `status == success`, matching
+`AccommodationSearchResult`'s own rule (section 43) that a
+`not_connected`/`unavailable`/`failed` result must never carry a
+fabricated or leftover offer.
+
+Confirmed by dedicated import-safety tests
+(`backend/app/tests/providers/test_flight_provider.py`) that neither
+`backend/app/models/flight.py` nor `backend/app/providers/flights/base.py`
+imports `httpx`/`requests`/a browser-automation library/Groq/Anthropic/
+Kiwi/MCP -- mirroring every prior Section 167/168 skeleton step's own
+import-safety checks.
+
+---
+
+## 53. Flight Provider Config, Not-Connected Adapter, Scraped-Local Stub, and Factory (Step 169B)
+
+Step 169B adds the flight equivalent of Section 167B/C's accommodation
+provider-selection foundation, with one deliberate difference: **the
+default flight provider is `scraped_local`, not `not_connected`** --
+matching the user requirement that flight scraping be on by default the
+same way Section 168F made accommodation scraping the default.
+
+**Config** (`backend/app/core/config.py`):
+
+```text
+flight_provider: str = "scraped_local"                    (FLIGHT_PROVIDER)
+scraped_flight_provider_enabled: bool = True               (SCRAPED_FLIGHT_PROVIDER_ENABLED)
+scraped_flight_html_path: str | None =
+  ".data/manual_scrapes/flights.html"                      (SCRAPED_FLIGHT_HTML_PATH)
+scraped_flight_source_id: str =
+  "manual_local_scraped_flight"                             (SCRAPED_FLIGHT_SOURCE_ID)
+scraped_flight_source_name: str =
+  "Manual local scraped flight source"                      (SCRAPED_FLIGHT_SOURCE_NAME)
+scraped_flight_base_url: str | None = None                 (SCRAPED_FLIGHT_BASE_URL)
+```
+
+`flight_provider` and `scraped_flight_provider_enabled` reuse the
+existing app-wide `scraping_enabled` flag (Step 168A) as a second gate --
+no separate flight-specific master switch was added. `Settings.
+resolved_scraped_flight_html_path()` mirrors `resolved_scraped_
+accommodation_html_path()` exactly: a relative path (including the
+default) resolves against the backend project root, never the process's
+current working directory, and returns `None` when
+`scraped_flight_html_path` is explicitly unset.
+
+**`NotConnectedFlightProvider`**
+(`backend/app/providers/flights/not_connected_adapter.py`) mirrors
+`NotConnectedAccommodationProvider`: `search_flights` always returns a
+deterministic `status=not_connected`, `offers=[]` result with an honest
+message, never calling a network service or inspecting `request` beyond
+echoing its search context (origin/destination/dates/travelers/currency)
+back onto the result -- never a fabricated airline, flight number,
+airport, time, duration, price, availability, baggage policy,
+cancellation policy, or booking link.
+
+**`ScrapedLocalFlightProvider`**
+(`backend/app/providers/flights/scraped_adapter.py`) is a **stub, not a
+working scraper** -- the flight HTML parser (the flight equivalent of
+`parse_scraped_accommodation_html`, section 47) does not exist until
+Step 169C. As of Step 169B:
+
+- If `scraping_enabled` or `scraped_flight_provider_enabled` is `False`,
+  it returns `status=not_connected`, `offers=[]`.
+- If `scraped_flight_html_path` is unset, or resolves to a path that
+  doesn't exist, it returns `status=unavailable`, `offers=[]`.
+- **If a local file does exist at that path, it still returns
+  `status=unavailable`, `offers=[]`**, with a message explaining that
+  flight HTML parsing is not implemented yet -- the provider checks only
+  the path's existence (`Path.is_file()`), never opens or reads the
+  file's content, and never fetches a live website. No offer is ever
+  created from a file simply being present, even one shaped like a real
+  flight listing.
+
+**`get_flight_provider(provider_name=None)`**
+(`backend/app/providers/flights/factory.py`) mirrors
+`get_accommodation_provider`: resolves `provider_name`, or
+`Settings.flight_provider` (default `"scraped_local"`) when omitted;
+`"scraped_local"` selects `ScrapedLocalFlightProvider`, `"not_connected"`
+selects `NotConnectedFlightProvider`, and any unrecognized name falls
+back to `NotConnectedFlightProvider` rather than raising or fabricating
+inventory. Provider selection itself never touches the network or the
+filesystem -- only calling `search_flights` on the resolved provider
+does, and even that never reaches the network.
+
+**No live flight API, no flight scraping, and no fake data.** No
+Amadeus/Duffel/Kiwi/Google Flights integration exists. No flight is ever
+scraped from a real website. Explicitly setting
+`FLIGHT_PROVIDER=not_connected` (or either scraping flag to `false`)
+remains a fully supported opt-out, exactly like accommodation's Step
+168F opt-out. **Still not wired into `ProviderGateway` or
+`PlanningOrchestrator`** -- the gateway's existing `flight` slot
+(`app.providers.base.FlightProvider`) and `PlanningOrchestrator` are
+both untouched; nothing in the app calls `get_flight_provider` outside
+this subsystem's own tests.
+
+---
+
+## 54. Static Flight HTML Parser (Step 169C)
+
+Step 169C adds the flight equivalent of Section 168B's accommodation
+static HTML parser: `backend/app/providers/flights/scraped_parser.py`'s
+`parse_scraped_flight_html(html, source_policy, request, source_url,
+parser_version) -> FlightSearchResult`, using only the Python standard
+library `html.parser.HTMLParser` (no BeautifulSoup, no new dependency).
+
+**The parser consumes already-provided static HTML only.** `html` must
+already be the full page content the caller obtained through its own,
+separately gated fetch path (none exists in this codebase yet) --
+`parse_scraped_flight_html` itself never fetches `source_url`, never
+opens a socket, and never calls a live website. `request`/`source_url`
+are used only to label the returned result's context; neither is ever
+used to construct or follow a live request.
+
+**Fixed test micro-format** (fixtures only -- no real site is known to
+use this exact shape): a "flight offer" is any element carrying class
+`flight-offer` and a `data-offer-id` attribute, containing one or more
+`outbound-segment` elements (required -- at least one) and zero or more
+`return-segment` elements. Inside each segment: `origin-airport`,
+`destination-airport`, `departure-time`/`arrival-time` (ISO-8601 text),
+`carrier-name`, `carrier-code`, `flight-number`, `duration-minutes`.
+Directly inside the offer (not inside a segment): `total-price`
+(optional `data-currency` attribute), `currency` (used as a fallback
+when `total-price` has no `data-currency` of its own), `availability-
+status`, `baggage-policy`, `cancellation-policy`, and a `booking-link`
+(`<a href="...">`).
+
+**`ScrapingSourcePolicy` gains `allows_flights: bool = False`**
+(`backend/app/models/scraping.py`), mirroring `allows_lodging`/
+`allows_restaurants`/`allows_attractions` -- defaulting to `False` so no
+existing/default source policy silently gains flight-scraping permission.
+The parser refuses to parse (`status=not_connected`, `offers=[]`, HTML
+never touched) when `source_policy.is_unsafe` (login-required/paywalled/
+captcha-expected/not personally approved -- checked even when the
+source is `enabled=False`), when the source is not `enabled`, or when
+`allows_flights` is `False` -- mirroring `parse_scraped_accommodation_
+html`'s three-check refusal exactly.
+
+**Parsed flight data is `scraped_public_page`/`experimental`/`fragile`,
+never official-provider data.** Every parsed `FlightOffer` carries
+`data_status=DataStatus.SCRAPED_PUBLIC_PAGE` and a `scraped_provenance`
+(`ScrapedDataProvenance`) with `source_type`/`provenance=
+scraped_public_page`, `confidence=experimental`,
+`extraction_method=static_html_parser`, `official_provider=False`
+(structurally fixed, never settable to `True`), and the caller-supplied
+`parser_version`/`source_url` plus `source_policy.source_id`/
+`source_name` preserved. `FlightOffer`'s existing
+`validate_scraped_provenance_consistency` validator (Step 169A) still
+rejects any attempt to attach `scraped_provenance` to a non-
+`scraped_public_page` offer -- this step adds no new bypass.
+
+**Missing flight fields remain missing, never guessed.** A field class
+absent from the HTML leaves the corresponding `FlightSegment`/
+`FlightOffer` field `None` (or an empty `outbound_segments`/
+`return_segments` list) exactly as `parse_scraped_accommodation_html`
+already does for lodging -- no fallback price, airline, carrier code,
+flight number, airport, departure/arrival time, duration, availability,
+baggage policy, cancellation policy, or booking link is ever created. An
+offer missing `data-offer-id` or with zero `outbound-segment` elements
+can't be safely identified as a bookable flight and is skipped entirely
+rather than given a fabricated id or segment; a page with no valid
+offers returns `status=unavailable`, `offers=[]`. A field that fails
+`FlightOffer`'s own validation (e.g. an invalid currency code) is caught
+and reported as `status=failed`, `offers=[]`, with a safe message --
+never a raw traceback, and never a guessed/placeholder value substituted
+in to make the offer validate.
+
+**Not wired into `ScrapedLocalFlightProvider`, `ProviderGateway`, or
+`PlanningOrchestrator` yet.** `ScrapedLocalFlightProvider` (Step 169B)
+still never calls `parse_scraped_flight_html` -- it still only checks
+local-file existence and reports `unavailable` either way; wiring the
+parser into the provider (plus the accommodation-style cache) is Step
+169D. Confirmed by dedicated tests that neither
+`scraped_adapter.py`, `ProviderGateway`, nor `PlanningOrchestrator`
+references `scraped_parser`/`parse_scraped_flight_html`.
+
+**No fake airlines, flights, prices, or booking links are created** --
+confirmed by dedicated import-safety tests
+(`backend/app/tests/providers/test_scraped_flight_parser.py`) that
+`scraped_parser.py` imports no `httpx`/`requests`/browser-automation
+library/Groq/Anthropic/Kiwi/MCP, mirroring every prior Section 167/168
+parser step's own import-safety checks.
+
+---
+
+## 55. Scraped Local Flight Provider Wired to the Parser and Cache (Step 169D)
+
+Step 169D wires `ScrapedLocalFlightProvider`
+(`backend/app/providers/flights/scraped_adapter.py`) to the Step 169C
+parser and a Step 168D-style cache, completing the flight equivalent of
+Section 168's accommodation provider. **The default flight provider
+remains `scraped_local`** (`Settings.flight_provider`, unchanged from
+Step 169B) -- this step only changes what that provider actually does
+once a local file exists.
+
+**It reads only the configured local HTML file -- never a live
+website.** `ScrapedLocalFlightProvider.search_flights` still checks the
+same three gates as Step 169B (`scraping_enabled`,
+`scraped_flight_provider_enabled`, and `Settings.resolved_scraped_
+flight_html_path()` actually resolving to an existing file); the only
+change is that once a file is found, it is now read
+(`path.read_text(encoding="utf-8")`) and handed to
+`parse_scraped_flight_html` (section 54) via a
+`ScrapingSourcePolicy(allows_flights=True, enabled=True,
+approved_for_personal_use=True, ...)` the provider builds itself. No
+`requests`/`httpx`/browser-automation import exists in this module, and
+no code path in it ever opens a socket.
+
+**Cache** (`ProviderCacheStore`, source `"scraped_flight"`, mirroring
+section 49's accommodation cache): a successful parse is cached under a
+key hashing `source_id`, `base_url`, `origin`, `destination`,
+`departure_date`, `return_date`, `adults`, `children`, `cabin_class`,
+`currency`, `parser_version`, and the local file's own `path`/
+`mtime_ns`/`size` -- so changing any request field, bumping the parser
+version, or editing the local file (which changes its mtime/size) all
+independently miss the old entry and trigger a fresh parse; the cache
+never stores raw HTML, only the normalized `FlightSearchResult` payload
+(`result.model_dump(mode="json")`). Gated by new `Settings.scraped_
+flight_cache_enabled` (default `True`) and `scraped_flight_cache_ttl_
+seconds` (default `3600`) -- when caching is disabled, `get_provider_
+cache_store` is never even called, and every request reparses the file
+directly. Only a `status=success` result is ever cached; `not_connected`/
+`unavailable`/`failed` are never cached, and a broken cache read/write is
+logged and treated as a fallback to (re-)parsing -- never a crash, and
+never a fabricated result.
+
+**Cached scraped flight data preserves its `scraped_public_page`/
+`experimental`/`fragile` provenance exactly.** A cache hit round-trips
+through `FlightSearchResult.model_validate(entry.payload)`, so every
+returned offer's `data_status=SCRAPED_PUBLIC_PAGE`,
+`scraped_provenance` (including `official_provider=False`,
+`extraction_method=static_html_parser`, `parser_version`, `source_id`/
+`source_name`/`source_url`), and every honestly-missing field are
+identical whether the result came from a fresh parse or a cache hit --
+nothing is relabeled, upgraded, or reinterpreted as official-provider
+data on a hit.
+
+**No fake airlines, flights, prices, or booking links are created** at
+any point in this flow -- a field absent from the HTML stays honestly
+`None`/empty through the parser, through the cache round-trip, and out
+of `search_flights`'s return value; `ScrapedLocalFlightProvider` adds,
+guesses, or backfills nothing itself. `ScrapingRateLimitGuard`
+(`app.models.scraping`, Step 168D) is still not used by this provider --
+that guard exists for a *future live* scraper's repeated network
+requests, and this provider only ever reads a local file, so there is
+nothing to rate-limit.
+
+**Still not wired into `ProviderGateway` or `PlanningOrchestrator`.**
+The gateway's existing `flight` slot (`app.providers.base.
+FlightProvider`) and `PlanningOrchestrator` remain untouched -- confirmed
+by dedicated tests
+(`backend/app/tests/providers/test_scraped_flight_cache.py`) asserting
+neither module's source references `ScrapedLocalFlightProvider` or
+`app.providers.flights`.
+
+---
+
+## 56. Flight Inventory Wired Through the Full App (Step 169E, final Section 169 step)
+
+Step 169E completes Section 169 by exposing flight inventory end to end
+-- `ProviderGateway`, a new `FlightInventoryService`, `PlanningState.
+flight_inventory_report`, `ProviderCoverage.flights`, a non-blocking
+`PlanValidatorService` warning, and API/frontend display -- while
+preserving the exact no-fake-flight-data guarantees every prior Section
+169 step already established.
+
+**`ProviderGateway`** gains a `flight_inventory` slot
+(`FlightInventoryProvider | None`, defaulting to
+`get_flight_provider()`, i.e. `scraped_local`) and a `search_flights(
+request: FlightSearchRequest) -> FlightSearchResult` method, mirroring
+`accommodation_inventory`/`search_accommodations` (section 43) exactly.
+The gateway adds no guessing or fallback of its own -- it only ever
+delegates to whatever provider is configured/injected.
+
+**`FlightInventoryService`** (`backend/app/services/
+flight_inventory_service.py`) builds a `FlightSearchRequest` from the
+trip's own request fields -- `origin_city` (optional, never guessed when
+absent) becomes `origin`, `primary_destination` becomes `destination`,
+`start_date`/`end_date` become `departure_date`/`return_date` (a
+same-day trip is treated as one-way), `travelers_count` becomes
+`adults`, `budget_currency` becomes `currency` -- then calls
+`ProviderGateway.search_flights`, mirroring
+`AccommodationInventoryService` (section 44) exactly, including its
+Step 166D-style fail-safe exception handling.
+
+**`PlanningState.flight_inventory_report: FlightSearchResult | None`**
+is computed by `FlightInventoryService` directly inside
+`PlanningOrchestrator.run_stay_transport_stage`, right alongside
+`accommodation_inventory_report` -- never a stage service calling a
+provider adapter directly, and never scheduling a flight into the
+itinerary as a daily experience.
+
+**`ProviderCoverage.flights`** (the pre-existing field from section 8)
+is set from `flight_inventory_report.status`, using the same rule as
+`hotel_prices` (section 44): a `success` result with zero offers is
+reported `unavailable`, never upgraded to imply inventory exists when it
+doesn't. With the default `scraped_local` provider and no local file
+present, this is `unavailable`; explicitly opting out to
+`not_connected` (or scraping disabled) reports `not_connected` honestly.
+
+**`PlanValidatorService`** adds a non-blocking `flight_inventory`
+warning category, mirroring `accommodation_inventory` (section 44)
+exactly: missing/`not_connected`/`failed`/`unavailable` flight inventory
+never blocks generation; a `success` result with real offers still
+never claims those offers were reviewed for accuracy or scheduled into
+the itinerary; and when any offer carries `scraped_provenance`, the
+message explicitly calls out `scraped_public_page`/`experimental`/
+`fragile`, not official-provider data, needing manual review -- never
+claiming official schedule/price/availability/baggage/booking-link
+verification for scraped data.
+
+**API serialization** required no route change: `GET /trips/{trip_id}`
+already serializes the full `PlanningState`, so adding
+`flight_inventory_report` to that model exposes it automatically, with
+`scraped_provenance.official_provider` serializing as `false` and every
+missing field as `null`/empty, exactly as the model already guarantees.
+
+**Frontend** (`frontend/app/page.tsx`, `frontend/lib/types.ts`) adds a
+`FlightInventorySection` mirroring `AccommodationInventorySection`
+(section 39.6-39.9) -- rendering only backend-returned fields, showing a
+`ScrapedFlightProvenanceBadge` for any offer with `scraped_provenance`
+(same "Scraped public page · Experimental/Fragile · not
+official-provider data" treatment), never rendering a missing price/
+airline/flight-number/time/duration/baggage/cancellation/booking-link
+as if present, and never adding a flight into any day card in the
+itinerary.
+
+### Section 169 Summary (169A-169E)
+
+The complete flight inventory foundation, end to end:
+
+```text
+Step 169A -- FlightSearchRequest/FlightSegment/FlightOffer/
+             FlightSearchResult models, FlightInventoryProvider
+             interface (contract only, no adapter).
+Step 169B -- flight_provider config (default "scraped_local"),
+             NotConnectedFlightProvider, ScrapedLocalFlightProvider
+             (stub, no parser yet), get_flight_provider factory.
+Step 169C -- parse_scraped_flight_html static HTML parser (stdlib
+             html.parser only), ScrapingSourcePolicy.allows_flights.
+Step 169D -- ScrapedLocalFlightProvider wired to the parser plus a
+             ProviderCacheStore-backed cache (source "scraped_flight").
+Step 169E -- ProviderGateway.search_flights, FlightInventoryService,
+             PlanningState.flight_inventory_report,
+             ProviderCoverage.flights, PlanValidatorService's
+             flight_inventory warning, API exposure via the existing
+             GET /trips/{trip_id}, and FlightInventorySection in the
+             frontend.
+```
+
+Throughout every step: **no live flight website is ever fetched, no
+Amadeus/Duffel/Kiwi/Google Flights (or any other) API integration
+exists, no Kiwi/MCP integration exists, and no requests/httpx/
+browser-automation dependency was added.** The default flight provider
+is `scraped_local`; with no local HTML file present (the state of a
+fresh checkout), every layer -- provider, service, `PlanningState`,
+coverage, validation, API, frontend -- honestly reports
+`unavailable`/empty, never a fabricated airline, flight number, airport,
+departure/arrival time, duration, price, availability, baggage policy,
+cancellation policy, or booking link. Once an operator supplies a real
+local HTML fixture, every resulting offer is labeled
+`scraped_public_page`/`experimental`/`fragile`, structurally barred
+from ever claiming `official_provider=true`, and a flight is never
+scheduled into the itinerary as a daily experience -- this remains
+inventory reporting only.

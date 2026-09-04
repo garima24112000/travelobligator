@@ -2158,3 +2158,156 @@ behavior is identical to the proven Step 168C/168E end-to-end flow
 (or either scraping flag to `false`) still selects/produces the
 always-`not_connected` `NotConnectedAccommodationProvider` exactly as
 before this step.
+
+## 52. Flight Provider Model/Interface Foundation (Step 169A)
+
+`backend/app/models/flight.py` (`FlightSearchRequest`/`FlightSegment`/
+`FlightOffer`/`FlightSearchResult`) and
+`backend/app/providers/flights/base.py` (`FlightInventoryProvider`, an
+`abc.ABC` with one abstract method, `search_flights`) add the flight
+equivalent of Section 167's accommodation contract foundation (167A) --
+docs/12_provider_architecture.md section 52.
+
+**Not wired into `ProviderGateway` or planning yet.** `ProviderGateway`'s
+constructor, its pre-existing `flight` slot (`app.providers.base.
+FlightProvider`, still the always-`not_connected` stub), and its
+`default_provider_coverage`/`to_status_entry` methods are all untouched.
+No factory (no `backend/app/providers/flights/factory.py`) and no
+`Settings.flight_provider`-style config field exist yet -- unlike
+accommodation's `Settings.accommodation_provider`, there is nothing to
+select between here yet, only the one interface. `TripStrategyService`,
+`StayTransportService`, `PlanValidatorService`, and
+`PlanningOrchestrator` do not reference any of the new flight models or
+`FlightInventoryProvider`. No API route, repository, or frontend code
+constructs a `FlightSearchRequest` or reads a `FlightSearchResult`.
+
+Every optional fact field on `FlightSegment`/`FlightOffer` stays `None`
+unless a real future adapter sets it, and `FlightOffer.scraped_provenance`
+reuses the same `ScrapedDataProvenance` model and
+`data_status=scraped_public_page` consistency rule as
+`AccommodationOffer` (section 47/68) -- so a future scraped flight
+adapter, when it exists, inherits the same honesty contract without
+needing new plumbing.
+
+## 53. Flight Provider Factory and Default Scraped-Local Stub (Step 169B)
+
+`backend/app/core/config.py` gains `Settings.flight_provider` (default
+`"scraped_local"`, matching Section 168F's accommodation default),
+`scraped_flight_provider_enabled` (default `True`),
+`scraped_flight_html_path` (default
+`.data/manual_scrapes/flights.html`), `scraped_flight_source_id`/
+`scraped_flight_source_name`/`scraped_flight_base_url`, and
+`resolved_scraped_flight_html_path()` (mirroring `resolved_scraped_
+accommodation_html_path()`). `backend/app/providers/flights/` gains
+`not_connected_adapter.py` (`NotConnectedFlightProvider`),
+`scraped_adapter.py` (`ScrapedLocalFlightProvider`), and `factory.py`
+(`get_flight_provider`) -- docs/12_provider_architecture.md section 53.
+
+**`ScrapedLocalFlightProvider` is a default-selected stub, not a working
+scraper.** With no flight HTML parser implemented yet (that's Step
+169C), it reports `unavailable` in every case that would otherwise reach
+parsing -- including when a local file actually exists at the
+configured path -- and reports `not_connected` only when
+`scraping_enabled`/`scraped_flight_provider_enabled` is off. It never
+reads a file's content and never calls a network service.
+
+**Not wired into `ProviderGateway` or planning yet.** `ProviderGateway`'s
+constructor, its pre-existing `flight` slot (`app.providers.base.
+FlightProvider`), and `PlanningOrchestrator` are all untouched --
+confirmed by dedicated tests
+(`backend/app/tests/providers/test_flight_factory.py`) asserting neither
+module's source references `get_flight_provider`, `FlightInventoryProvider`,
+or `app.providers.flights`. No API route, repository, or frontend code
+calls `get_flight_provider` either.
+
+## 54. Static Scraped Flight Parser Framework (Step 169C)
+
+`backend/app/providers/flights/scraped_parser.py` adds
+`parse_scraped_flight_html`, the flight equivalent of the Step 168B
+accommodation parser (`parse_scraped_accommodation_html`) --
+docs/12_provider_architecture.md section 54. Uses only the stdlib
+`html.parser.HTMLParser`; transforms an already-provided HTML string into
+a normalized `FlightSearchResult`, never fetching anything itself.
+`ScrapingSourcePolicy` (`backend/app/models/scraping.py`) gains
+`allows_flights: bool = False`, mirroring `allows_lodging` -- the parser
+refuses to run unless a source is safe, enabled, and `allows_flights`.
+
+**Not wired into `ProviderGateway` or planning yet -- and not yet wired
+into `ScrapedLocalFlightProvider` either.** `ScrapedLocalFlightProvider`
+(Step 169B) still only checks whether a local file exists at
+`Settings.scraped_flight_html_path`; it does not call
+`parse_scraped_flight_html`, so it still reports `unavailable` (never
+`success`) even when a real file is present. Wiring the provider to
+actually call this parser (plus an accommodation-style cache) is Step
+169D. Confirmed by dedicated tests that neither `scraped_adapter.py`,
+`ProviderGateway`, nor `PlanningOrchestrator` references `scraped_parser`
+or `parse_scraped_flight_html`.
+
+## 55. ScrapedLocalFlightProvider Reads, Parses, and Caches Local Flight HTML (Step 169D)
+
+`ScrapedLocalFlightProvider.search_flights`
+(`backend/app/providers/flights/scraped_adapter.py`) now actually reads
+the configured local file, calls `parse_scraped_flight_html` (section
+54), and caches a successful normalized `FlightSearchResult` in the same
+`ProviderCacheStore` real adapters already use (source
+`"scraped_flight"`, new `Settings.scraped_flight_cache_enabled`/
+`scraped_flight_cache_ttl_seconds`, default `True`/`3600`) --
+docs/12_provider_architecture.md section 55, mirroring
+`ScrapedAccommodationProvider` (section 48-49). The three pre-existing
+config gates from Step 169B (`scraping_enabled`,
+`scraped_flight_provider_enabled`, and a resolvable, existing local
+file) are unchanged; only what happens once all three pass changed.
+
+**No live website fetching exists anywhere in this path.** The provider
+only ever calls `Path.read_text` on a file the developer/operator
+supplied themselves; `parse_scraped_flight_html` itself fetches nothing.
+Cache reads/writes are both best-effort SQLite operations against a
+local file (`Settings.resolved_provider_cache_path()`) -- never a
+network call, and a failure in either never crashes the provider or
+fabricates a result.
+
+**Not wired into `ProviderGateway` or planning yet.** The gateway's
+pre-existing `flight` slot (`app.providers.base.FlightProvider`) and
+`PlanningOrchestrator` remain untouched, confirmed by dedicated tests in
+`backend/app/tests/providers/test_scraped_flight_cache.py`.
+
+## 56. Flight Inventory Flow: Gateway to Frontend (Step 169E, final Section 169 step)
+
+Step 169E completes the flight inventory flow
+(docs/12_provider_architecture.md section 56):
+
+```text
+ProviderGateway.search_flights (new `flight_inventory` slot, default
+  scraped_local)
+  -> FlightInventoryService.build_report (backend/app/services/
+     flight_inventory_service.py; maps TripRequest fields -- origin_
+     city/primary_destination/start_date/end_date/travelers_count/
+     budget_currency -- into a FlightSearchRequest; fails safe on any
+     unexpected exception)
+  -> PlanningState.flight_inventory_report (set in
+     PlanningOrchestrator.run_stay_transport_stage, alongside
+     accommodation_inventory_report)
+  -> ProviderCoverage.flights (mapped from FlightSearchResult.status,
+     mirroring the hotel_prices mapping -- a success with zero offers
+     reports "unavailable")
+  -> PlanValidatorService's non-blocking "flight_inventory" warning
+     (mirrors the accommodation_inventory warning; scraped-aware
+     wording for any scraped_provenance-carrying offer)
+  -> GET /trips/{trip_id} (full PlanningState, including
+     flight_inventory_report -- no route/schema change needed, since
+     TripResponseData already serializes the whole PlanningState model)
+  -> FlightInventorySection / ScrapedFlightProvenanceBadge in
+     frontend/app/page.tsx
+```
+
+**Default flight provider remains `scraped_local`** (unchanged from
+Step 169B) -- this step only adds consumers of its output, never
+changes provider selection. **Missing local HTML still returns
+`unavailable`** with an empty `offers` list at every layer above,
+exactly as `ScrapedLocalFlightProvider` (Step 169D) itself already
+reports. **No live website fetching exists anywhere in this flow** --
+every link above is a plain read of already-computed data (or, at the
+provider layer, a local file read); the only network calls a full
+`/generate` run makes are the pre-existing, unrelated weather/holiday/
+currency/OSM calls. Flights are never scheduled into the itinerary as a
+daily experience anywhere in this chain.
