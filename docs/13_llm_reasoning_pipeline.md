@@ -3375,3 +3375,231 @@ prompt, no model inference exists anywhere in this flow.
   regeneration refusal (`409 REGENERATION_NOT_AVAILABLE`), and
   LangGraph's continued absence from `/generate` all still hold with
   `scraped_local` flight inventory explicitly enabled and populated.
+
+## 80. Read-Only AI Candidate Review Report (Step 170A)
+
+Step 170A adds `GET /trips/{trip_id}/ai-candidate-review`
+(`AICandidateReviewService`, `backend/app/services/ai_candidate_review_service.py`,
+docs/14_backend_architecture.md section 57) -- a report that makes the
+existing Step 157A-161B AI candidate discovery/grounding state visible and
+reviewable, without changing what any of it means.
+
+- **This report is read-only.** It is computed fresh on every call directly
+  from `PlanningState.ai_candidate_proposal_batch`/`candidate_grounding_batch`
+  -- the same fields the Step 161B shadow stage already populates when
+  `AI_CANDIDATE_DISCOVERY_SHADOW_MODE_ENABLED` is set. It never triggers new
+  AI candidate discovery, never calls a provider/Anthropic/Groq/OpenAI/LLM,
+  never calls `AICandidateDiscoveryService` or a proposal/grounding
+  provider directly, and never mutates `PlanningState`. With shadow mode
+  off (the default), or on a trip whose destination context was never
+  generated, it honestly returns `status="no_candidate_data"` and an empty
+  `items` list rather than fabricating a candidate.
+- **No promotion happens in this step.** Every `AICandidateReviewItem.
+  eligible_for_promotion` and the report's own `eligible_for_promotion`
+  count are hardcoded `False`/`0` -- enforced by a model validator, not just
+  a service default -- regardless of grounding or (future) quality state.
+  Nothing here schedules an AI-proposed or AI-grounded candidate into a
+  day's `experiences`; `ExperiencePlannerService` is completely untouched
+  by this step (same guarantee Section 40 already established for the
+  shadow stage itself).
+- **LLMs do not get to bypass provider grounding.** An `AICandidateProposal`
+  is still just an idea (Section 25/Stage 5); a `GroundedCandidate` is still
+  only produced by `CandidateGroundingService` matching against explicit
+  `ProviderCandidateForGrounding` evidence (Section 30/32/Stage 6). This
+  report's `provider_grounded`/`grounding_status` fields only ever restate
+  which of those two states an existing proposal is already in -- it never
+  grounds anything itself, never lowers the grounding bar, and never lets a
+  proposal's own wording stand in for real provider/open-data evidence.
+- `quality_bucket` stays `None` for every item in this step: `CandidateQualityService`
+  does not score AI-proposed/grounded candidates yet (Section 15 test
+  coverage for that non-consumption is unchanged by this step), so this
+  report never fabricates a quality tier it hasn't actually computed.
+- `rejection_reasons`/`warnings` are drawn only from a small, fixed,
+  honest set (e.g. "AI candidate promotion is not enabled yet.", "Candidate
+  is not provider-grounded.", or an existing `RejectedCandidateProposal.message`)
+  -- never an invented justification, and never marketing or overclaiming
+  language implying certainty, official verification, or a finished
+  decision this step does not actually make.
+
+## 81. Deterministic AI Candidate Promotion Eligibility Rules (Step 170B)
+
+Step 170B adds `AICandidatePromotionEligibilityService`
+(`backend/app/services/ai_candidate_promotion_eligibility_service.py`,
+docs/14_backend_architecture.md section 58), which lets `AICandidateReviewItem.
+eligible_for_promotion` become `True` -- but only through a fixed,
+deterministic rule set, never through any new AI reasoning.
+
+- **Eligibility is deterministic, not another AI judgment call.** The
+  service takes no provider/LLM/LangGraph dependency at all -- it is a
+  pure function over already-computed fields (`AICandidateProposal`,
+  `GroundedCandidate`/`RejectedCandidateProposal`, and an already-built
+  `CandidateQualityReport`). No new prompt, no new model call, no new
+  heuristic invents a fact: every rule reads an existing typed field and
+  compares it against an existing enum value or numeric threshold that
+  already governs real provider candidates elsewhere in the codebase
+  (e.g. the accepted quality tiers are identical to
+  `ExperiencePlannerService._ELIGIBLE_SCHEDULING_TIERS`, Section 15).
+- **LLM proposals still cannot bypass provider grounding or quality
+  checks.** The 8 rules require, in order: (1) the candidate was
+  AI-proposed, (2) it is provider-grounded (a real `GroundedCandidate`
+  exists), (3) its grounding match type/confidence tier represents a real,
+  non-ambiguous, non-low-confidence match, (4) the real provider place it
+  grounded to has an already-computed `CandidateQualityReport` score in an
+  accepted tier (`primary_anchor`/`good_candidate`/`secondary_candidate`
+  -- looked up by joining on `provider_place_id`/name against
+  `PlanningState.candidate_quality_report`, never recomputed for the AI
+  candidate itself), (5) the grounding evidence's own provider confidence
+  clears a minimum floor, (6) the candidate carries no grounding rejection,
+  (7)/(8) its real provider category isn't accommodation/lodging or
+  flight/transport-shaped, and its grounding evidence is provider-backed
+  rather than `ai_inferred`. **An AI proposal's own wording is never
+  substituted for any of these** -- an ungrounded proposal, or one with no
+  matching quality score, is never marked eligible no matter how
+  confident or well-argued the proposal text is.
+- **This still isn't promotion.** `eligible_for_promotion=True` means "this
+  candidate has cleared the deterministic bar" -- it does not mean the
+  candidate has been added to any `DailyPlan`. `ExperiencePlannerService`
+  is completely unmodified and unaware of this subsystem (verified by a
+  dedicated source-inspection test); actually acting on eligibility is
+  Step 170C's job, not this one's.
+- **Model-level safety net**: `AICandidateReviewItem` now enforces, via a
+  `model_validator`, that `eligible_for_promotion=True` is structurally
+  impossible unless `provider_grounded=True` and `rejection_reasons` is
+  empty -- independent of whatever the eligibility service itself
+  computed, so a future bug in that service's logic can never silently
+  produce an unsafe eligible item.
+
+## 82. AI Candidate Promotion Report (Step 170C)
+
+Step 170C adds `AICandidatePromotionService`
+(`backend/app/services/ai_candidate_promotion_service.py`) and
+`POST /trips/{trip_id}/ai-candidate-promotions`
+(`backend/app/api/routes/trips.py`), which materialize Step 170B's
+already-computed `eligible_for_promotion` verdicts into a dedicated,
+durable `AICandidatePromotionReport` -- docs/14_backend_architecture.md
+section 59.
+
+- **Promotion is deterministic and based only on existing provider-grounded
+  review results.** `AICandidatePromotionService.build_promotion_report`
+  calls `AICandidateReviewService.build_report` (Section 80/81) to get the
+  same deterministic eligibility verdict the read-only review endpoint
+  already computes, then simply partitions the items it returns:
+  `eligible_for_promotion=True` items become a `PromotedAICandidate`
+  (carrying the real `GroundedCandidate.evidence.provider_place_id`/
+  `provider_name` alongside the review item's `quality_bucket`/
+  `grounding_status`/`eligibility_reasons`); everything else's id is
+  recorded in `skipped_candidate_ids`. No new eligibility logic is
+  introduced here, and no provider/LLM/LangGraph call exists anywhere in
+  this service.
+- **Promotion does not mean itinerary scheduling yet.** A
+  `PromotedAICandidate` is not an itinerary stop. Nothing in this step
+  reads or writes `ExperiencePlan`/`daily_plans`, and
+  `ExperiencePlannerService` remains completely unaware of this subsystem
+  (verified by a dedicated source-inspection test asserting its source
+  never references `AICandidatePromotionReport`, `PromotedAICandidate`,
+  `ai_candidate_promotion_service`, or `ai_candidate_promotion_report`).
+  Actually scheduling a promoted candidate into a day is a future step
+  (170D), not this one.
+- **LLM proposals still cannot bypass grounding or quality checks.**
+  `build_promotion_report` never re-evaluates or loosens Step 170B's
+  rules -- it only reads their already-computed result. An AI proposal
+  that was never grounded, or that grounded to a low-quality/missing-
+  quality/accommodation/flight-shaped provider place, is never promoted
+  no matter how it's phrased; it's recorded in `skipped_candidate_ids`
+  like every other ineligible candidate.
+- **Idempotent by construction**: `PromotedAICandidate.candidate_id` is
+  deterministically derived from the original AI candidate id
+  (`f"promoted_{original_ai_candidate_id}"`), and
+  `POST /ai-candidate-promotions` *replaces*
+  `PlanningState.ai_candidate_promotion_report` on every call rather than
+  appending -- calling it repeatedly produces the same promoted
+  candidates, never duplicates.
+- **The read-only review endpoint is unaffected.**
+  `GET /trips/{trip_id}/ai-candidate-review` still never applies
+  promotion and never sets `ai_candidate_promotion_report` -- confirmed by
+  a dedicated test asserting its handler's source never references the
+  promotion service.
+
+## 83. Safe Scheduling Integration for Promoted AI Candidates (Step 170D)
+
+Step 170D lets `ExperiencePlannerService` (Section 15) consider an
+already-promoted AI candidate (Step 170C) as an additional schedulable
+place, without ever loosening any existing safety rule --
+docs/14_backend_architecture.md section 60 has the full mechanism.
+
+- **Only promoted, provider-grounded, quality-approved candidates can ever
+  enter scheduling.** A candidate reaches `ExperiencePlannerService` only
+  by way of `PlanningState.ai_candidate_promotion_report.promoted_candidates`
+  -- and every entry there already passed, in order: (1) AI proposal, (2)
+  provider grounding (Step 158A/159A), (3) `CandidateQualityService`
+  approval of the real place it grounded to (Section 15/156E's accepted
+  tiers, looked up by Step 170B, never recomputed for the AI candidate
+  itself), (4) Step 170B's full deterministic eligibility rule set, and
+  (5) Step 170C's promotion materialization. An ungrounded proposal, a
+  proposal that grounded to a low-quality/missing-quality/accommodation/
+  flight-shaped place, or one that was simply never promoted, can never
+  reach this point -- there is no code path that lets a raw
+  `AICandidateProposal` skip straight to scheduling.
+- **LLM suggestions still cannot bypass grounding, quality, or
+  promotion.** `ExperiencePlannerService` never reads
+  `ai_candidate_proposal_batch`/`candidate_grounding_batch` directly (source-
+  inspection-tested), never calls `CandidateQualityService` a second time
+  for an AI candidate, and never re-evaluates Step 170B's rules -- it only
+  reads the already-vetted `PromotedAICandidate` list. A promoted
+  candidate is merged into the exact same must-visit/interest tiering,
+  geographic day-grouping, and pace-based per-day cap every real candidate
+  already goes through -- never a bypass, never a special case.
+- **Promotion is not itinerary scheduling by itself.** Being promoted
+  (Step 170C) only makes a candidate *eligible to be considered*;
+  `ExperiencePlannerService`'s existing geographic/priority rules decide
+  whether it actually gets a day slot, exactly as they already decide for
+  every real provider candidate. A promoted candidate never bumps an
+  already-scheduled real candidate that the planner's existing rules would
+  have picked anyway.
+- **No new provider/LLM/LangGraph call exists anywhere in this scheduling
+  integration.** `PlanningOrchestrator._run_ai_candidate_promotion_stage`
+  (new in Step 170D) only calls `AICandidatePromotionService.apply_promotion`,
+  which itself only reads already-computed `PlanningState` fields.
+
+## 84. Frontend AI Candidate Review/Promotion Display (Step 170E, final Section 170 step)
+
+Step 170E (final Section 170 step) adds a frontend panel
+(`AICandidateReviewSection`, `frontend/app/page.tsx`) rendering
+`GET /trips/{trip_id}/ai-candidate-review` and, when it exists,
+`PlanningState.ai_candidate_promotion_report`, plus a badge on any
+scheduled itinerary item that came from a promoted candidate (Step 170D).
+docs/14_backend_architecture.md section 61 and docs/16_frontend_
+architecture.md section 39.11 have the implementation detail.
+
+- **Displaying this data does not make an AI suggestion trustworthy by
+  itself.** The frontend never re-derives eligibility, grounding, or
+  quality -- it only renders fields the backend already computed and
+  validated (Steps 170A-170D). "Eligible for scheduling" and "Promoted"
+  are rendered as informational statuses only -- the panel and itinerary
+  badge never imply independent verification, a certainty claim, a safety
+  judgment, a settled final decision, or official-provider status. A
+  candidate reaching this page's "Promoted" group already passed every
+  real gate (AI-proposed, provider-grounded, quality-approved,
+  deterministically promoted); the frontend's only job is to say so
+  honestly, not to add a claim of its own.
+- **LLM suggestions still cannot bypass grounding, quality, or promotion
+  from the frontend either.** The panel's "Refresh AI promotion report"
+  button calls `POST /trips/{trip_id}/ai-candidate-promotions` -- the same
+  deterministic, provider-call-free endpoint Step 170C added. It never
+  calls Groq/Anthropic/OpenAI or an AI candidate proposal provider, and it
+  never adds a candidate to the itinerary itself; scheduling remains
+  entirely `ExperiencePlannerService`'s decision (Step 170D). Clicking it
+  only recomputes and redisplays the same kind of report the backend can
+  already auto-compute during `/generate`.
+- **Missing/null fields never render as facts.** `quality_bucket`,
+  `grounding_status`, `provider_source`, and every reasons/warnings list
+  are rendered only when the backend actually returned them; no rating,
+  price, opening hour, route, distance, duration, or booking link is ever
+  shown, because none of those fields exist on any of these models to
+  begin with.
+- **A scheduled itinerary item's "AI-suggested · Provider-grounded" badge
+  is rendered only when the backend itself set
+  `ExperienceItem.promoted_from_ai: true`** -- a normal provider-backed
+  experience (the overwhelming majority, and the only kind produced by
+  default) never shows it. This is not a claim of booking, verification,
+  or official status.

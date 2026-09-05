@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any
 
+from app.models.ai_candidate_promotion import AICandidatePromotionReport, PromotedAICandidate
 from app.models.candidate_quality import CandidateQualityReport
+from app.models.common import GeoPoint
 from app.models.planning_state import (
     DestinationContext,
     PlanningState,
@@ -439,6 +442,249 @@ def test_experience_plan_has_no_forbidden_factual_fields() -> None:
         candidate_pois=candidates,
         candidate_restaurants=[_place("r1", "Cafe One", "cafe", lat=0.0, lng=0.0005)],
         candidate_accommodation_pois=[_place("a1", "Hotel One", "hotel", lat=0.0, lng=0.0005)],
+    )
+
+    ExperiencePlannerService().run(planning_state)
+    plan_dump = planning_state.experience_plan.model_dump(mode="json")
+
+    _assert_no_forbidden_fields(plan_dump)
+
+
+# ---------------------------------------------------------------------------
+# Step 170D: safe scheduling integration for promoted AI candidates.
+# ---------------------------------------------------------------------------
+
+
+def _promoted_candidate(
+    candidate_id: str,
+    name: str,
+    *,
+    provider_place_id: str | None = None,
+    provider_source: str = "openstreetmap_places",
+    quality_bucket: str = "good_candidate",
+    lat: float | None = 0.0,
+    lng: float | None = 0.0,
+    confidence: float | None = 0.6,
+    category: str | None = "attraction",
+) -> PromotedAICandidate:
+    return PromotedAICandidate(
+        candidate_id=f"promoted_{candidate_id}",
+        name=name,
+        category=category,
+        provider_place_id=provider_place_id,
+        provider_source=provider_source,
+        original_ai_candidate_id=candidate_id,
+        quality_bucket=quality_bucket,
+        grounding_status="exact_name",
+        coordinates=GeoPoint(lat=lat, lng=lng) if lat is not None and lng is not None else None,
+        confidence=confidence,
+        data_status="live",
+        promotion_reasons=["Quality tier 'good_candidate' is acceptable for scheduling."],
+    )
+
+
+def _promotion_report(*candidates: PromotedAICandidate, trip_id: str = "trip_test") -> AICandidatePromotionReport:
+    return AICandidatePromotionReport(
+        trip_id=trip_id,
+        status="promoted" if candidates else "no_eligible_candidates",
+        total_reviewed_candidates=len(candidates),
+        promoted_count=len(candidates),
+        skipped_count=0,
+        promoted_candidates=list(candidates),
+        skipped_candidate_ids=[],
+        generated_at=datetime.now(timezone.utc),
+    )
+
+
+# 1. No promotion report means itinerary output is unchanged.
+def test_no_promotion_report_leaves_itinerary_unchanged() -> None:
+    candidates = [_place("p1", "Real Museum", "museum", lat=0.0, lng=0.0)]
+    baseline_state = _planning_state(candidate_pois=candidates)
+    ExperiencePlannerService().run(baseline_state)
+    baseline_dump = baseline_state.experience_plan.model_dump(
+        mode="json", exclude={"experience_plan_id", "daily_plans"}
+    )
+    baseline_names = _scheduled_names(baseline_state)
+
+    with_none_state = _planning_state(candidate_pois=candidates)
+    assert with_none_state.ai_candidate_promotion_report is None
+    ExperiencePlannerService().run(with_none_state)
+
+    assert _scheduled_names(with_none_state) == baseline_names
+    assert with_none_state.experience_plan.model_dump(
+        mode="json", exclude={"experience_plan_id", "daily_plans"}
+    ) == baseline_dump
+
+
+# 2. Empty promotion report means itinerary output is unchanged.
+def test_empty_promotion_report_leaves_itinerary_unchanged() -> None:
+    candidates = [_place("p1", "Real Museum", "museum", lat=0.0, lng=0.0)]
+    baseline_state = _planning_state(candidate_pois=candidates)
+    ExperiencePlannerService().run(baseline_state)
+    baseline_names = _scheduled_names(baseline_state)
+
+    empty_report_state = _planning_state(candidate_pois=candidates)
+    empty_report_state.ai_candidate_promotion_report = _promotion_report()
+    ExperiencePlannerService().run(empty_report_state)
+
+    assert _scheduled_names(empty_report_state) == baseline_names
+
+
+# 3. Promoted eligible provider-grounded candidate can appear in the
+#    itinerary scheduling pool when there is room for it.
+def test_promoted_candidate_can_appear_in_schedule_when_room_available() -> None:
+    candidates = [_place("p1", "Real Museum", "museum", lat=0.0, lng=0.0)]
+    planning_state = _planning_state(candidate_pois=candidates, pace=TripPace.RELAXED)
+    planning_state.ai_candidate_promotion_report = _promotion_report(
+        _promoted_candidate("proposal_1", "Promoted Landmark", provider_place_id="osm/way/999", lat=0.0, lng=0.01)
+    )
+
+    ExperiencePlannerService().run(planning_state)
+
+    assert "Promoted Landmark" in _scheduled_names(planning_state)
+
+
+# 4. Scheduled promoted candidate preserves promoted_from_ai/source
+#    metadata.
+def test_scheduled_promoted_candidate_preserves_provenance_metadata() -> None:
+    candidates = [_place("p1", "Real Museum", "museum", lat=0.0, lng=0.0)]
+    planning_state = _planning_state(candidate_pois=candidates, pace=TripPace.RELAXED)
+    planning_state.ai_candidate_promotion_report = _promotion_report(
+        _promoted_candidate(
+            "proposal_1",
+            "Promoted Landmark",
+            provider_place_id="osm/way/999",
+            provider_source="openstreetmap_places",
+            lat=0.0,
+            lng=0.01,
+        )
+    )
+
+    ExperiencePlannerService().run(planning_state)
+
+    promoted_experience = next(
+        experience
+        for day_plan in planning_state.experience_plan.daily_plans
+        for experience in day_plan.experiences
+        if experience.name == "Promoted Landmark"
+    )
+    assert promoted_experience.promoted_from_ai is True
+    assert promoted_experience.original_ai_candidate_id == "proposal_1"
+    assert promoted_experience.provider_place_id == "osm/way/999"
+    assert promoted_experience.provider_source == "openstreetmap_places"
+
+    # A real (non-promoted) experience must not carry these markers.
+    real_experience = next(
+        experience
+        for day_plan in planning_state.experience_plan.daily_plans
+        for experience in day_plan.experiences
+        if experience.name == "Real Museum"
+    )
+    assert real_experience.promoted_from_ai is False
+    assert real_experience.original_ai_candidate_id is None
+    assert real_experience.provider_place_id is None
+    assert real_experience.provider_source is None
+
+
+# 11. Duplicate provider_place_id/name is not scheduled twice.
+def test_promoted_duplicate_of_real_candidate_is_not_scheduled_twice() -> None:
+    candidates = [_place("osm/way/1", "Real Museum", "museum", lat=0.0, lng=0.0)]
+    planning_state = _planning_state(candidate_pois=candidates, pace=TripPace.PACKED)
+    planning_state.ai_candidate_promotion_report = _promotion_report(
+        _promoted_candidate("proposal_1", "Real Museum", provider_place_id="osm/way/1", lat=0.0, lng=0.0)
+    )
+
+    ExperiencePlannerService().run(planning_state)
+
+    names = _scheduled_names(planning_state)
+    assert names.count("Real Museum") == 1
+
+
+def test_promoted_duplicate_by_name_is_not_scheduled_twice() -> None:
+    """Same rule, but the duplicate is detected by normalized name rather
+    than a shared provider_place_id (e.g. a promoted candidate whose
+    provider_place_id wasn't carried over for some reason)."""
+    candidates = [_place("osm/way/1", "Real Museum", "museum", lat=0.0, lng=0.0)]
+    planning_state = _planning_state(candidate_pois=candidates, pace=TripPace.PACKED)
+    planning_state.ai_candidate_promotion_report = _promotion_report(
+        _promoted_candidate("proposal_1", "Real Museum", provider_place_id=None, lat=0.0, lng=0.0)
+    )
+
+    ExperiencePlannerService().run(planning_state)
+
+    names = _scheduled_names(planning_state)
+    assert names.count("Real Museum") == 1
+
+
+# 10. Candidate with missing required scheduling fields (coordinates) is
+#     skipped, not completed with fake data.
+def test_promoted_candidate_missing_coordinates_is_skipped_with_warning() -> None:
+    candidates = [_place("p1", "Real Museum", "museum", lat=0.0, lng=0.0)]
+    planning_state = _planning_state(candidate_pois=candidates, pace=TripPace.RELAXED)
+    planning_state.ai_candidate_promotion_report = _promotion_report(
+        _promoted_candidate("proposal_1", "Coordinateless Landmark", lat=None, lng=None)
+    )
+
+    ExperiencePlannerService().run(planning_state)
+
+    assert "Coordinateless Landmark" not in _scheduled_names(planning_state)
+    assert any(
+        "Coordinateless Landmark" in assumption and "missing" in assumption.lower()
+        for assumption in planning_state.experience_plan.assumptions
+    )
+
+
+# Promoted candidates must not bypass geographic scheduling rules or bump
+# an already-grounded, geographically-closer real candidate out of a slot
+# it would otherwise win.
+def test_promoted_candidate_does_not_replace_a_naturally_closer_real_candidate() -> None:
+    candidates = [
+        _place("p1", "Anchor Museum", "museum", lat=0.0, lng=0.0),
+        _place("p2", "Nearby Gallery", "museum", lat=0.0, lng=0.001),
+    ]
+    planning_state = _planning_state(candidate_pois=candidates, pace=TripPace.RELAXED)
+    # Pace RELAXED caps this single day at 2 slots -- both real candidates
+    # already fill it. The promoted candidate is far away geographically,
+    # so it must not bump "Nearby Gallery" out of the remaining slot.
+    planning_state.ai_candidate_promotion_report = _promotion_report(
+        _promoted_candidate("proposal_1", "Far Away Landmark", lat=10.0, lng=10.0)
+    )
+
+    ExperiencePlannerService().run(planning_state)
+
+    names = _scheduled_names(planning_state)
+    assert "Anchor Museum" in names
+    assert "Nearby Gallery" in names
+    assert "Far Away Landmark" not in names
+
+
+# 13. Existing provider-grounded OSM candidates still schedule as before
+#     when a promotion report exists but adds nothing new.
+def test_real_candidates_schedule_unaffected_by_unrelated_promotion_report() -> None:
+    candidates = [
+        _place("p1", "Museum One", "museum", lat=0.0, lng=0.0),
+        _place("p2", "Museum Two", "museum", lat=0.0, lng=0.001),
+    ]
+    baseline_state = _planning_state(candidate_pois=candidates)
+    ExperiencePlannerService().run(baseline_state)
+    baseline_names = _scheduled_names(baseline_state)
+
+    with_promotion_state = _planning_state(candidate_pois=candidates)
+    with_promotion_state.ai_candidate_promotion_report = _promotion_report(
+        _promoted_candidate("proposal_1", "Museum One", provider_place_id="p1", lat=0.0, lng=0.0)
+    )
+    ExperiencePlannerService().run(with_promotion_state)
+
+    assert _scheduled_names(with_promotion_state) == baseline_names
+
+
+# 12. No new forbidden factual fields (coordinates/rating/etc. are never
+#     invented) are introduced by a promoted candidate's ExperienceItem.
+def test_promoted_candidate_experience_item_has_no_forbidden_factual_fields() -> None:
+    candidates = [_place("p1", "Real Museum", "museum", lat=0.0, lng=0.0)]
+    planning_state = _planning_state(candidate_pois=candidates, pace=TripPace.RELAXED)
+    planning_state.ai_candidate_promotion_report = _promotion_report(
+        _promoted_candidate("proposal_1", "Promoted Landmark", provider_place_id="osm/way/999", lat=0.0, lng=0.01)
     )
 
     ExperiencePlannerService().run(planning_state)

@@ -8,6 +8,7 @@ from uuid import uuid4
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.models.accommodation import AccommodationSearchResult
+from app.models.ai_candidate_promotion import AICandidatePromotionReport
 from app.models.ai_candidate_proposal import AICandidateProposalBatch
 from app.models.candidate_grounding import CandidateGroundingBatch
 from app.models.candidate_quality import CandidateQualityReport
@@ -509,6 +510,21 @@ class ExperienceItem(BaseModel):
     data_quality: DataQuality | None = None
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
     claim_sources: list[ClaimSource] = Field(default_factory=list)
+
+    # AI candidate promotion provenance (Step 170D,
+    # docs/13_llm_reasoning_pipeline.md, docs/14_backend_architecture.md).
+    # `promoted_from_ai` stays `False` (the default) for every experience
+    # scheduled from `destination_context.candidate_pois` the normal way --
+    # it is only ever `True` for a candidate that came from an already
+    # `eligible_for_promotion=True` entry on
+    # `PlanningState.ai_candidate_promotion_report`. These fields never
+    # carry a rating, opening hour, price, route, or booking link; they
+    # only ever restate identifiers already present on the underlying
+    # `PromotedAICandidate`.
+    promoted_from_ai: bool = False
+    original_ai_candidate_id: str | None = None
+    provider_place_id: str | None = None
+    provider_source: str | None = None
 
 
 class RestaurantOption(BaseModel):
@@ -1167,6 +1183,20 @@ class PlanningState(BaseModel):
     # AICandidateDiscoveryService) populates these yet.
     ai_candidate_proposal_batch: AICandidateProposalBatch | None = None
     candidate_grounding_batch: CandidateGroundingBatch | None = None
+    # Deterministic AI candidate promotion report (Step 170C,
+    # docs/13_llm_reasoning_pipeline.md, docs/14_backend_architecture.md).
+    # A promoted candidate is not an itinerary stop -- it is a
+    # provider-grounded, quality-approved candidate already marked
+    # `eligible_for_promotion=True` by Step 170B's deterministic rules,
+    # materialized here for future scheduling consideration. Stays `None`
+    # until a caller explicitly calls
+    # `POST /trips/{trip_id}/ai-candidate-promotions`
+    # (`AICandidatePromotionService.apply_promotion`) -- the read-only
+    # `GET /trips/{trip_id}/ai-candidate-review` endpoint never sets this
+    # field. Nothing in `PlanningOrchestrator`/`ExperiencePlannerService`
+    # reads or writes this field; a promoted candidate is never scheduled
+    # into `experience_plan.daily_plans` by this step.
+    ai_candidate_promotion_report: AICandidatePromotionReport | None = None
     # Backend PlanningOrchestrator pipeline stage-progress bookkeeping (Step
     # 163B) -- never real flight/route/travel progress. `None` only for
     # planning states persisted before this step; `PlanningOrchestrator.

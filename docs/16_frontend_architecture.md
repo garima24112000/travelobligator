@@ -1784,4 +1784,122 @@ invented client-side:
   `AccommodationInventorySection`, `ScrapedProvenanceBadge`,
   `CandidatePoiSection`, and every OSM-candidate-rendering component are
   untouched.
-exactly as already documented.
+
+### 39.11 Future AI Candidate Review Panel Note (Step 170A)
+
+Step 170A adds a backend-only, read-only report endpoint
+(`GET /trips/{trip_id}/ai-candidate-review`, docs/13_llm_reasoning_pipeline.md
+section 80, docs/14_backend_architecture.md section 57) exposing the
+existing Step 157A-161B AI candidate discovery/grounding shadow-mode state
+in a reviewable shape. **No frontend component was added or changed in
+this step** -- `frontend/app/page.tsx` does not call this endpoint yet, and
+`frontend/lib/types.ts` gained no new type for it.
+
+A future step (Step 170E) is expected to add an `AICandidateReviewSection`
+panel mirroring `AccommodationInventorySection`/`FlightInventorySection`'s
+existing display conventions: an honest status line, per-candidate rows
+showing whether each AI-proposed candidate is provider-grounded, and its
+`rejection_reasons`/`warnings` rendered verbatim. No candidate from this
+panel is ever merged into a day's scheduled experiences.
+
+**Step 170B update**: `eligible_for_promotion` can now genuinely be `true`
+for some items (docs/13_llm_reasoning_pipeline.md section 81,
+docs/14_backend_architecture.md section 58) -- a deterministic rules
+result, not an AI judgment. The future panel (Step 170E) should render
+eligible and non-eligible candidates as two clearly distinguished groups
+(e.g. "Eligible for future promotion" vs. "Not eligible"), each row backed
+by real fields already returned by the endpoint:
+`eligibility_reasons`/`quality_bucket`/`grounding_status` for an eligible
+item, `rejection_reasons`/`warnings` for one that isn't. **`true` here must
+never be rendered as "added to your itinerary," "booked," or "confirmed"**
+-- Step 170B only computes eligibility; nothing promotes a candidate into
+a day's schedule until (and unless) a future step implements that
+separately, and the panel must not imply otherwise.
+
+**Step 170C update**: `POST /trips/{trip_id}/ai-candidate-promotions`
+(docs/13_llm_reasoning_pipeline.md section 82,
+docs/14_backend_architecture.md section 59) now exists on the backend and
+stores `PlanningState.ai_candidate_promotion_report`, but **no frontend
+component was added or changed in this step** -- `frontend/app/page.tsx`
+does not call this endpoint yet, and `frontend/lib/types.ts` gained no new
+type for it. The future Step 170E panel is expected to show promoted vs.
+skipped candidates as two clearly distinguished groups (mirroring the
+eligible/non-eligible grouping already planned above), each promoted row
+backed by real fields the endpoint already returns
+(`quality_bucket`/`grounding_status`/`promotion_reasons`/
+`provider_place_id`/`provider_source`), and each skipped id cross-referenced
+back to its `AICandidateReviewItem` for the specific reason it wasn't
+promoted. **A promoted candidate must never be rendered as an itinerary
+stop, a booking, or a scheduled day item** -- Step 170C only stores a
+promotion report; nothing schedules a promoted candidate into a day until
+a future step implements that separately, and the panel must not imply
+otherwise.
+
+**Step 170D update**: a promoted candidate *can* now actually be scheduled
+into a day's `experiences` (docs/13_llm_reasoning_pipeline.md section 83,
+docs/14_backend_architecture.md section 60) -- when
+`ExperiencePlannerService`'s existing geographic/quality/pace rules
+naturally pick it, exactly like any real provider candidate. **Still no
+frontend component was added or changed in this step** --
+`frontend/app/page.tsx` does not render this distinction yet, and
+`frontend/lib/types.ts` gained no new fields for it. When a future step
+adds this to the itinerary day-card rendering, it should mark a scheduled
+item with `promoted_from_ai=true` distinctly from a normal
+provider-backed one (e.g. a small badge/label referencing
+`ai_candidate_promotion_report`, similar in spirit to
+`ScrapedProvenanceBadge`) -- never silently indistinguishable from, and
+never implying more certainty than, a normal scheduled experience. The
+`original_ai_candidate_id`/`provider_place_id`/`provider_source` fields on
+`ExperienceItem` exist specifically so such a future badge can link back
+to the underlying promotion/review data without inventing anything new.
+
+### 39.12 AI Candidate Review/Promotion Panel and Itinerary Badge, Implemented (Step 170E, final Section 170 step)
+
+Step 170E implements everything section 39.11 anticipated. `frontend/lib/types.ts`
+gained `AICandidateReviewItem`/`AICandidateReviewReport`/`AICandidateReviewData`/
+`PromotedAICandidate`/`AICandidatePromotionReport`/`AICandidatePromotionData`,
+plus `promoted_from_ai`/`original_ai_candidate_id`/`provider_place_id`/
+`provider_source` on `ExperienceItem` and `ai_candidate_promotion_report`
+on `TripData.planning_state`. `frontend/lib/api.ts` gained
+`getAiCandidateReview`/`promoteAiCandidates`.
+
+- **`AICandidateReviewSection`** (`frontend/app/page.tsx`) is rendered in
+  the "Data sources and candidates" group, immediately after
+  `FlightInventorySection`. It shows total/grounded/ungrounded/eligible
+  counts (plus promoted/skipped counts once a promotion report exists),
+  a "Refresh AI promotion report" button (calls `promoteAiCandidates` and
+  updates `PlanResult.aiCandidatePromotionReport` via the same
+  `setResult((previous) => previous ? {...} : previous)` pattern every
+  other mutation-triggering panel on this page already uses), and four
+  candidate groups: "Eligible for scheduling", "Not eligible", "Promoted
+  candidates", "Skipped candidates". Each candidate card
+  (`AICandidateReviewCard`/`PromotedAICandidateCard`) shows name/category/
+  source, `quality_bucket`/`grounding_status` only when present, and
+  `eligibility_reasons`/`rejection_reasons`/`warnings`/`promotion_reasons`
+  verbatim. With no AI candidate data at all
+  (`status="no_candidate_data"`, the default -- shadow mode is off by
+  default), the panel renders a single honest line ("No AI candidate data
+  is available for this trip yet.") instead of the stat grid/groups --
+  verified by loading a real generated trip end to end in a browser.
+- **`AIPromotedBadge`** renders inside `ScheduledExperienceCard` only when
+  `experience.promoted_from_ai === true`, showing the fixed label
+  "AI-suggested · Provider-grounded" plus `provider_source`/
+  `original_ai_candidate_id` only when returned. A normal
+  provider-backed experience (every experience produced by default, since
+  shadow mode is off) never renders this badge -- confirmed visually: a
+  real generated Lisbon trip's scheduled experiences showed no badge at
+  all.
+- **Wording discipline**: neither the panel nor the badge ever implies a
+  confirmed booking, independent verification by the travel provider, a
+  certainty claim, a safety judgment, a settled final decision, or
+  official-provider status (none exists for AI candidates). Approved
+  terms used throughout: "AI-suggested", "Provider-grounded", "Eligible
+  for scheduling", "Promoted candidate", "Needs review".
+- **No fabricated facts**: no rating, price, opening hour, route,
+  distance, duration, or booking link field exists on any of these new
+  types or components, matching the backend models they mirror exactly.
+- **Scheduling stays backend-owned**: clicking "Refresh AI promotion
+  report" only calls the existing `POST /trips/{trip_id}/ai-candidate-promotions`
+  endpoint and updates local state with its response -- it never adds a
+  candidate to `dailyPlans` itself, and never calls
+  Groq/Anthropic/OpenAI/an AI candidate proposal provider.

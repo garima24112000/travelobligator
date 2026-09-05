@@ -33,6 +33,7 @@ from app.repositories.planning_state_repository import (
 from app.repositories.trip_repository import TripRepository, trip_repository
 from app.services.accommodation_inventory_service import AccommodationInventoryService
 from app.services.ai_candidate_discovery_service import AICandidateDiscoveryService
+from app.services.ai_candidate_promotion_service import AICandidatePromotionService
 from app.services.candidate_quality_service import CandidateQualityService
 from app.services.destination_context_service import DestinationContextService
 from app.services.experience_planner_service import ExperiencePlannerService
@@ -236,6 +237,7 @@ class PlanningOrchestrator:
         plan_diff_preview_service: PlanDiffPreviewService | None = None,
         regeneration_readiness_service: RegenerationReadinessService | None = None,
         ai_candidate_discovery_service: AICandidateDiscoveryService | None = None,
+        ai_candidate_promotion_service: AICandidatePromotionService | None = None,
         planning_state_repo: PlanningStateRepository | None = None,
         trip_repo: TripRepository | None = None,
     ) -> None:
@@ -269,6 +271,9 @@ class PlanningOrchestrator:
         )
         self.ai_candidate_discovery_service = (
             ai_candidate_discovery_service or AICandidateDiscoveryService()
+        )
+        self.ai_candidate_promotion_service = (
+            ai_candidate_promotion_service or AICandidatePromotionService()
         )
         self.planning_state_repository = planning_state_repo or planning_state_repository
         self.trip_repository = trip_repo or trip_repository
@@ -382,6 +387,14 @@ class PlanningOrchestrator:
         # pure no-op unless AI_CANDIDATE_DISCOVERY_SHADOW_MODE_ENABLED is set.
         # See _run_ai_candidate_discovery_shadow_stage's docstring.
         planning_state = self._run_ai_candidate_discovery_shadow_stage(planning_state)
+        # Step 170D: auto-computes ai_candidate_promotion_report right
+        # after the shadow stage (and after candidate_quality_report
+        # above), so any promoted candidates are already available to
+        # ExperiencePlannerService later in this same generate() run. See
+        # _run_ai_candidate_promotion_stage's docstring -- a pure no-op
+        # whenever ai_candidate_proposal_batch is None (shadow mode
+        # disabled, the default).
+        planning_state = self._run_ai_candidate_promotion_stage(planning_state)
         return planning_state
 
     def _run_ai_candidate_discovery_shadow_stage(self, planning_state: PlanningState) -> PlanningState:
@@ -425,6 +438,51 @@ class PlanningOrchestrator:
             request=dry_run_result.grounding_request,
             result=dry_run_result.grounding_result,
         )
+        return planning_state
+
+    def _run_ai_candidate_promotion_stage(self, planning_state: PlanningState) -> PlanningState:
+        """Auto-computes and stores `ai_candidate_promotion_report` (Step
+        170D, docs/13_llm_reasoning_pipeline.md, docs/14_backend_
+        architecture.md) immediately after the optional Step 161B AI
+        candidate discovery shadow stage above.
+
+        This is the only reason a promoted candidate can ever reach
+        `ExperiencePlannerService` within a single `generate_full_plan`
+        call -- without it, `POST /trips/{trip_id}/ai-candidate-promotions`
+        could only ever run *after* `experience_plan` already exists, with
+        no path back into scheduling (regeneration stays refused, Step
+        138). Calling `AICandidatePromotionService.apply_promotion` here
+        never calls a provider/LLM/LangGraph -- it only reads
+        `ai_candidate_proposal_batch`/`candidate_grounding_batch`/
+        `candidate_quality_report`, all already computed above.
+
+        A pure no-op whenever `planning_state.ai_candidate_proposal_batch`
+        is `None` -- the default, since shadow mode is off by default --
+        so `ai_candidate_promotion_report` stays `None` exactly as before
+        this step. When the shadow stage did run (proposals list may still
+        be empty, e.g. the default `not_connected` proposal provider),
+        this stores an honest report -- empty when nothing was eligible,
+        just like calling the explicit `POST` endpoint would. The explicit
+        endpoint remains available and idempotent for a manual
+        recompute/refresh.
+
+        Fails safe: an unexpected exception from `apply_promotion` is
+        swallowed and `ai_candidate_promotion_report` stays whatever it
+        already was, never crashing generation for an unrelated reason --
+        mirroring every other Step 166D-style fail-safe stage in this
+        orchestrator.
+        """
+        if planning_state.ai_candidate_proposal_batch is None:
+            return planning_state
+
+        try:
+            planning_state = self.ai_candidate_promotion_service.apply_promotion(planning_state)
+        except Exception:
+            logger.warning(
+                "AICandidatePromotionService.apply_promotion failed unexpectedly during "
+                "generation; leaving ai_candidate_promotion_report unchanged.",
+                exc_info=True,
+            )
         return planning_state
 
     def run_trip_strategy_stage(self, planning_state: PlanningState) -> PlanningState:

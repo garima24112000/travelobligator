@@ -1,4 +1,6 @@
 import type {
+  AICandidatePromotionData,
+  AICandidateReviewData,
   ApiResponse,
   DestinationContextData,
   ExperiencePlanData,
@@ -157,5 +159,31 @@ export function getGenerationProgress(
 ): Promise<GenerationProgressData> {
   return request<GenerationProgressData>(
     `/trips/${tripId}/generation-progress`,
+  );
+}
+
+// Read-only AI candidate discovery/grounding/eligibility review (Step
+// 170A/170B). Never triggers new AI candidate discovery, never calls a
+// provider/LLM, and never mutates PlanningState -- see
+// AICandidateReviewReport in ./types.
+export function getAiCandidateReview(
+  tripId: string,
+): Promise<AICandidateReviewData> {
+  return request<AICandidateReviewData>(
+    `/trips/${tripId}/ai-candidate-review`,
+  );
+}
+
+// Materializes already-computed Step 170B eligibility verdicts into
+// PlanningState.ai_candidate_promotion_report (Step 170C). Never calls a
+// provider/LLM/AI candidate proposal provider itself, and never schedules
+// anything into the itinerary directly -- scheduling is decided entirely
+// by the backend's existing ExperiencePlannerService rules (Step 170D).
+export function promoteAiCandidates(
+  tripId: string,
+): Promise<AICandidatePromotionData> {
+  return request<AICandidatePromotionData>(
+    `/trips/${tripId}/ai-candidate-promotions`,
+    { method: "POST" },
   );
 }

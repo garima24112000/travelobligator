@@ -2311,3 +2311,309 @@ provider layer, a local file read); the only network calls a full
 `/generate` run makes are the pre-existing, unrelated weather/holiday/
 currency/OSM calls. Flights are never scheduled into the itinerary as a
 daily experience anywhere in this chain.
+
+## 57. Read-Only AI Candidate Review Report (Step 170A)
+
+**Step 170A adds `AICandidateReviewService`**
+(`backend/app/services/ai_candidate_review_service.py`) and
+`GET /trips/{trip_id}/ai-candidate-review`
+(`backend/app/api/routes/trips.py`), plus their supporting models
+(`backend/app/models/ai_candidate_review.py`: `AICandidateReviewItem`,
+`AICandidateReviewReport`) and response schema
+(`backend/app/schemas/ai_candidate_review.py`:
+`AICandidateReviewResponseData`), docs/13_llm_reasoning_pipeline.md section
+80.
+
+- **Purpose**: make the existing Step 157A-161B AI candidate discovery/
+  grounding state (`PlanningState.ai_candidate_proposal_batch`/
+  `candidate_grounding_batch`) visible and reviewable through a normal
+  read-only endpoint, without changing what that state means or does.
+- **`AICandidateReviewService.build_report`** only reads
+  `planning_state.ai_candidate_proposal_batch`/`candidate_grounding_batch`
+  -- it takes no provider/gateway/LLM dependency at all, never calls
+  `AICandidateDiscoveryService` or any `AICandidateProposalProvider`, and
+  never mutates `planning_state`. If `ai_candidate_proposal_batch` is
+  `None` (the default -- shadow mode is off by default) or its result has
+  no proposals, it returns an honest empty report
+  (`status="no_candidate_data"`, or the underlying result's own status
+  string, e.g. `"not_connected"`) rather than computing anything further.
+- **Route**: `get_ai_candidate_review` follows the existing
+  `get_candidate_quality`/`get_regeneration_readiness` pattern exactly --
+  `trip_not_found_error` for an unknown `trip_id`, otherwise
+  `success_response(AICandidateReviewResponseData(...))`. It calls
+  `planning_state_repository.get_by_trip_id` only (never `.save`), so a
+  planning state is never written to as a side effect of this GET.
+- **Promotion stays disabled**: `AICandidateReviewItem.eligible_for_promotion`
+  and `AICandidateReviewReport.eligible_for_promotion` are hardcoded
+  `False`/`0`, enforced by a pydantic `field_validator` on each model (not
+  just a service-level default), so no future code path can silently start
+  reporting a candidate as promotable without a deliberate model change.
+  `rejection_reasons` is built from a small fixed set of honest strings
+  (e.g. "AI candidate promotion is not enabled yet.", "Candidate is not
+  provider-grounded.") plus, when a candidate was actually rejected by
+  `CandidateGroundingService`, that rejection's own `message` -- never an
+  invented justification.
+- **No PlanningState field was added.** Unlike `candidate_quality_report`
+  (computed once per destination-context stage and stored), the AI
+  candidate review report is deliberately *not* persisted -- it is
+  recomputed from the existing stored batches on every call, exactly like
+  `get_trip_summary`'s `scheduled_experiences_count` is recomputed live
+  rather than stored. `PlanningOrchestrator` is completely untouched by
+  this step.
+- **Confirmed unchanged**: `ExperiencePlannerService` scheduling,
+  route-aware scheduling (Section 35-40), regeneration refusal, and every
+  existing candidate-quality/grounding/discovery test all pass unmodified
+  -- this step only adds a new read path over already-existing data.
+
+## 58. Deterministic AI Candidate Promotion Eligibility Rules (Step 170B)
+
+**Step 170B adds `AICandidatePromotionEligibilityService`**
+(`backend/app/services/ai_candidate_promotion_eligibility_service.py`),
+consumed by `AICandidateReviewService.build_report` (Section 57), plus
+model/route changes so `eligible_for_promotion` can now be `True`,
+docs/13_llm_reasoning_pipeline.md section 81.
+
+- **`evaluate_promotion_eligibility(proposal, grounded, rejected,
+  candidate_quality_report) -> PromotionEligibilityResult`** is a pure
+  function: no constructor dependency, no provider/gateway/LLM import, no
+  mutation of any argument. It never calls `CandidateQualityService` or
+  `CandidateGroundingService` -- it only *reads* their prior output
+  (`GroundedCandidate`/`RejectedCandidateProposal`/`CandidateQualityReport`)
+  already sitting on `PlanningState`.
+- **`find_quality_score`** joins a `GroundedCandidate` to its real
+  provider place's already-computed `CandidateQualityScore` by comparing
+  `evidence.provider_place_id` against `CandidateQualityScore.candidate_id`
+  first (both derive from the same underlying candidate's `place_id` when
+  one exists), falling back to a normalized-name match. This is a lookup
+  only -- it never triggers new scoring, and `CandidateQualityService`
+  remains completely unaware of AI candidates (Section 40's non-consumption
+  guarantee, and its dedicated test, are untouched).
+- **The 8 rules** (docs/13_llm_reasoning_pipeline.md section 81 has the
+  full list) each contribute either a `passed_reasons` or `failed_reasons`
+  entry to the result; `eligible` is `True` only when `failed_reasons` is
+  empty. Accepted quality tiers
+  (`primary_anchor`/`good_candidate`/`secondary_candidate`) are the exact
+  same set as `ExperiencePlannerService._ELIGIBLE_SCHEDULING_TIERS` (Section
+  15) -- an AI candidate is never held to a different bar than a real
+  provider candidate. Accommodation/flight/transport exclusion (rules 7-8)
+  is checked only against `GroundedCandidate.evidence.matched_category`
+  (the real provider category string), never against the AI proposal's own
+  free-text wording.
+- **`AICandidateReviewService.build_report`** now calls
+  `evaluate_promotion_eligibility` once per candidate and maps its result
+  onto `AICandidateReviewItem.quality_bucket`/`eligibility_reasons`/
+  `eligible_for_promotion`/`rejection_reasons` -- `rejection_reasons` is
+  now exactly the eligibility result's `failed_reasons` (the Step 170A
+  fixed "AI candidate promotion is not enabled yet." placeholder text is
+  gone, since promotion eligibility is now genuinely computed). The
+  service still takes no provider/LLM dependency and still never mutates
+  `PlanningState`.
+- **Model changes** (`backend/app/models/ai_candidate_review.py`):
+  `AICandidateReviewItem` gained `eligibility_reasons: list[str]` and
+  replaced its old "always False" field validator with a
+  `model_validator(mode="after")` that raises unless
+  `eligible_for_promotion` implies both `provider_grounded=True` and
+  empty `rejection_reasons` -- a structural safety net independent of the
+  eligibility service's own correctness. `AICandidateReviewReport`
+  replaced its old "always 0" validator with one that requires
+  `eligible_for_promotion` (the count) to exactly equal the number of
+  `items` actually marked eligible, so a report can never silently drift
+  from what it's summarizing.
+- **No new `PlanningState` field, no orchestrator change.** Exactly like
+  Section 57, the eligibility verdict is recomputed fresh on every
+  `GET /trips/{trip_id}/ai-candidate-review` call, never persisted, and
+  `PlanningOrchestrator`/`ExperiencePlannerService` remain completely
+  untouched -- confirmed by a dedicated test asserting
+  `experience_planner_service`'s source never references
+  `AICandidateReviewItem`, `ai_candidate_review_service`,
+  `ai_candidate_promotion_eligibility_service`, or `eligible_for_promotion`.
+- **Still not promotion**: nothing in this step adds a candidate to any
+  `DailyPlan`/`experiences` list. Step 170C is the step that would act on
+  `eligible_for_promotion`; this step only computes it honestly.
+
+## 59. AI Candidate Promotion Report (Step 170C)
+
+**Step 170C adds `AICandidatePromotionService`**
+(`backend/app/services/ai_candidate_promotion_service.py`) and
+`POST /trips/{trip_id}/ai-candidate-promotions`
+(`backend/app/api/routes/trips.py`), plus supporting models
+(`backend/app/models/ai_candidate_promotion.py`: `PromotedAICandidate`,
+`AICandidatePromotionReport`) and response schema
+(`backend/app/schemas/ai_candidate_promotion.py`:
+`AICandidatePromotionResponseData`), docs/13_llm_reasoning_pipeline.md
+section 82.
+
+- **`AICandidatePromotionService.build_promotion_report`** is pure/
+  read-only: it calls `AICandidateReviewService.build_report` (Section 57)
+  to get the already-computed eligibility verdict, then partitions
+  `review_report.items` by `eligible_for_promotion`. For each eligible
+  item it looks up the matching real `GroundedCandidate` on
+  `planning_state.candidate_grounding_batch` (by `proposal_id`, the same
+  id as `AICandidateReviewItem.candidate_id`) to carry over
+  `evidence.provider_place_id`/`evidence.provider_name` onto the new
+  `PromotedAICandidate` -- no new provider/grounding lookup, just reading
+  what's already stored. Every non-eligible item's id goes into
+  `skipped_candidate_ids` instead. It takes no provider/LLM dependency and
+  never mutates `planning_state`.
+- **`AICandidatePromotionService.apply_promotion`** is the only mutating
+  entry point: it calls `build_promotion_report` and assigns the result to
+  `planning_state.ai_candidate_promotion_report` (replacing whatever was
+  there before, never appending), then calls `planning_state.touch()`.
+  Mirroring every other mutation-flavored service (e.g.
+  `UserLockService.add_lock`), it does not persist itself -- the caller
+  (the API route) still owns `planning_state_repository.save`.
+- **`PlanningState.ai_candidate_promotion_report: AICandidatePromotionReport
+  | None`** (`backend/app/models/planning_state.py`) is a new field,
+  defaulting to `None`. It is set only by
+  `POST /trips/{trip_id}/ai-candidate-promotions` -- nothing in
+  `PlanningOrchestrator`/`generate_full_plan` touches it, and
+  `GET /trips/{trip_id}/ai-candidate-review` never sets it either
+  (confirmed by a dedicated test).
+- **Route**: `promote_ai_candidates` follows the existing
+  `create_trip_lock`/`delete_trip_lock` mutation pattern -- `trip_not_found_error`
+  for an unknown `trip_id`, otherwise `apply_promotion` then
+  `planning_state_repository.save`, returning
+  `AICandidatePromotionResponseData`. No other `PlanningState` field is
+  touched besides `ai_candidate_promotion_report` and
+  `metadata.updated_at`.
+- **`PromotedAICandidate`/`AICandidatePromotionReport` model validators**:
+  `PromotedAICandidate.promoted` is enforced `True` by a field validator
+  (an ineligible candidate never becomes a `PromotedAICandidate` object at
+  all -- it's an id in `skipped_candidate_ids` instead).
+  `AICandidatePromotionReport` has a `model_validator` requiring
+  `promoted_count`/`skipped_count`/`total_reviewed_candidates` to exactly
+  match their backing lists, and forbidding any id from appearing in both
+  `promoted_candidates` and `skipped_candidate_ids`.
+- **Idempotent**: `PromotedAICandidate.candidate_id` is deterministically
+  `f"promoted_{original_ai_candidate_id}"`, and the stored report is fully
+  replaced on every `POST` call -- calling it twice in a row yields the
+  same promoted candidates, never a duplicate.
+- **Confirmed unchanged**: `ExperiencePlannerService` scheduling
+  (Section 15), route-aware scheduling (Section 35-40), regeneration
+  refusal, and every existing candidate-quality/grounding/review test all
+  pass unmodified -- this step only adds a new write path that stores an
+  already-computed eligibility verdict, never a new itinerary mutation.
+
+## 61. Frontend AI Candidate Review/Promotion Panel (Step 170E, final Section 170 step)
+
+**Step 170E is a frontend-only step** (`frontend/app/page.tsx`,
+`frontend/lib/types.ts`, `frontend/lib/api.ts`) consuming the endpoints
+Sections 57-60 already built. No backend model, service, or route logic
+changed in this step.
+
+- **Backend endpoints consumed**: `GET /trips/{trip_id}/ai-candidate-review`
+  (new `getAiCandidateReview` API helper, called alongside the existing
+  `loadPlanResult` `Promise.all` fetch group) and
+  `POST /trips/{trip_id}/ai-candidate-promotions` (new `promoteAiCandidates`
+  helper, called only from the panel's "Refresh AI promotion report"
+  button). `PlanningState.ai_candidate_promotion_report` itself is read
+  from the existing `GET /trips/{trip_id}` response (`TripData.
+  planning_state.ai_candidate_promotion_report`, mirroring how
+  `accommodation_inventory_report`/`flight_inventory_report` are already
+  read) -- no new endpoint was needed for that field.
+- **New frontend types** (`frontend/lib/types.ts`): `AICandidateReviewItem`,
+  `AICandidateReviewReport`, `AICandidateReviewData`, `PromotedAICandidate`,
+  `AICandidatePromotionReport`, `AICandidatePromotionData` -- each a direct
+  field-for-field mirror of the corresponding backend Pydantic model
+  (Sections 57/59), so a TypeScript compile failure would immediately
+  surface any future drift. `ExperienceItem` also gained
+  `promoted_from_ai`/`original_ai_candidate_id`/`provider_place_id`/
+  `provider_source` (Section 60's new fields).
+- **`AICandidateReviewSection`** (`frontend/app/page.tsx`) renders the
+  review report's summary counts, then groups `items` into "Eligible for
+  scheduling"/"Not eligible", and (when
+  `ai_candidate_promotion_report` exists) "Promoted candidates"/"Skipped
+  candidates" using `promoted_candidates`/`skipped_candidate_ids`. Placed
+  in the "Data sources and candidates" group, immediately after
+  `FlightInventorySection` and before the destination candidate lists.
+  Handles every combination of missing data gracefully: no review report
+  at all (`status="no_candidate_data"`), a review report with zero items,
+  and a review report present but no promotion report yet -- each renders
+  an honest one-line message rather than crashing or guessing.
+- **`AIPromotedBadge`** (`frontend/app/page.tsx`) renders inside
+  `ScheduledExperienceCard` only when `experience.promoted_from_ai` is
+  `true` -- never for a normal provider-backed experience. Shows a fixed
+  "AI-suggested · Provider-grounded" label plus `provider_source`/
+  `original_ai_candidate_id` only when the backend actually returned them.
+- **No scheduling/regeneration behavior changed.** This step reads
+  already-existing endpoints/fields only; `PlanningOrchestrator`,
+  `ExperiencePlannerService`, and every backend route are untouched.
+
+## 60. Safe Scheduling Integration for Promoted AI Candidates (Step 170D)
+
+**Step 170D lets a promoted AI candidate (Section 59) join
+`ExperiencePlannerService`'s attraction scheduling pool**, and adds the
+orchestrator wiring needed for that to actually happen within a single
+`POST /generate` call, docs/13_llm_reasoning_pipeline.md section 83.
+
+- **`PlanningOrchestrator._run_ai_candidate_promotion_stage`** (new,
+  called from `run_destination_context_stage` right after the existing
+  Step 161B shadow discovery stage, and after `candidate_quality_report`
+  is computed) auto-calls `AICandidatePromotionService.apply_promotion`
+  and stores `ai_candidate_promotion_report` -- **before**
+  `run_experience_plan_stage` runs later in the same `generate_full_plan`
+  call. Without this, a promoted candidate could never reach scheduling at
+  all: `POST /trips/{trip_id}/ai-candidate-promotions` can only run after
+  `experience_plan` already exists, and there is no regeneration path back
+  into scheduling (Step 138's refusal is completely untouched). A pure
+  no-op whenever `ai_candidate_proposal_batch` is `None` (shadow mode
+  disabled, the default) -- `ai_candidate_promotion_report` stays `None`
+  exactly as it did before this step. Fails safe (mirrors every other
+  Step 166D-style stage): an unexpected exception from `apply_promotion`
+  is swallowed and the field stays whatever it already was, never
+  crashing generation. The explicit `POST /ai-candidate-promotions`
+  endpoint remains available and idempotent for a manual recompute.
+- **`ExperiencePlannerService.run`** (`backend/app/services/
+  experience_planner_service.py`) gained `_build_promoted_candidate_pois`,
+  called right after the existing quality-based selection
+  (`_select_candidates_by_quality`) and before must-visit/interest
+  tiering. It reads `planning_state.ai_candidate_promotion_report` only --
+  never `ai_candidate_proposal_batch`/`candidate_grounding_batch`/
+  `GroundedCandidate`/`AICandidateProposal` directly (a dedicated
+  source-inspection test enforces this one-way dependency: the planner may
+  depend on the already-vetted `PromotedAICandidate`/
+  `AICandidatePromotionReport` models, never on the raw proposal/grounding
+  internals or the eligibility/review services themselves). Each
+  `PromotedAICandidate` is converted into the exact same dict shape a real
+  `destination_context` candidate already uses (via
+  `_promoted_candidate_to_poi_dict`), then appended to the scheduling
+  pool -- from that point on it goes through identical geographic
+  day-grouping, nearest-neighbor ordering, and the pace-based per-day cap
+  as any other candidate. It is never re-scored by `CandidateQualityService`
+  (its tier was already verified once during Step 170B promotion) and
+  never allowed to bump an already-scheduled real candidate the planner's
+  existing rules would have picked anyway -- appending happens after real
+  candidates already claimed their priority-ordered position, so a
+  promoted candidate only ever fills a slot real candidates didn't
+  naturally win.
+- **Duplicate prevention** (`_candidate_identity_keys`): before merging, a
+  promoted candidate's `provider_place_id` *and* normalized name are both
+  checked against every real `candidate_pois` entry's own place id/name --
+  a match on either signal skips the promoted candidate as a duplicate
+  (with an honest assumption explaining why), so the same real place can
+  never be scheduled twice.
+- **Missing-field handling**: a `PromotedAICandidate` with no `coordinates`
+  (the one field required to place it geographically -- copied verbatim
+  from `GroundedCandidate.evidence.coordinates` at promotion time, Section
+  59) is skipped with an explicit assumption rather than scheduled with a
+  guessed location. No coordinate, rating, opening hour, price, route, or
+  description is ever invented at this layer either.
+- **Provenance is preserved on the schedule itself**: `ExperienceItem`
+  (`backend/app/models/planning_state.py`) gained
+  `promoted_from_ai: bool = False`, `original_ai_candidate_id`,
+  `provider_place_id`, and `provider_source` -- all `None`/`False` for a
+  normally-scheduled real candidate, and set only for a candidate that
+  came from `ai_candidate_promotion_report`. `_build_experience_item`'s
+  `why_included`/`claim_sources` text is adjusted accordingly (attributing
+  the claim to `ai_candidate_promotion_report.promoted_candidates` instead
+  of `destination_context.candidate_pois` for a promoted item).
+- **Byte-for-byte no-op by default**: when `ai_candidate_promotion_report`
+  is absent or has zero promoted candidates, `_build_promoted_candidate_pois`
+  returns `([], [])` and scheduling behaves exactly as it did before Step
+  170D -- confirmed by dedicated tests comparing a baseline run against one
+  with an explicitly empty/absent report.
+- **Unaffected**: accommodation/flight inventory (Sections 44/56),
+  route-aware scheduling (Section 35-40), and regeneration refusal (Step
+  138) -- none of their code paths changed, and the full existing test
+  suite (candidate-quality, candidate-grounding, accommodation, flight,
+  routing, regeneration-refusal) passes unmodified.

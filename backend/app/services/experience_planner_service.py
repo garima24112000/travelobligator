@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import timedelta
 from typing import Any
 
+from app.models.ai_candidate_promotion import PromotedAICandidate
 from app.models.candidate_quality import CandidateQualityScore, CandidateQualityTier
 from app.models.common import (
     ChecklistItemStatus,
@@ -287,6 +288,141 @@ def _distance_and_quality_sort_key(
     return (_distance_bucket(distance_km), -rank, -total_score)
 
 
+# Step 170D (docs/13_llm_reasoning_pipeline.md, docs/14_backend_architecture.md):
+# safe scheduling integration for AI candidates that already cleared Step
+# 170B's deterministic eligibility rules and were materialized by Step
+# 170C's `AICandidatePromotionService` into
+# `PlanningState.ai_candidate_promotion_report`. A `PromotedAICandidate` is
+# never a special case here -- it is converted into the exact same
+# dict-shaped candidate representation `destination_context.candidate_pois`
+# already uses, then merged into the scheduling pool so it goes through
+# identical must-visit/interest tiering, geographic day-grouping, and
+# nearest-neighbor ordering as every real provider candidate. It never
+# re-enters `CandidateQualityService` (its quality tier was already
+# verified once, during promotion) and never bypasses the pace-based
+# per-day cap. If `PlanningState.ai_candidate_promotion_report` is absent
+# or has zero promoted candidates, this is a complete no-op and scheduling
+# behaves exactly as it did before Step 170D.
+_PROMOTED_CANDIDATE_MISSING_COORDINATES_WARNING_TEMPLATE = (
+    "Promoted AI candidate '{name}' is missing provider-backed coordinates, "
+    "so it was skipped rather than scheduled with a guessed location."
+)
+_PROMOTED_CANDIDATE_DUPLICATE_WARNING_TEMPLATE = (
+    "Promoted AI candidate '{name}' duplicates an existing provider "
+    "candidate and was not scheduled a second time."
+)
+
+
+def _normalize_candidate_name(name: str) -> str:
+    return name.strip().lower()
+
+
+def _candidate_identity_keys(poi: dict[str, Any]) -> set[tuple[str, str]]:
+    """Deterministic dedup keys for one candidate dict -- both a real
+    provider place id (`place_id`/`provider_place_id`) *and* a normalized
+    name, whichever are present, so two candidates count as duplicates if
+    they share either signal (e.g. a real OSM candidate always carries a
+    `place_id`, while a promoted candidate missing `provider_place_id`
+    would otherwise only be comparable by name). Never invents an id;
+    returns an empty set only when a candidate has neither, in which case
+    it can't be deduplicated against.
+    """
+    keys: set[tuple[str, str]] = set()
+    place_id = poi.get("place_id") or poi.get("provider_place_id")
+    if place_id:
+        keys.add(("place_id", str(place_id)))
+    name = poi.get("name")
+    if name:
+        keys.add(("name", _normalize_candidate_name(str(name))))
+    return keys
+
+
+def _promoted_candidate_to_poi_dict(promoted: PromotedAICandidate) -> dict[str, Any] | None:
+    """Converts one `PromotedAICandidate` into the same dict shape
+    `_build_experience_item`/`_poi_coordinates`/`_order_candidates` already
+    expect from a `destination_context` candidate. Every value here is
+    copied verbatim from already-computed, provider-backed fields -- no
+    coordinate, rating, opening hour, price, route, or description is ever
+    invented. Returns `None` (skip, never fabricate) when the candidate is
+    missing the one field required to schedule it geographically:
+    coordinates.
+    """
+    if promoted.coordinates is None:
+        return None
+    return {
+        # Deliberately NOT defaulted to `promoted.candidate_id` (a
+        # promotion-internal id, not a real provider place id) -- when
+        # `provider_place_id` is unavailable, `_candidate_identity_key`
+        # must fall back to a normalized-name dedup match instead of a
+        # meaningless internal id that could never collide with anything.
+        "place_id": promoted.provider_place_id,
+        "provider_place_id": promoted.provider_place_id,
+        "name": promoted.name,
+        "category": promoted.category or _DEFAULT_CATEGORY,
+        "coordinates": {"lat": promoted.coordinates.lat, "lng": promoted.coordinates.lng},
+        "source": promoted.provider_source or promoted.source,
+        "data_status": promoted.data_status or DataStatus.LIVE.value,
+        "confidence": promoted.confidence if promoted.confidence is not None else 0.0,
+        "promoted_from_ai": True,
+        "original_ai_candidate_id": promoted.original_ai_candidate_id,
+        "provider_source": promoted.provider_source,
+    }
+
+
+def _build_promoted_candidate_pois(
+    planning_state: PlanningState,
+    candidate_pois: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Builds the list of promoted-AI-candidate dicts eligible to join the
+    attraction scheduling pool (Step 170D), plus any honest skip warnings.
+
+    Only ever reads `planning_state.ai_candidate_promotion_report` (already
+    computed by `AICandidatePromotionService` -- this never calls it, never
+    calls a provider/LLM, and never mutates `planning_state`). Returns
+    `([], [])` whenever the report is absent or has zero promoted
+    candidates, so default behavior (no promotion report, or an empty one)
+    is byte-for-byte unchanged from before Step 170D.
+
+    Every promoted candidate missing required coordinates is skipped with
+    an explicit warning instead of being scheduled with a guessed
+    location. Every promoted candidate whose `provider_place_id`/name
+    already matches a real candidate already in `candidate_pois` is
+    skipped as a duplicate -- promotion never causes the same real place to
+    be scheduled twice.
+    """
+    promotion_report = planning_state.ai_candidate_promotion_report
+    if promotion_report is None or not promotion_report.promoted_candidates:
+        return [], []
+
+    existing_keys: set[tuple[str, str]] = set()
+    for poi in candidate_pois:
+        existing_keys |= _candidate_identity_keys(poi)
+
+    promoted_pois: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    seen_keys: set[tuple[str, str]] = set()
+
+    for promoted in promotion_report.promoted_candidates:
+        candidate_dict = _promoted_candidate_to_poi_dict(promoted)
+        if candidate_dict is None:
+            warnings.append(
+                _PROMOTED_CANDIDATE_MISSING_COORDINATES_WARNING_TEMPLATE.format(name=promoted.name)
+            )
+            continue
+
+        candidate_keys = _candidate_identity_keys(candidate_dict)
+        if candidate_keys & (existing_keys | seen_keys):
+            warnings.append(
+                _PROMOTED_CANDIDATE_DUPLICATE_WARNING_TEMPLATE.format(name=promoted.name)
+            )
+            continue
+        seen_keys |= candidate_keys
+
+        promoted_pois.append(candidate_dict)
+
+    return promoted_pois, warnings
+
+
 class ExperiencePlannerService(PlanningStageService):
     """Owns `experience_plan`, `experience_cards`, and itinerary decision
     cards (docs/14_backend_architecture.md section 13).
@@ -455,6 +591,26 @@ class ExperiencePlannerService(PlanningStageService):
     and to plan-level stay-area guidance below -- those keep excluding only
     `rejected` candidates, never `low_priority` ones, since low-priority
     location candidates are still safe to show as nearby-only suggestions.
+
+    Step 170D (docs/13_llm_reasoning_pipeline.md, docs/14_backend_
+    architecture.md): after quality-based selection, any already-promoted
+    AI candidates on `PlanningState.ai_candidate_promotion_report` (Step
+    170C -- themselves only ever produced from a provider-grounded,
+    quality-approved candidate that already cleared Step 170B's
+    deterministic promotion rules) are merged into the same scheduling pool as
+    real `candidate_pois`, going through identical must-visit/interest
+    tiering, geographic day-grouping, and per-day pace caps -- never a
+    special case, never re-scored by `CandidateQualityService`, never
+    allowed to bump an already-scheduled real candidate out of a slot it
+    would otherwise win. A promoted candidate missing coordinates, or
+    duplicating a real candidate already in `candidate_pois`, is skipped
+    with an honest assumption/warning instead of being scheduled with a
+    guessed location or scheduled twice. Every resulting `ExperienceItem`
+    scheduled this way carries `promoted_from_ai=True` plus
+    `original_ai_candidate_id`/`provider_place_id`/`provider_source` so its
+    provenance is never lost. If `ai_candidate_promotion_report` is absent
+    or has zero promoted candidates, scheduling is a byte-for-byte no-op
+    versus pre-170D behavior.
     """
 
     def run(self, planning_state: PlanningState) -> PlanningState:
@@ -505,6 +661,25 @@ class ExperiencePlannerService(PlanningStageService):
         # honestly instead of silently under-filling it.
         quality_excluded_count = len(candidate_pois) - len(scheduling_candidate_pois)
 
+        # Step 170D: merge in any already-promoted AI candidates. This is a
+        # complete no-op when `ai_candidate_promotion_report` is absent or
+        # has zero promoted candidates -- `promoted_pois` stays `[]` and
+        # scheduling proceeds exactly as before Step 170D. Appended after
+        # quality selection (never re-filtered by CandidateQualityService --
+        # their quality tier was already verified once during promotion)
+        # and before must-visit/interest tiering, so a promoted candidate
+        # is treated identically to any other candidate from this point on:
+        # it can anchor a day if it matches a must-visit/interest term, or
+        # simply fill a remaining slot if the planner's existing geographic
+        # nearest-neighbor fill naturally picks it. It never bumps an
+        # already-scheduled real candidate out of a slot it would otherwise
+        # have won.
+        promoted_pois, promoted_candidate_warnings = _build_promoted_candidate_pois(
+            planning_state, candidate_pois
+        )
+        scheduling_candidate_pois = scheduling_candidate_pois + promoted_pois
+        has_any_attraction_candidates = bool(candidate_pois) or bool(promoted_pois)
+
         ordered_pois, must_visit_ids, interest_ids = _order_candidates(
             scheduling_candidate_pois, must_visit_terms, interest_terms
         )
@@ -517,7 +692,7 @@ class ExperiencePlannerService(PlanningStageService):
             day_pois = _order_day_by_distance(day_groups[day_number - 1])
 
             warnings: list[str] = []
-            if not candidate_pois:
+            if not has_any_attraction_candidates:
                 warnings.append(
                     "No attraction candidates are available yet, so this day is empty."
                 )
@@ -561,12 +736,21 @@ class ExperiencePlannerService(PlanningStageService):
             "optimization, and route ordering, timing, and opening-hours feasibility "
             "are not implemented yet."
         ]
-        if not candidate_pois:
+        if not has_any_attraction_candidates:
             assumptions.insert(
                 0,
                 "No experiences could be scheduled because no provider-backed attraction "
                 "candidates are available.",
             )
+        if promoted_pois:
+            assumptions.append(
+                f"{len(promoted_pois)} additional candidate"
+                f"{'s' if len(promoted_pois) != 1 else ''} came from "
+                "ai_candidate_promotion_report.promoted_candidates -- each one is a "
+                "provider-grounded, quality-approved AI-proposed candidate, scheduled "
+                "using the exact same rules as every other candidate."
+            )
+        assumptions.extend(promoted_candidate_warnings)
 
         stay_area_guidance = _build_stay_area_guidance(
             daily_plans, candidate_accommodation_pois, accommodation_quality_lookup
@@ -589,7 +773,7 @@ class ExperiencePlannerService(PlanningStageService):
             route_feasibility_context=route_feasibility_context,
             provider_coverage=planning_state.provider_coverage.model_copy(),
             assumptions=assumptions,
-            confidence=0.35 if candidate_pois else 0.0,
+            confidence=0.35 if has_any_attraction_candidates else 0.0,
         )
 
         planning_state.experience_plan = experience_plan
@@ -1588,6 +1772,9 @@ def _build_experience_item(
     coordinates = _poi_coordinates(poi)
     confidence = float(poi.get("confidence") or 0.0)
     data_status_value = poi.get("data_status") or DataStatus.LIVE.value
+    # Step 170D: set only on a dict built by `_promoted_candidate_to_poi_dict`
+    # -- never on a real `destination_context.candidate_pois` entry.
+    promoted_from_ai = bool(poi.get("promoted_from_ai"))
 
     if id(poi) in must_visit_ids:
         why_included = "Matches your must-visit request."
@@ -1595,6 +1782,12 @@ def _build_experience_item(
         why_included = (
             "Matches your interests based on this candidate's provider-backed "
             "name, category, and address."
+        )
+    elif promoted_from_ai:
+        why_included = (
+            "Promoted from an AI-proposed candidate that was independently "
+            "provider-grounded and quality-approved (see "
+            "ai_candidate_promotion_report)."
         )
     else:
         why_included = "Selected from provider-backed attraction candidates."
@@ -1605,6 +1798,16 @@ def _build_experience_item(
         if source and "openstreetmap" in source
         else ClaimSourceType.PROVIDER_FACT
     )
+
+    if promoted_from_ai:
+        claim = (
+            f"{name} is a real, provider-grounded place promoted from an AI-proposed "
+            "candidate via ai_candidate_promotion_report."
+        )
+        based_on = ["ai_candidate_promotion_report.promoted_candidates"]
+    else:
+        claim = f"{name} is a real place from destination_context.candidate_pois."
+        based_on = ["destination_context.candidate_pois"]
 
     return ExperienceItem(
         name=name,
@@ -1617,10 +1820,14 @@ def _build_experience_item(
         ),
         claim_sources=[
             ClaimSource(
-                claim=f"{name} is a real place from destination_context.candidate_pois.",
+                claim=claim,
                 source_type=source_type,
                 source=source,
-                based_on=["destination_context.candidate_pois"],
+                based_on=based_on,
             )
         ],
+        promoted_from_ai=promoted_from_ai,
+        original_ai_candidate_id=poi.get("original_ai_candidate_id") if promoted_from_ai else None,
+        provider_place_id=poi.get("provider_place_id") if promoted_from_ai else None,
+        provider_source=poi.get("provider_source") if promoted_from_ai else None,
     )

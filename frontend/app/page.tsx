@@ -8,6 +8,7 @@ import {
   createTripLock,
   deleteTripLock,
   generatePlan,
+  getAiCandidateReview,
   getDestinationContext,
   getExperiencePlan,
   getGenerationProgress,
@@ -17,12 +18,16 @@ import {
   getTrip,
   getTripSummary,
   getValidationReport,
+  promoteAiCandidates,
   requestRegeneration,
   submitTripFeedback,
 } from "@/lib/api";
 import type {
   AccommodationInventoryReport,
   AccommodationSuggestion,
+  AICandidatePromotionReport,
+  AICandidateReviewItem,
+  AICandidateReviewReport,
   CandidatePoi,
   ChecklistItemStatus,
   CurrencyContext,
@@ -41,6 +46,7 @@ import type {
   PlanDiffPreview,
   ProviderCoverageData,
   ProviderStatusEntry,
+  PromotedAICandidate,
   ReadinessChecklist,
   RegenerationAttempt,
   RegenerationReadiness,
@@ -97,6 +103,8 @@ type PlanResult = {
   regenerationAttempts: RegenerationAttempt[];
   accommodationInventoryReport: AccommodationInventoryReport | null;
   flightInventoryReport: FlightInventoryReport | null;
+  aiCandidateReviewReport: AICandidateReviewReport | null;
+  aiCandidatePromotionReport: AICandidatePromotionReport | null;
 };
 
 function parseCommaList(value: string): string[] {
@@ -873,6 +881,40 @@ function ExperienceMapLinks({ coordinates }: { coordinates: GeoPoint | null }) {
 }
 
 /**
+ * Badge for one scheduled experience that came from an already-promoted
+ * AI candidate (Step 170D, docs/16_frontend_architecture.md). Rendered
+ * only when the backend itself set `promoted_from_ai: true` -- a normal
+ * provider-backed experience never shows this badge. The label is
+ * deliberately "AI-suggested · provider-grounded" and implies no
+ * independent verification, certainty, or official-provider status: this
+ * candidate was proposed by an AI, then independently matched against
+ * real provider/open data and approved by the same quality rules every
+ * other candidate must pass -- it is not a claim of price, rating,
+ * opening hours, route, or booking status, none of which exist on this
+ * model.
+ */
+function AIPromotedBadge({ experience }: { experience: ExperienceItem }) {
+  return (
+    <div className="mt-1 flex flex-wrap items-center gap-2">
+      <span className="inline-flex items-center rounded-full border border-violet-300/40 bg-violet-950/30 px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-violet-200">
+        AI-suggested · Provider-grounded
+      </span>
+      {(experience.provider_source || experience.original_ai_candidate_id) && (
+        <span className="text-[11px] text-slate-500">
+          {experience.provider_source ? `Source: ${experience.provider_source}` : ""}
+          {experience.provider_source && experience.original_ai_candidate_id
+            ? " · "
+            : ""}
+          {experience.original_ai_candidate_id
+            ? `Candidate: ${experience.original_ai_candidate_id}`
+            : ""}
+        </span>
+      )}
+    </div>
+  );
+}
+
+/**
  * Compact card for a single scheduled experience. `orderNumber` is the
  * full-day itinerary position (1-based index into the day's `experiences`
  * array), matching the numbering used by `DayMapPreview`'s markers -- not a
@@ -979,6 +1021,9 @@ function ScheduledExperienceCard({
               ({experience.category})
             </span>
           </p>
+          {experience.promoted_from_ai && (
+            <AIPromotedBadge experience={experience} />
+          )}
           {experience.why_included && (
             <p className="mt-1 text-xs text-slate-400">
               {experience.why_included}
@@ -1994,6 +2039,371 @@ function FlightInventorySection({
   );
 }
 
+// Human-readable label for one AI candidate's grounding_status (Step
+// 170A/170B). `grounding_status` on the backend holds either a
+// CandidateGroundingMatchType value (a real match) or a
+// CandidateGroundingRejectReason value (why grounding failed) -- this only
+// ever restates that value in a more readable form, never invents a
+// judgment beyond what the backend already computed.
+function groundingStatusLabel(groundingStatus: string | null): string {
+  if (!groundingStatus) return "Not grounded yet";
+  return groundingStatus.replaceAll("_", " ");
+}
+
+/**
+ * One AI candidate review card (Step 170A/170B, docs/16_frontend_
+ * architecture.md). Renders only fields the backend actually returned --
+ * `quality_bucket`/`grounding_status` only when present, and
+ * `rejection_reasons`/`warnings`/`eligibility_reasons` verbatim, never
+ * paraphrased into a stronger claim, and never implies independent
+ * verification, a confirmed booking, certainty, or official-provider
+ * status -- this is a review of an AI-suggested, possibly
+ * provider-grounded candidate, not a confirmed itinerary item.
+ */
+function AICandidateReviewCard({ item }: { item: AICandidateReviewItem }) {
+  return (
+    <li className="rounded-lg border border-white/10 bg-slate-900/60 p-3 text-sm">
+      <p className="font-medium text-slate-100">
+        {item.name}
+        {item.category && (
+          <span className="font-normal text-slate-400"> ({item.category})</span>
+        )}
+      </p>
+      <p className="mt-1 text-[11px] uppercase tracking-wide text-slate-500">
+        {item.source} · {item.provider_grounded ? "Provider-grounded" : "Ungrounded"}
+        {item.quality_bucket ? ` · Quality: ${item.quality_bucket}` : ""}
+      </p>
+      <p className="mt-1 text-[11px] uppercase tracking-wide text-slate-500">
+        Grounding: {groundingStatusLabel(item.grounding_status)}
+      </p>
+      <p className="mt-1 text-xs font-semibold text-slate-300">
+        {item.eligible_for_promotion ? "Eligible for scheduling" : "Needs review"}
+      </p>
+      {item.eligibility_reasons.length > 0 && (
+        <ul className="mt-1 list-disc pl-4 text-xs text-emerald-300/80">
+          {item.eligibility_reasons.map((reason, index) => (
+            <li key={`${item.candidate_id}-eligible-${index}`}>{reason}</li>
+          ))}
+        </ul>
+      )}
+      {item.rejection_reasons.length > 0 && (
+        <ul className="mt-1 list-disc pl-4 text-xs text-amber-300/90">
+          {item.rejection_reasons.map((reason, index) => (
+            <li key={`${item.candidate_id}-rejection-${index}`}>{reason}</li>
+          ))}
+        </ul>
+      )}
+      {item.warnings.length > 0 && (
+        <ul className="mt-1 list-disc pl-4 text-xs text-slate-400">
+          {item.warnings.map((warning, index) => (
+            <li key={`${item.candidate_id}-warning-${index}`}>{warning}</li>
+          ))}
+        </ul>
+      )}
+    </li>
+  );
+}
+
+/**
+ * One promoted AI candidate card (Step 170C/170D). A promoted candidate
+ * is a provider-grounded, quality-approved candidate that is safe for
+ * future scheduling consideration -- it is never itself a claim that the
+ * candidate is booked, scheduled, or itinerary-ready; whether it actually
+ * appears in a day's itinerary is decided entirely by the backend's
+ * existing ExperiencePlannerService rules (Step 170D).
+ */
+function PromotedAICandidateCard({
+  candidate,
+}: {
+  candidate: PromotedAICandidate;
+}) {
+  return (
+    <li className="rounded-lg border border-violet-300/30 bg-violet-950/10 p-3 text-sm">
+      <p className="font-medium text-slate-100">
+        {candidate.name}
+        {candidate.category && (
+          <span className="font-normal text-slate-400">
+            {" "}
+            ({candidate.category})
+          </span>
+        )}
+      </p>
+      <p className="mt-1 text-[11px] uppercase tracking-wide text-violet-200">
+        Promoted candidate
+        {candidate.quality_bucket ? ` · Quality: ${candidate.quality_bucket}` : ""}
+      </p>
+      <p className="mt-1 text-[11px] uppercase tracking-wide text-slate-500">
+        Grounding: {groundingStatusLabel(candidate.grounding_status)}
+        {candidate.provider_source ? ` · Source: ${candidate.provider_source}` : ""}
+      </p>
+      {candidate.promotion_reasons.length > 0 && (
+        <ul className="mt-1 list-disc pl-4 text-xs text-emerald-300/80">
+          {candidate.promotion_reasons.map((reason, index) => (
+            <li key={`${candidate.candidate_id}-reason-${index}`}>{reason}</li>
+          ))}
+        </ul>
+      )}
+      {candidate.warnings.length > 0 && (
+        <ul className="mt-1 list-disc pl-4 text-xs text-slate-400">
+          {candidate.warnings.map((warning, index) => (
+            <li key={`${candidate.candidate_id}-warning-${index}`}>{warning}</li>
+          ))}
+        </ul>
+      )}
+    </li>
+  );
+}
+
+/**
+ * AI candidate review/promotion panel (Section 170, docs/13_llm_
+ * reasoning_pipeline.md sections 80-83, docs/14_backend_architecture.md
+ * sections 57-60). Renders `GET /trips/{trip_id}/ai-candidate-review`
+ * (always read-only, never mutates anything) and, when it exists, the
+ * already-computed `ai_candidate_promotion_report`.
+ *
+ * This panel never adds a candidate to the itinerary itself -- scheduling
+ * stays entirely backend-owned (Step 170D): "Eligible for scheduling" and
+ * "Promoted" are both informational statuses only, never a claim of a
+ * confirmed booking, independent verification by the travel provider,
+ * certainty, or a settled final decision. A candidate reaches "Promoted"
+ * only after being AI-proposed, provider-grounded, quality-approved, and
+ * deterministically promoted by the backend -- an AI suggestion alone is
+ * never enough.
+ */
+function AICandidateReviewSection({
+  tripId,
+  reviewReport,
+  promotionReport,
+  onPromotionReportChange,
+}: {
+  tripId: string;
+  reviewReport: AICandidateReviewReport | null;
+  promotionReport: AICandidatePromotionReport | null;
+  onPromotionReportChange: (report: AICandidatePromotionReport) => void;
+}) {
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [refreshError, setRefreshError] = useState<string | null>(null);
+
+  async function handleRefreshPromotions() {
+    setIsRefreshing(true);
+    setRefreshError(null);
+    try {
+      const data = await promoteAiCandidates(tripId);
+      onPromotionReportChange(data.ai_candidate_promotion_report);
+    } catch (err) {
+      setRefreshError(
+        err instanceof ApiRequestError
+          ? err.message
+          : "Something went wrong while refreshing the AI promotion report.",
+      );
+    } finally {
+      setIsRefreshing(false);
+    }
+  }
+
+  const hasCandidateData =
+    reviewReport !== null && reviewReport.status !== "no_candidate_data";
+  const items = reviewReport?.items ?? [];
+  const eligibleItems = items.filter((item) => item.eligible_for_promotion);
+  const notEligibleItems = items.filter((item) => !item.eligible_for_promotion);
+  const promotedCandidates = promotionReport?.promoted_candidates ?? [];
+  const skippedIds = promotionReport?.skipped_candidate_ids ?? [];
+
+  return (
+    <div className="rounded-2xl border border-white/10 bg-white/5 p-5">
+      <h2 className="text-lg font-semibold">AI candidate review</h2>
+      <p className="mt-1 text-xs text-amber-300/90">
+        AI-suggested candidates are never scheduled directly. Only
+        provider-grounded, quality-approved candidates can become eligible
+        for scheduling, and scheduling itself stays fully backend-owned.
+      </p>
+
+      {!hasCandidateData ? (
+        <p className="mt-3 text-sm text-slate-300">
+          No AI candidate data is available for this trip yet.
+        </p>
+      ) : (
+        <>
+          <dl className="mt-3 grid grid-cols-2 gap-3 text-sm sm:grid-cols-4">
+            <div className="rounded-lg border border-white/10 bg-slate-900/60 p-3">
+              <dt className="text-[11px] uppercase tracking-wide text-slate-500">
+                Total AI candidates
+              </dt>
+              <dd className="mt-1 font-semibold text-slate-100">
+                {reviewReport!.total_ai_candidates}
+              </dd>
+            </div>
+            <div className="rounded-lg border border-white/10 bg-slate-900/60 p-3">
+              <dt className="text-[11px] uppercase tracking-wide text-slate-500">
+                Provider-grounded
+              </dt>
+              <dd className="mt-1 font-semibold text-slate-100">
+                {reviewReport!.grounded_candidates}
+              </dd>
+            </div>
+            <div className="rounded-lg border border-white/10 bg-slate-900/60 p-3">
+              <dt className="text-[11px] uppercase tracking-wide text-slate-500">
+                Ungrounded
+              </dt>
+              <dd className="mt-1 font-semibold text-slate-100">
+                {reviewReport!.ungrounded_candidates}
+              </dd>
+            </div>
+            <div className="rounded-lg border border-white/10 bg-slate-900/60 p-3">
+              <dt className="text-[11px] uppercase tracking-wide text-slate-500">
+                Eligible for scheduling
+              </dt>
+              <dd className="mt-1 font-semibold text-slate-100">
+                {reviewReport!.eligible_for_promotion}
+              </dd>
+            </div>
+            {promotionReport && (
+              <>
+                <div className="rounded-lg border border-white/10 bg-slate-900/60 p-3">
+                  <dt className="text-[11px] uppercase tracking-wide text-slate-500">
+                    Promoted candidates
+                  </dt>
+                  <dd className="mt-1 font-semibold text-slate-100">
+                    {promotionReport.promoted_count}
+                  </dd>
+                </div>
+                <div className="rounded-lg border border-white/10 bg-slate-900/60 p-3">
+                  <dt className="text-[11px] uppercase tracking-wide text-slate-500">
+                    Skipped candidates
+                  </dt>
+                  <dd className="mt-1 font-semibold text-slate-100">
+                    {promotionReport.skipped_count}
+                  </dd>
+                </div>
+              </>
+            )}
+          </dl>
+
+          <div className="mt-4 flex flex-wrap items-center gap-3">
+            <button
+              type="button"
+              onClick={() => void handleRefreshPromotions()}
+              disabled={isRefreshing}
+              className="rounded-full border border-cyan-300/40 bg-slate-900 px-3 py-1 text-xs font-semibold text-cyan-200 transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {isRefreshing ? "Refreshing..." : "Refresh AI promotion report"}
+            </button>
+            {refreshError && (
+              <p className="text-xs text-red-300">{refreshError}</p>
+            )}
+          </div>
+          <p className="mt-2 text-[11px] text-slate-500">
+            Refreshing only recomputes which already-grounded candidates are
+            eligible/promoted -- it never calls an AI provider and never
+            schedules anything into the itinerary by itself.
+          </p>
+
+          <div className="mt-4">
+            <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+              Eligible for scheduling
+            </p>
+            {eligibleItems.length === 0 ? (
+              <p className="mt-2 text-xs text-slate-400">
+                No AI candidates are currently eligible for scheduling.
+              </p>
+            ) : (
+              <ul className="mt-2 flex flex-col gap-2">
+                {eligibleItems.map((item) => (
+                  <AICandidateReviewCard key={item.candidate_id} item={item} />
+                ))}
+              </ul>
+            )}
+          </div>
+
+          <div className="mt-4">
+            <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+              Not eligible
+            </p>
+            {notEligibleItems.length === 0 ? (
+              <p className="mt-2 text-xs text-slate-400">
+                No AI candidates were reviewed as not eligible.
+              </p>
+            ) : (
+              <ul className="mt-2 flex flex-col gap-2">
+                {notEligibleItems.map((item) => (
+                  <AICandidateReviewCard key={item.candidate_id} item={item} />
+                ))}
+              </ul>
+            )}
+          </div>
+
+          <div className="mt-4">
+            <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+              Promoted candidates
+            </p>
+            {!promotionReport ? (
+              <p className="mt-2 text-xs text-slate-400">
+                No promotion report has been computed yet.
+              </p>
+            ) : promotedCandidates.length === 0 ? (
+              <p className="mt-2 text-xs text-slate-400">
+                No candidates have been promoted yet.
+              </p>
+            ) : (
+              <ul className="mt-2 flex flex-col gap-2">
+                {promotedCandidates.map((candidate) => (
+                  <PromotedAICandidateCard
+                    key={candidate.candidate_id}
+                    candidate={candidate}
+                  />
+                ))}
+              </ul>
+            )}
+          </div>
+
+          <div className="mt-4">
+            <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+              Skipped candidates
+            </p>
+            {!promotionReport ? (
+              <p className="mt-2 text-xs text-slate-400">
+                No promotion report has been computed yet.
+              </p>
+            ) : skippedIds.length === 0 ? (
+              <p className="mt-2 text-xs text-slate-400">
+                No candidates were skipped.
+              </p>
+            ) : (
+              <ul className="mt-2 flex flex-col gap-1 text-xs text-slate-400">
+                {skippedIds.map((candidateId) => {
+                  const matchingItem = items.find(
+                    (item) => item.candidate_id === candidateId,
+                  );
+                  return (
+                    <li key={candidateId}>
+                      {matchingItem
+                        ? `${matchingItem.name}${
+                            matchingItem.category
+                              ? ` (${matchingItem.category})`
+                              : ""
+                          }`
+                        : candidateId}
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </div>
+
+          <p className="mt-4 text-xs text-slate-500">
+            A promoted candidate is not an itinerary stop by itself -- it
+            only becomes a scheduled experience if the backend&apos;s
+            existing geographic/quality/pace rules pick it, exactly like
+            any real provider candidate. A scheduled experience that came
+            from a promoted candidate is labeled &ldquo;AI-suggested ·
+            Provider-grounded&rdquo; in the itinerary above.
+          </p>
+        </>
+      )}
+    </div>
+  );
+}
+
 function changePreviewRegenerationLabel(
   wouldRequireRegeneration: boolean | null,
 ): string {
@@ -2944,6 +3354,7 @@ async function loadPlanResult(tripId: string): Promise<PlanResult> {
     trip,
     regenerationReadiness,
     regenerationAttempts,
+    aiCandidateReview,
   ] = await Promise.all([
     getDestinationContext(tripId),
     getExperiencePlan(tripId),
@@ -2952,6 +3363,7 @@ async function loadPlanResult(tripId: string): Promise<PlanResult> {
     getTrip(tripId),
     getRegenerationReadiness(tripId),
     getRegenerationAttempts(tripId),
+    getAiCandidateReview(tripId),
   ]);
 
   return {
@@ -2986,6 +3398,9 @@ async function loadPlanResult(tripId: string): Promise<PlanResult> {
     accommodationInventoryReport:
       trip.planning_state.accommodation_inventory_report,
     flightInventoryReport: trip.planning_state.flight_inventory_report,
+    aiCandidateReviewReport: aiCandidateReview.ai_candidate_review_report,
+    aiCandidatePromotionReport:
+      trip.planning_state.ai_candidate_promotion_report,
   };
 }
 
@@ -4031,6 +4446,19 @@ export default function Home() {
             />
 
             <FlightInventorySection report={result.flightInventoryReport} />
+
+            <AICandidateReviewSection
+              tripId={result.summary.trip_id}
+              reviewReport={result.aiCandidateReviewReport}
+              promotionReport={result.aiCandidatePromotionReport}
+              onPromotionReportChange={(report) =>
+                setResult((previous) =>
+                  previous
+                    ? { ...previous, aiCandidatePromotionReport: report }
+                    : previous,
+                )
+              }
+            />
 
             <CandidatePoiSection
               title="Destination candidate attractions"

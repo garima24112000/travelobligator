@@ -150,6 +150,13 @@ export type CurrencyContext = {
   warnings: string[];
 };
 
+// `promoted_from_ai`/`original_ai_candidate_id`/`provider_place_id`/
+// `provider_source` (Step 170D, backend: app.models.planning_state.
+// ExperienceItem) are set only for an experience that came from an
+// already-promoted AI candidate (Step 170C) -- `false`/`null` for a
+// normally-scheduled real provider candidate. They never carry a rating,
+// opening hour, price, route, or booking link; they only ever restate
+// identifiers already present on the underlying PromotedAICandidate.
 export type ExperienceItem = {
   experience_id: string;
   name: string;
@@ -160,6 +167,10 @@ export type ExperienceItem = {
   estimated_duration_minutes: number | null;
   why_included: string | null;
   confidence: number;
+  promoted_from_ai: boolean;
+  original_ai_candidate_id: string | null;
+  provider_place_id: string | null;
+  provider_source: string | null;
 };
 
 export type RestaurantSuggestion = {
@@ -659,11 +670,106 @@ export type GenerationProgressData = {
   generation_progress: GenerationProgress;
 };
 
+// One AI-proposed candidate's review state (Step 170A, extended with
+// deterministic eligibility in Step 170B; backend:
+// app.models.ai_candidate_review.AICandidateReviewItem). Never carries a
+// price, rating, opening hour, route time, review count, booking link, or
+// safety score -- those fields don't exist on the backend model this
+// mirrors. `eligible_for_promotion=true` means this candidate cleared
+// deterministic provider-grounding/quality rules -- it is not a claim
+// that the candidate is booked, verified, or has been scheduled.
+export type AICandidateReviewItem = {
+  candidate_id: string;
+  name: string;
+  category: string | null;
+  source: string;
+  ai_proposed: boolean;
+  provider_grounded: boolean;
+  quality_bucket: string | null;
+  grounding_status: string | null;
+  eligible_for_promotion: boolean;
+  eligibility_reasons: string[];
+  rejection_reasons: string[];
+  warnings: string[];
+};
+
+// Read-only AI candidate review report (Step 170A/170B; backend:
+// app.models.ai_candidate_review.AICandidateReviewReport). `status` stays
+// `"no_candidate_data"` honestly when no AI candidate discovery has run
+// for this trip -- never fabricated. This report never implies a
+// candidate has been scheduled or promoted; see AICandidatePromotionReport
+// for that separate, explicit step.
+export type AICandidateReviewReport = {
+  trip_id: string;
+  status: string;
+  total_ai_candidates: number;
+  grounded_candidates: number;
+  ungrounded_candidates: number;
+  eligible_for_promotion: number;
+  items: AICandidateReviewItem[];
+  generated_at: string;
+};
+
+export type AICandidateReviewData = {
+  trip_id: string;
+  ai_candidate_review_report: AICandidateReviewReport;
+};
+
+// One AI candidate that cleared Step 170B's deterministic eligibility
+// rules and was materialized by Step 170C (backend:
+// app.models.ai_candidate_promotion.PromotedAICandidate). `promoted` is
+// always `true` here. `coordinates`/`confidence`/`data_status` (Step
+// 170D) are copied verbatim from the real GroundedCandidate evidence used
+// to ground this candidate -- never guessed. Being promoted is still not
+// the same as being scheduled into an itinerary day; see
+// ExperienceItem.promoted_from_ai for that.
+export type PromotedAICandidate = {
+  candidate_id: string;
+  name: string;
+  category: string | null;
+  source: string;
+  provider_place_id: string | null;
+  provider_source: string | null;
+  original_ai_candidate_id: string | null;
+  quality_bucket: string | null;
+  grounding_status: string | null;
+  coordinates: GeoPoint | null;
+  confidence: number | null;
+  data_status: string | null;
+  promotion_reasons: string[];
+  warnings: string[];
+  promoted: boolean;
+};
+
+// Deterministic AI candidate promotion report (Step 170C; backend:
+// app.models.ai_candidate_promotion.AICandidatePromotionReport). `status`
+// stays honestly `"no_candidates_reviewed"`/`"no_eligible_candidates"`
+// when there is nothing to promote -- never fabricated. This report is
+// never itself an itinerary mutation -- see docs/13_llm_reasoning_
+// pipeline.md section 83 for how (and only how) a promoted candidate can
+// later be scheduled by the backend's own existing rules.
+export type AICandidatePromotionReport = {
+  trip_id: string;
+  status: string;
+  total_reviewed_candidates: number;
+  promoted_count: number;
+  skipped_count: number;
+  promoted_candidates: PromotedAICandidate[];
+  skipped_candidate_ids: string[];
+  generated_at: string;
+};
+
+export type AICandidatePromotionData = {
+  trip_id: string;
+  ai_candidate_promotion_report: AICandidatePromotionReport;
+};
+
 // Full PlanningState is much larger than this; only feedback_history,
 // pending_feedback_summary, user_locks, version_history, plan_diff_preview,
 // regeneration_readiness, regeneration_attempts,
-// accommodation_inventory_report, and flight_inventory_report are
-// declared here since that's the only part of it the frontend reads.
+// accommodation_inventory_report, flight_inventory_report, and
+// ai_candidate_promotion_report are declared here since that's the only
+// part of it the frontend reads.
 export type TripData = {
   trip_id: string;
   planning_state: {
@@ -676,5 +782,6 @@ export type TripData = {
     regeneration_attempts: RegenerationAttempt[];
     accommodation_inventory_report: AccommodationInventoryReport | null;
     flight_inventory_report: FlightInventoryReport | null;
+    ai_candidate_promotion_report: AICandidatePromotionReport | null;
   };
 };

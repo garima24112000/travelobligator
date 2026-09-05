@@ -12,6 +12,8 @@ from app.core.response import success_response
 from app.models.common import ReadinessStatus
 from app.models.planning_state import GenerationProgress, TripRequest
 from app.repositories.planning_state_repository import planning_state_repository
+from app.schemas.ai_candidate_promotion import AICandidatePromotionResponseData
+from app.schemas.ai_candidate_review import AICandidateReviewResponseData
 from app.schemas.api_responses import ApiResponse
 from app.schemas.candidate_quality import CandidateQualityResponseData
 from app.schemas.destination_context import DestinationContextResponseData
@@ -24,6 +26,8 @@ from app.schemas.regeneration_readiness import RegenerationReadinessResponseData
 from app.schemas.trip_summary import TripSummaryResponseData
 from app.schemas.trips import FeedbackRequest, LockRequest, TripResponseData
 from app.schemas.validation_report import ValidationReportResponseData
+from app.services.ai_candidate_promotion_service import ai_candidate_promotion_service
+from app.services.ai_candidate_review_service import ai_candidate_review_service
 from app.services.plan_diff_preview_service import plan_diff_preview_service
 from app.services.planning_orchestrator import planning_orchestrator
 from app.services.regeneration_attempt_service import regeneration_attempt_service
@@ -428,5 +432,75 @@ def get_generation_progress(trip_id: str) -> ApiResponse[GenerationProgressRespo
     data = GenerationProgressResponseData(
         trip_id=trip_id,
         generation_progress=planning_state.generation_progress or GenerationProgress(),
+    )
+    return success_response(data)
+
+
+@router.get(
+    "/{trip_id}/ai-candidate-review",
+    response_model=ApiResponse[AICandidateReviewResponseData],
+)
+def get_ai_candidate_review(trip_id: str) -> ApiResponse[AICandidateReviewResponseData]:
+    """Read-only AI candidate discovery/grounding/eligibility review report
+    (Step 170A, extended with deterministic eligibility rules in Step
+    170B, docs/13_llm_reasoning_pipeline.md, docs/14_backend_architecture.md).
+
+    Built on every call, purely from `planning_state.ai_candidate_proposal_batch`/
+    `candidate_grounding_batch`/`candidate_quality_report` -- the same
+    shadow-mode state the Step 161B stage already stores when
+    `AI_CANDIDATE_DISCOVERY_SHADOW_MODE_ENABLED` is set. This endpoint
+    never triggers new AI candidate discovery, never calls a provider/LLM,
+    and never mutates `planning_state` -- with shadow mode off (the
+    default), it honestly reports `status="no_candidate_data"` and an
+    empty candidate list rather than fabricating one. `eligible_for_promotion`
+    can be `True` when Step 170B's deterministic rules pass, but this
+    endpoint never applies that eligibility -- it never sets
+    `planning_state.ai_candidate_promotion_report`. Only
+    `POST /trips/{trip_id}/ai-candidate-promotions` does that.
+    """
+    planning_state = planning_state_repository.get_by_trip_id(trip_id)
+    if planning_state is None:
+        raise trip_not_found_error(trip_id)
+
+    report = ai_candidate_review_service.build_report(planning_state)
+    data = AICandidateReviewResponseData(
+        trip_id=trip_id,
+        ai_candidate_review_report=report,
+    )
+    return success_response(data)
+
+
+@router.post(
+    "/{trip_id}/ai-candidate-promotions",
+    response_model=ApiResponse[AICandidatePromotionResponseData],
+)
+def promote_ai_candidates(trip_id: str) -> ApiResponse[AICandidatePromotionResponseData]:
+    """Materializes Step 170B's deterministic eligibility verdicts into a
+    dedicated `AICandidatePromotionReport`, stored on
+    `planning_state.ai_candidate_promotion_report` (Step 170C,
+    docs/13_llm_reasoning_pipeline.md, docs/14_backend_architecture.md).
+
+    A promoted candidate is **not** an itinerary stop -- it is a
+    provider-grounded, quality-approved candidate now recorded as safe for
+    a future scheduling step (170D) to consider. This endpoint never
+    schedules anything into `experience_plan.daily_plans`, never calls a
+    provider/LLM/AI candidate proposal provider, and only ever mutates
+    `planning_state.ai_candidate_promotion_report` (plus the
+    `metadata.updated_at` bump that comes with it) -- every other section
+    of `planning_state` is untouched. Calling this endpoint again
+    recomputes and replaces the report rather than appending to it, so
+    repeated calls never duplicate a promoted candidate.
+    """
+    planning_state = planning_state_repository.get_by_trip_id(trip_id)
+    if planning_state is None:
+        raise trip_not_found_error(trip_id)
+
+    planning_state = ai_candidate_promotion_service.apply_promotion(planning_state)
+    planning_state_repository.save(planning_state)
+
+    assert planning_state.ai_candidate_promotion_report is not None
+    data = AICandidatePromotionResponseData(
+        trip_id=trip_id,
+        ai_candidate_promotion_report=planning_state.ai_candidate_promotion_report,
     )
     return success_response(data)
