@@ -401,6 +401,25 @@ class Settings(BaseSettings):
         default=3600, alias="SCRAPED_FLIGHT_CACHE_TTL_SECONDS", ge=0
     )
 
+    # Config gate for POST /trips/{trip_id}/generate's engine selection
+    # (Step 171D, made the default in Step 171E once the LangGraph path
+    # reached stage parity with legacy -- docs/13_llm_reasoning_pipeline.md,
+    # docs/14_backend_architecture.md). "langgraph" (default as of Step
+    # 171E) and "legacy" are the only supported values today -- see
+    # app.api.routes.trips.generate_trip_plan. Mirrors the existing
+    # `accommodation_provider`/`flight_provider`/`routing_provider`
+    # convention: an unsupported/unrecognized value falls back to
+    # "legacy" (PlanningOrchestrator.generate_full_plan) rather than
+    # raising, silently doing nothing, or defaulting to the newer engine --
+    # only an explicit exact "langgraph" (or the default) selects the
+    # LangGraph path. Changing this value never itself calls a provider/
+    # LLM/network service, and never changes itinerary scheduling,
+    # route-aware scheduling, or regeneration behavior -- both engines call
+    # the exact same deterministic stage services, in the same relative
+    # order, either way. Set PLANNING_ENGINE_MODE=legacy to keep using the
+    # original hand-written orchestrator loop.
+    planning_engine_mode: str = Field(default="langgraph", alias="PLANNING_ENGINE_MODE")
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

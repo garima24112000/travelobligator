@@ -1903,3 +1903,75 @@ on `TripData.planning_state`. `frontend/lib/api.ts` gained
   endpoint and updates local state with its response -- it never adds a
   candidate to `dailyPlans` itself, and never calls
   Groq/Anthropic/OpenAI/an AI candidate proposal provider.
+
+### 39.13 No Frontend Change (Step 171A)
+
+Step 171A (Section 171, start) adds a backend-only LangGraph orchestration
+skeleton (`backend/app/graphs/planning_graph_state.py`,
+`planning_graph_nodes.py`, `planning_graph.py`, docs/13_llm_reasoning_
+pipeline.md section 85, docs/14_backend_architecture.md section 62)
+representing the planning pipeline as graph nodes. **No frontend file was
+added or changed in this step** -- `frontend/app/page.tsx`,
+`frontend/lib/types.ts`, and `frontend/lib/api.ts` are all untouched. The
+graph is not wired into `POST /trips/{trip_id}/generate` yet, so there is
+nothing new for the frontend to call or render; `loadPlanResult`'s
+existing `Promise.all` fetch group and every panel on this page keep
+working exactly as they did after Step 170E.
+
+### 39.14 No Frontend Change (Step 171B)
+
+Step 171B adds a backend-only `LangGraphPlanningService`
+(`backend/app/services/langgraph_planning_service.py`, docs/13_llm_reasoning_
+pipeline.md section 86, docs/14_backend_architecture.md section 63) that
+can run the Step 171A planning graph end to end with injected services.
+**No frontend file was added or changed in this step** -- same as Step
+171A, this service is not wired into `POST /trips/{trip_id}/generate`, so
+there is nothing new for the frontend to call or render.
+
+### 39.15 No Frontend Change (Step 171C)
+
+Step 171C adds a read-only backend endpoint,
+`POST /trips/{trip_id}/langgraph-shadow-run` (docs/13_llm_reasoning_pipeline.md
+section 87, docs/14_backend_architecture.md section 64), that runs the
+LangGraph planning graph against an isolated copy of a trip's
+`PlanningState` for inspection. **No frontend file was added or changed
+in this step** -- `frontend/lib/api.ts`/`types.ts`/`app/page.tsx` are all
+untouched, and nothing on this page calls the new endpoint yet.
+
+### 39.16 No Frontend Change (Step 171D)
+
+Step 171D adds a backend-only config field
+(`Settings.planning_engine_mode`) and a new `PlanningOrchestrator` method
+(`generate_full_plan_via_langgraph`) so `POST /trips/{trip_id}/generate`
+can optionally run through the LangGraph planning graph
+(docs/13_llm_reasoning_pipeline.md section 88, docs/14_backend_architecture.md
+section 65). **No frontend file was added or changed in this step** --
+`frontend/lib/api.ts`/`types.ts`/`app/page.tsx` are all untouched. The
+frontend already calls `POST /trips/{trip_id}/generate` and renders
+whatever `PlanningState` comes back; the response shape is unchanged
+regardless of which engine mode produced it, so this step needed no
+frontend awareness of the new config field at all. `npm run lint`/
+`npm run build` both still pass unmodified.
+
+### 39.17 No Frontend Change (Step 171E, final Section 171 step)
+
+Step 171E extends the LangGraph planning graph with the remaining stage
+nodes needed for parity with legacy generation, then flips
+`Settings.planning_engine_mode`'s default from `"legacy"` to
+`"langgraph"` (docs/13_llm_reasoning_pipeline.md section 89,
+docs/14_backend_architecture.md section 66). **No frontend file was added
+or changed in this step** -- `frontend/lib/api.ts`/`types.ts`/
+`app/page.tsx` are all untouched. `POST /trips/{trip_id}/generate`'s
+response envelope (`{trip_id, planning_state}`) and every field on
+`PlanningState` the frontend already renders from are exactly the same
+shape regardless of which engine produced them -- the frontend consumes
+the same API shape either way and needed no changes to keep working.
+`npm run lint`/`npm run build` both still pass unmodified.
+
+A future step could add a small, clearly-labeled panel showing the graph
+execution trace (`completed_nodes`/`failed_nodes`/`errors`/`warnings`
+from the shadow-run response) for comparison against the trip's official,
+`/generate`-produced plan -- but it must render `persisted: false`
+honestly (e.g. "Shadow run preview -- not saved") and must never let a
+user mistake the shadow `planning_state` preview for the trip's actual,
+stored plan, or trigger any itinerary update from it.

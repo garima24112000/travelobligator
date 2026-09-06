@@ -39,6 +39,7 @@ from app.services.destination_context_service import DestinationContextService
 from app.services.experience_planner_service import ExperiencePlannerService
 from app.services.feedback_service import FeedbackService
 from app.services.flight_inventory_service import FlightInventoryService
+from app.services.langgraph_planning_service import LangGraphPlanningService
 from app.services.plan_diff_preview_service import PlanDiffPreviewService
 from app.services.plan_validator_service import PlanValidatorService
 from app.services.regeneration_readiness_service import RegenerationReadinessService
@@ -120,6 +121,37 @@ def _flight_coverage_value(result: FlightSearchResult) -> str:
     if result.status == FlightSearchStatus.SUCCESS and not result.offers:
         return "unavailable"
     return _FLIGHT_STATUS_TO_COVERAGE_VALUE.get(result.status, "not_connected")
+
+# Step 171E: maps each legacy GENERATION_STAGE_KEYS entry onto the set of
+# LangGraph node names that together cover that same stage concept, so
+# generate_full_plan_via_langgraph can report progress in the exact same
+# granularity generate_full_plan does. "ai_candidate_shadow" maps onto the
+# graph's "ai_candidate" node -- matching generate_full_plan's own
+# behavior of marking this progress label finished unconditionally,
+# regardless of whether AI_CANDIDATE_DISCOVERY_SHADOW_MODE_ENABLED is even
+# on (see run_destination_context_stage's own unconditional
+# _mark_stage_finished(planning_state, "ai_candidate_shadow") call) --
+# never a claim that discovery itself ran. "post_processing" has no graph
+# node backing it (mirroring legacy, where it is pure orchestrator
+# bookkeeping after every stage service has already run) and is handled
+# directly in generate_full_plan_via_langgraph instead.
+_GRAPH_NODES_BY_GENERATION_STAGE_KEY: dict[str, frozenset[str]] = {
+    "traveler_profile": frozenset({"traveler_profile"}),
+    "destination_context": frozenset({"destination_context"}),
+    "candidate_quality": frozenset({"candidate_quality"}),
+    "ai_candidate_shadow": frozenset({"ai_candidate"}),
+    "trip_strategy": frozenset({"trip_strategy"}),
+    "stay_transport": frozenset({"stay_transport", "accommodation_inventory", "flight_inventory"}),
+    "experience_plan": frozenset(
+        {
+            "experience_planning",
+            "route_feasibility",
+            "route_aware_sequencing",
+            "travel_time_buffer",
+        }
+    ),
+    "validation": frozenset({"validation"}),
+}
 
 # Human-readable labels for GENERATION_STAGE_KEYS (Step 163B). Purely
 # cosmetic text for `GenerationProgress.current_stage_label` -- never a
@@ -238,6 +270,7 @@ class PlanningOrchestrator:
         regeneration_readiness_service: RegenerationReadinessService | None = None,
         ai_candidate_discovery_service: AICandidateDiscoveryService | None = None,
         ai_candidate_promotion_service: AICandidatePromotionService | None = None,
+        langgraph_planning_service: LangGraphPlanningService | None = None,
         planning_state_repo: PlanningStateRepository | None = None,
         trip_repo: TripRepository | None = None,
     ) -> None:
@@ -274,6 +307,34 @@ class PlanningOrchestrator:
         )
         self.ai_candidate_promotion_service = (
             ai_candidate_promotion_service or AICandidatePromotionService()
+        )
+        # Step 171D: only ever invoked by generate_full_plan_via_langgraph
+        # below -- generate_full_plan (the default/legacy path) never
+        # references this attribute. Step 171E: the default construction
+        # below deliberately reuses this orchestrator's own
+        # already-constructed stage-service instances (not fresh separate
+        # ones) for every stage the graph now covers, so both engines
+        # share identical service/gateway state -- a test (or operator)
+        # that reconfigures/monkeypatches `self.<stage>_service` affects
+        # both `generate_full_plan` and `generate_full_plan_via_langgraph`
+        # identically. `ai_candidate_promotion_service` is deliberately
+        # left at its default (`None`, a pure no-op) -- see
+        # `build_ai_candidate_node`'s docstring for why the AI candidate
+        # discovery/promotion integration stays a
+        # `generate_full_plan`-specific (legacy engine) feature.
+        self.langgraph_planning_service = langgraph_planning_service or LangGraphPlanningService(
+            traveler_profile_service=self.traveler_profile_service,
+            destination_context_service=self.destination_context_service,
+            candidate_quality_service=self.candidate_quality_service,
+            trip_strategy_service=self.trip_strategy_service,
+            stay_transport_service=self.stay_transport_service,
+            accommodation_inventory_service=self.accommodation_inventory_service,
+            flight_inventory_service=self.flight_inventory_service,
+            experience_planner_service=self.experience_planner_service,
+            route_feasibility_service=self.route_feasibility_service,
+            route_aware_sequencing_service=self.route_aware_sequencing_service,
+            travel_time_buffer_service=self.travel_time_buffer_service,
+            plan_validator_service=self.plan_validator_service,
         )
         self.planning_state_repository = planning_state_repo or planning_state_repository
         self.trip_repository = trip_repo or trip_repository
@@ -771,6 +832,82 @@ class PlanningOrchestrator:
             raise
 
         return planning_state
+
+    # Step 171D: config-gated alternative to generate_full_plan, selected by
+    # app.api.routes.trips.generate_trip_plan whenever
+    # Settings.planning_engine_mode == "langgraph" -- the default as of
+    # Step 171E, once the graph reached the stage parity documented in
+    # planning_graph.py's module docstring (an explicit "legacy", or any
+    # unrecognized config value, always calls generate_full_plan above
+    # instead, completely unchanged). Runs the same deterministic stage
+    # services as generate_full_plan, in the same relative order, but
+    # through the LangGraph graph (via self.langgraph_planning_service)
+    # instead of the hand-written stage_runners loop -- never a free-form
+    # LLM planning call, never a new provider/network call beyond what
+    # those same stage services already made before Step 171D existed.
+    def generate_full_plan_via_langgraph(self, trip_id: str) -> PlanningState:
+        planning_state = self.planning_state_repository.get_by_trip_id(trip_id)
+        if planning_state is None:
+            raise trip_not_found_error(trip_id)
+
+        planning_state.set_pipeline_status(PipelineStatus.GENERATING)
+        planning_state = self._start_generation_progress(planning_state)
+        self.planning_state_repository.save(planning_state)
+
+        try:
+            result = self.langgraph_planning_service.run(
+                trip_id, planning_state.trip_request, planning_state
+            )
+            new_state = result.planning_state
+
+            # Mirrors generate_full_plan's own per-GENERATION_STAGE_KEYS
+            # progress bookkeeping (Step 163B) as closely as the graph's
+            # finer-grained node list allows, via
+            # _GRAPH_NODES_BY_GENERATION_STAGE_KEY below -- a legacy stage
+            # key is only marked finished once every graph node backing it
+            # actually completed, so a partial/failed graph run never
+            # claims more progress than genuinely happened.
+            completed_nodes = set(result.completed_nodes)
+            for stage_key in GENERATION_STAGE_KEYS:
+                if stage_key == "post_processing":
+                    continue
+                backing_nodes = _GRAPH_NODES_BY_GENERATION_STAGE_KEY[stage_key]
+                if not backing_nodes.issubset(completed_nodes):
+                    break
+                new_state = self._mark_stage_started(new_state, stage_key)
+                new_state = self._mark_stage_finished(new_state, stage_key)
+
+            # Mirrors run_validation_stage's own readiness->pipeline_status
+            # mapping exactly -- the graph's validation node only calls
+            # PlanValidatorService.run() directly, which (like every other
+            # stage service) never sets pipeline_status itself.
+            report = new_state.validation_report
+            pipeline_status = (
+                _READINESS_TO_PIPELINE_STATUS.get(
+                    report.readiness_status.value, PipelineStatus.NEEDS_REVIEW
+                )
+                if report is not None
+                else PipelineStatus.NEEDS_REVIEW
+            )
+            new_state.set_pipeline_status(pipeline_status)
+
+            # Same post-processing bookkeeping generate_full_plan performs,
+            # so a LangGraph-generated trip's version_history/plan_diff_preview/
+            # regeneration_readiness are just as real and current as a
+            # legacy-generated trip's.
+            new_state = self._mark_stage_started(new_state, "post_processing")
+            new_state = self.versioning_service.create_initial_version(new_state)
+            new_state = self.plan_diff_preview_service.recompute(new_state)
+            new_state = self.regeneration_readiness_service.recompute(new_state)
+            new_state = self._mark_stage_finished(new_state, "post_processing")
+            new_state = self._finish_generation_progress(new_state)
+            self.planning_state_repository.save(new_state)
+        except Exception:
+            planning_state = self._fail_generation_progress(planning_state)
+            self.planning_state_repository.save(planning_state)
+            raise
+
+        return new_state
 
     def apply_feedback(self, trip_id: str, feedback_text: str) -> PlanningState:
         planning_state = self.planning_state_repository.get_by_trip_id(trip_id)

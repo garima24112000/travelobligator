@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 import app.providers.ai_candidate_proposal.anthropic_adapter as anthropic_adapter_module
 import app.providers.ai_candidate_proposal.groq_adapter as groq_adapter_module
 import app.services.planning_orchestrator as orchestrator_module
-from app.core.config import Settings
+from app.core.config import Settings, get_settings
 from app.models.ai_candidate_proposal import (
     AICandidateProposal,
     AICandidateProposalGuardrailReport,
@@ -191,6 +191,16 @@ def _disabled_and_enabled_states(
 def _generate_with_fake_completed_service(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> str:
+    """As of Step 171E, this shadow-mode-through-generate integration
+    remains `PlanningOrchestrator.generate_full_plan`-specific (legacy
+    engine) -- intentionally not part of the LangGraph engine's stage
+    graph (see `build_ai_candidate_node`'s docstring in
+    `planning_graph_nodes.py`). `PLANNING_ENGINE_MODE=legacy` is pinned
+    here so `POST /generate` -- now defaulting to the LangGraph engine --
+    still exercises it.
+    """
+    monkeypatch.setenv("PLANNING_ENGINE_MODE", "legacy")
+    get_settings.cache_clear()
     monkeypatch.setattr(
         orchestrator_module,
         "get_settings",
@@ -266,10 +276,20 @@ def test_shadow_stage_is_noop_when_disabled_even_with_destination_context(
 
 
 def _enable_shadow_mode_with_not_connected_provider(monkeypatch: pytest.MonkeyPatch) -> None:
+    """As of Step 171E, this shadow-mode-through-generate integration
+    remains `PlanningOrchestrator.generate_full_plan`-specific (legacy
+    engine) -- intentionally not part of the LangGraph engine's stage
+    graph (see `build_ai_candidate_node`'s docstring in
+    `planning_graph_nodes.py`). `PLANNING_ENGINE_MODE=legacy` is pinned
+    here so `POST /generate` -- now defaulting to the LangGraph engine --
+    still exercises it.
+    """
     from app.providers.ai_candidate_proposal.not_connected_adapter import (
         NotConnectedAICandidateProposalProvider,
     )
 
+    monkeypatch.setenv("PLANNING_ENGINE_MODE", "legacy")
+    get_settings.cache_clear()
     monkeypatch.setattr(
         orchestrator_module,
         "get_settings",
@@ -580,6 +600,13 @@ def test_no_frontend_files_reference_shadow_mode_feature() -> None:
 
 
 def test_planning_orchestrator_has_no_disallowed_llm_framework_imports() -> None:
+    """As of Step 171D, `planning_orchestrator.py` legitimately imports its
+    own in-repo `app.services.langgraph_planning_service` module (to
+    implement the config-gated `generate_full_plan_via_langgraph` method) --
+    that module contains no free-form LLM planning call itself (see its own
+    test suite's disallowed-import checks). What this test still guards
+    against is the real third-party `langgraph`/`langsmith` packages, or
+    any OpenAI/Gemini/Claude Code CLI import, being pulled in directly."""
     source = inspect.getsource(orchestrator_module)
     tree = ast.parse(source)
 
@@ -590,6 +617,7 @@ def test_planning_orchestrator_has_no_disallowed_llm_framework_imports() -> None
         elif isinstance(node, ast.ImportFrom) and node.module:
             imported_names.append(node.module)
 
+    allowed_exceptions = ("app.services.langgraph_planning_service",)
     disallowed_substrings = (
         "langgraph",
         "langsmith",
@@ -599,6 +627,8 @@ def test_planning_orchestrator_has_no_disallowed_llm_framework_imports() -> None
         "claude_code",
     )
     for name in imported_names:
+        if name in allowed_exceptions:
+            continue
         lowered = name.lower()
         for disallowed in disallowed_substrings:
             assert disallowed not in lowered, f"Disallowed import found: {name}"

@@ -647,6 +647,18 @@ def _raise_unexpectedly(*args, **kwargs):
 def test_route_feasibility_computation_failure_does_not_crash_generation(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Tests `generate_full_plan`'s own Step 166D fallback-report hardening
+    contract specifically (an unexpected exception is replaced with an
+    explicit `status=failed` placeholder report, never left unset) --
+    pinned to the legacy engine since Step 171E. The LangGraph engine's
+    equivalent `route_feasibility` node instead leaves the field honestly
+    unset on failure (documented in `planning_graph_nodes.py` and
+    exercised by `test_langgraph_generate_mode.py`) rather than
+    fabricating this same placeholder -- both are valid, safe, tested
+    behaviors, just not identical ones.
+    """
+    monkeypatch.setenv("PLANNING_ENGINE_MODE", "legacy")
+    get_settings.cache_clear()
     monkeypatch.setattr(
         planning_orchestrator.route_feasibility_service, "build_report", _raise_unexpectedly
     )
@@ -681,6 +693,12 @@ def test_route_feasibility_computation_failure_does_not_crash_generation(
 def test_route_aware_sequencing_computation_failure_does_not_crash_generation(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Pinned to the legacy engine since Step 171E -- see
+    `test_route_feasibility_computation_failure_does_not_crash_generation`'s
+    docstring for why.
+    """
+    monkeypatch.setenv("PLANNING_ENGINE_MODE", "legacy")
+    get_settings.cache_clear()
     monkeypatch.setattr(
         planning_orchestrator.route_aware_sequencing_service, "build_report", _raise_unexpectedly
     )
@@ -716,6 +734,12 @@ def test_route_aware_sequencing_computation_failure_does_not_crash_generation(
 def test_travel_time_buffer_computation_failure_does_not_crash_generation(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Pinned to the legacy engine since Step 171E -- see
+    `test_route_feasibility_computation_failure_does_not_crash_generation`'s
+    docstring for why.
+    """
+    monkeypatch.setenv("PLANNING_ENGINE_MODE", "legacy")
+    get_settings.cache_clear()
     monkeypatch.setattr(
         planning_orchestrator.travel_time_buffer_service, "build_report", _raise_unexpectedly
     )

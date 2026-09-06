@@ -1,223 +1,191 @@
 from __future__ import annotations
 
-import operator
-from typing import Annotated, Any, TypedDict
-
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
-from app.core.config import get_settings
-from app.models.ai_candidate_proposal import AICandidateProposalBatch
-from app.models.candidate_grounding import CandidateGroundingBatch
-from app.models.planning_state import PlanningState
-from app.services.ai_candidate_discovery_service import AICandidateDiscoveryService
+from app.graphs.planning_graph_nodes import (
+    build_accommodation_inventory_node,
+    build_ai_candidate_node,
+    build_candidate_quality_node,
+    build_destination_context_node,
+    build_experience_planning_node,
+    build_final_state_node,
+    build_flight_inventory_node,
+    build_provider_coverage_node,
+    build_route_aware_sequencing_node,
+    build_route_feasibility_node,
+    build_stay_transport_node,
+    build_travel_time_buffer_node,
+    build_traveler_profile_node,
+    build_trip_strategy_node,
+    build_validation_node,
+)
+from app.graphs.planning_graph_state import PlanningGraphState, build_initial_planning_graph_state
+from app.models.planning_state import PlanningState, TripRequest
+from app.services.accommodation_inventory_service import AccommodationInventoryService
+from app.services.ai_candidate_promotion_service import AICandidatePromotionService
 from app.services.candidate_quality_service import CandidateQualityService
 from app.services.destination_context_service import DestinationContextService
 from app.services.experience_planner_service import ExperiencePlannerService
+from app.services.flight_inventory_service import FlightInventoryService
 from app.services.plan_validator_service import PlanValidatorService
+from app.services.route_aware_sequencing_service import RouteAwareSequencingService
+from app.services.route_feasibility_service import RouteFeasibilityService
 from app.services.stay_transport_service import StayTransportService
+from app.services.travel_time_buffer_service import TravelTimeBufferService
 from app.services.traveler_profile_service import TravelerProfileService
 from app.services.trip_strategy_service import TripStrategyService
 
-# LangGraph skeleton around the deterministic planning pipeline (Step 162B,
-# extended with a real AI candidate shadow node in Step 162C,
-# docs/13_llm_reasoning_pipeline.md sections 42-43,
-# docs/14_backend_architecture.md section 25). This is architecture/resume
-# foundation only -- still not the active runtime path:
+# LangGraph orchestration skeleton for the planning pipeline (Step 171A,
+# extended for stage parity with `PlanningOrchestrator.generate_full_plan`
+# in Step 171E -- docs/13_llm_reasoning_pipeline.md,
+# docs/14_backend_architecture.md).
 #
-# - PlanningState remains the single source of truth. Every node here reads
-#   it from PlanningGraphState, calls exactly one existing deterministic
-#   stage service's `run` (or, for candidate quality, `build_report`; or,
-#   for the AI candidate shadow node, `AICandidateDiscoveryService.dry_run`),
-#   and returns the mutated PlanningState back into the graph state -- no
-#   node duplicates any service's own logic.
-# - The node order mirrors PlanningOrchestrator.generate_full_plan's
-#   existing stage order exactly, plus the candidate-quality step
-#   PlanningOrchestrator already runs inline inside
-#   run_destination_context_stage (docs/14_backend_architecture.md section
-#   25, Step 156B), and the AI-candidate-discovery shadow node mirroring
-#   PlanningOrchestrator._run_ai_candidate_discovery_shadow_stage (Step
-#   161B).
-# - This module is not imported by any API route or by
-#   PlanningOrchestrator's runtime path. It does not call a provider
-#   network, Kiwi/MCP, or a scraper, and it does not persist anything (no
-#   PlanningStateRepository/TripRepository call anywhere in this module).
-#   It does not change /trips/{trip_id}/generate behavior, scheduling,
-#   validation, or regeneration behavior.
-# - `ai_candidate_shadow_node` (Step 162C) is disabled by default, exactly
-#   like `PlanningOrchestrator._run_ai_candidate_discovery_shadow_stage`:
-#   it only calls the injected `AICandidateDiscoveryService.dry_run` when
-#   shadow mode is explicitly enabled *and* `destination_context` already
-#   exists, storing the same two validated batch objects onto
-#   `planning_state` the orchestrator already does. Whichever proposal
-#   provider that service resolves (Groq, Anthropic, or the default
-#   not_connected) is entirely config-gated elsewhere (Steps 160E/161A/
-#   162A) -- this graph node never talks to a vendor SDK directly, and
-#   never prints a prompt, raw LLM response, API key, or other secret.
+# As of Step 171E, this graph's stage order and outputs are the same
+# planning-stage concepts `PlanningOrchestrator.generate_full_plan` covers
+# (docs/CLAUDE.md's Traveler Profile -> Destination Context -> Trip
+# Strategy -> Stay + Transport -> Experience Planner -> Plan Validator
+# pipeline), reached via the exact same deterministic services in the
+# same relative order:
+#
+#   START -> traveler_profile -> destination_context -> candidate_quality
+#   -> ai_candidate -> trip_strategy -> stay_transport
+#   -> accommodation_inventory -> flight_inventory -> experience_planning
+#   -> route_feasibility -> route_aware_sequencing -> travel_time_buffer
+#   -> validation -> provider_coverage -> final_state -> END
+#
+# One documented, intentional gap remains: the optional, off-by-default
+# Step 161B AI candidate *discovery* shadow stage is not wrapped by any
+# node here -- see `build_ai_candidate_node`'s docstring for why that is
+# not a parity gap for the default (and only supported) LangGraph
+# configuration.
+#
+# - `PlanningState` remains the single source of truth. Every node
+#   (`planning_graph_nodes.py`) calls exactly one existing deterministic
+#   service's own method (`run`/`build_report`/`apply_report`/
+#   `apply_promotion`) -- no node duplicates any service's logic, and no
+#   node calls Groq/Anthropic/OpenAI or any other LLM. LangGraph here
+#   orchestrates existing deterministic services; it does not replace them
+#   with LLM reasoning.
+#   `ProviderGateway` (which defaults to safe not_connected
+#   adapters, exactly like `PlanningOrchestrator` today), does not call
+#   Kiwi/MCP or a scraper, and does not persist anything (no
+#   `PlanningStateRepository`/`TripRepository` call anywhere in this
+#   module).
 # - No module-level singleton is constructed -- `PlanningGraphRunner` and
-#   `build_planning_graph` are only ever instantiated/called explicitly (by
-#   tests, or by a future step that decides to wire this in), matching the
-#   existing "no premature singleton" boundary used by every other
-#   not-yet-wired piece of this AI-candidate-discovery track (Steps
-#   157B-161B).
-
-
-class PlanningGraphState(TypedDict):
-    """LangGraph state schema for the planning graph.
-
-    `planning_state` is the single source of truth, carried through and
-    mutated by each node's underlying service call -- never duplicated or
-    reconstructed by a node itself. `executed_nodes` is a test/debug-only
-    trace of which nodes ran, in order. `errors` stays empty for every
-    deterministic stage node (each `run` is documented to never raise for
-    missing upstream/provider data -- see `PlanningStageService`); the only
-    node that can ever append to it is `ai_candidate_shadow_node` (Step
-    162C), and only with a generic, secret-free marker string when
-    `AICandidateDiscoveryService.dry_run` raises -- never the raw
-    exception, a prompt, or an LLM response.
-    """
-
-    planning_state: PlanningState
-    executed_nodes: Annotated[list[str], operator.add]
-    errors: Annotated[list[str], operator.add]
+#   `build_planning_graph` are only ever instantiated/called explicitly.
 
 
 def build_planning_graph(
-    traveler_profile_service: TravelerProfileService,
-    destination_context_service: DestinationContextService,
-    candidate_quality_service: CandidateQualityService,
-    ai_candidate_discovery_service: AICandidateDiscoveryService,
-    trip_strategy_service: TripStrategyService,
-    stay_transport_service: StayTransportService,
-    experience_planner_service: ExperiencePlannerService,
-    plan_validator_service: PlanValidatorService,
-    shadow_mode_enabled: bool | None = None,
+    traveler_profile_service: TravelerProfileService | None = None,
+    destination_context_service: DestinationContextService | None = None,
+    candidate_quality_service: CandidateQualityService | None = None,
+    ai_candidate_promotion_service: AICandidatePromotionService | None = None,
+    trip_strategy_service: TripStrategyService | None = None,
+    stay_transport_service: StayTransportService | None = None,
+    accommodation_inventory_service: AccommodationInventoryService | None = None,
+    flight_inventory_service: FlightInventoryService | None = None,
+    experience_planner_service: ExperiencePlannerService | None = None,
+    route_feasibility_service: RouteFeasibilityService | None = None,
+    route_aware_sequencing_service: RouteAwareSequencingService | None = None,
+    travel_time_buffer_service: TravelTimeBufferService | None = None,
+    plan_validator_service: PlanValidatorService | None = None,
 ) -> CompiledStateGraph:
-    """Builds and compiles the planning `StateGraph` from already-constructed
-    stage services (real or fake/injected). Every node below calls exactly
-    one of these services' existing `run`/`build_report`/`dry_run` method --
-    no stage logic is duplicated here.
+    """Builds and compiles the planning `StateGraph` from already-
+    constructed stage services (real or fake/injected). Every node calls
+    exactly one of these services' existing method -- no stage logic is
+    duplicated here.
 
-    `shadow_mode_enabled` lets tests inject an explicit override for
-    `ai_candidate_shadow_node`'s gate; when `None` (the default), the node
-    reads `Settings.ai_candidate_discovery_shadow_mode_enabled` live via
-    `get_settings()` on every run, exactly like
-    `PlanningOrchestrator._run_ai_candidate_discovery_shadow_stage` does --
-    so default behavior (disabled) is unchanged by this parameter existing.
+    `ai_candidate_promotion_service` defaults to `None`, which keeps
+    `ai_candidate` a pure no-op (see `build_ai_candidate_node`'s
+    docstring) -- passing a real `AICandidatePromotionService` is
+    deterministic and still never calls an LLM.
+
+    Every other service defaults to constructing the real one (mirroring
+    `PlanningOrchestrator.__init__`'s own default-construction pattern),
+    which is safe to call in any environment since each service's
+    provider calls go through `ProviderGateway`'s existing safe defaults
+    -- tests should still inject fakes to keep runs fully deterministic
+    and network-free.
     """
-
-    def traveler_profile_node(state: PlanningGraphState) -> dict[str, Any]:
-        planning_state = traveler_profile_service.run(state["planning_state"])
-        return {"planning_state": planning_state, "executed_nodes": ["traveler_profile"]}
-
-    def destination_context_node(state: PlanningGraphState) -> dict[str, Any]:
-        planning_state = destination_context_service.run(state["planning_state"])
-        return {"planning_state": planning_state, "executed_nodes": ["destination_context"]}
-
-    def candidate_quality_node(state: PlanningGraphState) -> dict[str, Any]:
-        planning_state = state["planning_state"]
-        # Stores the report on planning_state exactly like
-        # PlanningOrchestrator.run_destination_context_stage does (Step
-        # 156B) -- never re-derives or duplicates the scoring logic itself,
-        # which lives entirely in CandidateQualityService.
-        planning_state.candidate_quality_report = candidate_quality_service.build_report(
-            planning_state
-        )
-        return {"planning_state": planning_state, "executed_nodes": ["candidate_quality"]}
-
-    def ai_candidate_shadow_node(state: PlanningGraphState) -> dict[str, Any]:
-        """Config-gated AI-candidate-discovery shadow node (Step 162C),
-        mirroring `PlanningOrchestrator._run_ai_candidate_discovery_shadow_stage`
-        exactly:
-
-        - Disabled (the default) -> no-op: no batch field is touched.
-        - Enabled but `destination_context` is still `None` -> no-op: the
-          discovery service is never called without real candidate data to
-          ground against.
-        - Enabled and `destination_context` exists -> calls
-          `ai_candidate_discovery_service.dry_run(planning_state)` and
-          stores the two validated request/result batch pairs it returns
-          onto `planning_state`, for inspection only. This never mutates
-          `destination_context` candidates, never feeds a proposal or
-          `GroundedCandidate` into `ExperiencePlannerService` (already run
-          later in the graph) or `CandidateQualityService` (already run
-          earlier), never touches `validation_report`, `provider_coverage`,
-          or `data_sources_used`.
-        - If `dry_run` raises for any reason, this fails safe: nothing is
-          stored, a generic secret-free marker is appended to `errors`
-          (never the raw exception, a prompt, or an LLM response), and the
-          graph continues exactly as if shadow mode were disabled for this
-          run.
-        - Never persists anything -- storing onto `planning_state` here is
-          the same in-memory mutation `PlanningOrchestrator`'s own
-          shadow-mode helper performs; the caller remains solely
-          responsible for persistence, if any.
-        """
-        planning_state = state["planning_state"]
-        enabled = (
-            shadow_mode_enabled
-            if shadow_mode_enabled is not None
-            else get_settings().ai_candidate_discovery_shadow_mode_enabled
-        )
-        if not enabled:
-            return {"executed_nodes": ["ai_candidate_shadow"]}
-
-        if planning_state.destination_context is None:
-            return {"executed_nodes": ["ai_candidate_shadow"]}
-
-        try:
-            dry_run_result = ai_candidate_discovery_service.dry_run(planning_state)
-        except Exception:
-            return {
-                "executed_nodes": ["ai_candidate_shadow"],
-                "errors": ["ai_candidate_shadow_node failed safely; no batch stored."],
-            }
-
-        planning_state.ai_candidate_proposal_batch = AICandidateProposalBatch(
-            request=dry_run_result.proposal_request,
-            result=dry_run_result.proposal_result,
-        )
-        planning_state.candidate_grounding_batch = CandidateGroundingBatch(
-            request=dry_run_result.grounding_request,
-            result=dry_run_result.grounding_result,
-        )
-        return {"planning_state": planning_state, "executed_nodes": ["ai_candidate_shadow"]}
-
-    def trip_strategy_node(state: PlanningGraphState) -> dict[str, Any]:
-        planning_state = trip_strategy_service.run(state["planning_state"])
-        return {"planning_state": planning_state, "executed_nodes": ["trip_strategy"]}
-
-    def stay_transport_node(state: PlanningGraphState) -> dict[str, Any]:
-        planning_state = stay_transport_service.run(state["planning_state"])
-        return {"planning_state": planning_state, "executed_nodes": ["stay_transport"]}
-
-    def experience_plan_node(state: PlanningGraphState) -> dict[str, Any]:
-        planning_state = experience_planner_service.run(state["planning_state"])
-        return {"planning_state": planning_state, "executed_nodes": ["experience_plan"]}
-
-    def validation_node(state: PlanningGraphState) -> dict[str, Any]:
-        planning_state = plan_validator_service.run(state["planning_state"])
-        return {"planning_state": planning_state, "executed_nodes": ["validation"]}
+    resolved_traveler_profile_service = traveler_profile_service or TravelerProfileService()
+    resolved_destination_context_service = (
+        destination_context_service or DestinationContextService()
+    )
+    resolved_candidate_quality_service = candidate_quality_service or CandidateQualityService()
+    resolved_trip_strategy_service = trip_strategy_service or TripStrategyService()
+    resolved_stay_transport_service = stay_transport_service or StayTransportService()
+    resolved_accommodation_inventory_service = (
+        accommodation_inventory_service or AccommodationInventoryService()
+    )
+    resolved_flight_inventory_service = flight_inventory_service or FlightInventoryService()
+    resolved_experience_planner_service = (
+        experience_planner_service or ExperiencePlannerService()
+    )
+    resolved_route_feasibility_service = route_feasibility_service or RouteFeasibilityService()
+    resolved_route_aware_sequencing_service = (
+        route_aware_sequencing_service or RouteAwareSequencingService()
+    )
+    resolved_travel_time_buffer_service = (
+        travel_time_buffer_service or TravelTimeBufferService()
+    )
+    resolved_plan_validator_service = plan_validator_service or PlanValidatorService()
 
     graph = StateGraph(PlanningGraphState)
-    graph.add_node("traveler_profile", traveler_profile_node)
-    graph.add_node("destination_context", destination_context_node)
-    graph.add_node("candidate_quality", candidate_quality_node)
-    graph.add_node("ai_candidate_shadow", ai_candidate_shadow_node)
-    graph.add_node("trip_strategy", trip_strategy_node)
-    graph.add_node("stay_transport", stay_transport_node)
-    graph.add_node("experience_plan", experience_plan_node)
-    graph.add_node("validation", validation_node)
+    graph.add_node(
+        "traveler_profile", build_traveler_profile_node(resolved_traveler_profile_service)
+    )
+    graph.add_node(
+        "destination_context", build_destination_context_node(resolved_destination_context_service)
+    )
+    graph.add_node(
+        "candidate_quality", build_candidate_quality_node(resolved_candidate_quality_service)
+    )
+    graph.add_node("ai_candidate", build_ai_candidate_node(ai_candidate_promotion_service))
+    graph.add_node("trip_strategy", build_trip_strategy_node(resolved_trip_strategy_service))
+    graph.add_node("stay_transport", build_stay_transport_node(resolved_stay_transport_service))
+    graph.add_node(
+        "accommodation_inventory",
+        build_accommodation_inventory_node(resolved_accommodation_inventory_service),
+    )
+    graph.add_node(
+        "flight_inventory", build_flight_inventory_node(resolved_flight_inventory_service)
+    )
+    graph.add_node(
+        "experience_planning", build_experience_planning_node(resolved_experience_planner_service)
+    )
+    graph.add_node(
+        "route_feasibility", build_route_feasibility_node(resolved_route_feasibility_service)
+    )
+    graph.add_node(
+        "route_aware_sequencing",
+        build_route_aware_sequencing_node(
+            resolved_route_aware_sequencing_service, resolved_route_feasibility_service
+        ),
+    )
+    graph.add_node(
+        "travel_time_buffer", build_travel_time_buffer_node(resolved_travel_time_buffer_service)
+    )
+    graph.add_node("validation", build_validation_node(resolved_plan_validator_service))
+    graph.add_node("provider_coverage", build_provider_coverage_node())
+    graph.add_node("final_state", build_final_state_node())
 
     graph.add_edge(START, "traveler_profile")
     graph.add_edge("traveler_profile", "destination_context")
     graph.add_edge("destination_context", "candidate_quality")
-    graph.add_edge("candidate_quality", "ai_candidate_shadow")
-    graph.add_edge("ai_candidate_shadow", "trip_strategy")
+    graph.add_edge("candidate_quality", "ai_candidate")
+    graph.add_edge("ai_candidate", "trip_strategy")
     graph.add_edge("trip_strategy", "stay_transport")
-    graph.add_edge("stay_transport", "experience_plan")
-    graph.add_edge("experience_plan", "validation")
-    graph.add_edge("validation", END)
+    graph.add_edge("stay_transport", "accommodation_inventory")
+    graph.add_edge("accommodation_inventory", "flight_inventory")
+    graph.add_edge("flight_inventory", "experience_planning")
+    graph.add_edge("experience_planning", "route_feasibility")
+    graph.add_edge("route_feasibility", "route_aware_sequencing")
+    graph.add_edge("route_aware_sequencing", "travel_time_buffer")
+    graph.add_edge("travel_time_buffer", "validation")
+    graph.add_edge("validation", "provider_coverage")
+    graph.add_edge("provider_coverage", "final_state")
+    graph.add_edge("final_state", END)
 
     return graph.compile()
 
@@ -226,11 +194,12 @@ class PlanningGraphRunner:
     """DI-friendly wrapper around the compiled planning graph.
 
     Defaults to constructing the real stage services (mirroring
-    `PlanningOrchestrator.__init__`'s own default-construction pattern), but
-    every service can be injected -- tests should inject fakes so no real
-    provider/network call ever happens. This class is never instantiated as
-    a module-level singleton, and nothing in `app/api/routes/` or
-    `PlanningOrchestrator` constructs or imports it.
+    `PlanningOrchestrator.__init__`'s own default-construction pattern),
+    but every service can be injected -- tests should inject fakes so no
+    real provider/network call ever happens. This class is never
+    instantiated as a module-level singleton, and nothing in
+    `app/api/routes/` or `PlanningOrchestrator` constructs or imports it
+    directly.
     """
 
     def __init__(
@@ -238,67 +207,84 @@ class PlanningGraphRunner:
         traveler_profile_service: TravelerProfileService | None = None,
         destination_context_service: DestinationContextService | None = None,
         candidate_quality_service: CandidateQualityService | None = None,
-        ai_candidate_discovery_service: AICandidateDiscoveryService | None = None,
+        ai_candidate_promotion_service: AICandidatePromotionService | None = None,
         trip_strategy_service: TripStrategyService | None = None,
         stay_transport_service: StayTransportService | None = None,
+        accommodation_inventory_service: AccommodationInventoryService | None = None,
+        flight_inventory_service: FlightInventoryService | None = None,
         experience_planner_service: ExperiencePlannerService | None = None,
+        route_feasibility_service: RouteFeasibilityService | None = None,
+        route_aware_sequencing_service: RouteAwareSequencingService | None = None,
+        travel_time_buffer_service: TravelTimeBufferService | None = None,
         plan_validator_service: PlanValidatorService | None = None,
-        shadow_mode_enabled: bool | None = None,
     ) -> None:
         self.traveler_profile_service = traveler_profile_service or TravelerProfileService()
         self.destination_context_service = (
             destination_context_service or DestinationContextService()
         )
         self.candidate_quality_service = candidate_quality_service or CandidateQualityService()
-        # Mirrors PlanningOrchestrator.__init__'s own default construction
-        # (Step 161B). Constructing this is inert -- it never calls a
-        # network service by itself; only ai_candidate_shadow_node calling
-        # .dry_run() does, and only when shadow mode is enabled.
-        self.ai_candidate_discovery_service = (
-            ai_candidate_discovery_service or AICandidateDiscoveryService()
-        )
+        # None (the default) keeps ai_candidate a pure no-op -- see
+        # build_ai_candidate_node's docstring.
+        self.ai_candidate_promotion_service = ai_candidate_promotion_service
         self.trip_strategy_service = trip_strategy_service or TripStrategyService()
         self.stay_transport_service = stay_transport_service or StayTransportService()
+        self.accommodation_inventory_service = (
+            accommodation_inventory_service or AccommodationInventoryService()
+        )
+        self.flight_inventory_service = flight_inventory_service or FlightInventoryService()
         self.experience_planner_service = (
             experience_planner_service or ExperiencePlannerService()
         )
+        self.route_feasibility_service = route_feasibility_service or RouteFeasibilityService()
+        self.route_aware_sequencing_service = (
+            route_aware_sequencing_service or RouteAwareSequencingService()
+        )
+        self.travel_time_buffer_service = (
+            travel_time_buffer_service or TravelTimeBufferService()
+        )
         self.plan_validator_service = plan_validator_service or PlanValidatorService()
-        # None (the default) means "read Settings.
-        # ai_candidate_discovery_shadow_mode_enabled live on every run" --
-        # see build_planning_graph's docstring. Only ever forced to a bool
-        # by tests.
-        self.shadow_mode_enabled = shadow_mode_enabled
 
         self._graph = build_planning_graph(
             self.traveler_profile_service,
             self.destination_context_service,
             self.candidate_quality_service,
-            self.ai_candidate_discovery_service,
+            self.ai_candidate_promotion_service,
             self.trip_strategy_service,
             self.stay_transport_service,
+            self.accommodation_inventory_service,
+            self.flight_inventory_service,
             self.experience_planner_service,
+            self.route_feasibility_service,
+            self.route_aware_sequencing_service,
+            self.travel_time_buffer_service,
             self.plan_validator_service,
-            shadow_mode_enabled=self.shadow_mode_enabled,
         )
 
-    def run(self, planning_state: PlanningState) -> PlanningState:
-        """Runs the full graph once and returns the resulting PlanningState.
+    def run(
+        self,
+        trip_id: str,
+        trip_request: TripRequest,
+        planning_state: PlanningState,
+    ) -> PlanningGraphState:
+        """Runs the full graph once and returns the resulting
+        `PlanningGraphState` (including `completed_nodes`/`failed_nodes`/
+        `errors`/`warnings`, not just `planning_state`).
 
         Never saves to any repository -- persistence stays the exclusive
-        responsibility of the caller (as it does for
-        `PlanningOrchestrator`'s stage-runner methods).
+        responsibility of the caller, exactly like
+        `PlanningOrchestrator`'s own stage-runner methods.
         """
-        initial_state: PlanningGraphState = {
-            "planning_state": planning_state,
-            "executed_nodes": [],
-            "errors": [],
-        }
+        initial_state = build_initial_planning_graph_state(trip_id, trip_request, planning_state)
         result = self._graph.invoke(initial_state)
-        return result["planning_state"]
+        return result
 
 
-def run_planning_graph(planning_state: PlanningState) -> PlanningState:
-    """Convenience entry point using default real services. Not called by
-    any API route or by `PlanningOrchestrator` in this step.
+def run_planning_graph(
+    trip_id: str,
+    trip_request: TripRequest,
+    planning_state: PlanningState,
+) -> PlanningGraphState:
+    """Convenience entry point using default real (but LLM-free-by-default)
+    services.
     """
-    return PlanningGraphRunner().run(planning_state)
+    return PlanningGraphRunner().run(trip_id, trip_request, planning_state)

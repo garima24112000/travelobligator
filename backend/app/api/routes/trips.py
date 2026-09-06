@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, status
 
+from app.core.config import get_settings
 from app.core.errors import (
     AppError,
     lock_not_found_error,
@@ -20,6 +21,7 @@ from app.schemas.destination_context import DestinationContextResponseData
 from app.schemas.errors import ErrorCode
 from app.schemas.experience_plan import ExperiencePlanResponseData
 from app.schemas.generation_progress import GenerationProgressResponseData
+from app.schemas.langgraph_shadow_run import LangGraphShadowRunResponseData
 from app.schemas.provider_coverage import ProviderCoverageResponseData
 from app.schemas.regeneration_attempts import RegenerationAttemptsResponseData
 from app.schemas.regeneration_readiness import RegenerationReadinessResponseData
@@ -28,6 +30,7 @@ from app.schemas.trips import FeedbackRequest, LockRequest, TripResponseData
 from app.schemas.validation_report import ValidationReportResponseData
 from app.services.ai_candidate_promotion_service import ai_candidate_promotion_service
 from app.services.ai_candidate_review_service import ai_candidate_review_service
+from app.services.langgraph_planning_service import LangGraphPlanningService
 from app.services.plan_diff_preview_service import plan_diff_preview_service
 from app.services.planning_orchestrator import planning_orchestrator
 from app.services.regeneration_attempt_service import regeneration_attempt_service
@@ -66,7 +69,18 @@ def get_trip(trip_id: str) -> ApiResponse[TripResponseData]:
     response_model=ApiResponse[TripResponseData],
 )
 def generate_trip_plan(trip_id: str) -> ApiResponse[TripResponseData]:
-    planning_state = planning_orchestrator.generate_full_plan(trip_id)
+    # Step 171D: config-gated engine selection; Step 171E made "langgraph"
+    # the default once it reached stage parity with the legacy path (see
+    # PlanningOrchestrator.generate_full_plan_via_langgraph's docstring).
+    # An explicit "legacy", or any unrecognized value, always calls
+    # generate_full_plan instead -- the original hand-written orchestrator
+    # loop, completely unmodified by this branch. Either way, this route
+    # only ever reaches a method already owned by the planning_orchestrator
+    # singleton, never the underlying planning service directly.
+    if get_settings().planning_engine_mode == "langgraph":
+        planning_state = planning_orchestrator.generate_full_plan_via_langgraph(trip_id)
+    else:
+        planning_state = planning_orchestrator.generate_full_plan(trip_id)
     data = TripResponseData(trip_id=trip_id, planning_state=planning_state)
     return success_response(data)
 
@@ -502,5 +516,58 @@ def promote_ai_candidates(trip_id: str) -> ApiResponse[AICandidatePromotionRespo
     data = AICandidatePromotionResponseData(
         trip_id=trip_id,
         ai_candidate_promotion_report=planning_state.ai_candidate_promotion_report,
+    )
+    return success_response(data)
+
+
+@router.post(
+    "/{trip_id}/langgraph-shadow-run",
+    response_model=ApiResponse[LangGraphShadowRunResponseData],
+)
+def run_langgraph_shadow(trip_id: str) -> ApiResponse[LangGraphShadowRunResponseData]:
+    """Read-only LangGraph shadow-run endpoint (Step 171C,
+    docs/13_llm_reasoning_pipeline.md, docs/14_backend_architecture.md).
+
+    Executes the Step 171A/171B LangGraph planning graph
+    (`LangGraphPlanningService`) against an isolated deep copy of this
+    trip's current `PlanningState`, purely for inspection/comparison. This
+    is **not** the official generation path -- `POST /trips/{trip_id}/generate`
+    (`PlanningOrchestrator.generate_full_plan`) remains that -- and the
+    result is never persisted:
+
+    - `planning_state_repository.save` is never called.
+    - The trip's cached `PlanningState` object is never mutated -- a
+      `model_copy(deep=True)` is passed into the graph, never the same
+      instance `planning_state_repository.get_by_trip_id` returned.
+    - No version history, regeneration attempt, lock, or generation-progress
+      bookkeeping is touched.
+    - `persisted` is always `False` in the response (structurally
+      enforced by the schema), confirming this honestly.
+
+    Every node the graph runs is one of the same already-existing
+    deterministic stage services `PlanningOrchestrator` itself uses (or,
+    for `ai_candidate`, nothing at all by default -- see
+    `build_ai_candidate_node`'s docstring). This endpoint never calls
+    Groq/Anthropic/OpenAI, an AI candidate proposal provider, or any other
+    LLM, and it never calls `POST /generate` internally.
+    """
+    planning_state = planning_state_repository.get_by_trip_id(trip_id)
+    if planning_state is None:
+        raise trip_not_found_error(trip_id)
+
+    shadow_planning_state = planning_state.model_copy(deep=True)
+    result = LangGraphPlanningService().run(
+        trip_id, planning_state.trip_request, shadow_planning_state
+    )
+
+    data = LangGraphShadowRunResponseData(
+        trip_id=trip_id,
+        status="completed" if not result.failed_nodes else "completed_with_failures",
+        planning_state=result.planning_state,
+        completed_nodes=result.completed_nodes,
+        failed_nodes=result.failed_nodes,
+        errors=result.errors,
+        warnings=result.warnings,
+        persisted=False,
     )
     return success_response(data)

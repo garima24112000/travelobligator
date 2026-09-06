@@ -7,7 +7,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import app.services.planning_orchestrator as orchestrator_module
-from app.core.config import Settings
+from app.core.config import Settings, get_settings
 from app.models.ai_candidate_proposal import (
     AICandidateProposal,
     AICandidateProposalGuardrailReport,
@@ -131,6 +131,17 @@ def _generate_with_shadow_mode(
     monkeypatch: pytest.MonkeyPatch,
     proposals: list[AICandidateProposal],
 ) -> str:
+    """As of Step 171E, the config-gated Step 161B AI candidate discovery
+    shadow stage remains a `PlanningOrchestrator.generate_full_plan`-
+    specific (legacy engine) integration -- it is intentionally not part
+    of the LangGraph engine's stage graph (see `build_ai_candidate_node`'s
+    docstring in `planning_graph_nodes.py` for why). `PLANNING_ENGINE_MODE=
+    legacy` is pinned here so `POST /generate` -- now defaulting to the
+    LangGraph engine -- still exercises that legacy-path-specific
+    integration.
+    """
+    monkeypatch.setenv("PLANNING_ENGINE_MODE", "legacy")
+    get_settings.cache_clear()
     monkeypatch.setattr(
         orchestrator_module,
         "get_settings",

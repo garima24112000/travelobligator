@@ -279,9 +279,10 @@ def test_full_generate_with_scraped_local_still_succeeds_without_langgraph(
     monkeypatch: pytest.MonkeyPatch, client: TestClient, tmp_path: Path
 ) -> None:
     """LangGraph-not-wired-into-/generate is already asserted at the
-    import level by test_generation_progress.py/test_planning_graph.py --
-    this just confirms the full generate flow still succeeds end to end
-    with scraped_local flight inventory enabled."""
+    import level by test_generation_progress.py/backend/app/tests/graphs/
+    test_langgraph_planning_graph.py -- this just confirms the full
+    generate flow still succeeds end to end with scraped_local flight
+    inventory enabled."""
     html_path = _write_html(tmp_path, _TEST_HTML_ONE_OFFER)
     _enable_scraped_local(monkeypatch, html_path)
 

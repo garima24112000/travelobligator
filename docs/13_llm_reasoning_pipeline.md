@@ -3603,3 +3603,288 @@ architecture.md section 39.11 have the implementation detail.
   experience (the overwhelming majority, and the only kind produced by
   default) never shows it. This is not a claim of booking, verification,
   or official status.
+
+## 85. LangGraph Planning State and Deterministic Node Skeleton (Step 171A)
+
+Step 171A introduces a LangGraph orchestration skeleton
+(`backend/app/graphs/planning_graph_state.py`, `planning_graph_nodes.py`,
+`planning_graph.py`) representing the planning pipeline as graph nodes,
+without replacing anything. This **supersedes** the earlier Step 162B/162C
+`planning_graph.py` prototype (which mirrored `PlanningOrchestrator.
+generate_full_plan`'s exact `traveler_profile -> destination_context ->
+candidate_quality -> ai_candidate_shadow -> trip_strategy -> stay_transport
+-> experience_plan -> validation` order) with a new state/node design
+aligned to Section 170's AI candidate review/promotion/provider-coverage
+concepts. The old prototype was fully isolated (only its own now-removed
+test file imported it, per its own docstring "not imported by any API
+route or by PlanningOrchestrator"), so this replacement changes nothing
+observable anywhere else in the codebase.
+
+- **LangGraph orchestrates existing deterministic services here -- it does
+  not replace them with LLM reasoning, and it does not itself call
+  Groq/Anthropic/OpenAI or any other LLM.** Every node in
+  `planning_graph_nodes.py` (`destination_context`, `stay_transport`,
+  `ai_candidate`, `experience_planning`, `validation`, `provider_coverage`,
+  `final_state`) is a thin wrapper that calls exactly one existing
+  service's own method (`DestinationContextService.run`,
+  `StayTransportService.run`, `ExperiencePlannerService.run`,
+  `PlanValidatorService.run`, or -- only if explicitly injected --
+  `AICandidatePromotionService.apply_promotion`) -- no node duplicates any
+  service's logic. `ai_candidate` defaults to a pure no-op when no service
+  is injected, so this skeleton never triggers AI candidate discovery or
+  any LLM call on its own.
+- **Existing services remain the single source of truth.** `PlanningState`
+  is carried through the graph state unchanged in shape; a node either
+  calls a service that mutates and returns it, or is a pure checkpoint
+  that touches nothing. No node invents a coordinate, rating, opening
+  hour, price, route, distance, duration, description, or booking link.
+- **LLMs cannot bypass provider grounding/validation through this
+  skeleton.** Even the one node capable of touching AI candidate state
+  (`ai_candidate`) only ever calls `AICandidatePromotionService.
+  apply_promotion` -- the same fully deterministic, provider-call-free
+  service Step 170C/170D already built, which itself only materializes
+  candidates that already passed grounding (Stage 6) and quality approval
+  (Section 15/156E). Nothing in this graph skeleton grounds, scores, or
+  promotes a candidate using new logic of its own.
+- **Graph order**: `START -> destination_context -> stay_transport ->
+  ai_candidate -> experience_planning -> validation -> provider_coverage
+  -> final_state -> END`. A real `langgraph.graph.StateGraph` is used
+  (the `langgraph` package is already an existing dependency, added in
+  Step 162B) -- `build_planning_graph()` returns an actual compiled,
+  invokable `CompiledStateGraph`, not a hand-rolled stand-in.
+- **Not wired into `/generate` yet.** `backend/app/api/routes/trips.py`
+  and `PlanningOrchestrator` (including `generate_full_plan`) do not
+  import `app.graphs` anywhere -- confirmed by dedicated source/AST
+  inspection tests, mirroring the exact assertions
+  `test_generation_progress.py` already made for the superseded
+  prototype. `PlanningOrchestrator` behavior, itinerary scheduling,
+  route-aware scheduling, and regeneration refusal are all completely
+  unchanged by this step.
+- **Fails safe, never fabricates**: every node catches its own
+  exceptions, records a generic secret-free marker in `errors`/
+  `failed_nodes` (never a raw exception, prompt, or LLM response), and
+  leaves `planning_state` completely untouched for that node -- a failed
+  node never invents data to compensate. The graph continues past a
+  failed node rather than crashing the whole run; `final_state_node`
+  reports an honest summary warning if any node failed.
+
+## 86. LangGraph Planning Runner/Service (Step 171B)
+
+Step 171B adds `LangGraphPlanningService`
+(`backend/app/services/langgraph_planning_service.py`), a thin wrapper
+around Step 171A's `PlanningGraphRunner` that can run the planning graph
+end to end with injected deterministic services -- still not the active
+`/generate` path.
+
+- **The LangGraph runner executes deterministic service nodes, nothing
+  more.** `LangGraphPlanningService.run` never re-implements a stage's
+  logic; it only decides whether to build a fresh `PlanningState` (when
+  none is given, following the same non-persisting conventions
+  `PlanningOrchestrator.create_trip` already uses) and then delegates the
+  actual run to `PlanningGraphRunner`, which itself delegates every node
+  to exactly one existing deterministic service's own method (Section 85).
+  No LLM call exists anywhere in this service -- `ai_candidate_promotion_service`
+  defaults to `None`, keeping the `ai_candidate` node a pure no-op exactly
+  as Step 171A already established.
+- **It is still not the active `/generate` path.** Neither
+  `backend/app/api/routes/trips.py` nor `PlanningOrchestrator` imports
+  this service or `app.graphs` anywhere -- verified by dedicated
+  AST-import-inspection tests, mirroring the same assertions already made
+  for the graph skeleton itself. `PlanningOrchestrator.generate_full_plan`,
+  itinerary scheduling, route-aware scheduling, and regeneration refusal
+  remain completely unchanged.
+- **LLMs still cannot bypass provider grounding/validation through this
+  service.** The only node capable of touching AI candidate state
+  (`ai_candidate`) still only ever calls `AICandidatePromotionService.
+  apply_promotion` when explicitly injected -- the same fully
+  deterministic, provider-call-free service from Step 170C/170D that only
+  materializes candidates already grounded (Stage 6) and quality-approved
+  (Section 15/156E). This service adds no new eligibility, grounding, or
+  quality logic of its own.
+- **Errors are never swallowed silently.** A node's own failure is
+  already caught safely inside `planning_graph_nodes.py` and surfaced
+  honestly via the returned `LangGraphPlanningResult`'s `failed_nodes`/
+  `errors` -- never fabricated `PlanningState` data. A genuinely
+  unexpected failure invoking the graph itself (as opposed to one node
+  failing gracefully) is logged and re-raised, mirroring
+  `PlanningOrchestrator.generate_full_plan`'s own fail-loud-at-the-top-level
+  behavior rather than returning a misleadingly "successful" result.
+- **Persistence stays outside the graph runner.** `LangGraphPlanningService`
+  never calls `PlanningStateRepository.save`/`TripRepository.create` --
+  confirmed by a dedicated test that makes both raise if called and proves
+  a full run never triggers either, whether `planning_state` is freshly
+  built or passed in.
+
+## 87. Read-Only LangGraph Shadow-Run Endpoint (Step 171C)
+
+Step 171C adds `POST /trips/{trip_id}/langgraph-shadow-run`
+(`backend/app/api/routes/trips.py`), exposing `LangGraphPlanningService`
+(Section 86) through a safe, read-only endpoint so the graph can be
+exercised end to end for a real trip without replacing anything.
+
+- **The shadow run can execute the deterministic graph for inspection,
+  nothing more.** The endpoint fetches the trip's current `PlanningState`,
+  makes an isolated deep copy of it, and runs the Step 171A/171B graph
+  against that copy only. It never touches the cached `PlanningState`
+  object `PlanningStateRepository.get_by_trip_id` returned, and it never
+  calls `PlanningStateRepository.save` -- the response's `persisted` field
+  is always `False`, structurally enforced (`Literal[False]`), and no
+  version history, regeneration attempt, lock, or generation-progress
+  bookkeeping is created or modified.
+- **It is still not the official `/generate` path.**
+  `POST /trips/{trip_id}/generate` is completely untouched -- it still
+  calls only `PlanningOrchestrator.generate_full_plan`, confirmed by a
+  dedicated test asserting the route handler's own code (not its
+  docstring) never mentions `generate_full_plan`/`planning_orchestrator`,
+  and a matching test confirming `generate_trip_plan`'s handler never
+  mentions LangGraph/the graph package either. `PlanningOrchestrator`
+  behavior, itinerary scheduling, route-aware scheduling, and
+  regeneration refusal remain completely unmodified.
+- **LLMs still cannot bypass provider grounding/validation through this
+  endpoint.** `LangGraphPlanningService()` is constructed with no
+  `ai_candidate_promotion_service` injected, so the `ai_candidate` node
+  stays a pure no-op exactly as Step 171A/171B already established --
+  confirmed by a dedicated test that makes
+  `AICandidateDiscoveryService.dry_run` raise if called and proves a
+  shadow run never triggers it. Two more dedicated tests make
+  Anthropic's/Groq's `.propose` raise if called, proving no LLM call
+  happens anywhere in a shadow run either.
+- **A node failure is surfaced honestly, never hidden or fabricated.** If
+  an underlying stage service raises, the response still returns `200`
+  with `status="completed_with_failures"`, the failing node's name in
+  `failed_nodes`, a generic secret-free message in `errors`, and the
+  affected `PlanningState` section left exactly as it was (e.g. `None` on
+  a fresh trip) -- never a guessed value.
+
+## 88. Config-Gated LangGraph /generate Mode (Step 171D)
+
+Step 171D lets `POST /trips/{trip_id}/generate` optionally run through the
+Section 85-87 graph for real, instead of only inspecting it through the
+shadow endpoint -- gated behind a single new config field so the existing
+path stays the default and stays fully intact.
+
+- **New config field, same fallback convention as every other provider
+  selector in this codebase.** `Settings.planning_engine_mode`
+  (`PLANNING_ENGINE_MODE`, default `"legacy"`) is a plain string field, not
+  a validated enum -- mirroring `accommodation_provider`/`flight_provider`/
+  `routing_provider`. `Settings` accepts any string without raising; the
+  route only switches engines on an exact `"langgraph"` match, so an unset,
+  misspelled, or future value always falls back to the legacy path rather
+  than failing the request.
+- **The route still only ever calls `planning_orchestrator`.**
+  `generate_trip_plan` (`backend/app/api/routes/trips.py`) branches once on
+  `get_settings().planning_engine_mode`: `"langgraph"` calls the new
+  `PlanningOrchestrator.generate_full_plan_via_langgraph`;
+  everything else calls the pre-existing `generate_full_plan`, byte-for-byte
+  unchanged. The route's own source still never references
+  `LangGraphPlanningService` directly in either branch -- both engines are
+  reached only through methods already owned by the `planning_orchestrator`
+  singleton, confirmed by dedicated structural tests.
+- **`generate_full_plan_via_langgraph` mirrors `generate_full_plan`'s
+  bookkeeping, not its stage-by-stage loop.** It loads the trip's
+  `PlanningState`, marks generation as started, delegates the actual
+  computation to `LangGraphPlanningService.run` (Section 86), then applies
+  the exact same `readiness_status -> pipeline_status` mapping
+  `run_validation_stage` already uses (the graph's `validation` node calls
+  `PlanValidatorService.run()` directly, which -- like every stage service
+  -- never sets `pipeline_status` itself), recomputes
+  `version_history`/`plan_diff_preview`/`regeneration_readiness` the same
+  way `generate_full_plan` does, marks generation finished, and persists.
+  On an unexpected exception it marks generation failed and re-raises,
+  matching `generate_full_plan`'s own error handling exactly.
+- **Known, honest scope limit as of this step (closed in Step 171E, see
+  Section 89 below): the graph's node set was narrower than the legacy
+  pipeline.** The Section 85 graph, as it stood after this step, only
+  wrapped `destination_context`/`stay_transport`/`ai_candidate`/
+  `experience_planning`/`validation`/`provider_coverage`/`final_state` --
+  it had no `traveler_profile`, `trip_strategy`, `route_feasibility`,
+  `route_aware_sequencing`, `travel_time_buffer`, `accommodation_inventory`,
+  or `flight_inventory` node, so a langgraph-mode generate left those
+  `PlanningState` report fields unset. Step 171E adds those nodes and
+  makes the LangGraph engine the default once parity was reached.
+- **Every other guarantee holds in both modes.** Route-aware scheduling,
+  regeneration refusal (`POST /regenerate` still always `409`), and
+  accommodation/flight provider behavior are completely unmodified by this
+  step in either engine mode. The shadow endpoint (Section 87) never reads
+  `planning_engine_mode` and keeps behaving identically regardless of it.
+  `PlanningOrchestrator` is never modified structurally to remove
+  `generate_full_plan` or drop the legacy path -- it is only extended with
+  one new optional constructor parameter (`langgraph_planning_service`,
+  defaulting to a real `LangGraphPlanningService()`) and one new method.
+
+## 89. LangGraph Stage Parity and New Default Engine (Step 171E, final Section 171 step)
+
+Step 171E closes the Section 88 scope-limit gap and, once that parity was
+confirmed by the full test suite, flips `Settings.planning_engine_mode`'s
+default from `"legacy"` to `"langgraph"` -- LangGraph is now the default
+orchestration path, but only because it reached parity with the legacy
+path first, and only for the deterministic-service orchestration this
+whole feature has always been: it composes existing, already-deterministic
+stage services in the documented order, it does not freely generate
+itinerary facts, and `PLANNING_ENGINE_MODE=legacy` remains available and
+fully unmodified for anyone who wants the original hand-written
+orchestrator loop instead.
+
+- **The graph's stage order now mirrors
+  `PlanningOrchestrator.generate_full_plan`'s own pipeline.** `START ->
+  traveler_profile -> destination_context -> candidate_quality ->
+  ai_candidate -> trip_strategy -> stay_transport ->
+  accommodation_inventory -> flight_inventory -> experience_planning ->
+  route_feasibility -> route_aware_sequencing -> travel_time_buffer ->
+  validation -> provider_coverage -> final_state -> END`. Every new node
+  is a thin wrapper around exactly the same deterministic service method
+  `generate_full_plan` already calls for that concept
+  (`TravelerProfileService.run`, `CandidateQualityService.build_report`,
+  `TripStrategyService.run`, `AccommodationInventoryService.build_report`,
+  `FlightInventoryService.build_report`, `RouteFeasibilityService.
+  build_report`, `RouteAwareSequencingService.build_report`/
+  `apply_report`, `TravelTimeBufferService.build_report`) -- no node
+  duplicates a service's own decision logic, and no node calls an LLM.
+  `route_aware_sequencing`'s node reads
+  `Settings.route_aware_scheduling_enabled` the same way
+  `run_experience_plan_stage` does, so that config's behavior (shadow-only
+  by default, applied only past the configured minimum real improvement
+  when enabled) is identical in both engines.
+- **One documented, intentional gap remains, by design.** The optional,
+  off-by-default Step 161B AI candidate *discovery* shadow stage
+  (`Settings.ai_candidate_discovery_shadow_mode_enabled`) is still not
+  part of any graph node -- it stays a `generate_full_plan`-specific
+  (legacy engine) integration. CLAUDE.md is explicit that this subsystem
+  should not be wired into the real pipeline without being asked to, and
+  a dedicated structural test (`test_nodes_module_has_no_llm_or_network_
+  imports`/`test_planning_graph_module_has_no_disallowed_imports`) keeps
+  the graph's own modules structurally incapable of importing
+  `AICandidateDiscoveryService` at all. With shadow mode off -- the only
+  configuration the LangGraph engine supports today -- both engines
+  already behave identically (`ai_candidate_proposal_batch`/
+  `candidate_grounding_batch`/`ai_candidate_promotion_report` all stay
+  `None`), so this is not a parity gap for the new default configuration.
+  `GET /trips/{trip_id}/ai-candidate-review` and
+  `POST /trips/{trip_id}/ai-candidate-promotions` remain fully available
+  and unaffected regardless of engine -- tests that specifically exercise
+  the shadow-mode-through-`/generate` integration now pin
+  `PLANNING_ENGINE_MODE=legacy` explicitly.
+- **Generation-progress bookkeeping matches legacy's granularity.**
+  `generate_full_plan_via_langgraph` maps the graph's `completed_nodes`
+  back onto the same nine `GENERATION_STAGE_KEYS` `generate_full_plan`
+  reports (via `_GRAPH_NODES_BY_GENERATION_STAGE_KEY` in
+  `planning_orchestrator.py`), so `generation_progress.completed_stages`
+  reads identically regardless of engine -- a legacy stage key is only
+  marked finished once every graph node backing it actually completed.
+- **One other documented, honest difference on node failure.** Legacy's
+  Step 166D hardening replaces an unexpected `route_feasibility`/
+  `route_aware_sequencing`/`travel_time_buffer` computation failure with
+  an explicit `status=failed` placeholder report. The graph's equivalent
+  nodes instead leave that field exactly as it already was (this graph's
+  existing, Step 171A-established failure convention for every node) --
+  never fabricating even a placeholder object. Both are safe, tested
+  behaviors; they are simply not byte-identical on the (rare, unexpected)
+  failure path.
+- **New default, same safety contract.** No LLM call, no new provider/
+  network call, no itinerary-scheduling-rule change, and no fake travel
+  data was introduced by this step -- every new node wraps a service this
+  codebase already shipped and already tested. `PlanningOrchestrator.
+  __init__` now constructs `LangGraphPlanningService` with its own
+  already-constructed stage-service instances (not fresh separate ones),
+  so a test or operator that reconfigures one of `planning_orchestrator`'s
+  services affects both engines identically.
