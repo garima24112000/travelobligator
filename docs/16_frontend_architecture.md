@@ -2625,3 +2625,119 @@ file changes.
   enabled is a UX convenience only -- `POST /trips/{trip_id}/regenerate`
   itself still re-validates every precondition server-side on every
   call, unchanged from Steps 174B-174D.
+
+## Step 175B: No Frontend Display Change
+
+Step 175B (`backend/app/services/plan_validator_service.py`) added a
+backend-only `category="provider_coverage_consistency"` warning to
+`validation_report.warnings` and cleaned up stale validator wording. No
+frontend file changed. The existing `ValidationSection`/validation-report
+rendering in `frontend/app/page.tsx` already renders every
+`validation_report.warnings` entry generically (severity, category,
+message, suggested_fix) without a category allowlist, so a new warning
+category appears in the existing warnings list without any code change
+-- but no dedicated UI treatment (icon, grouping, or special copy) for
+`provider_coverage_consistency` was added in this step. That display
+work, if wanted, is a future frontend step, not part of 175B.
+
+## Step 175C: No Frontend Display Change
+
+Step 175C (`backend/app/services/plan_validator_service.py`) added three
+more backend-only `warnings` categories --
+`route_aware_sequencing`, `movement_data`, and `route_geometry` -- and
+changed nothing else. No frontend file changed. As with 175B, the
+existing generic `ValidationIssueList`/`ValidationSection` rendering in
+`frontend/app/page.tsx` (category, severity, message, affected_section,
+suggested_fix, no allowlist) already renders these new categories exactly
+like every other warning, including their `SUGGESTION` severity badge
+where used. No dedicated UI treatment (icon, grouping, day-level/map
+overlay, or special copy) for route-aware sequencing, movement data, or
+route geometry validation was added in this step -- that display work, if
+wanted, is a future frontend step, not part of 175C.
+
+## Step 175D: No Frontend Display Change
+
+Step 175D (`backend/app/services/plan_validator_service.py`) added two
+more backend-only `warnings` categories -- `regeneration` and
+`regeneration_state_consistency` -- plus a tiny `affected_section` value
+change on the existing flight-inventory warning (`"stay_transport"` ->
+`"flight_inventory"`). No frontend file changed. The existing generic
+`ValidationIssueList`/`ValidationSection` rendering in
+`frontend/app/page.tsx` already renders these new categories exactly like
+every other warning (category, severity, message, affected_section,
+suggested_fix, no allowlist), so they appear in the existing warnings
+list without any code change. No dedicated UI treatment (icon, grouping,
+or a link into `RegenerationReadinessSection`) for regeneration-lifecycle
+validation warnings was added in this step -- that display work, if
+wanted, is a future frontend step, not part of 175D.
+
+## Step 175E (final Section 175 step): Grouped Validation Display
+
+Step 175E is frontend-only (`frontend/app/page.tsx`) -- no backend file
+changed, and (after review) no backend behavior needed changing either.
+It polishes how `ValidationSection`/`ValidationIssueList` render the
+larger set of categories/severities Sections 175B-175D added, without
+creating a single new validation fact.
+
+- **Category grouping.** A new `groupValidationIssuesByCategory` helper
+  groups an issue list by `category`, preserving the order categories
+  first appear in (never reordering individual issues within a category,
+  never dropping or inventing one). `ValidationIssueList` now renders one
+  heading per category group instead of one flat list.
+- **Human-readable category labels.** A new `VALIDATION_CATEGORY_LABELS`
+  map plus `validationCategoryLabel` fallback (snake_case ->
+  Title Case) turns backend category strings into display labels --
+  `provider_coverage_consistency` -> "Provider coverage consistency",
+  `route_aware_sequencing` -> "Route-aware sequencing", `movement_data`
+  -> "Movement data", `route_geometry` -> "Route geometry",
+  `regeneration` -> "Regeneration", `regeneration_state_consistency` ->
+  "Regeneration state consistency", and so on for every pre-existing
+  category too. This is purely a display relabeling of a string the
+  backend already sent -- it never changes, interprets, or invents the
+  underlying `message`/`severity`/`affected_section`/`suggested_fix`.
+- **Warnings vs. suggestions, split and clearly distinguished.** The
+  backend places every non-critical issue in `ValidationReport.warnings`,
+  using its own `severity` field ("warning" vs "suggestion") to
+  distinguish them (Steps 175C/175D) -- `ValidationReport.suggestions` is
+  never populated. `ValidationSection` now splits `warnings` into two
+  buckets by that existing `severity` field and renders them as separate
+  titled sections, "Warnings" and "Suggestions", each independently
+  grouped by category. A new `validationSeverityToneClassName` helper
+  (reading only `issue.severity`) gives `critical`/`warning`/`suggestion`
+  visibly different border/badge tones so a suggestion reads clearly as a
+  lower-severity, informational item -- this is a pure style computed
+  from a field the backend already sent, never a new judgment about the
+  issue.
+- **Critical issues and warnings are never hidden.** `ValidationIssueList`
+  still renders nothing only when its own issue list is empty (unchanged
+  behavior) -- grouping/relabeling never causes an issue to be dropped
+  from display. Verified live: a `blocked` trip (zero provider-backed
+  attraction candidates) still shows its one `category="provider_coverage"`
+  critical issue in its own red-toned "Critical issues (1)" section, and
+  a `needs_review` trip's warnings/suggestions (across `feasibility`,
+  `weather`, `accommodation_inventory`, `flight_inventory`,
+  `route_aware_sequencing`, `movement_data`, `route_geometry`) render
+  correctly grouped with the right severity tone.
+- **Provider coverage notes and unavailable-data notes are unchanged** --
+  same two `SummaryList`-style blocks below the issue lists, still always
+  visible when non-empty.
+- **Nothing else on the page changed.** Numbered stops, movement rows,
+  provider-backed route paths, the AI-promoted badge, the regeneration
+  UI, locks, version history, diff preview, and the accommodation/flight
+  inventory sections were not touched -- confirmed both by `git diff`
+  (only the `ValidationIssueList`/`ValidationSection` hunks changed) and
+  by live verification (created a trip, generated a plan, loaded it via
+  "Load existing trip", and visually confirmed those sections still
+  render with zero console errors).
+- **Backend safety review (no code change resulted).** Re-read
+  `plan_validator_service.py` end to end and confirmed: every 175B/175C/
+  175D issue is `WARNING`/`SUGGESTION` severity only; `readiness_status`
+  is still governed solely by `critical_issues`; no message claims a
+  route order is superior, a fact is confirmed beyond what was checked,
+  a locked item's fate is assured, feedback's intent was fully met, or
+  that the trip will be better as a result; no validation function
+  computes a route geometry,
+  distance, or duration (only presence/count is read); and no validation
+  function mutates provider/planning/regeneration state -- every one of
+  them is a pure read returning a list of `ValidationIssue`. No backend
+  bug was found, so no backend file changed in this step.

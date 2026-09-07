@@ -4316,3 +4316,206 @@ that nothing in that lifecycle is AI-generated at any layer:
   fixed boolean checks over stored `PlanningState` fields (Step 174D),
   and rendered by static UI copy reading those same fields (Step 174E).
   No LLM, LangGraph, or AI candidate call exists anywhere in this path.
+
+---
+
+## 104. Validation Taxonomy Cleanup and Provider-Coverage Consistency Hardening (Step 175B)
+
+Step 175B is a small, deterministic hardening pass over
+`PlanValidatorService` -- backend validation/service/test/docs only, no
+planning, provider, LangGraph, or regeneration behavior changed. **This
+step calls no AI/LLM and no provider; it only compares fields already
+computed elsewhere on `PlanningState`.**
+
+- **New additive check: provider-coverage consistency.** A small,
+  read-only cross-check (`_build_provider_coverage_consistency_warnings`,
+  `backend/app/services/plan_validator_service.py`) compares what
+  validation already observed on `accommodation_inventory_report`/
+  `flight_inventory_report`/`route_feasibility_report` against what
+  `planning_state.provider_coverage` separately reports for the same
+  data. `ProviderCoverageService` and `PlanValidatorService` are
+  independent today and could in principle drift; this check exists so a
+  drift is surfaced honestly rather than silently trusted. It only fires
+  on a clear contradiction (validation saw a real, provider-backed
+  success with actual offers/legs, but the matching `provider_coverage`
+  field says `failed`/`not_connected`/`unavailable`), only ever appends a
+  `category="provider_coverage_consistency"` `WARNING` (never a critical
+  issue), and never invents a new provider status value -- every quoted
+  value is a plain restatement of an existing `AccommodationSearchStatus`/
+  `FlightSearchStatus`/`ProviderStatus`-derived string already stored on
+  `PlanningState`. A missing `provider_coverage` is handled defensively
+  and never crashes validation; an internally consistent state (including
+  the common case where neither side has real data yet) produces no
+  warning, so this never adds noise to a non-contradictory plan.
+- **Readiness semantics are unchanged.** `readiness_status` is still
+  `blocked` only when a critical issue exists, `needs_review` otherwise --
+  this new warning is always additive and never flips either outcome.
+- **Stale wording cleanup, not a behavior change.** A few
+  `PlanValidatorService` docstrings/messages still described route
+  feasibility, route-aware sequencing, and travel-time buffering as "not
+  implemented yet" even though Sections 165/166/172/173 already
+  implemented them (route feasibility reporting, config-gated
+  route-aware sequencing, travel-time buffer sufficiency, and route
+  geometry/path rendering). The class docstring, `_build_feasibility_warning`'s
+  docstring, and the feasibility warning's provider-backed-success message/
+  suggested-fix text now say plainly: route feasibility exists when
+  provider-backed routing data is available; route-aware sequencing may be
+  applied, unavailable, failed, or not connected depending on provider data
+  and configuration; and this validator reports that uncertainty, it does
+  not calculate a missing route itself. Every message/assertion an
+  existing test depended on for exact wording (the "no route data at all"
+  fallback message, the geographic-spread warning, and the budget/holiday
+  warnings) was left untouched, since those describe checks that
+  genuinely remain unimplemented.
+
+---
+
+## 105. Route-Aware Sequencing, Movement-Data, and Route-Geometry Validation Hardening (Step 175C)
+
+Step 175C adds more additive, deterministic review visibility to
+`PlanValidatorService` for data Sections 166/172/173 already compute --
+backend validation/test/docs only, no planning/provider/LangGraph/
+regeneration behavior changed. **This step calls no AI/LLM, no provider,
+and no network endpoint; it only restates what
+`route_aware_sequencing_report`/`travel_time_buffer_report`/
+`route_feasibility_report` already recorded on `PlanningState`.**
+
+- **Route-aware sequencing visibility** (`category="route_aware_sequencing"`).
+  A new function reads `planning_state.route_aware_sequencing_report`
+  (Step 166A/166B) and reports, in one summary issue, whether any day's
+  real schedule order was actually reordered by a provider-backed
+  suggestion (`RouteAwareSequenceSuggestion.applied`) or whether the
+  itinerary keeps its originally scheduled/suggested order. When no
+  report exists at all, a single low-severity `SUGGESTION` says so
+  honestly rather than guessing an order judgement. The message
+  vocabulary is deliberately restrained: it never says a route order is
+  optimal, safest, or verified -- only that a provider-backed reorder
+  did or did not happen.
+- **Movement-data visibility** (`category="movement_data"`). The same
+  function also reports how much of the itinerary's day-level sequencing
+  had real, provider-backed movement data available at all (all days,
+  some days, or none), and a second, independent check reports the same
+  for `travel_time_buffer_report`'s own aggregate `status`
+  (`not_connected`/`partial`/`failed`/`unavailable`) -- distinct from,
+  and never duplicating, the existing per-leg `category="travel_time_buffer"`
+  insufficient-buffer warnings, which are completely unchanged.
+  `not_connected`/`unavailable`/`failed` movement data is always treated
+  as this app's expected default state (`SUGGESTION`, not `WARNING`)
+  unless coverage is only partial, which is a `WARNING` since it signals
+  a genuine inconsistency worth a closer look.
+- **Route-geometry visibility** (`category="route_geometry"`). A third
+  function counts how many of an itinerary's scheduled legs carry
+  provider-backed `route_geometry` (Step 173A), preferring
+  `travel_time_buffer_report.buffers` (falling back to
+  `route_feasibility_report.legs` only when no buffer report exists) so
+  the same leg is never counted twice. It reports "all", "none", or "N
+  of M" legs have geometry, always at `SUGGESTION` severity -- missing
+  geometry is never treated as an error, since it is expected whenever
+  routing/movement data itself is unavailable. This never computes,
+  infers, or straight-lines a path, and never restates a leg's real
+  distance/duration figures.
+- **No critical issues, ever.** Every new issue is `WARNING` or
+  `SUGGESTION` severity only, appended to the same `warnings` list the
+  rest of `PlanValidatorService` already populates -- `readiness_status`
+  stays governed entirely by `critical_issues`, exactly as before, so
+  none of this step's checks can flip a plan to `blocked`, and none can
+  mark it `ready` either.
+
+---
+
+## 106. Regeneration Lifecycle Validation Plus Small Accommodation/Flight Refinement (Step 175D)
+
+Step 175D adds one more additive, deterministic check to
+`PlanValidatorService`, restating the regeneration lifecycle Section 174
+already computes -- backend validation/test/docs only, no
+planning/provider/regeneration behavior changed. **This step calls no
+AI/LLM and no provider; it only reads already-stored
+`pending_feedback_summary`/`regeneration_readiness`/`user_locks`/
+`regeneration_attempts`/`plan_diff_preview`/`version_history`/
+`metadata.current_version` fields, exactly as Section 174's own services
+left them.**
+
+- **Regeneration lifecycle visibility** (`category="regeneration"`). A
+  new function reports, in one issue, the honest state of pending
+  feedback: no feedback ever captured -> nothing added (the default,
+  needs no review); feedback exists but every event's `applied_at` is
+  already set -> a `SUGGESTION` says previously submitted feedback has
+  already been marked applied; pending (unapplied) feedback exists with
+  an active lock -> a `WARNING` says active locks currently block
+  feedback-driven regeneration; pending feedback with
+  `regeneration_readiness.can_regenerate == True` -> a `SUGGESTION` says
+  pending feedback is available for deterministic regeneration; any other
+  not-ready case (e.g. unclassified feedback) -> a `WARNING` quoting
+  `regeneration_readiness.blocked_by` verbatim, never inventing a new
+  reason. Independently, if the most recent `regeneration_attempts` entry
+  has `status == "failed"`, a `WARNING` says the latest attempt failed
+  and the attempt history should be reviewed before retrying.
+- **Restrained wording, by design.** None of these messages ever say
+  feedback was fully satisfied, that a locked item will be preserved
+  (lock-aware partial regeneration is not implemented), or that
+  regeneration will improve the trip -- they only restate whether pending
+  feedback is/isn't currently regeneratable and why, using vocabulary
+  Section 174's own services already produced.
+- **Regeneration state consistency** (`category="regeneration_state_consistency"`).
+  A second function cross-checks two pairs of already-computed records
+  that this codebase's recompute-from-scratch pattern normally keeps in
+  sync but which could in principle drift: `regeneration_readiness.
+  can_regenerate` vs. `plan_diff_preview.regeneration_available`
+  (`WARNING` on any disagreement), and `metadata.current_version` vs.
+  `version_history` (`WARNING` only when `version_history` is non-empty
+  and `current_version` doesn't match any recorded `version_label` --
+  an empty history with the default `current_version="v1"` is normal,
+  unpopulated state, not a mismatch).
+- **A known ordering caveat, documented rather than fixed.**
+  `PlanValidatorService` runs before `PlanDiffPreviewService`/
+  `RegenerationReadinessService` recompute during `POST /generate`'s
+  post-processing step (an existing, pre-175D fact about
+  `PlanningOrchestrator.generate_full_plan`'s stage order -- this step
+  does not reorder anything). So on a trip's very first generation, this
+  check may restate those fields' pre-plan defaults rather than their
+  post-generation values; that is an honest reflection of "what does the
+  stored field say right now," exactly like every other check in this
+  file, never a claim that the field's freshness has been checked.
+- **Small accommodation/flight refinement.** After reviewing current
+  accommodation/flight validation behavior, only one tiny, low-risk
+  change was made: the flight-inventory warning's `affected_section` now
+  reads `"flight_inventory"` instead of the more generic `"stay_transport"`,
+  since bookable flight search is a distinct concept from
+  `StayTransportDecision`'s local/intercity transport strategy. No test
+  asserted the previous value. The scraped-data wording ("not
+  official-provider data," "has not been verified") and the
+  success-with-zero-offers handling were both already correct and were
+  left untouched.
+
+---
+
+## 107. Section 175 Complete: Validation Hardening Stays Deterministic and No-AI End to End (Step 175E, final Section 175 step)
+
+Step 175E closes out Section 175 with a frontend display pass
+(docs/16_frontend_architecture.md) and a final backend safety re-review
+that changed no backend code. Across all of 175A-175E, no AI/LLM call
+was ever added to validation, and none is added now:
+
+- **`PlanValidatorService` remains a pure function of already-computed
+  `PlanningState` data.** Every check added across 175B (provider-
+  coverage consistency), 175C (route-aware sequencing/movement-data/
+  route-geometry visibility), and 175D (regeneration lifecycle/
+  consistency visibility) reads fields other deterministic services
+  already wrote (`ProviderCoverageService`, `RouteFeasibilityService`,
+  `RouteAwareSequencingService`, `TravelTimeBufferService`,
+  `FeedbackService`, `RegenerationReadinessService`,
+  `PlanDiffPreviewService`) and restates them as `WARNING`/`SUGGESTION`
+  issues -- never a provider call, never an LLM call, never a network
+  call, from this file or anything it calls.
+- **The frontend display pass (175E) is equally mechanical.** Grouping
+  issues by category and relabeling category strings for display
+  (`frontend/app/page.tsx`'s `groupValidationIssuesByCategory`/
+  `validationCategoryLabel`/`validationSeverityToneClassName`) is plain
+  string/array processing over fields the backend already sent -- no
+  client-side inference, no AI call, and no new validation fact.
+- **Final re-confirmation**: no message added anywhere in Section 175
+  claims a route order is optimal/safest/verified, that feedback was
+  fully satisfied, that a locked item will be preserved, or that
+  regeneration will improve the trip. Every quoted status, count, or
+  reason traces back to a field that already existed on `PlanningState`
+  before the message was built.

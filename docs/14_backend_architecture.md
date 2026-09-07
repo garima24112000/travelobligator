@@ -3553,3 +3553,262 @@ No `ErrorCode`, error message, `RegenerationAttempt` field, readiness/
 diff-preview branch, or applied-feedback field changed in this step --
 Section 174's backend contract (174B-174D) is exactly what the frontend
 now calls, unmodified.
+
+## 81. Validation Taxonomy Cleanup and Provider-Coverage Consistency Hardening (Step 175B)
+
+Step 175B hardens `PlanValidatorService` (`backend/app/services/plan_validator_service.py`)
+without changing planning, provider, LangGraph, or regeneration behavior.
+Backend validation/service/test/docs only; no route, model shape, or
+frontend change.
+
+- **New provider-coverage consistency warning.** `PlanValidatorService`
+  previously never read `planning_state.provider_coverage` at all, even
+  though `ProviderCoverageService` maintains it independently -- the two
+  could drift without either side noticing. A new function,
+  `_build_provider_coverage_consistency_warnings`, cross-checks three
+  already-computed pairs:
+  - `accommodation_inventory_report` (status `success` with real offers)
+    against `provider_coverage.hotel_prices`
+  - `flight_inventory_report` (status `success` with real offers) against
+    `provider_coverage.flights`
+  - `route_feasibility_report` (status `success`) against
+    `provider_coverage.routes`
+
+  If the report side says success with real data but the coverage side
+  says `failed`/`not_connected`/`unavailable`, a single
+  `category="provider_coverage_consistency"` `ValidationIssue` is
+  appended to `validation_report.warnings` -- `severity=WARNING`, never
+  `CRITICAL`. If `provider_coverage` is missing (defensive-only; a
+  `PlanningState` always constructs one) or the two sides already agree,
+  no warning is added. The check is entirely read-only: it never writes
+  to `provider_coverage`, never touches any inventory/feasibility report,
+  and calls no provider, LLM, or network endpoint.
+- **Readiness semantics unchanged.** `readiness_status` is still
+  `ReadinessStatus.BLOCKED` only when `critical_issues` is non-empty, and
+  `ReadinessStatus.NEEDS_REVIEW` otherwise; this new warning can never
+  flip that outcome by itself, in either direction.
+- **No new provider status vocabulary.** Every value the warning message
+  quotes is an existing `AccommodationSearchStatus`/`FlightSearchStatus`/
+  `ProviderStatus`-derived string already stored on `PlanningState` --
+  nothing here defines a new enum or status taxonomy.
+- **Stale wording cleanup.** `PlanValidatorService`'s class docstring,
+  `_build_feasibility_warning`'s docstring, and the feasibility warning's
+  provider-backed-success message/suggested-fix text described route
+  feasibility, route-aware sequencing, and travel-time buffering as "not
+  implemented yet" even after Sections 165/166/172/173 implemented them.
+  Wording now says: route feasibility exists when provider-backed routing
+  data is available; route-aware sequencing may be applied, unavailable,
+  failed, or not connected depending on provider data/configuration; and
+  validation reports that uncertainty rather than calculating a missing
+  route itself. Message text that existing tests assert on verbatim (the
+  no-route-data fallback message, the geographic-spread warning, and the
+  budget/holiday warnings) was intentionally left unchanged -- those
+  describe checks that genuinely remain unimplemented, so the prior
+  wording there was already accurate.
+- **Tests.** `backend/app/tests/services/test_plan_validator_service.py`
+  gained coverage for: a missing `provider_coverage` not crashing
+  validation; a consistent `provider_coverage` producing no warning; an
+  accommodation/flight/route contradiction each producing exactly one
+  `WARNING` (never a critical issue); the warning never flipping
+  `readiness_status` by itself; and the warning never introducing a
+  forbidden factual field. All pre-existing validator, provider-coverage,
+  accommodation/flight/routing, and Section 170-174 tests continue to
+  pass unchanged.
+
+## 82. Route-Aware Sequencing, Movement-Data, and Route-Geometry Validation Hardening (Step 175C)
+
+Step 175C adds three more additive, read-only checks to
+`PlanValidatorService`, all gated behind the existing
+`has_scheduled_experiences` branch (the same gate that already produces
+the feasibility/travel-time-buffer warnings), so they only ever run when
+an itinerary actually exists to report on. Backend validation/test/docs
+only -- `RouteFeasibilityService`, `RouteAwareSequencingService`,
+`TravelTimeBufferService`, the OSRM adapter, route geometry generation,
+regeneration, and accommodation/flight provider code are all untouched.
+
+- **`_build_route_aware_sequencing_issues`** reads
+  `planning_state.route_aware_sequencing_report` (Step 166A/166B) and
+  returns up to two `ValidationIssue`s:
+  - `category="route_aware_sequencing"`: whether any
+    `RouteAwareSequenceSuggestion.applied` is `True` (a provider-backed
+    reorder actually happened via Step 166B's config-gated
+    `apply_report`) versus every day keeping its originally scheduled/
+    suggested order. When `route_aware_sequencing_report` is `None` or
+    has no day suggestions, a single `SUGGESTION` says sequencing was
+    never computed, and no `movement_data` issue is added for that case.
+  - `category="movement_data"`: how many of the report's day suggestions
+    have `status == ProviderStatus.SUCCESS` (real, provider-backed
+    movement data) -- all, some (`WARNING`, since partial coverage is a
+    genuine inconsistency worth reviewing), or none (`SUGGESTION`, since
+    a fully-`not_connected`/`unavailable`/`failed` report is this app's
+    expected default state, not an error).
+- **`_build_travel_time_buffer_movement_issue`** reads
+  `planning_state.travel_time_buffer_report`'s own aggregate `status`
+  (Step 166C) -- a `category="movement_data"` issue distinct from, and
+  added alongside, the pre-existing per-leg `category="travel_time_buffer"`
+  insufficient-buffer warnings (`_build_travel_time_buffer_warnings`,
+  unchanged). Returns `None` (no issue) when the report is `success`,
+  since the existing per-leg warnings already cover anything worth
+  reviewing; a missing report gets a `SUGGESTION`; `partial` gets a
+  `WARNING`; `not_connected`/`failed`/`unavailable` get a `SUGGESTION`.
+- **`_build_route_geometry_issue`** (with helper
+  `_route_geometry_leg_counts`) counts legs with/without a real
+  `route_geometry` (Step 173A), reading `travel_time_buffer_report.buffers`
+  when present (falling back to `route_feasibility_report.legs` only when
+  no buffer report exists, so the same leg is never double-counted from
+  two independent reports) and returns one `category="route_geometry"`
+  `SUGGESTION` naming how many legs have provider-backed geometry ("all
+  N", "none of N", or "M of N"). Always `SUGGESTION`, never `WARNING` --
+  missing geometry is expected, not an error, whenever routing/movement
+  data itself is unavailable, and there is no field on
+  `RouteLegFeasibility`/`TravelTimeBuffer` today that would let this
+  function distinguish "never computed" from "computed but rejected as
+  malformed/too-short," so it does not attempt that distinction. Returns
+  `None` when neither report has any legs to inspect.
+- **Message vocabulary is deliberately restrained**: none of these three
+  checks ever says a resulting order/route is optimal, safest, or
+  verified, and none of them ever computes a distance, duration, or
+  geometry point of its own -- every figure quoted is a plain count of
+  already-computed report/leg data.
+- **Readiness semantics unchanged.** All three checks only ever append
+  `WARNING`/`SUGGESTION` severity issues to the same `warnings` list
+  `PlanValidatorService.run` already populates; `readiness_status` still
+  becomes `BLOCKED` only via `critical_issues`, and stays `NEEDS_REVIEW`
+  otherwise -- none of Step 175C's checks can flip that outcome in either
+  direction, and none of them set `READY`.
+- **Tests.** `backend/app/tests/services/test_plan_validator_service.py`
+  gained 14 new tests covering: a missing `route_aware_sequencing_report`
+  not crashing and producing only a `SUGGESTION`; `not_connected`
+  sequencing producing honest, non-critical issues; an applied,
+  provider-backed suggestion never overclaiming optimality/safety/
+  verification; a default/suggested order without movement data being
+  surfaced honestly; a missing `travel_time_buffer_report` not crashing;
+  `not_connected`/`partial` buffer movement data being `SUGGESTION`/
+  `WARNING` respectively and never critical; the pre-existing
+  insufficient-buffer warning and its category staying unchanged; route
+  geometry present/missing/partial being surfaced honestly without
+  fabricating path/distance/duration detail; no issue when there are no
+  legs to inspect; and none of these checks ever flipping
+  `readiness_status` to `blocked`. All pre-existing validator,
+  provider-coverage-consistency (175B), accommodation/flight/routing, and
+  Section 170-174 tests continue to pass unchanged.
+
+## 83. Regeneration Lifecycle Validation Plus Small Accommodation/Flight Refinement (Step 175D)
+
+Step 175D adds two more functions to `PlanValidatorService`, called
+unconditionally in `run()` (not gated behind `has_scheduled_experiences`,
+since the regeneration lifecycle is a plan-level concept independent of
+itinerary scheduling), plus one tiny `affected_section` refinement.
+`RegenerationReadinessService`, `PlanDiffPreviewService`,
+`FeedbackService`, and `POST /trips/{trip_id}/regenerate` are all
+untouched -- this step only reads fields those services already write.
+
+- **`_build_regeneration_lifecycle_issues`** reads
+  `pending_feedback_summary`, `regeneration_readiness`, `user_locks`, and
+  `regeneration_attempts`:
+  - `pending_feedback_summary.status == "none"`: if `feedback_history` is
+    also empty, nothing is added (the common default state). If
+    `feedback_history` is non-empty (every event's `applied_at` is
+    already set), a `category="regeneration"` `SUGGESTION` says
+    previously submitted feedback has already been marked applied.
+  - `pending_feedback_summary.status != "none"` (pending feedback
+    exists): an active-lock count computed fresh from `user_locks`
+    (rather than trusting a possibly-stale
+    `regeneration_readiness.active_lock_count` snapshot) takes priority
+    -> `WARNING` naming locks as the blocker. Otherwise,
+    `regeneration_readiness.can_regenerate` decides between a `SUGGESTION`
+    ("pending feedback is available for deterministic regeneration") and
+    a `WARNING` quoting `regeneration_readiness.blocked_by` verbatim
+    (covers, e.g., unclassified feedback).
+  - Independently of the above, the most recent `regeneration_attempts`
+    entry having `status == "failed"` adds its own `WARNING`.
+  - Message vocabulary is deliberately restrained: never "feedback was
+    satisfied," never "locked items will be preserved" (lock-aware
+    partial regeneration is not implemented), never "regeneration will
+    improve the trip."
+- **`_build_regeneration_state_consistency_issues`**
+  (`category="regeneration_state_consistency"`) cross-checks
+  `regeneration_readiness.can_regenerate` against `plan_diff_preview.
+  regeneration_available` (`WARNING` on any disagreement), and
+  `metadata.current_version` against `version_history` (`WARNING` only
+  when `version_history` is non-empty and no entry's `version_label`
+  matches `current_version` -- an empty history with the default
+  `current_version="v1"` is normal, not a mismatch).
+- **Ordering caveat.** `PlanningOrchestrator.run_validation_stage` runs
+  before `plan_diff_preview_service.recompute`/
+  `regeneration_readiness_service.recompute` in `generate_full_plan`'s
+  post-processing step (pre-existing order, unchanged by this step) --
+  so on a trip's first `/generate` call, this check may read those
+  fields' pre-plan defaults. This is documented in the class docstring
+  rather than "fixed," since reordering `PlanningOrchestrator` is out of
+  this step's strict boundaries; every check in this file already reads
+  whatever a given field currently contains, never re-deriving it.
+- **Small accommodation/flight refinement**: `_build_flight_inventory_warning`'s
+  `affected_section` changed from `"stay_transport"` to
+  `"flight_inventory"` (bookable flight search is distinct from
+  `StayTransportDecision`'s transport-strategy concept); no test asserted
+  the previous value. `_build_provider_coverage_consistency_warnings`'s
+  flight-contradiction `affected_section` (Step 175B) was deliberately
+  left as `"stay_transport"` -- the "keep existing 175B behavior intact"
+  boundary applies to that function specifically. Scraped-data wording
+  and success-with-zero-offers handling were already correct and
+  untouched.
+- **Tests.** `backend/app/tests/services/test_plan_validator_service.py`
+  gained 15 new tests covering: pending feedback with
+  `can_regenerate=True` producing a ready `SUGGESTION`; pending feedback
+  with an active lock producing a lock-blocked `WARNING`; pending
+  feedback with no derivable stage producing a `WARNING` quoting
+  `blocked_by`; applied-only feedback never implying availability; no
+  feedback at all producing no issue; a failed latest attempt surfaced
+  honestly and coexisting with a separate pending-feedback issue;
+  readiness/diff-preview mismatch and match cases; version-history/
+  current-version mismatch, match, and empty-history cases; regeneration
+  checks never producing a critical issue even when locks, a failed
+  attempt, and both consistency mismatches all coexist; regeneration
+  messages never containing "satisfied"/"improve"/"preserved"-family
+  words; and the flight-inventory `affected_section` refinement. All
+  pre-existing validator, provider-coverage-consistency (175B),
+  route/movement/geometry (175C), accommodation/flight/routing, and
+  Section 170-174 tests continue to pass unchanged.
+
+## 84. Section 175 Complete: Validation Hardening Is Deterministic, Additive, and Never Overclaims (Step 175E, final Section 175 step)
+
+Step 175E is frontend-only (`frontend/app/page.tsx` -- see
+docs/16_frontend_architecture.md for the display-side detail) plus a
+backend safety re-review that changed no backend code. This closes out
+Section 175 (175A audit, 175B provider-coverage consistency, 175C route/
+movement/geometry visibility, 175D regeneration lifecycle visibility,
+175E frontend polish + final review).
+
+- **Backend safety re-review, confirmed clean.** `plan_validator_service.py`
+  was read end to end again and confirmed against five criteria: (1)
+  every issue added by 175B/175C/175D is `WARNING`/`SUGGESTION` severity,
+  never `CRITICAL`; (2) `readiness_status` is still computed solely from
+  `critical_issues` (`BLOCKED` iff non-empty, `NEEDS_REVIEW` otherwise) --
+  the two `critical_issues.append(...)` call sites are the same two that
+  existed before 175B, untouched; (3) no message added by 175B/175C/175D
+  claims a route order is superior, a fact has been confirmed beyond what
+  was checked, a locked item's fate is assured, feedback's intent was
+  fully met, or that the trip itself will be better as a result; (4) no
+  function added by 175B/175C/175D
+  computes a route geometry, distance, or duration -- `_route_geometry_
+  leg_counts` only checks truthiness of `route_geometry`/`leg.
+  route_geometry`, never reading `distance_meters`/`duration_seconds`;
+  (5) every function added by 175B/175C/175D is a pure read returning
+  `list[ValidationIssue]` -- none mutates `provider_coverage`,
+  `regeneration_readiness`, `plan_diff_preview`, `version_history`,
+  `feedback_history`, or any inventory/feasibility/sequencing/buffer
+  report. No bug was found, so no backend file changed in this step.
+- **Section 175's net effect on `PlanValidatorService`**: it went from
+  emitting warnings/critical-issues only about scheduling, feasibility,
+  constraints, must-visit, budget, weather, holidays, and travel-time
+  buffers, to also honestly restating provider-coverage consistency
+  (175B), route-aware sequencing/movement-data/route-geometry state
+  (175C), and the regeneration lifecycle plus its own internal
+  consistency (175D) -- all as additional `WARNING`/`SUGGESTION` issues
+  layered onto the exact same `critical_issues`/`readiness_status`
+  contract that existed before Section 175 started. No planning,
+  provider, orchestration, route-aware sequencing, route geometry,
+  accommodation/flight provider, or regeneration *behavior* changed
+  anywhere in Section 175 -- only what the validator honestly reports
+  about state those systems already produce.

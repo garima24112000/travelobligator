@@ -12,6 +12,7 @@ from app.models.planning_state import (
 )
 from app.models.routing import (
     BufferSufficiencyStatus,
+    RouteAwareSequencingReport,
     RouteFeasibilityReport,
     RouteFeasibilityStatus,
     TravelTimeBufferReport,
@@ -34,9 +35,16 @@ class PlanValidatorService(PlanningStageService):
       exist but this plan has not scheduled them into days yet.
     * If experiences have been scheduled (ExperiencePlannerService's
       conservative day-level scheduling step), the plan is not blocked
-      anymore. However, route ordering, timing, opening-hours, and
-      feasibility checks are not implemented yet, so the report is
-      `needs_review`, never `ready`.
+      anymore. Route feasibility exists when provider-backed routing data
+      is available (`RouteFeasibilityService`, Section 165); route-aware
+      sequencing may be applied, unavailable, failed, or not connected
+      depending on provider data and configuration
+      (`RouteAwareSequencingService`, Section 166); opening-hours/timing
+      feasibility validation is still not implemented anywhere in this
+      codebase. This validator reports that uncertainty honestly -- it
+      never calculates a missing route itself -- so the report stays
+      `needs_review`, never `ready`, regardless of how much route data is
+      available (Step 175B).
     * If the trip request or traveler profile captured any constraints, a
       warning names them explicitly so the report never implies they were
       checked. This never blocks the plan by itself; constraints only add a
@@ -108,6 +116,43 @@ class PlanValidatorService(PlanningStageService):
       already covers "route timing is not implemented/checked" honestly.
       This is always a `WARNING`, never a critical issue, so it never
       blocks the plan by itself, and it does not modify `daily_plans`.
+    * (Step 175C) When experiences have been scheduled, three more
+      additive, read-only checks restate what
+      `planning_state.route_aware_sequencing_report`/
+      `travel_time_buffer_report`/`route_feasibility_report` already
+      recorded: whether any day's real order was actually reordered by a
+      provider-backed suggestion versus keeping its originally scheduled
+      order (`category="route_aware_sequencing"`), how much of the
+      itinerary had real provider-backed movement data available at all
+      across both the sequencing report and the travel-time-buffer report
+      (`category="movement_data"` for both -- distinct from the existing
+      per-leg `category="travel_time_buffer"` insufficient-buffer
+      warnings, which are unchanged), and how many scheduled legs have
+      provider-backed route geometry available
+      (`category="route_geometry"`). None of these ever claims a
+      resulting order is optimal, safest, or verified, none ever
+      calculates a route/geometry/distance/duration itself, and all of
+      them are `WARNING`/`SUGGESTION` severity only -- never a critical
+      issue, so they never affect `readiness_status` by themselves.
+    * (Step 175D) Regardless of scheduling state, one more additive,
+      read-only check restates the regeneration lifecycle already
+      recorded on `pending_feedback_summary`/`regeneration_readiness`/
+      `user_locks`/`regeneration_attempts`/`plan_diff_preview`/
+      `version_history` (`category="regeneration"` for the lifecycle
+      state itself, `category="regeneration_state_consistency"` for a
+      disagreement between two of those already-computed records). It
+      never says feedback was fully satisfied, never says a locked item
+      will be preserved, and never says regeneration will improve the
+      trip -- only that pending feedback is/isn't currently regeneratable,
+      why not (locks, no derivable stage), whether the latest attempt
+      failed, or whether two already-computed lifecycle records disagree.
+      Because `PlanValidatorService` runs before `PlanDiffPreviewService`/
+      `RegenerationReadinessService` recompute during `POST /generate`'s
+      post-processing step, this check restates whatever those fields
+      already contain at validation time -- possibly their pre-plan
+      defaults on a trip's very first generation -- exactly like every
+      other check in this class; it is never re-derived independently.
+      Always `WARNING`/`SUGGESTION` severity, never critical.
     """
 
     def run(self, planning_state: PlanningState) -> PlanningState:
@@ -135,6 +180,23 @@ class PlanValidatorService(PlanningStageService):
             warnings.extend(
                 _build_travel_time_buffer_warnings(planning_state.travel_time_buffer_report)
             )
+            # Step 175C: additive, read-only route-aware sequencing/
+            # movement/geometry visibility -- see the class docstring's
+            # 175C bullet. Never adds a critical issue.
+            warnings.extend(
+                _build_route_aware_sequencing_issues(planning_state.route_aware_sequencing_report)
+            )
+            buffer_movement_issue = _build_travel_time_buffer_movement_issue(
+                planning_state.travel_time_buffer_report
+            )
+            if buffer_movement_issue is not None:
+                warnings.append(buffer_movement_issue)
+            route_geometry_issue = _build_route_geometry_issue(
+                planning_state.travel_time_buffer_report,
+                planning_state.route_feasibility_report,
+            )
+            if route_geometry_issue is not None:
+                warnings.append(route_geometry_issue)
         elif candidate_pois_count > 0:
             critical_issues.append(
                 ValidationIssue(
@@ -342,6 +404,10 @@ class PlanValidatorService(PlanningStageService):
             _build_flight_inventory_warning(planning_state.flight_inventory_report)
         )
 
+        warnings.extend(_build_provider_coverage_consistency_warnings(planning_state))
+
+        warnings.extend(_build_regeneration_lifecycle_issues(planning_state))
+
         readiness_status = (
             ReadinessStatus.BLOCKED if critical_issues else ReadinessStatus.NEEDS_REVIEW
         )
@@ -380,9 +446,11 @@ _NO_ROUTE_FEASIBILITY_DATA_SUGGESTED_FIX = (
     "Implement route/timing feasibility validation before marking plans ready."
 )
 _ROUTE_AWARE_SCHEDULING_SUGGESTED_FIX = (
-    "Route ordering, timing, opening-hours, and full route-aware scheduling "
-    "(Section 166) are still not implemented -- implement those before marking "
-    "plans ready."
+    "Review route-aware sequencing (Section 166, applied only when "
+    "Settings.route_aware_scheduling_enabled) and opening-hours/timing "
+    "feasibility, which this validator does not evaluate -- it reports "
+    "route data, it does not calculate a missing route or reorder the "
+    "itinerary itself."
 )
 
 
@@ -391,9 +459,16 @@ def _build_feasibility_warning(route_feasibility_report: RouteFeasibilityReport 
     (Step 165E), built purely from `planning_state.route_feasibility_report`
     -- no provider call of its own (route lookups already happened in
     `RouteFeasibilityService`, before validation runs). Always a `WARNING`,
-    never a critical issue, and this never marks the plan ready by itself --
-    full route-aware scheduling/timing/opening-hours validation is Section
-    166's job, not this step's.
+    never a critical issue, and this never marks the plan ready by itself.
+
+    Route feasibility exists when provider-backed routing data is
+    available; route-aware sequencing (Section 166) may be applied,
+    unavailable, failed, or not connected depending on provider data and
+    configuration -- separately from this feasibility report, and still
+    never opening-hours/timing feasibility validation, which is not
+    implemented anywhere in this codebase. This function reports
+    uncertainty honestly; it never calculates a missing route itself
+    (Step 175B wording cleanup -- no behavior changed).
 
     When no report is available, or it has no legs (e.g. every day has at
     most one scheduled experience), this falls back to the original,
@@ -440,8 +515,10 @@ def _build_feasibility_warning(route_feasibility_report: RouteFeasibilityReport 
     message = (
         f"{len(feasible_legs)} of {len(legs)} scheduled leg(s) have a provider-backed "
         f"route (via {route_feasibility_report.route_data_source}) with a real distance "
-        "and duration. Route timing, opening-hours, and full route-aware scheduling are "
-        "still not implemented, so this plan still needs review before it can be "
+        "and duration. Route-aware sequencing may be applied, unavailable, failed, or "
+        "not connected depending on provider data and configuration, and opening-hours/"
+        "timing feasibility is not evaluated here -- this reports uncertainty, it does "
+        "not calculate a missing route, so this plan still needs review before it can be "
         "considered ready."
     )
     if other_legs:
@@ -778,7 +855,12 @@ def _build_flight_inventory_warning(
         severity=ValidationSeverity.WARNING,
         category="flight_inventory",
         message=message,
-        affected_section="stay_transport",
+        # Step 175D: flight inventory is a distinct bookable-search concept
+        # from local/intercity StayTransportDecision.transport_strategy --
+        # naming it "flight_inventory" here (rather than the more general
+        # "stay_transport") makes affected_section unambiguous. No test
+        # asserted the previous value; only this field changed.
+        affected_section="flight_inventory",
         suggested_fix=_FLIGHT_SUGGESTED_FIX,
     )
 
@@ -852,6 +934,297 @@ def _build_travel_time_buffer_warnings(
     return warnings
 
 
+# ---------------------------------------------------------------------------
+# Step 175C: route-aware sequencing, movement-data, and route-geometry
+# validation hardening. Every function below is a pure, additive read over
+# already-computed PlanningState reports (route_aware_sequencing_report,
+# travel_time_buffer_report, route_feasibility_report) -- no provider call,
+# no AI/LLM call, no network call, and none of these ever mutate a report,
+# reorder an experience, or compute a distance/duration/geometry of their
+# own. Every issue produced here is WARNING or SUGGESTION severity only,
+# never CRITICAL, so none of them can affect validation_report.readiness_status.
+# ---------------------------------------------------------------------------
+
+_ROUTE_AWARE_SEQUENCING_NOT_COMPUTED_MESSAGE = (
+    "Route-aware sequencing has not been computed for this plan; this "
+    "itinerary keeps its originally scheduled order."
+)
+_ROUTE_AWARE_SEQUENCING_NOT_APPLIED_MESSAGE = (
+    "This itinerary keeps its suggested order; route-aware reordering was "
+    "not applied to any day."
+)
+_ROUTE_AWARE_SEQUENCING_APPLIED_MESSAGE_TEMPLATE = (
+    "Provider-backed route-aware sequencing was applied to {applied} of "
+    "{total} day(s) with two or more scheduled experiences; any remaining "
+    "day(s) keep their suggested order. This only reports that a "
+    "provider-backed reorder happened -- it makes no claim about how good "
+    "the resulting order is."
+)
+
+_MOVEMENT_DATA_ALL_SUCCESS_MESSAGE_TEMPLATE = (
+    "Provider-backed movement data was available for route-aware "
+    "sequencing on all {total} day(s) with two or more scheduled "
+    "experiences."
+)
+_MOVEMENT_DATA_PARTIAL_MESSAGE_TEMPLATE = (
+    "Provider-backed movement data was available for route-aware "
+    "sequencing on {success} of {total} day(s); it was unavailable, not "
+    "connected, or failed for the rest."
+)
+_MOVEMENT_DATA_NONE_MESSAGE = (
+    "Route-aware sequencing was not applied for any day because "
+    "provider-backed movement data was unavailable, not connected, or "
+    "failed for every day that needed it."
+)
+
+
+def _build_route_aware_sequencing_issues(
+    report: RouteAwareSequencingReport | None,
+) -> list[ValidationIssue]:
+    """Deterministic, additive review visibility for route-aware
+    sequencing (Step 175C), built purely from
+    `planning_state.route_aware_sequencing_report` (Step 166A/166B) -- no
+    provider call of its own (route lookups already happened in
+    `RouteAwareSequencingService`, before validation runs). Only ever
+    appends `WARNING`/`SUGGESTION` issues, never a critical issue, and
+    never claims a resulting day order is optimal, safest, or verified --
+    it only restates what the report itself already recorded (whether a
+    provider-backed suggestion was actually applied via Step 166B's
+    config-gated `apply_report`, and whether provider-backed movement data
+    existed to compute a suggestion at all).
+
+    Returns exactly one `category="route_aware_sequencing"` issue
+    describing whether any day's real schedule order was actually
+    reordered versus keeping its originally scheduled/suggested order,
+    plus (only when a report with day suggestions exists) one
+    `category="movement_data"` issue describing how much of the itinerary
+    had real, provider-backed movement data available to compute a
+    sequencing suggestion. When no report exists at all (the stage never
+    ran, or no day had two or more scheduled experiences), a single
+    low-severity `SUGGESTION` explains that honestly instead of guessing
+    an order judgement, and no `movement_data` issue is added since there
+    is no per-day data to summarize.
+    """
+    if report is None or not report.suggestions:
+        return [
+            ValidationIssue(
+                severity=ValidationSeverity.SUGGESTION,
+                category="route_aware_sequencing",
+                message=_ROUTE_AWARE_SEQUENCING_NOT_COMPUTED_MESSAGE,
+                affected_section="experience_plan",
+            )
+        ]
+
+    suggestions = report.suggestions
+    total = len(suggestions)
+    applied = [suggestion for suggestion in suggestions if suggestion.applied]
+    successful = [
+        suggestion for suggestion in suggestions if suggestion.status == ProviderStatus.SUCCESS
+    ]
+
+    issues: list[ValidationIssue] = []
+
+    if applied:
+        issues.append(
+            ValidationIssue(
+                severity=ValidationSeverity.SUGGESTION,
+                category="route_aware_sequencing",
+                message=_ROUTE_AWARE_SEQUENCING_APPLIED_MESSAGE_TEMPLATE.format(
+                    applied=len(applied), total=total
+                ),
+                affected_section="experience_plan",
+            )
+        )
+    else:
+        issues.append(
+            ValidationIssue(
+                severity=ValidationSeverity.SUGGESTION,
+                category="route_aware_sequencing",
+                message=_ROUTE_AWARE_SEQUENCING_NOT_APPLIED_MESSAGE,
+                affected_section="experience_plan",
+            )
+        )
+
+    if len(successful) == total:
+        movement_message = _MOVEMENT_DATA_ALL_SUCCESS_MESSAGE_TEMPLATE.format(total=total)
+        movement_severity = ValidationSeverity.SUGGESTION
+    elif successful:
+        movement_message = _MOVEMENT_DATA_PARTIAL_MESSAGE_TEMPLATE.format(
+            success=len(successful), total=total
+        )
+        movement_severity = ValidationSeverity.WARNING
+    else:
+        movement_message = _MOVEMENT_DATA_NONE_MESSAGE
+        movement_severity = ValidationSeverity.SUGGESTION
+
+    issues.append(
+        ValidationIssue(
+            severity=movement_severity,
+            category="movement_data",
+            message=movement_message,
+            affected_section="experience_plan",
+        )
+    )
+
+    return issues
+
+
+_TRAVEL_TIME_BUFFER_REPORT_MISSING_MESSAGE = (
+    "No travel-time buffer report exists for this plan yet; travel-time "
+    "buffer sufficiency has not been assessed for any leg."
+)
+_TRAVEL_TIME_BUFFER_PARTIAL_MESSAGE = (
+    "Provider-backed travel-time buffer movement data is only partially "
+    "available across this itinerary's legs; some legs could not be "
+    "checked."
+)
+_TRAVEL_TIME_BUFFER_UNAVAILABLE_MESSAGE_TEMPLATE = (
+    "No provider-backed travel-time buffer movement data is available for "
+    "this itinerary's legs (status: {status})."
+)
+
+
+def _build_travel_time_buffer_movement_issue(
+    travel_time_buffer_report: TravelTimeBufferReport | None,
+) -> ValidationIssue | None:
+    """Deterministic, additive report-level review visibility for
+    `planning_state.travel_time_buffer_report` (Step 175C) -- distinct
+    from `_build_travel_time_buffer_warnings`, which already covers
+    per-leg `insufficient` buffers and is left unchanged by this function.
+    This only summarizes the report's own aggregate `status`; it never
+    inspects individual legs and never duplicates a per-leg warning.
+
+    A missing report gets an honest `SUGGESTION` explaining that
+    sufficiency has not been assessed at all, rather than silence. A
+    `success` report instead returns `None`, since there is nothing to add
+    beyond what
+    `_build_travel_time_buffer_warnings` already reports for any
+    insufficient leg. A `partial` report is a `WARNING` (some legs have
+    real movement data, some don't -- worth a closer look); any other
+    non-success status (`not_connected`/`failed`/`unavailable`) is a
+    `SUGGESTION`, since that is this app's default, expected state
+    whenever no routing provider is connected, never an error condition
+    by itself. This never computes a distance/duration/buffer of its own
+    and never marks the plan critical.
+    """
+    if travel_time_buffer_report is None:
+        return ValidationIssue(
+            severity=ValidationSeverity.SUGGESTION,
+            category="movement_data",
+            message=_TRAVEL_TIME_BUFFER_REPORT_MISSING_MESSAGE,
+            affected_section="experience_plan",
+        )
+
+    status = travel_time_buffer_report.status
+    if status == ProviderStatus.SUCCESS:
+        return None
+    if status == ProviderStatus.PARTIAL:
+        return ValidationIssue(
+            severity=ValidationSeverity.WARNING,
+            category="movement_data",
+            message=_TRAVEL_TIME_BUFFER_PARTIAL_MESSAGE,
+            affected_section="experience_plan",
+        )
+
+    return ValidationIssue(
+        severity=ValidationSeverity.SUGGESTION,
+        category="movement_data",
+        message=_TRAVEL_TIME_BUFFER_UNAVAILABLE_MESSAGE_TEMPLATE.format(status=status.value),
+        affected_section="experience_plan",
+    )
+
+
+_ROUTE_GEOMETRY_NONE_MESSAGE_TEMPLATE = (
+    "No provider-backed route geometry is available for any of this "
+    "itinerary's {total} scheduled leg(s); no map path can be drawn for "
+    "this plan."
+)
+_ROUTE_GEOMETRY_ALL_MESSAGE_TEMPLATE = (
+    "Provider-backed route geometry is available for all {total} "
+    "scheduled leg(s) in this itinerary."
+)
+_ROUTE_GEOMETRY_PARTIAL_MESSAGE_TEMPLATE = (
+    "Provider-backed route geometry is available for {with_geometry} of "
+    "{total} scheduled leg(s); the rest have no drawable path."
+)
+
+
+def _route_geometry_leg_counts(
+    travel_time_buffer_report: TravelTimeBufferReport | None,
+    route_feasibility_report: RouteFeasibilityReport | None,
+) -> tuple[int, int] | None:
+    """Counts legs with/without provider-backed `route_geometry` (Step
+    173A), reading it only from already-computed leg-level data -- never
+    computing, inferring, or straight-lining a path of its own. Prefers
+    `travel_time_buffer_report.buffers` (the same consecutive-experience
+    legs `route_feasibility_report.legs` also covers) so the same leg is
+    never counted twice from two independent reports; falls back to
+    `route_feasibility_report.legs` only when no buffer report/buffers
+    exist. Returns `None` when neither report has any legs to inspect,
+    so the caller can honestly add no issue rather than reporting on
+    legs that don't exist.
+    """
+    if travel_time_buffer_report is not None and travel_time_buffer_report.buffers:
+        total = len(travel_time_buffer_report.buffers)
+        with_geometry = sum(
+            1 for buffer in travel_time_buffer_report.buffers if buffer.route_geometry
+        )
+        return with_geometry, total
+
+    if route_feasibility_report is not None and route_feasibility_report.legs:
+        total = len(route_feasibility_report.legs)
+        with_geometry = sum(
+            1 for leg in route_feasibility_report.legs if leg.route_geometry
+        )
+        return with_geometry, total
+
+    return None
+
+
+def _build_route_geometry_issue(
+    travel_time_buffer_report: TravelTimeBufferReport | None,
+    route_feasibility_report: RouteFeasibilityReport | None,
+) -> ValidationIssue | None:
+    """Deterministic, additive review visibility for provider-backed
+    `route_geometry` (Step 173A) across this itinerary's scheduled legs
+    (Step 175C) -- reads leg-level `route_geometry` presence only; never
+    computes geometry, never infers a path from stop coordinates, and
+    never calculates a distance/duration. Always `SUGGESTION` severity,
+    never a critical issue and never a `WARNING` -- missing geometry is
+    expected, not an error, whenever route/movement data is otherwise
+    unavailable (e.g. no routing provider connected), and this function
+    has no way to tell that case apart from a genuinely short/rejected
+    geometry using only the fields present on `RouteLegFeasibility`/
+    `TravelTimeBuffer` today.
+
+    Returns `None` when there are no legs to report on at all (e.g. no
+    experience_plan day has two or more scheduled experiences), since
+    there is nothing honest to say about geometry that was never
+    computable in the first place.
+    """
+    counts = _route_geometry_leg_counts(travel_time_buffer_report, route_feasibility_report)
+    if counts is None:
+        return None
+
+    with_geometry, total = counts
+
+    if with_geometry == 0:
+        message = _ROUTE_GEOMETRY_NONE_MESSAGE_TEMPLATE.format(total=total)
+    elif with_geometry == total:
+        message = _ROUTE_GEOMETRY_ALL_MESSAGE_TEMPLATE.format(total=total)
+    else:
+        message = _ROUTE_GEOMETRY_PARTIAL_MESSAGE_TEMPLATE.format(
+            with_geometry=with_geometry, total=total
+        )
+
+    return ValidationIssue(
+        severity=ValidationSeverity.SUGGESTION,
+        category="route_geometry",
+        message=message,
+        affected_section="experience_plan",
+    )
+
+
 def _day_geographic_spread_km(day: DailyPlan) -> float | None:
     """Sum of straight-line (haversine) distances between consecutive
     coordinate-backed experiences in a day, in the day's current scheduled
@@ -875,3 +1248,365 @@ def _day_geographic_spread_km(day: DailyPlan) -> float | None:
         if distance_km is not None:
             total_km += distance_km
     return total_km
+
+
+# Step 175B: provider-coverage consistency hardening. `ProviderCoverageService`
+# and `PlanValidatorService` are independent today and could drift -- a
+# stage service could, in principle, record a successful inventory/route
+# report on `PlanningState` without `provider_coverage` reflecting the same
+# outcome (or vice versa). This check is purely a read-only, additive
+# cross-check between two views of the same already-computed data; it never
+# calls a provider, never invents a status, and never reuses any vocabulary
+# other than the existing `AccommodationSearchStatus`/`FlightSearchStatus`/
+# `ProviderStatus` values already used elsewhere in this file.
+_DOWNGRADED_PROVIDER_COVERAGE_VALUES = {
+    ProviderStatus.FAILED.value,
+    ProviderStatus.NOT_CONNECTED.value,
+    ProviderStatus.UNAVAILABLE.value,
+}
+
+_ACCOMMODATION_COVERAGE_CONTRADICTION_MESSAGE_TEMPLATE = (
+    "Validation observed a successful, provider-backed accommodation "
+    "inventory result (via {provider}), but provider_coverage.hotel_prices "
+    "reports \"{coverage_value}\" for this plan. These two records "
+    "disagree; this plan does not resolve which one is current."
+)
+_ACCOMMODATION_COVERAGE_CONTRADICTION_SUGGESTED_FIX = (
+    "Investigate why provider_coverage.hotel_prices was not updated "
+    "alongside accommodation_inventory_report, or re-run the stay/"
+    "transport stage."
+)
+
+_FLIGHT_COVERAGE_CONTRADICTION_MESSAGE_TEMPLATE = (
+    "Validation observed a successful, provider-backed flight inventory "
+    "result (via {provider}), but provider_coverage.flights reports "
+    "\"{coverage_value}\" for this plan. These two records disagree; this "
+    "plan does not resolve which one is current."
+)
+_FLIGHT_COVERAGE_CONTRADICTION_SUGGESTED_FIX = (
+    "Investigate why provider_coverage.flights was not updated alongside "
+    "flight_inventory_report, or re-run the stay/transport stage."
+)
+
+_ROUTE_COVERAGE_CONTRADICTION_MESSAGE_TEMPLATE = (
+    "Validation observed a successful, provider-backed route feasibility "
+    "result (via {provider}), but provider_coverage.routes reports "
+    "\"{coverage_value}\" for this plan. These two records disagree; this "
+    "plan does not resolve which one is current."
+)
+_ROUTE_COVERAGE_CONTRADICTION_SUGGESTED_FIX = (
+    "Investigate why provider_coverage.routes was not updated alongside "
+    "route_feasibility_report, or re-run the experience-plan stage."
+)
+
+
+def _build_provider_coverage_consistency_warnings(
+    planning_state: PlanningState,
+) -> list[ValidationIssue]:
+    """Additive, read-only cross-check (Step 175B) between what validation
+    already observed on `accommodation_inventory_report`/
+    `flight_inventory_report`/`route_feasibility_report` and what
+    `planning_state.provider_coverage` separately reports for the same
+    data. Both sides are already-computed `PlanningState` fields -- this
+    performs no provider call, no AI/LLM call, and never mutates
+    `provider_coverage` or any inventory/feasibility report.
+
+    Only ever appends a `WARNING` (never a critical issue), and only for a
+    clear contradiction: validation saw a real, provider-backed success
+    with actual offers/legs, but the corresponding `provider_coverage`
+    field says `failed`/`not_connected`/`unavailable`. A missing
+    `provider_coverage` (defensively handled, though `PlanningState`
+    always constructs one) never crashes this check -- it simply produces
+    no warnings. An internally consistent state (including the common
+    case where neither side has real data yet) produces no warnings
+    either, so this never adds noise to a plan that isn't contradictory.
+    This never invents a new provider status value -- every value quoted
+    here is a plain restatement of an existing `AccommodationSearchStatus`/
+    `FlightSearchStatus`/`ProviderStatus`-derived string already stored on
+    `PlanningState`.
+    """
+    provider_coverage = getattr(planning_state, "provider_coverage", None)
+    if provider_coverage is None:
+        return []
+
+    warnings: list[ValidationIssue] = []
+
+    accommodation_report = planning_state.accommodation_inventory_report
+    if (
+        accommodation_report is not None
+        and accommodation_report.status == AccommodationSearchStatus.SUCCESS
+        and accommodation_report.offers
+        and provider_coverage.hotel_prices in _DOWNGRADED_PROVIDER_COVERAGE_VALUES
+    ):
+        warnings.append(
+            ValidationIssue(
+                severity=ValidationSeverity.WARNING,
+                category="provider_coverage_consistency",
+                message=_ACCOMMODATION_COVERAGE_CONTRADICTION_MESSAGE_TEMPLATE.format(
+                    provider=accommodation_report.provider,
+                    coverage_value=provider_coverage.hotel_prices,
+                ),
+                affected_section="stay_transport",
+                suggested_fix=_ACCOMMODATION_COVERAGE_CONTRADICTION_SUGGESTED_FIX,
+            )
+        )
+
+    flight_report = planning_state.flight_inventory_report
+    if (
+        flight_report is not None
+        and flight_report.status == FlightSearchStatus.SUCCESS
+        and flight_report.offers
+        and provider_coverage.flights in _DOWNGRADED_PROVIDER_COVERAGE_VALUES
+    ):
+        warnings.append(
+            ValidationIssue(
+                severity=ValidationSeverity.WARNING,
+                category="provider_coverage_consistency",
+                message=_FLIGHT_COVERAGE_CONTRADICTION_MESSAGE_TEMPLATE.format(
+                    provider=flight_report.provider,
+                    coverage_value=provider_coverage.flights,
+                ),
+                affected_section="stay_transport",
+                suggested_fix=_FLIGHT_COVERAGE_CONTRADICTION_SUGGESTED_FIX,
+            )
+        )
+
+    route_report = planning_state.route_feasibility_report
+    if (
+        route_report is not None
+        and route_report.status == ProviderStatus.SUCCESS
+        and provider_coverage.routes in _DOWNGRADED_PROVIDER_COVERAGE_VALUES
+    ):
+        warnings.append(
+            ValidationIssue(
+                severity=ValidationSeverity.WARNING,
+                category="provider_coverage_consistency",
+                message=_ROUTE_COVERAGE_CONTRADICTION_MESSAGE_TEMPLATE.format(
+                    provider=route_report.provider,
+                    coverage_value=provider_coverage.routes,
+                ),
+                affected_section="experience_plan",
+                suggested_fix=_ROUTE_COVERAGE_CONTRADICTION_SUGGESTED_FIX,
+            )
+        )
+
+    return warnings
+
+
+# ---------------------------------------------------------------------------
+# Step 175D: regeneration lifecycle validation. Every function below is a
+# pure, additive read over already-computed PlanningState fields
+# (pending_feedback_summary, regeneration_readiness, user_locks,
+# regeneration_attempts, plan_diff_preview, version_history, metadata) --
+# no provider call, no AI/LLM call, no network call, and none of these ever
+# mutate those fields, call FeedbackService/RegenerationReadinessService/
+# PlanDiffPreviewService, or otherwise change regeneration behavior. Every
+# issue produced here is WARNING or SUGGESTION severity only, never
+# CRITICAL, so none of them can affect validation_report.readiness_status.
+#
+# Because PlanValidatorService runs (via
+# PlanningOrchestrator.run_validation_stage) before PlanDiffPreviewService/
+# RegenerationReadinessService recompute during POST /generate's
+# post-processing step, these checks restate whatever those fields already
+# contain at validation time -- possibly their pre-plan defaults on a
+# trip's very first generation -- exactly like every other check in this
+# file; nothing here re-derives readiness/diff-preview independently.
+# ---------------------------------------------------------------------------
+
+_REGENERATION_READY_MESSAGE = "Pending feedback is available for deterministic regeneration."
+_REGENERATION_LOCK_BLOCKED_MESSAGE = (
+    "Active locks currently block feedback-driven regeneration."
+)
+_REGENERATION_NOT_READY_MESSAGE_TEMPLATE = (
+    "Pending feedback exists, but deterministic regeneration is not "
+    "currently available for it{reason}."
+)
+_REGENERATION_APPLIED_ONLY_MESSAGE = (
+    "Previously submitted feedback has already been marked applied; no "
+    "pending feedback remains for regeneration."
+)
+_REGENERATION_FAILED_ATTEMPT_MESSAGE = (
+    "The latest regeneration attempt failed; review the attempt history "
+    "before retrying."
+)
+
+
+def _build_regeneration_lifecycle_issues(planning_state: PlanningState) -> list[ValidationIssue]:
+    """Deterministic, additive review visibility for the regeneration
+    lifecycle (Step 175D), built purely from already-computed
+    `pending_feedback_summary`/`regeneration_readiness`/`user_locks`/
+    `regeneration_attempts` -- no provider call, no AI/LLM call, and no
+    call into `FeedbackService`/`RegenerationReadinessService`/
+    `PlanDiffPreviewService` of its own (their outputs are read, never
+    recomputed here).
+
+    Never claims feedback was fully satisfied, never claims a locked item
+    will be preserved (lock-aware partial regeneration is not
+    implemented), and never claims regeneration will improve the trip --
+    only restates whether pending feedback currently is/isn't
+    regeneratable, and why not, using this codebase's own existing
+    vocabulary (`RegenerationReadiness.blocked_by`).
+
+    When no feedback has ever been captured (`pending_feedback_summary.
+    status == "none"` and `feedback_history` is empty), this adds nothing
+    -- the common default state needs no review. When feedback exists but
+    every event has already been applied (`status == "none"` with
+    non-empty `feedback_history`), a low-severity `SUGGESTION` says so.
+    When pending (unapplied) feedback exists, exactly one issue names the
+    honest reason: active locks (`WARNING`, computed fresh from
+    `user_locks` rather than trusting a possibly-stale
+    `regeneration_readiness.active_lock_count` snapshot), ready
+    (`SUGGESTION`, restating `regeneration_readiness.can_regenerate`), or
+    any other not-ready reason (`WARNING`, quoting
+    `regeneration_readiness.blocked_by` verbatim -- never inventing a new
+    reason). Finally, if the most recent `regeneration_attempts` entry has
+    `status == "failed"`, a `WARNING` says so, independent of the above.
+    """
+    issues: list[ValidationIssue] = []
+
+    summary = planning_state.pending_feedback_summary
+    readiness = planning_state.regeneration_readiness
+    active_lock_count = sum(1 for lock in planning_state.user_locks if lock.is_active)
+
+    if summary.status == "none":
+        if planning_state.feedback_history:
+            issues.append(
+                ValidationIssue(
+                    severity=ValidationSeverity.SUGGESTION,
+                    category="regeneration",
+                    message=_REGENERATION_APPLIED_ONLY_MESSAGE,
+                    affected_section="feedback",
+                )
+            )
+        # else: no feedback has ever been captured -- nothing to report.
+    elif active_lock_count > 0:
+        issues.append(
+            ValidationIssue(
+                severity=ValidationSeverity.WARNING,
+                category="regeneration",
+                message=_REGENERATION_LOCK_BLOCKED_MESSAGE,
+                affected_section="feedback",
+            )
+        )
+    elif readiness.can_regenerate:
+        issues.append(
+            ValidationIssue(
+                severity=ValidationSeverity.SUGGESTION,
+                category="regeneration",
+                message=_REGENERATION_READY_MESSAGE,
+                affected_section="feedback",
+            )
+        )
+    else:
+        reason = f" ({'; '.join(readiness.blocked_by)})" if readiness.blocked_by else ""
+        issues.append(
+            ValidationIssue(
+                severity=ValidationSeverity.WARNING,
+                category="regeneration",
+                message=_REGENERATION_NOT_READY_MESSAGE_TEMPLATE.format(reason=reason),
+                affected_section="feedback",
+            )
+        )
+
+    latest_attempt = (
+        planning_state.regeneration_attempts[-1] if planning_state.regeneration_attempts else None
+    )
+    if latest_attempt is not None and latest_attempt.status == "failed":
+        issues.append(
+            ValidationIssue(
+                severity=ValidationSeverity.WARNING,
+                category="regeneration",
+                message=_REGENERATION_FAILED_ATTEMPT_MESSAGE,
+                affected_section="feedback",
+            )
+        )
+
+    issues.extend(_build_regeneration_state_consistency_issues(planning_state))
+
+    return issues
+
+
+_REGENERATION_AVAILABILITY_MISMATCH_MESSAGE_TEMPLATE = (
+    "regeneration_readiness.can_regenerate reports {readiness_value}, but "
+    "plan_diff_preview.regeneration_available reports {diff_value}. These "
+    "two records disagree; this plan does not resolve which one is "
+    "current."
+)
+_REGENERATION_AVAILABILITY_MISMATCH_SUGGESTED_FIX = (
+    "Investigate why regeneration_readiness and plan_diff_preview were "
+    "not recomputed together, or recompute both from the current "
+    "feedback/lock state."
+)
+_VERSION_HISTORY_MISMATCH_MESSAGE_TEMPLATE = (
+    'metadata.current_version is "{current_version}", but no entry in '
+    "version_history has that exact version_label. These two records "
+    "disagree; this plan does not resolve which version is actually "
+    "current."
+)
+_VERSION_HISTORY_MISMATCH_SUGGESTED_FIX = (
+    "Investigate why metadata.current_version and version_history "
+    "diverged, or add the missing version_history entry."
+)
+
+
+def _build_regeneration_state_consistency_issues(
+    planning_state: PlanningState,
+) -> list[ValidationIssue]:
+    """Additive, read-only cross-checks (Step 175D) between pairs of
+    already-computed regeneration-lifecycle records that this codebase's
+    own recompute-from-scratch pattern normally keeps in sync, but which
+    could in principle drift (e.g. one recomputed without the other after
+    a lock/feedback change). Both sides of every comparison are already-
+    computed `PlanningState` fields -- this performs no provider call, no
+    AI/LLM call, and never mutates `regeneration_readiness`/
+    `plan_diff_preview`/`version_history`/`metadata`.
+
+    Only ever appends a `WARNING` (never a critical issue):
+
+    - `regeneration_readiness.can_regenerate` vs.
+      `plan_diff_preview.regeneration_available` -- these two booleans are
+      computed by independent services from the same underlying state and
+      should always agree; a mismatch is flagged without guessing which
+      one is "right".
+    - `metadata.current_version` vs. `version_history` -- only checked
+      when `version_history` is non-empty (an empty history with the
+      default `current_version="v1"` is normal, unpopulated state, not a
+      mismatch); flags the case where the current version label doesn't
+      match any recorded version_history entry.
+    """
+    issues: list[ValidationIssue] = []
+
+    readiness = planning_state.regeneration_readiness
+    diff_preview = planning_state.plan_diff_preview
+    if readiness.can_regenerate != diff_preview.regeneration_available:
+        issues.append(
+            ValidationIssue(
+                severity=ValidationSeverity.WARNING,
+                category="regeneration_state_consistency",
+                message=_REGENERATION_AVAILABILITY_MISMATCH_MESSAGE_TEMPLATE.format(
+                    readiness_value=readiness.can_regenerate,
+                    diff_value=diff_preview.regeneration_available,
+                ),
+                affected_section="feedback",
+                suggested_fix=_REGENERATION_AVAILABILITY_MISMATCH_SUGGESTED_FIX,
+            )
+        )
+
+    version_history = planning_state.version_history
+    if version_history:
+        version_labels = {item.version_label for item in version_history}
+        current_version = planning_state.metadata.current_version
+        if current_version not in version_labels:
+            issues.append(
+                ValidationIssue(
+                    severity=ValidationSeverity.WARNING,
+                    category="regeneration_state_consistency",
+                    message=_VERSION_HISTORY_MISMATCH_MESSAGE_TEMPLATE.format(
+                        current_version=current_version
+                    ),
+                    affected_section="feedback",
+                    suggested_fix=_VERSION_HISTORY_MISMATCH_SUGGESTED_FIX,
+                )
+            )
+
+    return issues

@@ -584,3 +584,58 @@ work until it is fixed:
 - The frontend computes or displays a diff, changed-section list, route
   fact, or travel fact that did not come directly from
   `RegenerateResponseData` or a `GET /trips/{trip_id}` refresh.
+
+## 9. Validation-report regeneration lifecycle warnings (Step 175D)
+
+Step 175D added `category="regeneration"`/`category="regeneration_state_consistency"`
+entries to `GET /trips/{trip_id}/validation-report`'s `warnings` list,
+restating the same regeneration lifecycle this checklist already
+exercises above. These are read-only, additive, and never affect
+`readiness_status` or the regeneration endpoint itself -- use this
+section only to confirm the validation report stays honest alongside the
+flows already tested in sections 4/4a/5/6.
+
+- **Pending feedback, ready.** After submitting feedback that classifies
+  to a real stage (e.g. "Make this less packed") with zero active locks,
+  `GET /trips/{trip_id}/validation-report` should show one
+  `category="regeneration"` entry with `severity="suggestion"` saying
+  pending feedback is available for deterministic regeneration --
+  matching `readiness.can_regenerate == true` from section 4a.
+- **Blocked by locks.** After creating an active lock while feedback is
+  still pending, the same endpoint should show one
+  `category="regeneration"` `severity="warning"` entry naming active
+  locks as the blocker -- matching the `REGENERATION_BLOCKED_BY_LOCKS`
+  refusal from section 4a. Removing the lock and re-checking should
+  replace it with the "ready" suggestion above (assuming feedback is
+  still pending).
+- **Applied feedback / no repeat regeneration.** After a successful
+  `{"confirm": true}` regeneration (section 4a's "Real regeneration"
+  case), re-fetch the validation report: it should now show one
+  `category="regeneration"` `severity="suggestion"` entry saying
+  previously submitted feedback has already been marked applied --
+  never a "ready" suggestion, since `pending_feedback_summary.status`
+  is now `"none"` again. This should match the repeat
+  `REGENERATION_NO_PENDING_FEEDBACK` refusal a second `{"confirm": true}`
+  call gets in section 4a.
+- **Failed attempt visibility.** If a regeneration attempt fails (e.g. by
+  temporarily breaking `PlanningOrchestrator.rerun_affected_stages` in a
+  local test, or by inspecting a fixture with a `status="failed"`
+  `RegenerationAttempt`), the validation report should show a
+  `category="regeneration"` `severity="warning"` entry saying the latest
+  regeneration attempt failed and the attempt history should be reviewed
+  -- independent of, and possibly alongside, any pending-feedback entry
+  above.
+- **What must never appear**: any regeneration-category message claiming
+  feedback was "satisfied," a locked item "will be preserved," or that
+  regeneration "will improve" the trip. Also confirm `readiness_status`
+  in the same validation report is never `"blocked"` because of a
+  regeneration-category entry alone -- only a `critical_issues` entry
+  (e.g. no scheduled experiences) can do that.
+
+**Step 175E note**: these `category="regeneration"`/
+`category="regeneration_state_consistency"` entries now render in the
+frontend's own "Validation report" card (`frontend/app/page.tsx`),
+grouped under human-readable headings "Regeneration"/"Regeneration state
+consistency" alongside every other validation category -- so the
+scenarios above can be checked visually in the UI, not just via the raw
+`GET /trips/{trip_id}/validation-report` JSON.

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any
 
 from app.models.accommodation import (
@@ -7,7 +8,7 @@ from app.models.accommodation import (
     AccommodationSearchResult,
     AccommodationSearchStatus,
 )
-from app.models.common import DataStatus, ProviderStatus
+from app.models.common import DataStatus, ProviderStatus, RegenerationStrategy, ValidationSeverity
 from app.models.flight import (
     FlightOffer,
     FlightSearchResult,
@@ -16,16 +17,27 @@ from app.models.flight import (
 )
 from app.models.planning_state import (
     DestinationContext,
+    FeedbackEvent,
+    PendingFeedbackSummary,
+    PlanDiffPreview,
+    PlanningStage,
     PlanningState,
+    RegenerationAttempt,
+    RegenerationReadiness,
     TravelGroupType,
     TripRequest,
+    UserLock,
+    VersionHistoryItem,
 )
 from app.models.scraping import ScrapedDataConfidence, ScrapedDataProvenance
 from app.models.routing import (
     BufferSufficiencyStatus,
+    RouteAwareSequenceSuggestion,
+    RouteAwareSequencingReport,
     RouteFeasibilityReport,
     RouteFeasibilityStatus,
     RouteLegFeasibility,
+    RoutePathPoint,
     TravelTimeBuffer,
     TravelTimeBufferReport,
     TravelTimeBufferStatus,
@@ -1066,3 +1078,1022 @@ def test_flight_offers_never_appear_in_scheduled_daily_experiences() -> None:
     _run_planner_then_validator(planning_state)
 
     assert "TEST_ONLY_FLIGHT_OFFER_ALPHA" not in _scheduled_names(planning_state)
+
+
+# ---------------------------------------------------------------------------
+# Step 175B: provider-coverage consistency hardening. PlanValidatorService
+# cross-checks what it already observed on accommodation/flight/route
+# reports against the separately-maintained planning_state.provider_coverage
+# -- purely additive, read-only, WARNING-only.
+# ---------------------------------------------------------------------------
+
+
+def _provider_coverage_consistency_warnings(planning_state: PlanningState) -> list[Any]:
+    return [
+        warning
+        for warning in planning_state.validation_report.warnings
+        if warning.category == "provider_coverage_consistency"
+    ]
+
+
+def _accommodation_success_report() -> AccommodationSearchResult:
+    offer = AccommodationOffer(
+        provider="fake_accommodation_inventory_provider",
+        provider_property_id="prop_1",
+        property_name="Fake Property",
+        data_status=DataStatus.LIVE,
+    )
+    return AccommodationSearchResult(
+        provider="fake_accommodation_inventory_provider",
+        status=AccommodationSearchStatus.SUCCESS,
+        offers=[offer],
+    )
+
+
+def _flight_success_report() -> FlightSearchResult:
+    segment = FlightSegment(
+        origin_airport="TST",
+        destination_airport="DMO",
+        data_status=DataStatus.LIVE,
+    )
+    offer = FlightOffer(
+        offer_id="TEST_ONLY_FLIGHT_OFFER_ALPHA",
+        provider="fake_flight_inventory_provider",
+        data_status=DataStatus.LIVE,
+        outbound_segments=[segment],
+    )
+    return FlightSearchResult(
+        provider="fake_flight_inventory_provider",
+        status=FlightSearchStatus.SUCCESS,
+        offers=[offer],
+        destination="Lisbon, Portugal",
+        departure_date="2026-08-10",
+    )
+
+
+def test_missing_provider_coverage_does_not_crash_validation() -> None:
+    """Defensive: `PlanningState` always constructs a `ProviderCoverage`,
+    but this check must never crash even if that field is ever missing on
+    an older/malformed persisted record."""
+    planning_state = _planning_state()
+    planning_state.provider_coverage = None  # type: ignore[assignment]
+
+    PlanValidatorService().run(planning_state)
+
+    assert _provider_coverage_consistency_warnings(planning_state) == []
+    assert planning_state.validation_report is not None
+
+
+def test_consistent_provider_coverage_produces_no_consistency_warning() -> None:
+    planning_state = _planning_state()
+    planning_state.accommodation_inventory_report = _accommodation_success_report()
+    planning_state.provider_coverage.hotel_prices = "success"
+
+    PlanValidatorService().run(planning_state)
+
+    assert _provider_coverage_consistency_warnings(planning_state) == []
+
+
+def test_accommodation_provider_coverage_contradiction_produces_warning_not_critical() -> None:
+    planning_state = _planning_state()
+    planning_state.accommodation_inventory_report = _accommodation_success_report()
+    planning_state.provider_coverage.hotel_prices = "not_connected"
+
+    PlanValidatorService().run(planning_state)
+
+    warnings = _provider_coverage_consistency_warnings(planning_state)
+    assert len(warnings) == 1
+    assert warnings[0].severity == ValidationSeverity.WARNING
+    assert "hotel_prices" in warnings[0].message
+    assert not any(
+        issue.category == "provider_coverage_consistency"
+        for issue in planning_state.validation_report.critical_issues
+    )
+
+
+def test_flight_provider_coverage_contradiction_produces_warning_not_critical() -> None:
+    planning_state = _planning_state()
+    planning_state.flight_inventory_report = _flight_success_report()
+    planning_state.provider_coverage.flights = "failed"
+
+    PlanValidatorService().run(planning_state)
+
+    warnings = _provider_coverage_consistency_warnings(planning_state)
+    assert len(warnings) == 1
+    assert warnings[0].severity == ValidationSeverity.WARNING
+    assert "flights" in warnings[0].message
+    assert not any(
+        issue.category == "provider_coverage_consistency"
+        for issue in planning_state.validation_report.critical_issues
+    )
+
+
+def test_route_provider_coverage_contradiction_produces_warning_not_critical() -> None:
+    planning_state = _two_candidate_planning_state()
+    ExperiencePlannerService().run(planning_state)
+    scheduled = planning_state.experience_plan.daily_plans[0].experiences
+
+    planning_state.route_feasibility_report = RouteFeasibilityReport(
+        status=ProviderStatus.SUCCESS,
+        provider="osrm",
+        route_data_source="osrm",
+        legs=[
+            RouteLegFeasibility(
+                from_experience_id=scheduled[0].experience_id,
+                from_experience_name=scheduled[0].name,
+                to_experience_id=scheduled[1].experience_id,
+                to_experience_name=scheduled[1].name,
+                provider="osrm",
+                status=ProviderStatus.SUCCESS,
+                distance_meters=1200.0,
+                duration_seconds=600.0,
+                feasibility_status=RouteFeasibilityStatus.FEASIBLE,
+                message="A provider-backed route was found for this leg.",
+            )
+        ],
+    )
+    planning_state.provider_coverage.routes = "unavailable"
+
+    PlanValidatorService().run(planning_state)
+
+    warnings = _provider_coverage_consistency_warnings(planning_state)
+    assert len(warnings) == 1
+    assert warnings[0].severity == ValidationSeverity.WARNING
+    assert "routes" in warnings[0].message
+    assert not any(
+        issue.category == "provider_coverage_consistency"
+        for issue in planning_state.validation_report.critical_issues
+    )
+    assert planning_state.validation_report.readiness_status.value == "needs_review"
+
+
+def test_provider_coverage_consistency_warning_never_flips_readiness_status() -> None:
+    """A contradiction warning is additive only -- it must never turn an
+    otherwise-`blocked` plan into `needs_review`, and (per the other
+    tests in this block) never turns an otherwise-`needs_review` plan
+    into `blocked` either."""
+    planning_state = _planning_state()
+    assert planning_state.destination_context.candidate_pois == []
+    planning_state.accommodation_inventory_report = _accommodation_success_report()
+    planning_state.provider_coverage.hotel_prices = "failed"
+
+    PlanValidatorService().run(planning_state)
+
+    assert _provider_coverage_consistency_warnings(planning_state)
+    assert planning_state.validation_report.readiness_status.value == "blocked"
+    assert not any(
+        issue.category == "provider_coverage_consistency"
+        for issue in planning_state.validation_report.critical_issues
+    )
+
+
+def test_provider_coverage_consistency_check_never_fabricates_data() -> None:
+    """The consistency warning message only ever restates already-known
+    provider/status strings -- no forbidden factual field (price, rating,
+    etc.) is ever introduced."""
+    planning_state = _planning_state()
+    planning_state.accommodation_inventory_report = _accommodation_success_report()
+    planning_state.provider_coverage.hotel_prices = "not_connected"
+
+    PlanValidatorService().run(planning_state)
+
+    report_dump = planning_state.validation_report.model_dump(mode="json")
+    _assert_no_forbidden_fields(report_dump)
+
+
+# ---------------------------------------------------------------------------
+# Step 175C: route-aware sequencing, movement-data, and route-geometry
+# validation hardening. Every check here is additive and read-only over
+# planning_state.route_aware_sequencing_report/travel_time_buffer_report/
+# route_feasibility_report -- WARNING/SUGGESTION severity only, never a
+# critical issue, and never a claim that a resulting order is optimal,
+# safest, or verified.
+# ---------------------------------------------------------------------------
+
+_OVERCLAIM_WORDS = ("optimal", "safest", "verified", "guaranteed")
+
+
+def _route_aware_sequencing_issues(planning_state: PlanningState) -> list[Any]:
+    return [
+        warning
+        for warning in planning_state.validation_report.warnings
+        if warning.category == "route_aware_sequencing"
+    ]
+
+
+def _movement_data_issues(planning_state: PlanningState) -> list[Any]:
+    return [
+        warning
+        for warning in planning_state.validation_report.warnings
+        if warning.category == "movement_data"
+    ]
+
+
+def _route_geometry_issues(planning_state: PlanningState) -> list[Any]:
+    return [
+        warning
+        for warning in planning_state.validation_report.warnings
+        if warning.category == "route_geometry"
+    ]
+
+
+def _leg_with_geometry(scheduled: list[Any], *, has_geometry: bool) -> RouteLegFeasibility:
+    geometry = (
+        [RoutePathPoint(lat=38.70, lon=-9.13), RoutePathPoint(lat=38.71, lon=-9.14)]
+        if has_geometry
+        else None
+    )
+    return RouteLegFeasibility(
+        from_experience_id=scheduled[0].experience_id,
+        from_experience_name=scheduled[0].name,
+        to_experience_id=scheduled[1].experience_id,
+        to_experience_name=scheduled[1].name,
+        provider="osrm",
+        status=ProviderStatus.SUCCESS,
+        distance_meters=1200.0,
+        duration_seconds=600.0,
+        feasibility_status=RouteFeasibilityStatus.FEASIBLE,
+        route_geometry=geometry,
+    )
+
+
+def test_missing_route_aware_sequencing_report_does_not_crash() -> None:
+    planning_state = _two_candidate_planning_state()
+    ExperiencePlannerService().run(planning_state)
+    assert planning_state.route_aware_sequencing_report is None
+
+    PlanValidatorService().run(planning_state)
+
+    issues = _route_aware_sequencing_issues(planning_state)
+    assert len(issues) == 1
+    assert issues[0].severity == ValidationSeverity.SUGGESTION
+    assert not any(
+        issue.category == "route_aware_sequencing"
+        for issue in planning_state.validation_report.critical_issues
+    )
+    assert planning_state.validation_report.readiness_status.value == "needs_review"
+
+
+def test_route_aware_sequencing_not_connected_produces_honest_issues() -> None:
+    planning_state = _two_candidate_planning_state()
+    ExperiencePlannerService().run(planning_state)
+    scheduled = planning_state.experience_plan.daily_plans[0].experiences
+
+    planning_state.route_aware_sequencing_report = RouteAwareSequencingReport(
+        status=ProviderStatus.NOT_CONNECTED,
+        suggestions=[
+            RouteAwareSequenceSuggestion(
+                day_index=1,
+                status=ProviderStatus.NOT_CONNECTED,
+                original_order=[scheduled[0].experience_id, scheduled[1].experience_id],
+                suggested_order=[scheduled[0].experience_id, scheduled[1].experience_id],
+                provider="not_connected",
+                message="No routing provider is connected.",
+            )
+        ],
+    )
+
+    PlanValidatorService().run(planning_state)
+
+    sequencing_issues = _route_aware_sequencing_issues(planning_state)
+    sequencing_movement_issues = [
+        issue
+        for issue in _movement_data_issues(planning_state)
+        if "travel-time buffer" not in issue.message.lower()
+    ]
+    assert len(sequencing_issues) == 1
+    assert "not applied" in sequencing_issues[0].message.lower()
+    assert len(sequencing_movement_issues) == 1
+    assert sequencing_movement_issues[0].severity == ValidationSeverity.SUGGESTION
+    assert not any(
+        issue.category in {"route_aware_sequencing", "movement_data"}
+        for issue in planning_state.validation_report.critical_issues
+    )
+
+
+def test_applied_route_aware_sequencing_never_overclaims() -> None:
+    planning_state = _two_candidate_planning_state()
+    ExperiencePlannerService().run(planning_state)
+    scheduled = planning_state.experience_plan.daily_plans[0].experiences
+
+    suggestion = RouteAwareSequenceSuggestion(
+        day_index=1,
+        status=ProviderStatus.SUCCESS,
+        original_order=[scheduled[0].experience_id, scheduled[1].experience_id],
+        suggested_order=[scheduled[1].experience_id, scheduled[0].experience_id],
+        route_duration_seconds=300.0,
+        route_distance_meters=500.0,
+        improvement_seconds=120.0,
+        provider="osrm",
+        message="A provider-backed nearest-next sequencing suggestion was applied.",
+        applied=True,
+    )
+    planning_state.route_aware_sequencing_report = RouteAwareSequencingReport(
+        status=ProviderStatus.SUCCESS,
+        suggestions=[suggestion],
+        is_shadow_only=False,
+        applied_to_itinerary=True,
+    )
+
+    PlanValidatorService().run(planning_state)
+
+    sequencing_issues = _route_aware_sequencing_issues(planning_state)
+    assert len(sequencing_issues) == 1
+    message_lower = sequencing_issues[0].message.lower()
+    assert "applied" in message_lower
+    for banned_word in _OVERCLAIM_WORDS:
+        assert banned_word not in message_lower
+    assert not any(
+        issue.category == "route_aware_sequencing"
+        for issue in planning_state.validation_report.critical_issues
+    )
+
+
+def test_default_order_without_movement_data_is_surfaced_honestly() -> None:
+    planning_state = _two_candidate_planning_state()
+    ExperiencePlannerService().run(planning_state)
+    scheduled = planning_state.experience_plan.daily_plans[0].experiences
+
+    planning_state.route_aware_sequencing_report = RouteAwareSequencingReport(
+        status=ProviderStatus.UNAVAILABLE,
+        suggestions=[
+            RouteAwareSequenceSuggestion(
+                day_index=1,
+                status=ProviderStatus.UNAVAILABLE,
+                original_order=[scheduled[0].experience_id, scheduled[1].experience_id],
+                suggested_order=[scheduled[0].experience_id, scheduled[1].experience_id],
+                provider="osrm",
+                message="Fewer than two scheduled experiences in this day have coordinates.",
+            )
+        ],
+    )
+
+    PlanValidatorService().run(planning_state)
+
+    sequencing_issues = _route_aware_sequencing_issues(planning_state)
+    sequencing_movement_issues = [
+        issue
+        for issue in _movement_data_issues(planning_state)
+        if "travel-time buffer" not in issue.message.lower()
+    ]
+    assert "suggested order" in sequencing_issues[0].message.lower()
+    assert len(sequencing_movement_issues) == 1
+    assert sequencing_movement_issues[0].severity == ValidationSeverity.SUGGESTION
+    assert planning_state.validation_report.readiness_status.value == "needs_review"
+
+
+def test_missing_travel_time_buffer_report_adds_movement_suggestion_not_crash() -> None:
+    planning_state = _two_candidate_planning_state()
+    ExperiencePlannerService().run(planning_state)
+    assert planning_state.travel_time_buffer_report is None
+
+    PlanValidatorService().run(planning_state)
+
+    movement_issues = [
+        issue
+        for issue in _movement_data_issues(planning_state)
+        if "travel-time buffer" in issue.message.lower()
+    ]
+    assert len(movement_issues) == 1
+    assert movement_issues[0].severity == ValidationSeverity.SUGGESTION
+    assert not any(
+        issue.category == "movement_data"
+        for issue in planning_state.validation_report.critical_issues
+    )
+
+
+def test_travel_time_buffer_not_connected_is_suggestion_not_critical() -> None:
+    planning_state = _two_candidate_planning_state()
+    ExperiencePlannerService().run(planning_state)
+    scheduled = planning_state.experience_plan.daily_plans[0].experiences
+
+    planning_state.travel_time_buffer_report = TravelTimeBufferReport(
+        status=ProviderStatus.NOT_CONNECTED,
+        buffers=[
+            TravelTimeBuffer(
+                from_experience_id=scheduled[0].experience_id,
+                from_experience_name=scheduled[0].name,
+                to_experience_id=scheduled[1].experience_id,
+                to_experience_name=scheduled[1].name,
+                provider="not_connected",
+                status=TravelTimeBufferStatus.NOT_CONNECTED,
+                buffer_status=BufferSufficiencyStatus.UNAVAILABLE,
+                message="No routing provider is connected.",
+            )
+        ],
+    )
+
+    PlanValidatorService().run(planning_state)
+
+    movement_issues = [
+        issue
+        for issue in _movement_data_issues(planning_state)
+        if "travel-time buffer" in issue.message.lower()
+    ]
+    assert len(movement_issues) == 1
+    assert movement_issues[0].severity == ValidationSeverity.SUGGESTION
+    assert not any(
+        issue.category == "movement_data"
+        for issue in planning_state.validation_report.critical_issues
+    )
+
+
+def test_travel_time_buffer_partial_movement_is_warning_severity() -> None:
+    planning_state = _two_candidate_planning_state()
+    ExperiencePlannerService().run(planning_state)
+    scheduled = planning_state.experience_plan.daily_plans[0].experiences
+
+    planning_state.travel_time_buffer_report = TravelTimeBufferReport(
+        status=ProviderStatus.PARTIAL,
+        buffers=[
+            TravelTimeBuffer(
+                from_experience_id=scheduled[0].experience_id,
+                from_experience_name=scheduled[0].name,
+                to_experience_id=scheduled[1].experience_id,
+                to_experience_name=scheduled[1].name,
+                provider="osrm",
+                status=TravelTimeBufferStatus.SUCCESS,
+                route_duration_seconds=300.0,
+                route_distance_meters=500.0,
+                recommended_buffer_seconds=300.0,
+                available_gap_seconds=1200.0,
+                buffer_status=BufferSufficiencyStatus.SUFFICIENT,
+                message="A provider-backed travel duration fits within the scheduled gap.",
+            )
+        ],
+    )
+
+    PlanValidatorService().run(planning_state)
+
+    movement_issues = [
+        issue
+        for issue in _movement_data_issues(planning_state)
+        if "travel-time buffer" in issue.message.lower()
+    ]
+    assert len(movement_issues) == 1
+    assert movement_issues[0].severity == ValidationSeverity.WARNING
+    assert not any(
+        issue.category == "movement_data"
+        for issue in planning_state.validation_report.critical_issues
+    )
+
+
+def test_insufficient_buffer_warning_unchanged_and_no_extra_summary_on_success() -> None:
+    """Existing per-leg insufficient-buffer behavior (category
+    "travel_time_buffer") is untouched by Step 175C, and a `status=success`
+    report gets no additional movement_data summary -- nothing new to add
+    beyond the existing insufficient-leg warning."""
+    planning_state = _two_candidate_planning_state()
+    ExperiencePlannerService().run(planning_state)
+    scheduled = planning_state.experience_plan.daily_plans[0].experiences
+
+    planning_state.travel_time_buffer_report = TravelTimeBufferReport(
+        status=ProviderStatus.SUCCESS,
+        buffers=[
+            TravelTimeBuffer(
+                from_experience_id=scheduled[0].experience_id,
+                from_experience_name=scheduled[0].name,
+                to_experience_id=scheduled[1].experience_id,
+                to_experience_name=scheduled[1].name,
+                provider="osrm",
+                status=TravelTimeBufferStatus.SUCCESS,
+                route_duration_seconds=900.0,
+                route_distance_meters=1500.0,
+                recommended_buffer_seconds=900.0,
+                available_gap_seconds=300.0,
+                buffer_status=BufferSufficiencyStatus.INSUFFICIENT,
+                message="A provider-backed travel duration exceeds the scheduled gap.",
+            )
+        ],
+    )
+
+    PlanValidatorService().run(planning_state)
+
+    insufficient_warnings = [
+        warning
+        for warning in planning_state.validation_report.warnings
+        if warning.category == "travel_time_buffer"
+    ]
+    assert len(insufficient_warnings) == 1
+    assert not any(
+        "travel-time buffer" in issue.message.lower()
+        for issue in _movement_data_issues(planning_state)
+    )
+
+
+def test_route_geometry_present_is_recognized_without_fake_path_details() -> None:
+    planning_state = _two_candidate_planning_state()
+    ExperiencePlannerService().run(planning_state)
+    scheduled = planning_state.experience_plan.daily_plans[0].experiences
+
+    planning_state.route_feasibility_report = RouteFeasibilityReport(
+        status=ProviderStatus.SUCCESS,
+        provider="osrm",
+        route_data_source="osrm",
+        legs=[_leg_with_geometry(scheduled, has_geometry=True)],
+    )
+
+    PlanValidatorService().run(planning_state)
+
+    geometry_issues = _route_geometry_issues(planning_state)
+    assert len(geometry_issues) == 1
+    assert geometry_issues[0].severity == ValidationSeverity.SUGGESTION
+    assert "all 1" in geometry_issues[0].message
+    assert not any(
+        issue.category == "route_geometry"
+        for issue in planning_state.validation_report.critical_issues
+    )
+    # Never invents/echoes real coordinate detail as part of the message.
+    assert "38.7" not in geometry_issues[0].message
+    assert "-9.1" not in geometry_issues[0].message
+
+
+def test_route_geometry_missing_for_all_legs_is_surfaced_honestly() -> None:
+    planning_state = _two_candidate_planning_state()
+    ExperiencePlannerService().run(planning_state)
+    scheduled = planning_state.experience_plan.daily_plans[0].experiences
+
+    planning_state.route_feasibility_report = RouteFeasibilityReport(
+        status=ProviderStatus.SUCCESS,
+        provider="osrm",
+        route_data_source="osrm",
+        legs=[_leg_with_geometry(scheduled, has_geometry=False)],
+    )
+
+    PlanValidatorService().run(planning_state)
+
+    geometry_issues = _route_geometry_issues(planning_state)
+    assert len(geometry_issues) == 1
+    assert "no provider-backed route geometry" in geometry_issues[0].message.lower()
+    assert geometry_issues[0].severity == ValidationSeverity.SUGGESTION
+    assert not any(
+        issue.category == "route_geometry"
+        for issue in planning_state.validation_report.critical_issues
+    )
+
+
+def test_route_geometry_partial_coverage_is_surfaced_honestly() -> None:
+    planning_state = _two_candidate_planning_state()
+    ExperiencePlannerService().run(planning_state)
+    scheduled = planning_state.experience_plan.daily_plans[0].experiences
+
+    buffer_with_geometry = TravelTimeBuffer(
+        from_experience_id=scheduled[0].experience_id,
+        from_experience_name=scheduled[0].name,
+        to_experience_id=scheduled[1].experience_id,
+        to_experience_name=scheduled[1].name,
+        provider="osrm",
+        status=TravelTimeBufferStatus.SUCCESS,
+        route_duration_seconds=300.0,
+        route_distance_meters=500.0,
+        recommended_buffer_seconds=300.0,
+        buffer_status=BufferSufficiencyStatus.NOT_COMPUTABLE,
+        route_geometry=[RoutePathPoint(lat=38.70, lon=-9.13), RoutePathPoint(lat=38.71, lon=-9.14)],
+    )
+    buffer_without_geometry = buffer_with_geometry.model_copy(
+        update={"route_geometry": None, "to_experience_id": "another_experience_id"}
+    )
+    planning_state.travel_time_buffer_report = TravelTimeBufferReport(
+        status=ProviderStatus.SUCCESS,
+        buffers=[buffer_with_geometry, buffer_without_geometry],
+    )
+
+    PlanValidatorService().run(planning_state)
+
+    geometry_issues = _route_geometry_issues(planning_state)
+    assert len(geometry_issues) == 1
+    assert "1 of 2" in geometry_issues[0].message
+    assert geometry_issues[0].severity == ValidationSeverity.SUGGESTION
+
+
+def test_route_geometry_validation_never_computes_distance_or_duration() -> None:
+    """The route-geometry check only counts leg-level route_geometry
+    presence -- it must never introduce a new distance/duration figure of
+    its own; the real provider-backed figures already on
+    RouteLegFeasibility stay untouched, and are never restated here."""
+    planning_state = _two_candidate_planning_state()
+    ExperiencePlannerService().run(planning_state)
+    scheduled = planning_state.experience_plan.daily_plans[0].experiences
+
+    planning_state.route_feasibility_report = RouteFeasibilityReport(
+        status=ProviderStatus.SUCCESS,
+        provider="osrm",
+        route_data_source="osrm",
+        legs=[_leg_with_geometry(scheduled, has_geometry=True)],
+    )
+
+    PlanValidatorService().run(planning_state)
+
+    geometry_issues = _route_geometry_issues(planning_state)
+    assert geometry_issues
+    for issue in geometry_issues:
+        assert "1200" not in issue.message
+        assert "600" not in issue.message
+
+
+def test_route_geometry_no_legs_produces_no_issue() -> None:
+    """When neither report has any legs to inspect, no route_geometry
+    issue is added at all -- never a claim about geometry that was never
+    computable in the first place."""
+    planning_state = _two_candidate_planning_state()
+    ExperiencePlannerService().run(planning_state)
+    assert planning_state.route_feasibility_report is None
+    assert planning_state.travel_time_buffer_report is None
+
+    PlanValidatorService().run(planning_state)
+
+    assert _route_geometry_issues(planning_state) == []
+
+
+def test_step_175c_checks_never_flip_readiness_to_blocked() -> None:
+    planning_state = _two_candidate_planning_state()
+    ExperiencePlannerService().run(planning_state)
+    scheduled = planning_state.experience_plan.daily_plans[0].experiences
+
+    planning_state.route_aware_sequencing_report = RouteAwareSequencingReport(
+        status=ProviderStatus.FAILED,
+        suggestions=[
+            RouteAwareSequenceSuggestion(
+                day_index=1,
+                status=ProviderStatus.FAILED,
+                original_order=[scheduled[0].experience_id, scheduled[1].experience_id],
+                suggested_order=[scheduled[0].experience_id, scheduled[1].experience_id],
+                provider="osrm",
+                message="The routing provider request(s) failed.",
+            )
+        ],
+    )
+
+    PlanValidatorService().run(planning_state)
+
+    assert planning_state.validation_report.readiness_status.value == "needs_review"
+    assert planning_state.validation_report.critical_issues == []
+    assert _route_aware_sequencing_issues(planning_state)
+    assert _movement_data_issues(planning_state)
+
+
+# ---------------------------------------------------------------------------
+# Step 175D: regeneration lifecycle validation. Every check here is
+# additive and read-only over pending_feedback_summary/
+# regeneration_readiness/user_locks/regeneration_attempts/
+# plan_diff_preview/version_history/metadata -- WARNING/SUGGESTION
+# severity only, never a critical issue, and never a claim that feedback
+# was fully satisfied, a locked item will be preserved, or regeneration
+# will improve the trip.
+# ---------------------------------------------------------------------------
+
+_REGENERATION_OVERCLAIM_WORDS = ("satisfied", "improve", "improved", "preserved", "preserve")
+
+
+def _regeneration_issues(planning_state: PlanningState) -> list[Any]:
+    return [
+        warning
+        for warning in planning_state.validation_report.warnings
+        if warning.category == "regeneration"
+    ]
+
+
+def _regeneration_consistency_issues(planning_state: PlanningState) -> list[Any]:
+    return [
+        warning
+        for warning in planning_state.validation_report.warnings
+        if warning.category == "regeneration_state_consistency"
+    ]
+
+
+def _pending_feedback_event() -> FeedbackEvent:
+    return FeedbackEvent(
+        feedback_text="Make this less packed",
+        feedback_type="pace_change",
+        affected_stages=[PlanningStage.EXPERIENCE_PLAN],
+        regeneration_strategy=RegenerationStrategy.EXPLANATION_ONLY,
+    )
+
+
+def test_pending_feedback_with_can_regenerate_true_produces_ready_suggestion() -> None:
+    planning_state = _planning_state()
+    planning_state.feedback_history.append(_pending_feedback_event())
+    planning_state.pending_feedback_summary = PendingFeedbackSummary(
+        status="captured_not_applied", total_feedback_items=1
+    )
+    planning_state.regeneration_readiness = RegenerationReadiness(
+        status="ready",
+        can_regenerate=True,
+        current_version="v1",
+        would_create_version="v2",
+        pending_feedback_count=1,
+    )
+    planning_state.plan_diff_preview = PlanDiffPreview(
+        preview_status="regeneration_available", regeneration_available=True
+    )
+
+    PlanValidatorService().run(planning_state)
+
+    issues = _regeneration_issues(planning_state)
+    assert len(issues) == 1
+    assert issues[0].severity == ValidationSeverity.SUGGESTION
+    assert "available for deterministic regeneration" in issues[0].message.lower()
+    assert not any(
+        issue.category == "regeneration"
+        for issue in planning_state.validation_report.critical_issues
+    )
+
+
+def test_pending_feedback_with_active_lock_produces_lock_blocked_warning() -> None:
+    planning_state = _planning_state()
+    planning_state.feedback_history.append(_pending_feedback_event())
+    planning_state.pending_feedback_summary = PendingFeedbackSummary(
+        status="captured_not_applied", total_feedback_items=1
+    )
+    planning_state.user_locks.append(
+        UserLock(locked_item_type="experience", locked_item_id="experience_test_1")
+    )
+    planning_state.regeneration_readiness = RegenerationReadiness(
+        status="blocked",
+        can_regenerate=False,
+        active_lock_count=1,
+        blocked_by=[
+            "Regeneration is blocked because one or more active locks exist. "
+            "Remove all active locks before requesting regeneration."
+        ],
+    )
+
+    PlanValidatorService().run(planning_state)
+
+    issues = _regeneration_issues(planning_state)
+    assert len(issues) == 1
+    assert issues[0].severity == ValidationSeverity.WARNING
+    assert "lock" in issues[0].message.lower()
+    assert not any(
+        issue.category == "regeneration"
+        for issue in planning_state.validation_report.critical_issues
+    )
+
+
+def test_pending_feedback_without_derivable_stage_produces_not_ready_warning() -> None:
+    planning_state = _planning_state()
+    event = FeedbackEvent(
+        feedback_text="Please make it wonderful",
+        feedback_type="general_feedback",
+        affected_stages=[],
+        regeneration_strategy=RegenerationStrategy.EXPLANATION_ONLY,
+    )
+    planning_state.feedback_history.append(event)
+    planning_state.pending_feedback_summary = PendingFeedbackSummary(
+        status="captured_not_applied", total_feedback_items=1
+    )
+    planning_state.regeneration_readiness = RegenerationReadiness(
+        status="blocked",
+        can_regenerate=False,
+        blocked_by=[
+            "Pending feedback exists, but it did not classify to any plan "
+            "section a regeneration could rerun."
+        ],
+    )
+
+    PlanValidatorService().run(planning_state)
+
+    issues = _regeneration_issues(planning_state)
+    assert len(issues) == 1
+    assert issues[0].severity == ValidationSeverity.WARNING
+    assert "did not classify" in issues[0].message.lower()
+
+
+def test_applied_feedback_only_does_not_imply_regeneration_available() -> None:
+    planning_state = _planning_state()
+    applied_event = _pending_feedback_event()
+    applied_event.applied_at = datetime.now(timezone.utc)
+    applied_event.applied_in_version = "v2"
+    applied_event.handling_status = "applied"
+    planning_state.feedback_history.append(applied_event)
+    planning_state.pending_feedback_summary = PendingFeedbackSummary(
+        status="none",
+        note="All captured feedback has already been applied by a regeneration.",
+    )
+    planning_state.regeneration_readiness = RegenerationReadiness(
+        status="blocked", can_regenerate=False
+    )
+
+    PlanValidatorService().run(planning_state)
+
+    issues = _regeneration_issues(planning_state)
+    assert len(issues) == 1
+    assert issues[0].severity == ValidationSeverity.SUGGESTION
+    assert "already been marked applied" in issues[0].message.lower()
+    for banned_word in _REGENERATION_OVERCLAIM_WORDS:
+        assert banned_word not in issues[0].message.lower()
+
+
+def test_no_feedback_at_all_produces_no_regeneration_issue() -> None:
+    """The common default state (no feedback ever captured) needs no
+    review -- adding a warning here would just be noise."""
+    planning_state = _planning_state()
+
+    PlanValidatorService().run(planning_state)
+
+    assert _regeneration_issues(planning_state) == []
+
+
+def test_failed_latest_regeneration_attempt_is_surfaced_honestly() -> None:
+    planning_state = _planning_state()
+    planning_state.regeneration_attempts.append(
+        RegenerationAttempt(
+            status="failed",
+            reason_code="REGENERATION_NOT_AVAILABLE",
+            message="The regeneration rerun failed unexpectedly.",
+        )
+    )
+
+    PlanValidatorService().run(planning_state)
+
+    issues = _regeneration_issues(planning_state)
+    assert len(issues) == 1
+    assert issues[0].severity == ValidationSeverity.WARNING
+    assert "failed" in issues[0].message.lower()
+    assert not any(
+        issue.category == "regeneration"
+        for issue in planning_state.validation_report.critical_issues
+    )
+
+
+def test_failed_attempt_and_pending_feedback_both_surfaced() -> None:
+    """A failed attempt is independent of the pending-feedback state --
+    both issues can (and should) appear together without one
+    suppressing the other."""
+    planning_state = _planning_state()
+    planning_state.feedback_history.append(_pending_feedback_event())
+    planning_state.pending_feedback_summary = PendingFeedbackSummary(
+        status="captured_not_applied", total_feedback_items=1
+    )
+    planning_state.regeneration_readiness = RegenerationReadiness(
+        status="ready", can_regenerate=True
+    )
+    planning_state.regeneration_attempts.append(
+        RegenerationAttempt(status="failed", message="The regeneration rerun failed.")
+    )
+
+    PlanValidatorService().run(planning_state)
+
+    issues = _regeneration_issues(planning_state)
+    assert len(issues) == 2
+    assert any("ready" not in issue.message.lower() and "failed" in issue.message.lower() for issue in issues)
+    assert any("available for deterministic regeneration" in issue.message.lower() for issue in issues)
+
+
+def test_readiness_and_diff_preview_mismatch_produces_consistency_warning() -> None:
+    planning_state = _planning_state()
+    planning_state.regeneration_readiness = RegenerationReadiness(
+        status="ready", can_regenerate=True
+    )
+    planning_state.plan_diff_preview = PlanDiffPreview(
+        preview_status="not_available", regeneration_available=False
+    )
+
+    PlanValidatorService().run(planning_state)
+
+    issues = _regeneration_consistency_issues(planning_state)
+    assert len(issues) == 1
+    assert issues[0].severity == ValidationSeverity.WARNING
+    assert "disagree" in issues[0].message.lower()
+    assert not any(
+        issue.category == "regeneration_state_consistency"
+        for issue in planning_state.validation_report.critical_issues
+    )
+
+
+def test_matching_readiness_and_diff_preview_produces_no_consistency_warning() -> None:
+    planning_state = _planning_state()
+    planning_state.regeneration_readiness = RegenerationReadiness(
+        status="ready", can_regenerate=True
+    )
+    planning_state.plan_diff_preview = PlanDiffPreview(
+        preview_status="regeneration_available", regeneration_available=True
+    )
+
+    PlanValidatorService().run(planning_state)
+
+    assert _regeneration_consistency_issues(planning_state) == []
+
+
+def test_version_history_current_version_mismatch_produces_consistency_warning() -> None:
+    planning_state = _planning_state()
+    planning_state.version_history.append(
+        VersionHistoryItem(version_label="v1", created_by="system")
+    )
+    planning_state.metadata.current_version = "v99"
+
+    PlanValidatorService().run(planning_state)
+
+    issues = _regeneration_consistency_issues(planning_state)
+    assert any("current_version" in issue.message for issue in issues)
+    assert all(issue.severity == ValidationSeverity.WARNING for issue in issues)
+    assert not any(
+        issue.category == "regeneration_state_consistency"
+        for issue in planning_state.validation_report.critical_issues
+    )
+
+
+def test_matching_version_history_and_current_version_produces_no_warning() -> None:
+    planning_state = _planning_state()
+    planning_state.version_history.append(
+        VersionHistoryItem(version_label="v1", created_by="system")
+    )
+    planning_state.metadata.current_version = "v1"
+
+    PlanValidatorService().run(planning_state)
+
+    assert _regeneration_consistency_issues(planning_state) == []
+
+
+def test_empty_version_history_never_triggers_version_mismatch_warning() -> None:
+    """An empty version_history with the default current_version="v1" is
+    normal, unpopulated state -- never a mismatch to flag."""
+    planning_state = _planning_state()
+    assert planning_state.version_history == []
+    assert planning_state.metadata.current_version == "v1"
+
+    PlanValidatorService().run(planning_state)
+
+    assert _regeneration_consistency_issues(planning_state) == []
+
+
+def test_regeneration_validation_never_creates_critical_issues() -> None:
+    planning_state = _two_candidate_planning_state()
+    ExperiencePlannerService().run(planning_state)
+    planning_state.feedback_history.append(_pending_feedback_event())
+    planning_state.pending_feedback_summary = PendingFeedbackSummary(
+        status="captured_not_applied", total_feedback_items=1
+    )
+    planning_state.user_locks.append(
+        UserLock(locked_item_type="experience", locked_item_id="experience_test_1")
+    )
+    planning_state.regeneration_attempts.append(RegenerationAttempt(status="failed"))
+    planning_state.regeneration_readiness = RegenerationReadiness(
+        status="ready", can_regenerate=True
+    )
+    planning_state.plan_diff_preview = PlanDiffPreview(
+        preview_status="not_available", regeneration_available=False
+    )
+    planning_state.version_history.append(
+        VersionHistoryItem(version_label="v1", created_by="system")
+    )
+    planning_state.metadata.current_version = "v2"
+
+    PlanValidatorService().run(planning_state)
+
+    assert planning_state.validation_report.critical_issues == []
+    assert planning_state.validation_report.readiness_status.value == "needs_review"
+    regeneration_related = [
+        issue
+        for issue in planning_state.validation_report.warnings
+        if issue.category in {"regeneration", "regeneration_state_consistency"}
+    ]
+    # lock-blocked + failed-attempt + availability-mismatch + version-mismatch
+    assert len(regeneration_related) >= 4
+
+
+def test_regeneration_validation_never_overclaims() -> None:
+    planning_state = _planning_state()
+    planning_state.feedback_history.append(_pending_feedback_event())
+    planning_state.pending_feedback_summary = PendingFeedbackSummary(
+        status="captured_not_applied", total_feedback_items=1
+    )
+    planning_state.user_locks.append(
+        UserLock(locked_item_type="experience", locked_item_id="experience_test_1")
+    )
+    planning_state.regeneration_readiness = RegenerationReadiness(
+        status="ready", can_regenerate=True
+    )
+    planning_state.plan_diff_preview = PlanDiffPreview(
+        preview_status="not_available", regeneration_available=False
+    )
+    planning_state.regeneration_attempts.append(
+        RegenerationAttempt(status="failed", message="The regeneration rerun failed.")
+    )
+    planning_state.version_history.append(
+        VersionHistoryItem(version_label="v1", created_by="system")
+    )
+    planning_state.metadata.current_version = "v2"
+
+    PlanValidatorService().run(planning_state)
+
+    all_regeneration_messages = " ".join(
+        issue.message.lower()
+        for issue in planning_state.validation_report.warnings
+        if issue.category in {"regeneration", "regeneration_state_consistency"}
+    )
+    assert all_regeneration_messages  # sanity: something was actually produced
+    for banned_word in _REGENERATION_OVERCLAIM_WORDS:
+        assert banned_word not in all_regeneration_messages
+
+
+def test_flight_inventory_affected_section_is_flight_inventory_not_stay_transport() -> None:
+    """Step 175D refinement: flight inventory is distinct from
+    stay_transport's local/intercity transport strategy."""
+    planning_state = _planning_state()
+
+    PlanValidatorService().run(planning_state)
+
+    flight_warnings = _flight_inventory_warnings(planning_state)
+    assert len(flight_warnings) == 1
+    assert flight_warnings[0].affected_section == "flight_inventory"

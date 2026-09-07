@@ -431,41 +431,151 @@ function MovementRow({ buffer }: { buffer: TravelTimeBuffer }) {
   );
 }
 
+// Human-readable labels for backend ValidationIssue.category values (Step
+// 175E, docs/16_frontend_architecture.md). Purely a display relabeling of a
+// string the backend already sent -- it never changes, reorders, or
+// interprets the underlying message/severity/affected_section/
+// suggested_fix content, and it never invents a category the backend
+// didn't report. A category not listed here (e.g. a future backend
+// addition) falls back to a generic snake_case-to-Title-Case reformat
+// (validationCategoryLabel below) rather than showing nothing or a raw
+// backend key.
+const VALIDATION_CATEGORY_LABELS: Record<string, string> = {
+  provider_coverage: "Provider coverage",
+  provider_coverage_consistency: "Provider coverage consistency",
+  scheduling: "Scheduling",
+  feasibility: "Route feasibility",
+  travel_time_buffer: "Travel-time buffer",
+  route_aware_sequencing: "Route-aware sequencing",
+  movement_data: "Movement data",
+  route_geometry: "Route geometry",
+  regeneration: "Regeneration",
+  regeneration_state_consistency: "Regeneration state consistency",
+  geographic_spread: "Geographic spread",
+  constraints: "Constraints",
+  must_visit: "Must-visit places",
+  budget: "Budget",
+  weather: "Weather",
+  holidays: "Holidays",
+  accommodation_inventory: "Accommodation inventory",
+  flight_inventory: "Flight inventory",
+};
+
+function validationCategoryLabel(category: string): string {
+  const known = VALIDATION_CATEGORY_LABELS[category];
+  if (known) return known;
+  return category
+    .split("_")
+    .filter((word) => word.length > 0)
+    .map((word) => word[0].toUpperCase() + word.slice(1))
+    .join(" ");
+}
+
+// Groups an already-backend-ordered issue list by category, preserving the
+// order categories first appear in -- never reorders individual issues
+// within a category, and never invents or drops an issue (Step 175E).
+function groupValidationIssuesByCategory(
+  issues: ValidationReport["warnings"],
+): { category: string; issues: ValidationReport["warnings"] }[] {
+  const order: string[] = [];
+  const byCategory: Record<string, ValidationReport["warnings"]> = {};
+  for (const issue of issues) {
+    if (!byCategory[issue.category]) {
+      byCategory[issue.category] = [];
+      order.push(issue.category);
+    }
+    byCategory[issue.category].push(issue);
+  }
+  return order.map((category) => ({ category, issues: byCategory[category] }));
+}
+
+// Purely presentational severity -> tone mapping (Step 175E) -- reads only
+// the backend's own `issue.severity` field to pick a border/badge color; it
+// never changes which bucket (critical/warnings/suggestions) an issue is
+// grouped under, since that is already decided by the backend's severity
+// value itself. A `suggestion` gets a visibly quieter, informational tone
+// than a `warning`, which in turn is quieter than a `critical` issue.
+function validationSeverityToneClassName(severity: string): {
+  border: string;
+  badge: string;
+} {
+  if (severity === "critical") {
+    return { border: "border-red-500/30 bg-red-950/10", badge: "text-red-300/90" };
+  }
+  if (severity === "suggestion") {
+    return { border: "border-sky-500/20 bg-slate-900/40", badge: "text-sky-300/80" };
+  }
+  return { border: "border-amber-500/20 bg-slate-900/60", badge: "text-amber-300/90" };
+}
+
+function ValidationIssueCard({
+  issue,
+}: {
+  issue: ValidationReport["warnings"][number];
+}) {
+  const tone = validationSeverityToneClassName(issue.severity);
+  return (
+    <li className={`rounded-lg border p-3 text-sm ${tone.border}`}>
+      <p className={`text-[11px] uppercase tracking-wide ${tone.badge}`}>
+        {issue.severity}
+      </p>
+      <p className="mt-1 text-slate-200">{issue.message}</p>
+      {issue.affected_section && (
+        <p className="mt-1 text-xs text-slate-400">
+          Affects: {issue.affected_section}
+        </p>
+      )}
+      {issue.suggested_fix && (
+        <p className="mt-1 text-xs text-slate-400">
+          Suggested fix: {issue.suggested_fix}
+        </p>
+      )}
+    </li>
+  );
+}
+
+/**
+ * Renders one severity bucket (critical / warnings / suggestions) of a
+ * validation report, grouped by category with a human-readable heading per
+ * group (Step 175E). Every rendered field (message, severity,
+ * affected_section, suggested_fix) is copied verbatim from the backend's
+ * own ValidationIssue -- this never computes, infers, or adds a new
+ * validation fact, route/provider/regeneration conclusion, or fabricated
+ * travel detail; it only groups and relabels what the backend already
+ * sent. Rendering nothing when `issues` is empty means critical issues and
+ * warnings are never hidden by this component -- an empty bucket simply
+ * has nothing to group.
+ */
 function ValidationIssueList({
   title,
   issues,
 }: {
   title: string;
-  issues: ValidationReport["critical_issues"];
+  issues: ValidationReport["warnings"];
 }) {
   if (issues.length === 0) return null;
 
+  const groups = groupValidationIssuesByCategory(issues);
+
   return (
     <div className="mt-3">
-      <p className="text-sm font-semibold text-slate-200">{title}</p>
-      <ul className="mt-2 flex flex-col gap-2">
-        {issues.map((issue, index) => (
-          <li
-            key={`${issue.category}-${index}`}
-            className="rounded-lg border border-white/10 bg-slate-900/60 p-3 text-sm"
-          >
-            <p className="text-[11px] uppercase tracking-wide text-slate-500">
-              {issue.category} · {issue.severity}
+      <p className="text-sm font-semibold text-slate-200">
+        {title} ({issues.length})
+      </p>
+      <div className="mt-2 flex flex-col gap-3">
+        {groups.map((group) => (
+          <div key={group.category}>
+            <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+              {validationCategoryLabel(group.category)}
             </p>
-            <p className="mt-1 text-slate-200">{issue.message}</p>
-            {issue.affected_section && (
-              <p className="mt-1 text-xs text-slate-400">
-                Affects: {issue.affected_section}
-              </p>
-            )}
-            {issue.suggested_fix && (
-              <p className="mt-1 text-xs text-slate-400">
-                Suggested fix: {issue.suggested_fix}
-              </p>
-            )}
-          </li>
+            <ul className="mt-1 flex flex-col gap-2">
+              {group.issues.map((issue, index) => (
+                <ValidationIssueCard key={`${group.category}-${index}`} issue={issue} />
+              ))}
+            </ul>
+          </div>
         ))}
-      </ul>
+      </div>
     </div>
   );
 }
@@ -1550,9 +1660,25 @@ function AccommodationSuggestionCard({
 }
 
 function ValidationSection({ report }: { report: ValidationReport }) {
+  // The backend places every non-critical issue in `warnings`, using its
+  // own `severity` field ("warning" vs "suggestion") to distinguish
+  // between them (Steps 175C/175D) -- `ValidationReport.suggestions` is
+  // never populated. Splitting here is a pure display grouping over an
+  // already-backend-decided field; it never reclassifies an issue, and a
+  // `critical`-severity item (which should never appear in `warnings`)
+  // would still fall into the "Warnings" bucket rather than being
+  // silently dropped.
+  const actualWarnings = report.warnings.filter(
+    (issue) => issue.severity !== "suggestion",
+  );
+  const suggestions = report.warnings.filter(
+    (issue) => issue.severity === "suggestion",
+  );
+
   const hasNothingToShow =
     report.critical_issues.length === 0 &&
-    report.warnings.length === 0 &&
+    actualWarnings.length === 0 &&
+    suggestions.length === 0 &&
     report.provider_coverage_notes.length === 0 &&
     report.unavailable_data_notes.length === 0;
 
@@ -1571,7 +1697,8 @@ function ValidationSection({ report }: { report: ValidationReport }) {
       )}
 
       <ValidationIssueList title="Critical issues" issues={report.critical_issues} />
-      <ValidationIssueList title="Warnings" issues={report.warnings} />
+      <ValidationIssueList title="Warnings" issues={actualWarnings} />
+      <ValidationIssueList title="Suggestions" issues={suggestions} />
 
       {report.provider_coverage_notes.length > 0 && (
         <div className="mt-3">
