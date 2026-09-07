@@ -12,6 +12,7 @@ from app.models.planning_state import (
 from app.models.routing import (
     BufferSufficiencyStatus,
     MovementDataProvenance,
+    RoutePathPoint,
     RouteRequest,
     RouteResult,
     TravelTimeBufferStatus,
@@ -214,6 +215,86 @@ def test_successful_routing_provider_creates_buffer_with_duration_and_recommenda
     # never guessed.
     assert buffer.available_gap_seconds is None
     assert buffer.buffer_status == BufferSufficiencyStatus.NOT_COMPUTABLE
+
+
+# ---------------------------------------------------------------------------
+# Step 173A: route_geometry is exposed on a buffer only when the
+# underlying RouteResult itself carried real, provider-backed geometry --
+# copied verbatim, never re-derived from experience coordinates.
+# ---------------------------------------------------------------------------
+
+
+def test_buffer_exposes_route_geometry_when_provider_result_has_it() -> None:
+    points = [RoutePathPoint(lat=38.7223, lon=-9.1393), RoutePathPoint(lat=38.7169, lon=-9.1399)]
+    fake_provider = _FakeRoutingProvider(
+        RouteResult(
+            provider="fake_routing_provider",
+            status=ProviderStatus.SUCCESS,
+            distance_meters=1500.0,
+            duration_seconds=900.0,
+            geometry=points,
+            source="fake_routing_provider",
+            confidence=0.9,
+            message="Fake route with geometry for test purposes only.",
+        )
+    )
+    service = TravelTimeBufferService(gateway=ProviderGateway(routing=fake_provider))
+    planning_state = _planning_state_with_experiences(
+        [
+            _experience("A", lat=38.7223, lng=-9.1393),
+            _experience("B", lat=38.7169, lng=-9.1399),
+        ]
+    )
+
+    report = service.build_report(planning_state)
+
+    assert report.buffers[0].route_geometry == points
+
+
+def test_buffer_route_geometry_stays_none_when_provider_result_has_none() -> None:
+    fake_provider = _FakeRoutingProvider()
+    service = TravelTimeBufferService(gateway=ProviderGateway(routing=fake_provider))
+    planning_state = _planning_state_with_experiences(
+        [
+            _experience("A", lat=38.7223, lng=-9.1393),
+            _experience("B", lat=38.7169, lng=-9.1399),
+        ]
+    )
+
+    report = service.build_report(planning_state)
+
+    assert report.buffers[0].status == TravelTimeBufferStatus.SUCCESS
+    assert report.buffers[0].route_geometry is None
+
+
+def test_buffer_route_geometry_is_none_when_not_connected() -> None:
+    service = TravelTimeBufferService(gateway=ProviderGateway(routing=NotConnectedRoutingProvider()))
+    planning_state = _planning_state_with_experiences(
+        [
+            _experience("A", lat=38.7223, lng=-9.1393),
+            _experience("B", lat=38.7169, lng=-9.1399),
+        ]
+    )
+
+    report = service.build_report(planning_state)
+
+    assert report.buffers[0].status == TravelTimeBufferStatus.NOT_CONNECTED
+    assert report.buffers[0].route_geometry is None
+
+
+def test_buffer_route_geometry_is_none_when_missing_coordinates() -> None:
+    service = TravelTimeBufferService(gateway=ProviderGateway(routing=_AssertNeverCalledRoutingProvider()))
+    planning_state = _planning_state_with_experiences(
+        [
+            _experience("A", lat=38.7223, lng=-9.1393),
+            _experience("B", lat=None, lng=None),
+        ]
+    )
+
+    report = service.build_report(planning_state)
+
+    assert report.buffers[0].status == TravelTimeBufferStatus.NOT_COMPUTABLE
+    assert report.buffers[0].route_geometry is None
 
 
 def test_legs_built_for_every_consecutive_pair_within_a_day() -> None:

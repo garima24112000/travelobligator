@@ -2242,3 +2242,227 @@ end (re-verified live in a browser, and by direct source inspection):
   status, or completion claim about a route, stop order, or travel time
   -- confirmed by the repository-wide forbidden-phrase grep passing clean
   on every Section 172 step, including this one.
+
+### 39.23 Route Geometry Type Added, No Path Drawing Yet (Step 173A)
+
+Step 173A adds a backend route path geometry contract
+(docs/13_llm_reasoning_pipeline.md section 95,
+docs/14_backend_architecture.md section 72) -- this step's only frontend
+change is a matching TypeScript type addition, so the hand-maintained
+type mirror (`frontend/lib/types.ts`) stays in sync with the new backend
+response shape ahead of when it's actually used.
+
+- **New type: `RoutePathPoint`** (`{ lat: number; lon: number }`), and
+  `TravelTimeBuffer` gains `route_geometry: RoutePathPoint[] | null`.
+  Both are already present on the wire today (`GET /trips/{trip_id}`
+  already serializes the full `PlanningState`) -- this is a type-mirror
+  addition only, not a new backend field this step introduced at the API
+  layer.
+- **`frontend/app/page.tsx` is completely unchanged.** No path is drawn,
+  no polyline is rendered, and nothing reads `route_geometry` yet --
+  `findMovementBetweenStops`/`MovementRow` (Step 172D) still only read
+  `route_duration_seconds`/`route_distance_meters`/`status`. Full map
+  *path* visualization (turn-by-turn route geometry connecting real
+  road/walking segments between stops) remains deferred to a later
+  Section 173 step. When that step arrives, it must draw only real
+  backend-provided `route_geometry` points -- never a straight line
+  between two stops' coordinates as a substitute when geometry is
+  `null`, matching the same no-fallback-line rule
+  `DayMapPreview`'s existing dotted connector already documents for
+  itself (that connector is a *visual* straight-line convenience marker,
+  never presented as a real route -- future path drawing must not blur
+  that distinction).
+- **`npm run lint`/`npm run build` both still pass** with only the type
+  addition -- no runtime behavior changed.
+
+### 39.24 Provider-Backed Route Paths Drawn on the Day Map (Step 173B)
+
+Step 173B draws the route paths Step 173A's backend contract made
+possible: `DayMapPreview` now renders a second, visually distinct
+polyline layer for any leg whose `travel_time_buffer_report` entry is
+real and provider-backed -- using the exact points the backend returned,
+never a straight-line fallback.
+
+- **Gating, via the new `drawableRouteGeometry` helper
+  (`frontend/app/page.tsx`).** For each consecutive pair of stops, the
+  existing `findMovementBetweenStops` (Step 172D) looks up that leg's
+  `TravelTimeBuffer` by `(from_experience_id, to_experience_id)`.
+  `drawableRouteGeometry` then requires, in order: a match exists,
+  `status === "success"` (never `not_connected`/`unavailable`/`failed`/
+  `partial`), `route_geometry` is non-null, it has at least two points,
+  and every point's `lat`/`lon` is a finite number -- a single invalid
+  point discards the whole leg's path rather than drawing a
+  partial/corrupted one. Any leg that fails any of these checks draws no
+  path at all; the pre-existing dotted straight-line connector (a
+  visual convenience only, unchanged since before this step) still
+  connects every coordinate-backed marker regardless, and the numbered
+  markers, per-day route-order caption (Step 172C), and movement rows
+  (Step 172D) are all completely unaffected.
+- **Never a straight-line substitute, never inferred from coordinates.**
+  The new solid (non-dashed) polyline is built exclusively from
+  `buffer.route_geometry`'s own points -- the frontend never falls back
+  to connecting the two stops' own `coordinates` directly when geometry
+  is absent, and never computes a path, distance, or duration itself.
+  `findMovementBetweenStops`/`drawableRouteGeometry` only read fields
+  the backend already decided.
+- **Map bounds include route geometry points**, not just the stop
+  markers, so a real path that bows away from a straight line (as a real
+  road route usually does) is never clipped by `fitBounds`.
+- **Small legend addition** in the existing caption below the map:
+  "Solid green segments are a provider-backed route path, shown only for
+  a leg where the backend has one. Route path unavailable for any other
+  leg -- no straight line is drawn in its place."
+- **Verified live**, not just via `npm run build`: a synthetic
+  `PlanningState` with a real, curved (non-straight) `route_geometry` was
+  loaded in a browser and rendered as a solid green path clearly distinct
+  from a straight line between the two markers, while a default
+  (no-routing-provider) trip continued to show markers, the dashed
+  connector, and "Movement data unavailable" rows with no path drawn at
+  all -- confirming the gating and no-fallback rules both hold end to
+  end.
+- **`frontend/lib/types.ts`'s `RoutePathPoint` type (Step 173A) is now
+  actually read**, not just mirrored -- this is the first step that
+  consumes it. Full turn-by-turn route *editing*/interaction (if ever
+  added) remains out of scope; this is display-only, matching every
+  other itinerary field on this page.
+
+### 39.25 Route Path Legend and No-Fallback Visual Hardening (Step 173C)
+
+Step 173C removes the one remaining way the day map could read as
+showing a route it did not actually have: the pre-existing dashed
+straight-line connector that joined every coordinate-backed marker
+regardless of whether any real route data existed for that leg. A line
+between two dots reads as a path to a viewer no matter how the caption
+below it is worded, so that connector is now gone entirely rather than
+kept and re-labeled.
+
+- **The day map now draws exactly one kind of line: the real,
+  provider-backed route path from Step 173B**, and only for a leg where
+  `drawableRouteGeometry` returns a real path. A leg without one now
+  shows its two numbered markers and nothing joining them -- no dashed
+  line, no straight-line stand-in of any kind. This makes the
+  `DayMapPreview` "safer option" explicit: draw the real route geometry
+  when it exists, otherwise markers only, never a line invented to fill
+  the gap.
+- **Two new pure helpers in `frontend/app/page.tsx`, `dayHasDrawableRouteGeometry`
+  and `dayHasMovementStatusData`**, both walking the same
+  consecutive-pair indexing as the drawing loop itself (never
+  recomputing or reordering anything) to answer, respectively: does this
+  day have at least one leg with a real drawn path, and does this day
+  have any backend `TravelTimeBuffer` entry at all (regardless of its
+  status). Both read only fields the backend already decided.
+- **A new small legend line, via `routePathLegendLabel`**, rendered above
+  the existing caption paragraph: "Provider-backed route path" (in
+  emerald, matching the path's own color) when `dayHasDrawableRouteGeometry`
+  is true; "Route path unavailable" (in the default muted color) when no
+  path is drawn but `dayHasMovementStatusData` is true, meaning the
+  backend does have real movement/route status data for this day, just
+  not a drawable path -- so the claim is backed by an actual status, not
+  invented. When neither holds (e.g. an older trip persisted before Step
+  166C with no travel-time buffer report at all), no legend line renders
+  at all, since "unavailable" would not be a claim the backend data
+  actually supports.
+- **The caption below the map is reworded** to stop describing a dashed
+  connector that no longer exists: it now states plainly that numbered
+  markers show stop order only and are never route geometry, and that
+  solid green segments are the only line ever drawn, only for a leg
+  where the backend has one.
+- **Marker numbering (Step 172B), the per-day route-order caption (Step
+  172C), movement rows (Step 172D), and the AI-promoted badge (Section
+  170) are all completely unchanged** -- none of them read the map's own
+  polyline layer, and this step touches no itinerary ordering, no
+  scheduling, and no other component.
+- **Verified via `npm run lint`/`npm run build`** (this repo has no
+  frontend test framework) plus source inspection confirming no
+  straight-line polyline of any kind remains in `DayMapPreview` and that
+  every legend/caption string avoids overclaiming wording.
+
+### 39.26 Map Viewport/Path Rendering Polish and Route Geometry Safety (Step 173D)
+
+Step 173D hardens `DayMapPreview`'s viewport and geometry handling so a
+malformed or old persisted record can never distort or crash the map,
+and so a multi-leg day renders every leg it safely can.
+
+- **New shared helper `isValidGeoCoordinate(lat, lon)`** (`frontend/app/page.tsx`)
+  checks both finiteness (rejects `NaN`/`Infinity`) and the same in-range
+  bounds the backend's own `GeoPoint`/`RoutePathPoint` models enforce
+  (`lat` in [-90, 90], `lon` in [-180, 180]). Backend validation already
+  rejects an out-of-range coordinate at write time, but this is an
+  independent read-side guard against a pre-existing or hand-edited local
+  JSON record that predates that validation.
+- **`drawableRouteGeometry` (Step 173B) now also rejects out-of-range
+  lat/lon**, on top of its existing null/length/finiteness checks -- a
+  single invalid point anywhere in a leg's `route_geometry` still
+  discards that leg's whole path rather than drawing a partial one, and
+  still never triggers a straight-line or coordinate-inferred
+  substitute.
+- **"Coordinate-backed" now means valid, not just non-null**, for stop
+  markers too: the day's marker count, the marker list, and the
+  fit-bounds point list all filter through `isValidGeoCoordinate`
+  together, so they can never disagree (which previously could have left
+  the map container rendered with zero valid points to fit bounds
+  around, had a persisted coordinate ever been malformed).
+- **Map bounds include every valid stop coordinate plus every valid,
+  drawn leg's route geometry points** -- unchanged in shape from Step
+  173B, now built from the same validated point sets described above.
+- **Partial path coverage is allowed and honest**: each leg is evaluated
+  independently in the drawing loop, so on a multi-leg day one leg with
+  missing/invalid geometry does not stop another leg's valid,
+  provider-backed geometry from drawing. A leg without a drawable path
+  still gets no fallback line of any kind -- markers only for that leg,
+  exactly as Step 173C established.
+- **Legend behavior (Step 173C) is unchanged**: "Provider-backed route
+  path" when at least one leg draws, "Route path unavailable" only when
+  real backend movement/route status data exists for the day without a
+  drawable path, no legend line for an old trip with no travel-time
+  buffer report at all.
+- **Verified via `npm run lint`/`npm run build`** plus source inspection
+  confirming: no code path can call `L.marker`/`L.polyline`/
+  `L.latLngBounds` with a non-finite or out-of-range coordinate; no
+  geometry is ever created, interpolated, or repaired from stop
+  coordinates; no distance/duration is computed client-side; and marker
+  numbering (172B), route-aware captions (172C), movement rows (172D),
+  and the AI-promoted badge (Section 170) remain untouched.
+
+### 39.27 Section 173 Complete: Full Map Path Visualization, Final Frontend Summary (Step 173E, final Section 173 step)
+
+Step 173E is a review-and-polish step; no behavior changed from Step
+173D. It re-confirmed, by direct source inspection of
+`frontend/app/page.tsx`, every safety property Section 173 set out to
+establish:
+
+- **Exactly one `L.polyline` call exists in `DayMapPreview`**, and it is
+  gated entirely by `drawableRouteGeometry` (real backend
+  `route_geometry`, `status === "success"`, at least two points, every
+  point finite and in-range). No marker-coordinate fallback polyline
+  exists anywhere in the file.
+- **No `.sort()`/`.reverse()`/haversine/distance-from-coordinates logic
+  and no hardcoded travel duration/distance value** exists anywhere in
+  the map, movement-row, or legend code. The only mention of
+  "haversine" in the file is a comment stating what a nearby unit
+  converter (`formatDistanceMeters`) explicitly does *not* do.
+- **Map bounds are built only from valid stop coordinates and valid
+  route geometry points** (`isValidGeoCoordinate`, Step 173D), so
+  malformed data can never reach Leaflet or leave the bounds computation
+  empty.
+- **Partial path coverage across a multi-leg day is honest and
+  independent per leg** -- a day can show a real path on some legs and
+  markers-only on others, decided leg by leg, matching exactly what the
+  backend's per-leg `route_geometry` optionality (docs/14_backend_architecture.md
+  section 76) allows.
+- **Legend wording stays restrained**: only "Provider-backed route path"
+  and "Route path unavailable" are ever rendered by
+  `routePathLegendLabel`, gated so "unavailable" is never claimed
+  without real backend movement/route status data behind it. Neither
+  string, nor anything else in the map/legend/caption text, makes any
+  claim of speed, safety, independent confirmation, official status,
+  certainty, reservation status, or readiness for booking.
+- **Movement rows (172D), numbered markers (172B, `stop_order ?? index +
+  1`), route-aware captions (172C), and the AI-promoted badge (Section
+  170) are all confirmed unchanged** -- none of them read the map's own
+  polyline/legend layer.
+
+Section 173, end to end: `route_geometry` is real, provider-backed data
+only, drawn only where it exists, never inferred, never faked, and
+never confused with the plain numbered stop markers that exist
+regardless of whether any path does.

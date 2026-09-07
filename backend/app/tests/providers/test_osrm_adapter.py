@@ -80,18 +80,27 @@ def _settings_with_base_url(monkeypatch: pytest.MonkeyPatch, **overrides: Any) -
     return Settings(**fields)
 
 
-def _osrm_success_payload(distance: float = 1234.5, duration: float = 321.0) -> dict[str, Any]:
+def _osrm_success_payload(
+    distance: float = 1234.5,
+    duration: float = 321.0,
+    geometry: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    route: dict[str, Any] = {
+        "distance": distance,
+        "duration": duration,
+        "legs": [],
+    }
+    if geometry is not None:
+        route["geometry"] = geometry
     return {
         "code": "Ok",
-        "routes": [
-            {
-                "distance": distance,
-                "duration": duration,
-                "legs": [],
-            }
-        ],
+        "routes": [route],
         "waypoints": [],
     }
+
+
+def _geojson_linestring(*lon_lat_pairs: tuple[float, float]) -> dict[str, Any]:
+    return {"type": "LineString", "coordinates": [list(pair) for pair in lon_lat_pairs]}
 
 
 def _default_query_hash(**overrides: Any) -> str:
@@ -168,6 +177,218 @@ def test_successful_response_uses_first_route_only(monkeypatch: pytest.MonkeyPat
 
     assert result.distance_meters == pytest.approx(1000.0)
     assert result.duration_seconds == pytest.approx(100.0)
+
+
+# ---------------------------------------------------------------------------
+# Step 173A: OSRM adapter requests and parses real, provider-backed route
+# path geometry -- never invents one, never falls back to a straight
+# line, and only ever exposes it on a genuinely successful route.
+# ---------------------------------------------------------------------------
+
+
+def test_request_asks_osrm_for_full_geojson_geometry(monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = _settings_with_base_url(monkeypatch)
+    monkeypatch.setattr(osrm_adapter, "get_settings", lambda: settings)
+    captured_params: list[dict[str, Any] | None] = []
+
+    class _CapturingClient(_FakeClient):
+        def get(self, url: str, params: dict[str, Any] | None = None) -> _FakeResponse:
+            captured_params.append(params)
+            return super().get(url, params)
+
+    fake_client = _CapturingClient(_FakeResponse(json_data=_osrm_success_payload()))
+    monkeypatch.setattr(osrm_adapter.httpx, "Client", lambda **kwargs: fake_client)
+
+    adapter = OSRMRoutingAdapter()
+    adapter.get_route(_request())
+
+    assert captured_params == [{"overview": "full", "geometries": "geojson"}]
+
+
+def test_successful_response_with_geometry_parses_ordered_points(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _settings_with_base_url(monkeypatch)
+    monkeypatch.setattr(osrm_adapter, "get_settings", lambda: settings)
+    geometry = _geojson_linestring((-9.1393, 38.7223), (-9.1396, 38.72), (-9.1399, 38.7169))
+    _install_fake_client(
+        monkeypatch,
+        _FakeResponse(json_data=_osrm_success_payload(1234.5, 321.0, geometry=geometry)),
+    )
+
+    adapter = OSRMRoutingAdapter()
+    result = adapter.get_route(_request())
+
+    assert result.status == ProviderStatus.SUCCESS
+    assert result.geometry is not None
+    assert len(result.geometry) == 3
+    # Every point is a direct, unreordered read of the provider's own
+    # [lon, lat] pairs -- never inferred from the request's own
+    # origin/destination coordinates.
+    assert result.geometry[0].lat == pytest.approx(38.7223)
+    assert result.geometry[0].lon == pytest.approx(-9.1393)
+    assert result.geometry[-1].lat == pytest.approx(38.7169)
+    assert result.geometry[-1].lon == pytest.approx(-9.1399)
+
+
+def test_successful_response_without_geometry_key_leaves_geometry_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A route can succeed on distance/duration even when the response
+    has no `geometry` key at all -- this must never be treated as a
+    reason to fail the whole route, and must never be backfilled with a
+    straight line."""
+    settings = _settings_with_base_url(monkeypatch)
+    monkeypatch.setattr(osrm_adapter, "get_settings", lambda: settings)
+    _install_fake_client(
+        monkeypatch, _FakeResponse(json_data=_osrm_success_payload(1234.5, 321.0))
+    )
+
+    adapter = OSRMRoutingAdapter()
+    result = adapter.get_route(_request())
+
+    assert result.status == ProviderStatus.SUCCESS
+    assert result.geometry is None
+
+
+@pytest.mark.parametrize(
+    "malformed_geometry",
+    [
+        {"type": "Point", "coordinates": [-9.1393, 38.7223]},
+        {"type": "LineString", "coordinates": []},
+        {"type": "LineString", "coordinates": "not-a-list"},
+        {"type": "LineString", "coordinates": [[-9.1393]]},
+        {"type": "LineString", "coordinates": [["not-a-number", 38.7223]]},
+        {"type": "LineString", "coordinates": [[-9.1393, 999.0]]},
+        "not-a-dict",
+        None,
+    ],
+)
+def test_malformed_or_out_of_range_geometry_leaves_geometry_none_without_failing_route(
+    monkeypatch: pytest.MonkeyPatch, malformed_geometry: Any
+) -> None:
+    settings = _settings_with_base_url(monkeypatch)
+    monkeypatch.setattr(osrm_adapter, "get_settings", lambda: settings)
+    payload = _osrm_success_payload(1234.5, 321.0)
+    payload["routes"][0]["geometry"] = malformed_geometry
+    _install_fake_client(monkeypatch, _FakeResponse(json_data=payload))
+
+    adapter = OSRMRoutingAdapter()
+    result = adapter.get_route(_request())
+
+    # Distance/duration are unaffected by a geometry-parsing problem.
+    assert result.status == ProviderStatus.SUCCESS
+    assert result.distance_meters == pytest.approx(1234.5)
+    assert result.geometry is None
+
+
+@pytest.mark.parametrize(
+    "response_json",
+    [
+        {"code": "NoRoute", "routes": []},
+        {"code": "Ok", "routes": [{"distance": None, "duration": None}]},
+    ],
+)
+def test_unavailable_route_never_produces_geometry(
+    monkeypatch: pytest.MonkeyPatch, response_json: dict[str, Any]
+) -> None:
+    settings = _settings_with_base_url(monkeypatch)
+    monkeypatch.setattr(osrm_adapter, "get_settings", lambda: settings)
+    _install_fake_client(monkeypatch, _FakeResponse(json_data=response_json))
+
+    adapter = OSRMRoutingAdapter()
+    result = adapter.get_route(_request())
+
+    assert result.status == ProviderStatus.UNAVAILABLE
+    assert result.geometry is None
+
+
+def test_not_connected_route_never_produces_geometry(monkeypatch: pytest.MonkeyPatch) -> None:
+    disabled_settings = Settings(_env_file=None, osrm_base_url=None)
+    monkeypatch.setattr(osrm_adapter, "get_settings", lambda: disabled_settings)
+
+    adapter = OSRMRoutingAdapter()
+    result = adapter.get_route(_request())
+
+    assert result.status == ProviderStatus.NOT_CONNECTED
+    assert result.geometry is None
+
+
+def test_failed_route_never_produces_geometry(monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = _settings_with_base_url(monkeypatch)
+    monkeypatch.setattr(osrm_adapter, "get_settings", lambda: settings)
+    _install_fake_client(monkeypatch, _FakeResponse(should_fail=True))
+
+    adapter = OSRMRoutingAdapter()
+    result = adapter.get_route(_request())
+
+    assert result.status == ProviderStatus.FAILED
+    assert result.geometry is None
+
+
+def test_geometry_round_trips_through_the_route_cache(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    settings = _settings_with_base_url(monkeypatch)
+    monkeypatch.setattr(osrm_adapter, "get_settings", lambda: settings)
+    geometry = _geojson_linestring((-9.1393, 38.7223), (-9.1399, 38.7169))
+    _install_fake_client(
+        monkeypatch,
+        _FakeResponse(json_data=_osrm_success_payload(1234.5, 321.0, geometry=geometry)),
+    )
+    cache_store = ProviderCacheStore(tmp_path / "cache.sqlite3")
+    adapter = OSRMRoutingAdapter(cache_store=cache_store)
+
+    live_result = adapter.get_route(_request())
+    assert live_result.geometry is not None
+
+    # Cache metadata never carries anything beyond this route's own
+    # already-normalized geometry -- never a raw provider payload or an
+    # unrelated field.
+    entry = cache_store.get(_ROUTE_CACHE_SOURCE, _default_query_hash())
+    assert entry is not None
+    assert entry.payload["geometry"] == [
+        {"lat": pytest.approx(38.7223), "lon": pytest.approx(-9.1393)},
+        {"lat": pytest.approx(38.7169), "lon": pytest.approx(-9.1399)},
+    ]
+
+    cached_result = adapter.get_route(_request())
+    assert cached_result.geometry is not None
+    assert [point.model_dump() for point in cached_result.geometry] == [
+        point.model_dump() for point in live_result.geometry
+    ]
+
+
+def test_corrupted_cached_geometry_falls_back_to_live_request(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    settings = _settings_with_base_url(monkeypatch)
+    monkeypatch.setattr(osrm_adapter, "get_settings", lambda: settings)
+    cache_store = ProviderCacheStore(tmp_path / "cache.sqlite3")
+    cache_store.set(
+        _ROUTE_CACHE_SOURCE,
+        _default_query_hash(),
+        {
+            "distance_meters": 1.0,
+            "duration_seconds": 1.0,
+            "geometry": "not-a-list-of-points",
+            "confidence": 0.6,
+        },
+        ttl_seconds=86400,
+    )
+    fake_client = _install_fake_client(
+        monkeypatch, _FakeResponse(json_data=_osrm_success_payload(2000.0, 200.0))
+    )
+
+    adapter = OSRMRoutingAdapter(cache_store=cache_store)
+    result = adapter.get_route(_request())
+
+    # The unusable cache entry is never trusted or fabricated around --
+    # it just falls back to a fresh live request, exactly like any other
+    # broken cache entry.
+    assert fake_client.get_call_count == 1
+    assert result.status == ProviderStatus.SUCCESS
+    assert result.distance_meters == pytest.approx(2000.0)
 
 
 # ---------------------------------------------------------------------------

@@ -480,6 +480,18 @@ export type RouteFeasibilityReport = {
   status: string;
 };
 
+// One ordered point along a provider-backed route's real path geometry
+// (Step 173A; backend: app.models.routing.RoutePathPoint). Every point
+// is copied verbatim from a routing provider's own response -- never
+// interpolated, simplified beyond what the provider itself already did,
+// or synthesized from an origin/destination pair. Not yet drawn on any
+// map -- that is a later Section 173 step; this type exists only so the
+// shape stays in sync with the backend response ahead of that work.
+export type RoutePathPoint = {
+  lat: number;
+  lon: number;
+};
+
 // Travel-time/movement data between two consecutive scheduled experiences
 // within the same day (Step 166C; backend: app.models.routing.
 // TravelTimeBuffer, one entry per PlanningState.travel_time_buffer_report.
@@ -490,7 +502,10 @@ export type RouteFeasibilityReport = {
 // either in when the backend left them `null`. The backend does not
 // record a travel mode (walking/driving/transit) per leg at all, so Step
 // 172D never renders one -- this is an absent field, not an omitted
-// one.
+// one. `route_geometry` (Step 173A) is `null` unless the routing
+// provider's own result carried real path geometry for this exact leg --
+// present here only as a type mirror; no frontend code reads or draws it
+// yet (full map path visualization is a later Section 173 step).
 export type TravelTimeBuffer = {
   from_experience_id: string;
   to_experience_id: string;
@@ -498,6 +513,7 @@ export type TravelTimeBuffer = {
   status: string;
   route_duration_seconds: number | null;
   route_distance_meters: number | null;
+  route_geometry: RoutePathPoint[] | null;
 };
 
 // Plan-level travel-time buffer report across every scheduled day (Step

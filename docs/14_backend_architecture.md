@@ -3148,3 +3148,152 @@ backend behavior, all confirmed still passing by the full test suite:
   Section 172 only ever added new orchestration-adjacent metadata
   (order stamping) and a config default flip, never new scheduling,
   regeneration, or provider logic.
+
+## 72. Route Geometry Contract (Step 173A)
+
+**Step 173A adds a route path geometry contract to the routing
+subsystem** (`backend/app/models/routing.py`,
+`backend/app/providers/routing/osrm_adapter.py`,
+`backend/app/services/route_feasibility_service.py`,
+`backend/app/services/travel_time_buffer_service.py`), so a later
+Section 173 step can draw real itinerary paths on the map. This step
+adds the contract only -- no scheduling, route-aware sequencing, or
+LangGraph behavior changed.
+
+- **New model: `RoutePathPoint`** (`lat`/`lon`, bounds matching
+  `GeoPoint`) -- one ordered point along a provider-backed route's real
+  path.
+- **`RouteResult.geometry` changes type** from the unused `str | None`
+  placeholder (Step 165A) to `list[RoutePathPoint] | None`. Nothing in
+  this codebase read the old placeholder besides `OSRMRoutingAdapter`'s
+  own cache round-trip, so this is a safe, backward-compatible change --
+  `RouteResult` itself is never persisted in `PlanningState` or exposed
+  through any API response directly.
+- **`OSRMRoutingAdapter` now requests and parses real geometry.** The
+  OSRM request changed from `overview=false` to
+  `overview=full&geometries=geojson`; a successful route's response
+  `geometry.coordinates` (a GeoJSON `LineString`, `[lon, lat]` pairs) is
+  parsed into an ordered `RoutePathPoint` list via
+  `_parse_geojson_linestring` -- malformed, empty, or missing geometry
+  leaves `geometry=None` without failing the route's own
+  distance/duration. `NotConnectedRoutingProvider` and every
+  `not_connected`/`unavailable`/`failed` `RouteResult` constructor call
+  already default `geometry` to `None`, unchanged.
+- **Optional, nullable fields added to the two existing per-leg
+  reports** (never a new report type, matching this codebase's existing
+  architecture): `RouteLegFeasibility.route_geometry` and
+  `TravelTimeBuffer.route_geometry` -- both `list[RoutePathPoint] |
+  None`, both already carrying `from_experience_id`/`to_experience_id`
+  so a future frontend step can locate a specific leg's path by backend
+  ID rather than computing one itself.
+  `RouteFeasibilityService`/`TravelTimeBufferService` copy
+  `RouteResult.geometry` onto these fields verbatim -- no service logic,
+  ordering, or aggregation status computation changed.
+- **Backward compatible by construction.** `route_geometry` (and
+  `RouteResult.geometry`'s new type) default to `None`; a `PlanningState`
+  persisted before this step -- or even before Step 172A/166C entirely --
+  still loads through `PlanningState.model_validate` with every new/
+  changed field honestly absent, confirmed by new tests in
+  `backend/app/tests/models/test_planning_state_backward_compatibility.py`
+  and `test_route_geometry_models.py`.
+- **Provider cache stays safe.** `OSRMRoutingAdapter`'s route cache
+  entry now includes the same normalized `RoutePathPoint` list already
+  on the `RouteResult` being cached (serialized via `model_dump(mode=
+  "json")`, reconstructed via `RoutePathPoint(**point)` on read) --
+  never a raw OSRM payload, never anything beyond this one route's own
+  data. A malformed/corrupted cached geometry entry falls back to a
+  live request exactly like any other broken cache entry, never
+  fabricating a replacement.
+- **No new API route or response schema was needed.**
+  `GET /trips/{trip_id}`/`POST /trips/{trip_id}/generate` already
+  serialize the full `PlanningState`, so `route_geometry` is already on
+  the wire the moment a route succeeds with real geometry -- only
+  `frontend/lib/types.ts` gained a matching, currently-unused type
+  (`RoutePathPoint`, plus `TravelTimeBuffer.route_geometry`) for forward
+  compatibility; no frontend rendering changed.
+
+## 73. Frontend Route Path Rendering (Step 173B)
+
+Step 173B is the first step that actually renders Section 173's
+`route_geometry` contract: `frontend/app/page.tsx`'s `DayMapPreview`
+reads `PlanningState.travel_time_buffer_report.buffers` (Step 166C) and
+draws each leg's `route_geometry` (Step 173A) as a real map path only
+when that leg's buffer entry has `status === "success"` and at least two
+geometry points. No backend file changed -- `route_geometry` was already
+serialized on the wire since Step 173A; this step only consumes it. See
+docs/16_frontend_architecture.md section 39.24 for the full rendering
+behavior.
+
+## 74. Frontend Route Path Legend Hardening (Step 173C)
+
+Step 173C is frontend-only; no backend file changed. It confirms and
+hardens the consumption side of the Step 173A contract: `route_geometry`
+on a `TravelTimeBuffer` remains the *only* source the frontend treats as
+a drawable route path. `DayMapPreview` no longer draws any fallback line
+between stop markers when a leg lacks that data -- the frontend never
+substitutes a straight line between two stops' own coordinates, and
+never computes or infers a path, distance, or duration itself. See
+docs/16_frontend_architecture.md section 39.25 for the full rendering
+and legend behavior.
+
+## 75. Frontend Route Geometry Is Optional Per Leg (Step 173D)
+
+Step 173D is frontend-only; no backend file changed. It notes explicitly
+what was already implicit in the Step 173A contract: `route_geometry` is
+optional per leg, not per day or per plan, so the frontend may render
+partial path coverage -- a day with several legs can show a
+provider-backed path on some legs and none on others, decided
+independently per leg. The frontend also now applies its own read-side
+coordinate-validity check (finite, in-range lat/lon, matching the bounds
+`GeoPoint`/`RoutePathPoint` already enforce at write time) before
+drawing any point, as a defensive guard against a pre-existing or
+hand-edited local JSON record. See docs/16_frontend_architecture.md
+section 39.26 for the full behavior.
+
+## 76. Section 173 Complete: Full Map Path Visualization (Step 173E, final Section 173 step)
+
+Section 173 (173A-173E) is complete. No backend file changed in 173E --
+this step was a final review confirming the contract built across
+173A-173D is coherent, safe, and matches what the frontend actually
+consumes. Full contract, for reference:
+
+- **`route_geometry` source of truth**: `RoutePathPoint` (`lat`/`lon`,
+  bounds matching `GeoPoint`: `lat` in [-90, 90], `lon` in [-180, 180]),
+  populated only on `RouteResult.geometry` by `OSRMRoutingAdapter` when a
+  route request succeeds and OSRM's own GeoJSON response
+  (`overview=full&geometries=geojson`) included a `LineString` geometry.
+  Never populated for `not_connected`/`unavailable`/`failed`, never
+  derived from `RouteRequest.origin_*`/`destination_*`, never a straight
+  line.
+- **Propagation**: `RouteFeasibilityService`/`TravelTimeBufferService`
+  copy `RouteResult.geometry` verbatim onto
+  `RouteLegFeasibility.route_geometry`/`TravelTimeBuffer.route_geometry`
+  -- both `list[RoutePathPoint] | None`, optional per leg (a day's legs
+  can have a mix of present/absent geometry; no aggregation or
+  all-or-nothing behavior at the day or plan level).
+- **Cache behavior**: `OSRMRoutingAdapter`'s route cache stores the same
+  normalized `RoutePathPoint` list already on the cached `RouteResult`
+  (via `model_dump(mode="json")`/`RoutePathPoint(**point)`), never a raw
+  provider payload; a corrupted cache entry falls back to a live request
+  like any other broken cache entry, never fabricating a replacement.
+- **Backward compatibility**: `route_geometry` defaults to `None`
+  everywhere it appears, so a `PlanningState` persisted before Step 173A
+  (or before Step 172A/166C entirely) still loads cleanly with the field
+  honestly absent -- covered by
+  `test_planning_state_backward_compatibility.py` and
+  `test_route_geometry_models.py`.
+- **Frontend consumption** (docs/16_frontend_architecture.md sections
+  39.24-39.26 for full detail): the frontend reads
+  `route_geometry` only from `PlanningState.travel_time_buffer_report.
+  buffers`, draws a leg's path only when that leg's `status ===
+  "success"` and `route_geometry` has at least two valid (finite,
+  in-range) points, and never falls back to a straight line or a
+  frontend-computed path/distance/duration for any leg without one.
+- **No API/schema addition needed**: `GET /trips/{trip_id}`/
+  `POST /trips/{trip_id}/generate` already serialize the full
+  `PlanningState`, so this entire contract has been on the wire since
+  Step 173A.
+
+No scheduling, route-aware sequencing, LangGraph, regeneration, or
+accommodation/flight provider behavior changed anywhere across Section
+173.

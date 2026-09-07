@@ -148,6 +148,22 @@ class RouteRequest(BaseModel):
     profile: RoutingProfile = RoutingProfile.DRIVING
 
 
+class RoutePathPoint(BaseModel):
+    """One ordered point along a provider-backed route's real path
+    geometry (Step 173A, docs/13_llm_reasoning_pipeline.md,
+    docs/14_backend_architecture.md). Coordinate bounds match `GeoPoint`.
+
+    Every `RoutePathPoint` is copied verbatim from a routing provider's
+    own geometry payload -- never interpolated, simplified beyond what
+    the provider itself already did, or synthesized from an origin/
+    destination pair. A straight line between two stops is never
+    represented as a `RoutePathPoint` sequence.
+    """
+
+    lat: float = Field(ge=-90.0, le=90.0)
+    lon: float = Field(ge=-180.0, le=180.0)
+
+
 class RouteResult(BaseModel):
     """Normalized point-to-point route result returned by a
     `RoutingProvider` adapter (Step 165A).
@@ -157,16 +173,23 @@ class RouteResult(BaseModel):
     didn't supply a usable route -- never a guessed, estimated, or
     haversine-derived value (straight-line distance is a different concept
     entirely; see `app.utils.geo.haversine_distance_km`, which is not a
-    route and is never substituted here). `geometry` is not populated by
-    this step's adapter -- it exists as a placeholder for a future step
-    that parses OSRM's route geometry.
+    route and is never substituted here).
+
+    `geometry` (Step 173A) is `None` whenever `status != success`, or when
+    the provider's own response didn't include a usable path -- an
+    `OSRMRoutingAdapter` is never expected to invent one, and no other
+    adapter in this codebase currently populates it either. When present,
+    it is the real, ordered sequence of `RoutePathPoint`s the provider
+    itself returned for this exact route -- never a straight line between
+    `RouteRequest.origin_*`/`destination_*`, and never derived from
+    those coordinates by this app.
     """
 
     provider: str
     status: ProviderStatus
     distance_meters: float | None = None
     duration_seconds: float | None = None
-    geometry: str | None = None
+    geometry: list[RoutePathPoint] | None = None
     source: str
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
     message: str | None = None
@@ -231,6 +254,16 @@ class RouteLegFeasibility(BaseModel):
     # setting this explicitly (e.g. in an older test fixture) is never
     # mistaken for `provider_backed`.
     movement_data_provenance: MovementDataProvenance = MovementDataProvenance.UNAVAILABLE
+    # Step 173A: real, provider-backed route path geometry for this exact
+    # leg -- a full map path visualization contract only, not drawn by
+    # any frontend yet (Section 173 continues that work). `None` unless
+    # `status == ProviderStatus.SUCCESS` *and* the routing provider's own
+    # `RouteResult.geometry` was populated; copied verbatim from there,
+    # never re-derived from `from_lat`/`from_lon`/`to_lat`/`to_lon`, and
+    # never a straight line between them. Backward compatible: an older
+    # `RouteLegFeasibility` persisted before this step simply has this
+    # field default to `None` on load.
+    route_geometry: list[RoutePathPoint] | None = None
 
 
 class RouteFeasibilityReport(BaseModel):
@@ -486,6 +519,15 @@ class TravelTimeBuffer(BaseModel):
     # `MovementDataProvenance`'s own docstring. Computed alongside
     # `status`/`buffer_status`, never replacing either.
     movement_data_provenance: MovementDataProvenance = MovementDataProvenance.UNAVAILABLE
+    # Step 173A: real, provider-backed route path geometry for this exact
+    # leg -- see `RouteLegFeasibility.route_geometry`'s docstring for the
+    # full contract (same rules apply here: `None` unless `status ==
+    # TravelTimeBufferStatus.SUCCESS` and the routing provider's own
+    # `RouteResult.geometry` was populated, copied verbatim, never
+    # re-derived or straight-lined). Backward compatible: an older
+    # `TravelTimeBuffer` persisted before this step simply has this field
+    # default to `None` on load.
+    route_geometry: list[RoutePathPoint] | None = None
 
 
 class TravelTimeBufferReport(BaseModel):

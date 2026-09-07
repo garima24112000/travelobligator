@@ -4064,3 +4064,113 @@ behavior:
   `True`), which does not by itself call a provider or fabricate
   anything -- it only lets the pre-existing, safety-gated
   `apply_report` run by default.
+
+## 95. Route Geometry Contract for Full Map Path Visualization (Step 173A)
+
+Step 173A adds a provider-backed route path geometry contract --
+`RoutePathPoint` and a `route_geometry: list[RoutePathPoint] | None` field
+on `RouteResult`, `RouteLegFeasibility`, and `TravelTimeBuffer`
+(`backend/app/models/routing.py`) -- so a later Section 173 step can draw
+real itinerary paths on the map. This step creates the contract only:
+**no frontend path drawing was added.**
+
+- **Route geometry is provider-backed routing data, not AI-generated
+  path data.** `OSRMRoutingAdapter` (Step 165A, extended here) is the
+  only place geometry is ever populated: it now requests
+  `overview=full&geometries=geojson` from OSRM, and only when a route
+  genuinely succeeds does it parse the response's own `geometry.
+  coordinates` array into an ordered `RoutePathPoint` list -- every point
+  is copied verbatim from the provider's response, never interpolated,
+  simplified beyond what OSRM itself already did, or synthesized from
+  the request's origin/destination coordinates. No LLM, AI reasoning, or
+  heuristic ever contributes a single point.
+- **Missing geometry remains unavailable/null, never a straight line.**
+  `geometry`/`route_geometry` is `None` whenever: the routing provider is
+  `not_connected`, the route itself is `unavailable`/`failed`/`partial`,
+  one or both stops are missing coordinates, or the provider's response
+  simply didn't include usable geometry (even on an otherwise-successful
+  route) -- in every one of these cases the field is honestly `None`,
+  and this codebase's long-standing rule against ever substituting a
+  straight-line (haversine) estimate for a real route applies to path
+  geometry exactly as it already applied to distance/duration.
+- **Exposed through the existing leg-level reports, not a new
+  endpoint.** `RouteFeasibilityService`/`TravelTimeBufferService` (Step
+  165E/166C) copy `RouteResult.geometry` straight onto
+  `RouteLegFeasibility.route_geometry`/`TravelTimeBuffer.route_geometry`
+  -- both models already carry `from_experience_id`/`to_experience_id`,
+  so a future frontend step can locate the path between any two stops by
+  backend ID, never by computing it itself. `GET /trips/{trip_id}`
+  already serializes the whole `PlanningState`, so no new API route or
+  response schema was needed.
+
+## 96. Map Paths Are Deterministic Rendering of Provider-Backed Route Geometry (Step 173B)
+
+Step 173B's day-map route paths are, like Steps 172B-172D's numbering and
+movement transparency before them, deterministic UI rendering of an
+already-computed backend value -- never an AI-generated route. The
+frontend's `drawableRouteGeometry` (`frontend/app/page.tsx`) only checks
+existing backend fields (`status`, `route_geometry` presence/length) and
+draws exactly the points the routing provider returned; it performs no
+route computation, no distance/duration estimation, and no path
+inference from a leg's own stop coordinates. No LLM, provider, or
+network call is involved in deciding what to draw -- the frontend does
+not call any routing logic itself, it only reads the geometry the
+backend already decided existed (or didn't).
+
+## 97. Route Path Legend Wording Is Also Deterministic (Step 173C)
+
+Step 173C's route path legend (`routePathLegendLabel`,
+`frontend/app/page.tsx`) is the same kind of deterministic rendering as
+Step 173B's paths, not AI-generated route inference or commentary: it
+selects between two fixed, pre-written strings (or no legend at all)
+based only on the boolean results of `dayHasDrawableRouteGeometry` and
+`dayHasMovementStatusData`, both of which read only existing backend
+`TravelTimeBuffer` fields. Removing the old dashed marker-to-marker
+connector is likewise a static UI change with no reasoning step behind
+it -- no LLM, provider, or network call is involved.
+
+## 98. Map Bounds and Coordinate Validity Are Deterministic Transformations (Step 173D)
+
+Step 173D's viewport/bounds computation and its new `isValidGeoCoordinate`
+guard are deterministic UI transformations of backend-provided data, not
+AI route inference: `isValidGeoCoordinate` is a fixed numeric range/
+finiteness check with no model or heuristic behind it, and the
+fit-bounds computation is arithmetic over the exact points already read
+from `experience.coordinates` and `buffer.route_geometry` -- it never
+adds, removes, or moves a point to make bounds "look right." Partial
+path coverage across a multi-leg day is decided per leg by the same
+fixed `drawableRouteGeometry` check from Step 173B, not by any judgment
+call. No LLM, provider, or network call is involved.
+
+## 99. Section 173 Complete: Map Path Visualization Is Deterministic Rendering, Not AI Route Generation (Step 173E, final Section 173 step)
+
+Section 173 (173A-173E) adds full map path visualization end to end, and
+at every step the same rule holds: a drawn route path is a deterministic
+UI rendering of a routing provider's own geometry, never an AI-generated
+or AI-inferred route. No step in this section added an LLM call, a
+provider call, or a network call to decide what to draw. Concretely:
+
+- **173A** added the `route_geometry` data contract (backend models
+  only, nothing drawn yet).
+- **173B** drew it: `drawableRouteGeometry` (`frontend/app/page.tsx`)
+  gates a leg's path on backend-decided fields only (`status`,
+  `route_geometry` presence/length) and draws exactly the points the
+  routing provider returned.
+- **173C** removed the one place a viewer could have mistaken a
+  frontend visual convenience (the old dashed marker connector) for a
+  real route, and added a legend whose two possible strings are both
+  fixed, pre-written text selected by boolean backend-field checks.
+- **173D** hardened coordinate/geometry validity (`isValidGeoCoordinate`)
+  and the viewport bounds computation -- both fixed arithmetic/range
+  checks, not inference.
+- **173E** (this step) is a review step: it re-confirmed, by direct
+  source inspection, that no `.sort()`/`.reverse()`/haversine/distance
+  computation or hardcoded travel figure exists anywhere in the map
+  path/legend/movement-row code path, and that the single `L.polyline`
+  call left in `DayMapPreview` is gated by real, provider-backed
+  geometry with no fallback line of any kind.
+
+Final state: the frontend never computes, infers, or estimates a route,
+distance, or duration; it only ever renders what
+`ProviderGateway.get_route` (via `OSRMRoutingAdapter` when connected)
+already decided and the backend already serialized.

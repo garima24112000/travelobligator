@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timezone
 
+from app.models.common import ProviderStatus
 from app.models.planning_state import (
     DailyPlan,
     ExperienceItem,
@@ -10,21 +11,28 @@ from app.models.planning_state import (
     TravelGroupType,
     TripRequest,
 )
+from app.models.routing import (
+    RouteFeasibilityReport,
+    RouteFeasibilityStatus,
+    RouteLegFeasibility,
+)
 
 # Backward-compatibility model tests for Section 172 (Step 172E, final
-# Section 172 step). `PlanningStateRepository.__init__`
-# (backend/app/repositories/planning_state_repository.py) loads every
-# persisted trip via `PlanningState.model_validate(record)` -- the exact
-# call these tests exercise directly -- so a trip generated before Step
-# 172A (no `day_number`/`stop_order`/`route_aware_provenance` on any
+# Section 172 step) and Section 173 (Step 173A). `PlanningStateRepository.
+# __init__` (backend/app/repositories/planning_state_repository.py) loads
+# every persisted trip via `PlanningState.model_validate(record)` -- the
+# exact call these tests exercise directly -- so a trip generated before
+# Step 172A (no `day_number`/`stop_order`/`route_aware_provenance` on any
 # `ExperienceItem`, no `route_aware_sequencing_report`/
 # `route_feasibility_report`/`travel_time_buffer_report` on
-# `PlanningState`) must still load without raising, with every new field
-# honestly `None` rather than fabricated. This is what makes an old
-# persisted trip "old-trip-safe" for both the backend and, since the
-# frontend reads exactly these fields, for `frontend/lib/types.ts`'s
-# nullable typing too (docs/16_frontend_architecture.md sections
-# 39.18-39.21).
+# `PlanningState`) or before Step 173A (a `route_feasibility_report`/
+# `travel_time_buffer_report` that exists, but whose legs/buffers have no
+# `route_geometry` key at all) must still load without raising, with
+# every new field honestly `None` rather than fabricated. This is what
+# makes an old persisted trip "old-trip-safe" for both the backend and,
+# since the frontend reads exactly these fields, for `frontend/lib/
+# types.ts`'s nullable typing too (docs/16_frontend_architecture.md
+# sections 39.18-39.21).
 
 
 def _trip_request() -> TripRequest:
@@ -169,3 +177,70 @@ def test_planning_state_repository_style_load_of_mixed_old_and_new_trips(tmp_pat
     assert old_loaded.route_aware_sequencing_report is None
     assert old_loaded.route_feasibility_report is None
     assert old_loaded.travel_time_buffer_report is None
+
+
+# ---------------------------------------------------------------------------
+# Step 173A: a trip generated during Section 172 (after 166C/172A, but
+# before route geometry existed at all) has a real
+# route_feasibility_report/travel_time_buffer_report whose legs/buffers
+# simply have no `route_geometry` key -- this must load exactly like any
+# other backward-compatible field, defaulting to `None`.
+# ---------------------------------------------------------------------------
+
+
+def test_route_leg_feasibility_without_step_173a_geometry_key_defaults_to_none() -> None:
+    old_leg_record = {
+        "from_experience_id": "experience_a",
+        "from_experience_name": "A",
+        "to_experience_id": "experience_b",
+        "to_experience_name": "B",
+        "provider": "osrm",
+        "status": ProviderStatus.SUCCESS.value,
+        "distance_meters": 1500.0,
+        "duration_seconds": 900.0,
+        "feasibility_status": RouteFeasibilityStatus.FEASIBLE.value,
+    }
+
+    leg = RouteLegFeasibility.model_validate(old_leg_record)
+
+    assert leg.route_geometry is None
+    # Everything else on the leg survives untouched.
+    assert leg.distance_meters == 1500.0
+
+
+def test_planning_state_with_step_172_report_missing_step_173a_geometry_key() -> None:
+    """Simulates a `PlanningState` generated at the very end of Section
+    172 -- `route_feasibility_report` exists (Step 165E/172A) and has a
+    real leg, but that leg dict has no `route_geometry` key at all
+    (Step 173A didn't exist yet)."""
+    trip_request = _trip_request()
+    old_report_record = {
+        "status": ProviderStatus.SUCCESS.value,
+        "legs": [
+            {
+                "from_experience_id": "experience_a",
+                "from_experience_name": "A",
+                "to_experience_id": "experience_b",
+                "to_experience_name": "B",
+                "provider": "osrm",
+                "status": ProviderStatus.SUCCESS.value,
+                "distance_meters": 1500.0,
+                "duration_seconds": 900.0,
+                "feasibility_status": RouteFeasibilityStatus.FEASIBLE.value,
+            }
+        ],
+        "provider": "osrm",
+        "route_data_source": "osrm",
+    }
+    old_record = {
+        "trip_id": "trip_old_4",
+        "trip_request": trip_request.model_dump(mode="json"),
+        "route_feasibility_report": old_report_record,
+    }
+
+    planning_state = PlanningState.model_validate(old_record)
+
+    assert planning_state.route_feasibility_report is not None
+    assert planning_state.route_feasibility_report.legs[0].route_geometry is None
+    # Confirmed independently against the standalone model too.
+    assert RouteFeasibilityReport.model_validate(old_report_record).legs[0].route_geometry is None

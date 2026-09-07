@@ -54,6 +54,7 @@ import type {
   RouteAwareSequencingReport,
   RouteFeasibilityContext,
   RouteFeasibilityReport,
+  RoutePathPoint,
   ScrapedAccommodationProvenance,
   ScrapedFlightProvenance,
   StayAreaGuidance,
@@ -227,6 +228,130 @@ function findMovementBetweenStops(
  */
 function shouldRenderMovementRow(buffer: TravelTimeBuffer | null): buffer is TravelTimeBuffer {
   return buffer !== null;
+}
+
+/**
+ * Whether a raw (lat, lon) pair is safe to hand to Leaflet at all (Step
+ * 173D, docs/16_frontend_architecture.md) -- finite (rejects `NaN`/
+ * `Infinity`, which a malformed or hand-edited persisted record could
+ * carry) and within the same bounds the backend's own `GeoPoint`/
+ * `RoutePathPoint` models enforce (`lat` in [-90, 90], `lon` in
+ * [-180, 180]). Backend validation already rejects an out-of-range
+ * coordinate at write time, but this is a second, independent guard on
+ * the read side so a pre-existing/hand-edited local JSON record can
+ * never crash `L.marker`/`L.polyline`/`L.latLngBounds` or silently
+ * distort the map's fit-bounds computation.
+ */
+function isValidGeoCoordinate(lat: number, lon: number): boolean {
+  return (
+    Number.isFinite(lat) &&
+    Number.isFinite(lon) &&
+    lat >= -90 &&
+    lat <= 90 &&
+    lon >= -180 &&
+    lon <= 180
+  );
+}
+
+/**
+ * Extracts a leg's real, provider-backed route path points -- only when
+ * every one of these already-backend-decided conditions holds (Step
+ * 173B, docs/16_frontend_architecture.md): the leg has a matching
+ * `TravelTimeBuffer` entry, that buffer's `status === "success"` (never
+ * `not_connected`/`unavailable`/`failed`/`partial`), and its
+ * `route_geometry` is present with at least two points. Returns `null`
+ * otherwise -- the caller must render no path for that leg, never a
+ * straight line between the two stops' own coordinates as a substitute.
+ *
+ * Every returned point is copied verbatim from the backend; this
+ * function never creates, interpolates, or drops a point to "fix" a
+ * malformed one -- a single non-finite or out-of-range (Step 173D)
+ * lat/lon anywhere in the list discards the whole leg's path rather than
+ * drawing a partial/corrupted one.
+ */
+function drawableRouteGeometry(buffer: TravelTimeBuffer | null): RoutePathPoint[] | null {
+  if (!buffer || buffer.status !== "success" || buffer.route_geometry === null) {
+    return null;
+  }
+  const points = buffer.route_geometry;
+  if (points.length < 2) {
+    return null;
+  }
+  const allValid = points.every((point) => isValidGeoCoordinate(point.lat, point.lon));
+  return allValid ? points : null;
+}
+
+/**
+ * Whether at least one leg of this day already has a drawable,
+ * provider-backed route path (Step 173C, docs/16_frontend_architecture.md).
+ * Walks the same consecutive-pair indexing `DayMapPreview` itself uses so
+ * this can gate a day-level legend without duplicating the per-leg
+ * drawing loop's own gating logic.
+ */
+function dayHasDrawableRouteGeometry(
+  experiences: ExperienceItem[],
+  report: TravelTimeBufferReport | null,
+): boolean {
+  for (let index = 0; index < experiences.length - 1; index += 1) {
+    const buffer = findMovementBetweenStops(
+      experiences[index].experience_id,
+      experiences[index + 1].experience_id,
+      report,
+    );
+    if (drawableRouteGeometry(buffer) !== null) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Whether this day has any backend movement/route status data at all --
+ * i.e. at least one leg has a matching `TravelTimeBuffer` entry, whatever
+ * its status. Used only to decide whether an honest "Route path
+ * unavailable" legend line is backed by a real backend status rather than
+ * simply the absence of any report (e.g. an older trip persisted before
+ * Step 166C), which would make that wording unsupported.
+ */
+function dayHasMovementStatusData(
+  experiences: ExperienceItem[],
+  report: TravelTimeBufferReport | null,
+): boolean {
+  if (!report) return false;
+  for (let index = 0; index < experiences.length - 1; index += 1) {
+    const buffer = findMovementBetweenStops(
+      experiences[index].experience_id,
+      experiences[index + 1].experience_id,
+      report,
+    );
+    if (buffer !== null) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Small legend label for the day map (Step 173C). Returns
+ * "Provider-backed route path" only when this day actually has a drawn
+ * path; "Route path unavailable" only when no path is drawn but the
+ * backend still reports real movement/route status data for this day
+ * (so the claim is backed by an actual status, not just a missing
+ * report); `null` otherwise -- e.g. an older trip with no travel-time
+ * buffer report at all shows no legend, since "unavailable" would not be
+ * a claim the backend data actually supports.
+ */
+function routePathLegendLabel(
+  hasDrawablePath: boolean,
+  hasMovementStatusData: boolean,
+): string | null {
+  if (hasDrawablePath) {
+    return "Provider-backed route path";
+  }
+  if (hasMovementStatusData) {
+    return "Route path unavailable";
+  }
+  return null;
 }
 
 /** Rounds a real, provider-backed duration in seconds to whole minutes
@@ -913,20 +1038,69 @@ function RouteFeasibilitySection({
 
 /**
  * Small per-day map preview: numbered markers for this day's
- * coordinate-backed scheduled experiences (in existing itinerary order),
- * connected by a dotted straight-line polyline. This is not route
- * feasibility, walking distance, walking time, or route optimization --
- * see the caption rendered below the map for the exact wording. Leaflet is
- * loaded via dynamic import inside useEffect (never as a top-level runtime
- * import) so it never touches `window`/`document` during server rendering.
+ * coordinate-backed scheduled experiences (in existing itinerary order).
+ * Leaflet is loaded via dynamic import inside useEffect (never as a
+ * top-level runtime import) so it never touches `window`/`document`
+ * during server rendering.
+ *
+ * Step 173C removes the old dashed straight-line connector that used to
+ * join every marker regardless of route data: a line between dots reads
+ * as a path to a viewer no matter how the caption below the map words
+ * it, so a marker-only day now shows markers only -- no fallback line of
+ * any kind. The only line ever drawn is the solid green route path added
+ * in Step 173B, and only for a leg whose `travelTimeBufferReport` entry
+ * is real and provider-backed (`status === "success"` with a real
+ * `route_geometry` of at least two points) -- drawn from those exact
+ * backend-returned points, never inferred from the two stops' own
+ * coordinates. A leg without that data draws no path at all: the safer
+ * choice between "real path" and "markers only" is always markers only.
+ * A small legend line (`routePathLegendLabel`) states which of those two
+ * cases this day is in, and only claims "unavailable" when the backend
+ * actually reports movement/route status data to back that claim.
+ *
+ * Step 173D hardens the viewport/rendering side: "coordinate-backed"
+ * (for the marker count, the marker list, and the fit-bounds computation)
+ * now means a stop's coordinates are both present and pass
+ * `isValidGeoCoordinate` (finite, in-range lat/lon) -- not merely
+ * non-null -- so a malformed persisted coordinate can never reach
+ * Leaflet or leave the bounds computation with zero points. Each leg's
+ * route geometry is validated the same way (inside `drawableRouteGeometry`)
+ * before it is ever drawn or added to bounds. Every leg is evaluated
+ * independently: on a day with several legs, one leg's missing or
+ * invalid geometry never prevents another leg's valid, provider-backed
+ * path from drawing.
  */
-function DayMapPreview({ experiences }: { experiences: ExperienceItem[] }) {
+function DayMapPreview({
+  experiences,
+  travelTimeBufferReport,
+}: {
+  experiences: ExperienceItem[];
+  travelTimeBufferReport: TravelTimeBufferReport | null;
+}) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<Leaflet.Map | null>(null);
 
+  // Step 173D: "coordinate-backed" means the stop's own coordinates are
+  // both present and safe to plot -- not merely non-null. This keeps the
+  // marker count, the marker/bounds points below, and the early-return
+  // "no coordinate-backed places" message all agreeing on the same
+  // definition, so a malformed persisted coordinate can never leave the
+  // map container rendered with zero valid points to fit bounds around.
   const coordinateBackedCount = experiences.filter(
-    (experience) => experience.coordinates !== null,
+    (experience) =>
+      experience.coordinates !== null &&
+      isValidGeoCoordinate(experience.coordinates.lat, experience.coordinates.lng),
   ).length;
+
+  const hasDrawablePath = dayHasDrawableRouteGeometry(
+    experiences,
+    travelTimeBufferReport,
+  );
+  const hasMovementStatusData = dayHasMovementStatusData(
+    experiences,
+    travelTimeBufferReport,
+  );
+  const legendLabel = routePathLegendLabel(hasDrawablePath, hasMovementStatusData);
 
   useEffect(() => {
     if (coordinateBackedCount === 0 || !containerRef.current) {
@@ -957,13 +1131,22 @@ function DayMapPreview({ experiences }: { experiences: ExperienceItem[] }) {
       // renumbering of only the coordinate-backed ones, and never a
       // frontend-computed reordering -- e.g. if experience #2 has no
       // coordinates but #3 does, #3's marker still says "3" (or its own
-      // `stop_order`, if set).
+      // `stop_order`, if set). These markers show stop order only -- they
+      // are never route geometry and never imply a path exists between
+      // them.
       const points = experiences
         .map((experience, index) => ({
           experience,
           orderNumber: experience.stop_order ?? index + 1,
         }))
-        .filter((item) => item.experience.coordinates !== null);
+        .filter(
+          (item) =>
+            item.experience.coordinates !== null &&
+            isValidGeoCoordinate(
+              item.experience.coordinates.lat,
+              item.experience.coordinates.lng,
+            ),
+        );
 
       const latLngs: [number, number][] = points.map(({ experience }) => [
         experience.coordinates!.lat,
@@ -982,18 +1165,40 @@ function DayMapPreview({ experiences }: { experiences: ExperienceItem[] }) {
         }).addTo(map);
       }
 
-      if (latLngs.length > 1) {
-        L.polyline(latLngs, {
-          color: "#67e8f9",
-          weight: 2,
-          dashArray: "6, 6",
+      // Step 173C: no straight-line connector is drawn between markers
+      // any more, drawable or not -- the only line this map ever draws is
+      // the real, provider-backed route path below. A leg without one
+      // shows markers only (the safer of the two options), never a
+      // straight-line stand-in.
+      const boundsPoints: [number, number][] = [...latLngs];
+      for (let index = 0; index < experiences.length - 1; index += 1) {
+        const buffer = findMovementBetweenStops(
+          experiences[index].experience_id,
+          experiences[index + 1].experience_id,
+          travelTimeBufferReport,
+        );
+        const geometry = drawableRouteGeometry(buffer);
+        if (!geometry) {
+          continue;
+        }
+        const pathLatLngs: [number, number][] = geometry.map((point) => [
+          point.lat,
+          point.lon,
+        ]);
+        L.polyline(pathLatLngs, {
+          color: "#34d399",
+          weight: 4,
         }).addTo(map);
+        // Route geometry points are included in the fit-bounds
+        // computation (not just the two stop markers) so a real path
+        // that bows away from a straight line is never clipped.
+        boundsPoints.push(...pathLatLngs);
       }
 
-      if (latLngs.length === 1) {
-        map.setView(latLngs[0], 14);
+      if (boundsPoints.length === 1) {
+        map.setView(boundsPoints[0], 14);
       } else {
-        map.fitBounds(L.latLngBounds(latLngs), { padding: [24, 24] });
+        map.fitBounds(L.latLngBounds(boundsPoints), { padding: [24, 24] });
       }
     })();
 
@@ -1002,7 +1207,7 @@ function DayMapPreview({ experiences }: { experiences: ExperienceItem[] }) {
       mapRef.current?.remove();
       mapRef.current = null;
     };
-  }, [experiences, coordinateBackedCount]);
+  }, [experiences, travelTimeBufferReport, coordinateBackedCount]);
 
   if (coordinateBackedCount === 0) {
     return (
@@ -1018,10 +1223,20 @@ function DayMapPreview({ experiences }: { experiences: ExperienceItem[] }) {
         ref={containerRef}
         className="h-[260px] w-full overflow-hidden rounded-lg border border-white/10"
       />
-      <p className="mt-2 text-[11px] text-slate-500">
-        Map shows provider-backed scheduled place coordinates in itinerary
-        order. Dotted lines are visual straight-line connectors only, not
-        walking routes, travel-time estimates, or route optimization.
+      {legendLabel && (
+        <p
+          className={`mt-2 text-[11px] font-medium ${
+            hasDrawablePath ? "text-emerald-400" : "text-slate-500"
+          }`}
+        >
+          {legendLabel}
+        </p>
+      )}
+      <p className="mt-1 text-[11px] text-slate-500">
+        Numbered markers show this day&apos;s scheduled stop order only --
+        they are not route geometry. Solid green segments are a
+        provider-backed route path, shown only for a leg where the backend
+        has one; no line of any kind is drawn for any other leg.
       </p>
     </div>
   );
@@ -4592,7 +4807,10 @@ export default function Home() {
                         </p>
                       </>
                     )}
-                    <DayMapPreview experiences={day.experiences} />
+                    <DayMapPreview
+                      experiences={day.experiences}
+                      travelTimeBufferReport={result.travelTimeBufferReport}
+                    />
                     {day.restaurant_suggestions.length > 0 && (
                       <div className="mt-3">
                         <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">

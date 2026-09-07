@@ -4,7 +4,7 @@ import pytest
 from pydantic import ValidationError
 
 from app.models.common import ProviderStatus
-from app.models.routing import RouteRequest, RouteResult, RoutingProfile
+from app.models.routing import RoutePathPoint, RouteRequest, RouteResult, RoutingProfile
 from app.providers.gateway import ProviderGateway
 from app.providers.routing import NotConnectedRoutingProvider, RoutingProvider
 from app.providers.routing.factory import get_routing_provider
@@ -230,3 +230,31 @@ def test_repeated_default_calls_are_deterministic_and_never_fabricate() -> None:
     assert first.model_dump() == second.model_dump()
     assert first.distance_meters is None
     assert second.distance_meters is None
+
+
+# ---------------------------------------------------------------------------
+# Step 173A: the gateway preserves whatever route geometry the underlying
+# routing provider returned -- it never adds, drops, reorders, or
+# straight-line-substitutes it.
+# ---------------------------------------------------------------------------
+
+
+def test_gateway_preserves_provider_backed_route_geometry() -> None:
+    points = [RoutePathPoint(lat=38.7223, lon=-9.1393), RoutePathPoint(lat=38.7169, lon=-9.1399)]
+    fake_provider = _FakeRoutingProvider(
+        RouteResult(
+            provider="fake_routing_provider",
+            status=ProviderStatus.SUCCESS,
+            distance_meters=4200.0,
+            duration_seconds=600.0,
+            geometry=points,
+            source="fake_routing_provider",
+            confidence=0.9,
+            message="Fake route with geometry for test purposes only.",
+        )
+    )
+    gateway = ProviderGateway(routing=fake_provider)
+
+    result = gateway.get_route(_request())
+
+    assert result.geometry == points

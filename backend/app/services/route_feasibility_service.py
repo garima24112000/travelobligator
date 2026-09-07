@@ -219,6 +219,11 @@ class RouteFeasibilityService:
             feasibility_status=feasibility_status,
             message=message,
             movement_data_provenance=movement_data_provenance_from_status(result.status),
+            # Step 173A: copied verbatim from the routing provider's own
+            # result -- already `None` unless `result.status == success`
+            # and the provider itself returned usable geometry, so no
+            # extra condition is needed here.
+            route_geometry=result.geometry,
         )
 
 

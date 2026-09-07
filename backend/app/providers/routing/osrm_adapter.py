@@ -7,7 +7,7 @@ import httpx
 
 from app.core.config import get_settings
 from app.models.common import ProviderStatus
-from app.models.routing import RouteRequest, RouteResult
+from app.models.routing import RoutePathPoint, RouteRequest, RouteResult
 from app.providers.routing.base import RoutingProvider
 from app.storage.provider_cache_store import (
     ProviderCacheStore,
@@ -43,12 +43,23 @@ class OSRMRoutingAdapter(RoutingProvider):
     `NoRoute`/other non-`"Ok"` `code`, a malformed response, or a response
     with no usable route is reported `unavailable`; a request-level
     failure (network error, timeout, non-2xx status) is reported `failed`.
-    `geometry` is not parsed by this step -- the request always asks OSRM
-    for `overview=false` so no geometry payload is fetched or discarded.
+    `geometry` (Step 173A, docs/13_llm_reasoning_pipeline.md,
+    docs/14_backend_architecture.md): the request asks OSRM for
+    `overview=full&geometries=geojson`, and a successful route's
+    `RouteResult.geometry` is populated with the real, ordered
+    `RoutePathPoint`s from that response's own `route.geometry.
+    coordinates` -- never interpolated, simplified beyond what OSRM
+    itself already did, or synthesized from the origin/destination
+    coordinates. A missing, malformed, or empty geometry payload leaves
+    `geometry=None` -- this never fails the whole route just because
+    geometry specifically couldn't be parsed; `distance_meters`/
+    `duration_seconds` are unaffected either way.
 
     This adapter never calls `haversine_distance_km` (a straight-line
     estimate, not a route) and never falls back to one when OSRM data is
-    unavailable -- an unavailable route stays unavailable.
+    unavailable -- an unavailable route stays unavailable, and a route
+    with no usable geometry simply has `geometry=None`, never a straight
+    line substituted in its place.
 
     Route cache (Step 165C, docs/12_provider_architecture.md "Provider
     Cache Foundation" section): a successful, usable route is cached in
@@ -119,7 +130,7 @@ class OSRMRoutingAdapter(RoutingProvider):
             ) as client:
                 response = client.get(
                     f"{self._base_url}/route/v1/{profile}/{coordinates}",
-                    params={"overview": "false"},
+                    params={"overview": "full", "geometries": "geojson"},
                 )
                 response.raise_for_status()
                 payload = response.json()
@@ -156,7 +167,7 @@ class OSRMRoutingAdapter(RoutingProvider):
                 status=ProviderStatus.SUCCESS,
                 distance_meters=payload["distance_meters"],
                 duration_seconds=payload["duration_seconds"],
-                geometry=payload.get("geometry"),
+                geometry=_geometry_from_cache_payload(payload.get("geometry")),
                 source=self.provider_name,
                 confidence=payload.get("confidence", 0.6),
                 message="Route found via OSRM (cached).",
@@ -180,7 +191,16 @@ class OSRMRoutingAdapter(RoutingProvider):
                 {
                     "distance_meters": result.distance_meters,
                     "duration_seconds": result.duration_seconds,
-                    "geometry": result.geometry,
+                    # Step 173A: geometry is only ever the same normalized
+                    # `RoutePathPoint` data already on `result` -- never a
+                    # separate/raw provider payload, and never anything
+                    # unrelated to this one route (docs/14_backend_
+                    # architecture.md's provider-cache-safety contract).
+                    "geometry": (
+                        [point.model_dump(mode="json") for point in result.geometry]
+                        if result.geometry is not None
+                        else None
+                    ),
                     "confidence": result.confidence,
                 },
                 ttl_seconds=self._route_cache_ttl_seconds,
@@ -218,7 +238,7 @@ class OSRMRoutingAdapter(RoutingProvider):
             status=ProviderStatus.SUCCESS,
             distance_meters=distance_meters,
             duration_seconds=duration_seconds,
-            geometry=None,
+            geometry=_parse_geojson_linestring(first_route.get("geometry")),
             source=self.provider_name,
             confidence=0.6,
             message="Route found via OSRM.",
@@ -259,3 +279,55 @@ class OSRMRoutingAdapter(RoutingProvider):
             confidence=0.0,
             message=message,
         )
+
+
+def _parse_geojson_linestring(value: Any) -> list[RoutePathPoint] | None:
+    """Parses a GeoJSON `LineString` geometry (Step 173A) -- the shape
+    OSRM returns when asked for `geometries=geojson` -- into an ordered
+    list of `RoutePathPoint`s, or `None` when the payload is missing,
+    malformed, or empty. Every point is read directly from the
+    provider's own `coordinates` array (each `[lon, lat]`, per the
+    GeoJSON spec) -- never interpolated, reordered, or invented. Returns
+    `None` (rather than a partial list) on any malformed entry, so a
+    caller never receives a geometry that silently skipped a real
+    provider-returned point.
+    """
+    if not isinstance(value, dict) or value.get("type") != "LineString":
+        return None
+
+    coordinates = value.get("coordinates")
+    if not isinstance(coordinates, list) or not coordinates:
+        return None
+
+    points: list[RoutePathPoint] = []
+    for coordinate in coordinates:
+        if not isinstance(coordinate, list) or len(coordinate) < 2:
+            return None
+        lon, lat = coordinate[0], coordinate[1]
+        if not isinstance(lon, (int, float)) or not isinstance(lat, (int, float)):
+            return None
+        try:
+            points.append(RoutePathPoint(lat=lat, lon=lon))
+        except ValueError:
+            # Out-of-range coordinate from a malformed/unexpected
+            # provider payload -- never fabricate a clamped/corrected
+            # point in its place.
+            return None
+
+    return points
+
+
+def _geometry_from_cache_payload(value: Any) -> list[RoutePathPoint] | None:
+    """Reconstructs the `RoutePathPoint` list cached by `_write_route_cache`
+    (Step 173A) -- the exact inverse of `RoutePathPoint.model_dump()`.
+    Raises the same `(KeyError, TypeError, ValueError)` family
+    `_read_route_cache`'s own `try`/`except` already handles for a
+    malformed/unusable cache entry, so a broken cached geometry falls
+    back to a live request exactly like any other broken cache entry --
+    it never fabricates a replacement geometry.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, list):
+        raise ValueError("Cached route geometry was not a list.")
+    return [RoutePathPoint(**point) for point in value]
