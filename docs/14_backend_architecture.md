@@ -3297,3 +3297,259 @@ consumes. Full contract, for reference:
 No scheduling, route-aware sequencing, LangGraph, regeneration, or
 accommodation/flight provider behavior changed anywhere across Section
 173.
+
+## 77. Regeneration Request Contract and Guardrails, No Mutation Yet (Step 174B)
+
+Step 174B (Section 174, following the read-only Step 174A audit) gives
+`POST /trips/{trip_id}/regenerate` a real request contract and a staged
+guardrail chain, ahead of Step 174C's actual mutation. No planning
+stage, provider, or LangGraph call is added anywhere in this step.
+
+- **New request schema `RegenerateRequest`** (`backend/app/schemas/trips.py`):
+  `confirm: bool = False`, `scope: str = "affected_stages"`. Both fields
+  are optional with defaults, so the endpoint remains callable with no
+  JSON body at all -- FastAPI falls back to `RegenerateRequest()` when
+  the body is absent (`regenerate_request: RegenerateRequest | None =
+  None` in the route, defaulted to a fresh `RegenerateRequest()` inside
+  the function body). `scope` is accepted now to avoid a future breaking
+  request-shape change, but nothing reads any value other than the
+  default in this step -- no day-level or item-level scope exists yet.
+- **Four ordered outcomes in `regenerate_trip_plan`**
+  (`backend/app/api/routes/trips.py`), each still ending in a `409` and
+  each still only appending one `RegenerationAttempt`:
+  1. `confirm` missing or `false` -- byte-for-byte the original
+     `REGENERATION_NOT_AVAILABLE` refusal from before this step.
+  2. `confirm=true` with `sum(lock.is_active for lock in user_locks) > 0`
+     -- new `REGENERATION_BLOCKED_BY_LOCKS` error
+     (`regeneration_blocked_by_locks_error`, `core/errors.py`), since
+     locks today are bookkeeping only (no planning stage service reads
+     or respects them yet -- see Step 174A's audit) and a confirmed
+     request must refuse outright rather than silently ignore one.
+  3. `confirm=true` with an empty `feedback_history` -- new
+     `REGENERATION_NO_PENDING_FEEDBACK` error
+     (`regeneration_no_pending_feedback_error`).
+  4. `confirm=true`, feedback exists, zero active locks -- exactly
+     Section 174's chosen MVP scope (per the Step 174A audit), but still
+     returned the original `REGENERATION_NOT_AVAILABLE` refusal in this
+     step. **Superseded by Step 174C** (section 78 below), which
+     replaces only this branch with a real call to
+     `PlanningOrchestrator.rerun_affected_stages`.
+- **`RegenerationAttemptService.record_blocked_attempt` gained optional
+  `reason_code`/`message`/`status` parameters**, all defaulting to
+  exactly the values it always used before this step -- every existing
+  call site (including `test_regenerate_uses_regeneration_attempt_service_exactly_once_per_call`'s
+  single-argument monkeypatch spy) is unaffected. The route passes the
+  matching `reason_code`/`message` for whichever branch fired, so the
+  audit trail and the HTTP error can never disagree.
+- **Two new `ErrorCode` values** (`backend/app/schemas/errors.py`):
+  `REGENERATION_BLOCKED_BY_LOCKS`, `REGENERATION_NO_PENDING_FEEDBACK`.
+  `RegenerationAttempt.reason_code` is already a plain `str` field, so no
+  model change was needed to carry either new value.
+- **Zero mutation in every branch**: no branch touches `experience_plan`,
+  `route_aware_sequencing_report`, `travel_time_buffer_report` (or its
+  route geometry), `destination_context`, `validation_report`,
+  `provider_coverage`, `feedback_history`, `pending_feedback_summary`,
+  `user_locks`, `version_history`, or `plan_diff_preview`; none call
+  `PlanningOrchestrator.rerun_affected_stages`, `generate_full_plan`,
+  `generate_full_plan_via_langgraph`, `apply_feedback`, or
+  `LangGraphPlanningService`; `regeneration_readiness`/`plan_diff_preview`
+  are never recomputed by this endpoint, exactly as before. Covered by
+  new tests in `test_regenerate_refusal.py`'s "Step 174B" section; every
+  pre-existing refusal/guardrail test in that file and
+  `test_regenerate_guardrails.py` continues to pass unmodified.
+- **`docs/17_regeneration_manual_qa.md` updated** with the new
+  `confirm=true` guardrail matrix and expanded failure signs -- see that
+  doc for the full manual QA flow.
+
+## 78. Real Deterministic Regeneration for the MVP Scope (Step 174C)
+
+Step 174C replaces Step 174B's placeholder fourth branch (`confirm=true`,
+feedback exists, zero active locks) with a real, deterministic mutation
+-- still gated to that exact same MVP scope, still backend-only, still no
+frontend UI. Two new safe-refusal conditions guard the boundary of that
+scope before any mutation is attempted, and the mutation itself reuses
+only already-existing orchestrator/versioning machinery.
+
+- **Two additional safe-refusal conditions**, both still returning the
+  existing `REGENERATION_NOT_AVAILABLE` (no new error code needed):
+  no affected stage can be derived from the pending feedback (e.g. every
+  event is unclassified `general_feedback`), or no plan has ever been
+  generated for this trip (`experience_plan is None`). Neither widens the
+  MVP scope; both just refuse rather than rerun nothing or regenerate a
+  trip that doesn't have a plan yet.
+- **New helper `_derive_regeneration_affected_stages`**
+  (`backend/app/api/routes/trips.py`): prefers
+  `planning_state.pending_feedback_summary.affected_stages` (the rollup
+  `FeedbackService` already keeps fresh on every feedback submission);
+  falls back to unioning `feedback_history[].affected_stages` directly
+  only when that rollup is empty despite feedback existing (e.g. an
+  older persisted trip from before `pending_feedback_summary` existed).
+  Ordered to match `PlanningStage`'s own declaration order.
+- **The mutation itself is one call**:
+  `PlanningOrchestrator.rerun_affected_stages(planning_state,
+  affected_stages)` -- already existing (see the Step 174A audit),
+  previously never called anywhere. When `PlanningStage.EXPERIENCE_PLAN`
+  is among the affected stages, its own `run_experience_plan_stage`
+  already reruns `RouteFeasibilityService`/`RouteAwareSequencingService`/
+  `TravelTimeBufferService` internally (Section 165/166/172/173
+  behavior, completely unmodified), so route ordering, movement
+  transparency, and route geometry all stay consistent automatically --
+  no separate call was needed for any of them.
+- **Never calls `LangGraphPlanningService`, `generate_full_plan`, or
+  `generate_full_plan_via_langgraph`** -- verified by
+  `test_regenerate_success_does_not_call_langgraph_or_full_generation`.
+  Behavior is identical regardless of `Settings.planning_engine_mode`,
+  since `rerun_affected_stages` calls the orchestrator's own `run_*_stage`
+  methods directly rather than routing through the LangGraph graph.
+- **After a successful rerun**: `VersioningService.create_version_after_feedback`
+  (already existing, previously never called) records the new version --
+  `changed_sections` is the rerun stages' own `.value` strings,
+  `preserved_sections` is always `[]` (locks are disallowed entirely for
+  this scope), `feedback_event_id` is the most recent pending feedback
+  event's id (the model's own field is a single reference; every pending
+  event's id is still reported in the response's
+  `applied_feedback_event_ids`). `plan_diff_preview_service.recompute`/
+  `regeneration_readiness_service.recompute` then run exactly as they do
+  on every other write path in this router, and
+  `RegenerationAttemptService.record_applied_attempt` (new, thin wrapper
+  around `record_blocked_attempt` with `status="applied"`,
+  `reason_code="REGENERATION_APPLIED"`) records the audit entry.
+- **New response schema `RegenerateResponseData`**
+  (`backend/app/schemas/regeneration_result.py`): `trip_id`, `status`,
+  `previous_version`, `current_version`, `changed_sections`,
+  `preserved_sections`, `applied_feedback_event_ids`,
+  `active_lock_count`, `message`. Deliberately minimal -- no plan
+  content, no fabricated diff; a caller wanting the plan's current
+  content follows up with `GET /trips/{trip_id}` as usual.
+- **Failure handling**: `rerun_affected_stages` is called inside a
+  `try`/`except`; on any unexpected exception, no version is created, a
+  `RegenerationAttempt` with `status="failed"` is recorded (reusing
+  `record_blocked_attempt`'s existing `status` override from Step 174B),
+  and the endpoint still raises the same `REGENERATION_NOT_AVAILABLE`
+  refusal rather than returning `200`. This is a thin safety net, not new
+  rollback machinery: the individual stage services already fail safe
+  internally for expected provider-level failures (Step 166D), so this
+  `except` only ever catches a genuinely unexpected bug.
+- **`regeneration_readiness.can_regenerate` is still never set to
+  `true`** -- `RegenerationReadinessService` was not touched in this
+  step, on purpose, matching the Step 174B/174C boundary of not widening
+  what that read-only gate advertises. **Superseded by Step 174D**
+  (section 79 below), which updates this gate to honestly track the MVP
+  scope this step's mutation path actually supports.
+- **`feedback_history` is not cleared or marked applied** by a
+  successful regeneration -- an intentional, documented limitation (see
+  docs/17_regeneration_manual_qa.md), not an oversight. A second
+  `{"confirm": true}` call immediately after a success will see the same
+  pending feedback and, if it still derives a real affected stage, will
+  regenerate again. **Superseded by Step 174D** (section 79 below),
+  which marks the feedback a successful regeneration used as applied so
+  a repeat call correctly refuses instead.
+
+## 79. Applied-Feedback Lifecycle and Honest Regeneration Availability (Step 174D)
+
+Step 174D closes Step 174C's two documented gaps: `regeneration_readiness`/
+`plan_diff_preview` now honestly advertise the exact MVP scope the
+mutation path supports, and a successful regeneration marks the
+feedback it used as applied so it is never reprocessed by a later call.
+
+- **New `FeedbackEvent` fields** (`backend/app/models/planning_state.py`):
+  `applied_at: datetime | None = None`, `applied_in_version: str | None
+  = None`, both defaulting to `None` -- an older persisted event (from
+  before this step) loads as honestly pending. `handling_status`
+  (already existing) is set to `"applied"` alongside them; feedback
+  capture itself never sets any of the three.
+- **New shared helpers in `backend/app/services/feedback_service.py`**,
+  used by every consumer so none can disagree about which feedback still
+  counts:
+  - `pending_feedback_events(feedback_history)` -- `applied_at is None`.
+  - `derive_pending_affected_stages(feedback_history)` -- union of
+    pending events' `affected_stages`, ordered to match `PlanningStage`'s
+    declaration order. Replaces the near-identical logic that used to
+    live directly in `backend/app/api/routes/trips.py` (Step 174C) and
+    the separate `_STAGE_ORDER` tuples that used to live independently
+    in `PlanDiffPreviewService`/`FeedbackService` -- now one definition.
+  - `FeedbackService.recompute_pending_feedback_summary(planning_state)`
+    -- new public method (the underlying `_compute_pending_feedback_summary`
+    now filters to pending events only, and returns an honest "all
+    captured feedback has already been applied" note when
+    `feedback_history` is non-empty but every event is applied, distinct
+    from "no feedback captured yet").
+- **`RegenerationReadinessService`/`PlanDiffPreviewService` rewritten**
+  with two new branches inserted between the existing "no plan"/"no
+  pending feedback" branches and the final branch: active locks present
+  (still blocked/`not_available`, but now shows the derivable
+  `would_consider_sections`/`would_create_version` as a preview even
+  though it can't run), and pending feedback with no derivable stage
+  (still blocked/`not_available`). Only the final branch --  version
+  exists, pending feedback exists, zero active locks, at least one real
+  derivable stage -- sets `can_regenerate=True`/`status="ready"` (readiness)
+  or `regeneration_available=True`/`preview_status="regeneration_available"`
+  (diff preview), with `missing_capabilities`/`blocked_by` both empty.
+  Every other branch keeps its prior shape (including still listing
+  `"regeneration_engine"` as a missing capability, since the MVP-scope
+  engine isn't usable for *this* trip's current state until every
+  condition holds).
+- **`POST /trips/{trip_id}/regenerate`'s guardrails now use pending
+  feedback, not raw `feedback_history`**: the "no pending feedback"
+  guard and the affected-stage derivation both call
+  `pending_feedback_events`/`derive_pending_affected_stages` -- so a
+  trip whose only feedback has already been applied correctly hits
+  `REGENERATION_NO_PENDING_FEEDBACK`, not a stale success.
+- **After a successful rerun and version creation**, the route marks
+  exactly the feedback event(s) whose ids were captured *before* the
+  rerun started -- looked up again by id on the `planning_state`
+  returned by `rerun_affected_stages`/`create_version_after_feedback`
+  (never relying on object identity surviving those calls) -- setting
+  `applied_at`/`applied_in_version`/`handling_status="applied"`. It then
+  calls `feedback_service.recompute_pending_feedback_summary`,
+  `plan_diff_preview_service.recompute`, and
+  `regeneration_readiness_service.recompute`, in that order, before
+  recording the applied audit attempt and saving -- so every derived
+  view of "what's pending" is consistent by the time the response goes
+  out.
+- **Failure path unchanged in spirit, extended in effect**: if
+  `rerun_affected_stages` raises, execution never reaches the
+  applied-marking code at all (it comes after the `try`/`except`), so a
+  failed rerun still cannot mark any feedback applied, matching Step
+  174C's existing "no version, no pretended success" contract.
+- **Repeat-safety, concretely**: `feedback_history` is never shortened
+  or deleted -- calling `POST /trips/{trip_id}/regenerate` again with
+  `{"confirm": true}` and no new feedback submitted since a success now
+  correctly derives zero pending events and refuses with
+  `REGENERATION_NO_PENDING_FEEDBACK`, never a second `v3` from the same
+  feedback. Submitting genuinely new feedback creates a fresh pending
+  event unaffected by any prior application, so a further regeneration
+  call succeeds normally.
+
+## 80. Section 174 Complete: Frontend Now Calls confirm=true, Backend Remains Sole Source of Truth (Step 174E, final Section 174 step)
+
+Step 174E is frontend-only (`frontend/app/page.tsx`, `frontend/lib/api.ts`,
+`frontend/lib/types.ts`) -- no backend file changed, and no backend
+behavior changed. `frontend/lib/api.ts`'s `requestRegeneration` now
+always sends `{"confirm": true, "scope": "affected_stages"}` (previously
+sent no body at all), and the frontend's one "Regenerate from feedback"
+button (`RegenerationReadinessSection`) is enabled only when
+`RegenerationReadiness.can_regenerate` -- computed entirely server-side
+by Step 174D -- is already `true`.
+
+Critically, **this frontend gate is a UX convenience, not a security or
+correctness boundary**: the backend re-validates every precondition
+(`confirm`, active locks, pending feedback, derivable affected stages,
+an already-generated plan) on every call regardless of what the frontend
+already checked, exactly as it did before any frontend UI existed. A
+stale frontend, a direct API client, or a race between two tabs can
+still only ever get the outcomes Sections 174B-174D already defined --
+the frontend enabling a button never widens what the backend will do.
+
+On a successful response, the frontend performs one additional
+read-only step beyond rendering `RegenerateResponseData`: it calls
+`GET /trips/{trip_id}` (via the existing `loadPlanResult` helper, the
+same one every trip load already uses) to refresh the itinerary,
+version history, diff preview, readiness, and movement/route-path data
+together. This is a fetch, not a computation -- the frontend never
+derives, infers, or fabricates any of that content itself.
+
+No `ErrorCode`, error message, `RegenerationAttempt` field, readiness/
+diff-preview branch, or applied-feedback field changed in this step --
+Section 174's backend contract (174B-174D) is exactly what the frontend
+now calls, unmodified.

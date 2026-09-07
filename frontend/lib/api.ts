@@ -6,6 +6,8 @@ import type {
   ExperiencePlanData,
   GenerationProgressData,
   ProviderCoverageData,
+  RegenerateRequestInput,
+  RegenerateResponseData,
   RegenerationAttemptsData,
   RegenerationReadinessData,
   TripCreateData,
@@ -22,6 +24,12 @@ export class ApiRequestError extends Error {
   constructor(
     message: string,
     public status: number,
+    // The backend's own ApiError.code (e.g. "REGENERATION_BLOCKED_BY_LOCKS"),
+    // or null when the response body carried no error entry at all (e.g. a
+    // network-level failure surfaced some other way). Callers that need to
+    // distinguish refusal reasons (not just show a message) read this
+    // instead of parsing the message text.
+    public code: string | null = null,
   ) {
     super(message);
     this.name = "ApiRequestError";
@@ -39,7 +47,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   if (!response.ok || !body.success || body.data === null) {
     const message =
       body.errors[0]?.message ?? body.message ?? "The request failed.";
-    throw new ApiRequestError(message, response.status);
+    throw new ApiRequestError(message, response.status, body.errors[0]?.code ?? null);
   }
 
   return body.data;
@@ -133,14 +141,29 @@ export function getRegenerationReadiness(
   );
 }
 
-// Calls the backend's hard-refusal endpoint (backend:
-// app.api.routes.trips.regenerate_trip_plan). The backend always responds
-// with 409 REGENERATION_NOT_AVAILABLE today, so this reuses request()'s
-// existing ApiRequestError-on-failure behavior rather than treating any
-// response as a success -- callers should expect this to throw and read
-// the thrown message, not the resolved value.
-export function requestRegeneration(tripId: string): Promise<unknown> {
-  return request(`/trips/${tripId}/regenerate`, { method: "POST" });
+// Requests real regeneration (backend: app.api.routes.trips.
+// regenerate_trip_plan, Step 174B-174D). Always sends `confirm: true` --
+// the backend itself decides whether that succeeds (a generated plan,
+// pending feedback, zero active locks, and a real derivable affected
+// stage all being required) or refuses with a specific error code
+// (REGENERATION_BLOCKED_BY_LOCKS, REGENERATION_NO_PENDING_FEEDBACK, or
+// REGENERATION_NOT_AVAILABLE). Callers should only ever call this when
+// `RegenerationReadiness.can_regenerate` is already `true` -- the backend
+// re-checks every condition itself regardless, so this call is never the
+// sole safety gate. On success this resolves with the real
+// `RegenerateResponseData`; on refusal it throws `ApiRequestError` (read
+// `.code`/`.message`) exactly like every other endpoint here.
+export function requestRegeneration(
+  tripId: string,
+): Promise<RegenerateResponseData> {
+  const body: RegenerateRequestInput = {
+    confirm: true,
+    scope: "affected_stages",
+  };
+  return request<RegenerateResponseData>(`/trips/${tripId}/regenerate`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
 }
 
 export function getRegenerationAttempts(

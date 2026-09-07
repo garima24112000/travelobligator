@@ -494,14 +494,16 @@ def test_plan_diff_preview_is_persisted_and_reloadable(client: TestClient) -> No
 
     assert reloaded_state is not None
     preview = reloaded_state.plan_diff_preview
-    assert preview.preview_status == "ready_for_future_regeneration_preview"
+    # Step 174D: zero active locks + a real derivable affected stage means
+    # this is honestly regeneration_available=True.
+    assert preview.preview_status == "regeneration_available"
     assert preview.from_version == "v1"
     assert preview.would_create_version == "v2"
     assert preview.pending_feedback_count == 1
     assert preview.triggered_by_feedback_event_ids == [
         reloaded_state.feedback_history[0].feedback_event_id
     ]
-    assert preview.regeneration_available is False
+    assert preview.regeneration_available is True
     assert preview.to_version is None
 
 
@@ -546,12 +548,14 @@ def test_regeneration_readiness_is_persisted_and_reloadable(client: TestClient) 
 
     assert reloaded_state is not None
     readiness = reloaded_state.regeneration_readiness
-    assert readiness.status == "blocked"
-    assert readiness.can_regenerate is False
+    # Step 174D: zero active locks + a real derivable affected stage means
+    # this is honestly can_regenerate=True.
+    assert readiness.status == "ready"
+    assert readiness.can_regenerate is True
     assert readiness.current_version == "v1"
     assert readiness.would_create_version == "v2"
     assert readiness.pending_feedback_count == 1
-    assert readiness.missing_capabilities == ["regeneration_engine"]
+    assert readiness.missing_capabilities == []
 
 
 def test_regeneration_attempts_are_persisted_and_reloadable(client: TestClient) -> None:

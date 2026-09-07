@@ -48,6 +48,7 @@ import type {
   ProviderStatusEntry,
   PromotedAICandidate,
   ReadinessChecklist,
+  RegenerateResponseData,
   RegenerationAttempt,
   RegenerationReadiness,
   RestaurantSuggestion,
@@ -2925,17 +2926,11 @@ function PendingRequestedChangesSection({
         been applied to the plan yet.
       </p>
 
-      <button
-        type="button"
-        disabled
-        title="Feedback-driven regeneration is not implemented yet."
-        className="mt-3 cursor-not-allowed rounded-lg border border-white/10 bg-slate-900 px-4 py-2 text-sm font-semibold text-slate-500 opacity-50"
-      >
-        Regenerate with feedback
-      </button>
-      <p className="mt-2 text-xs text-slate-500">
-        Feedback-driven regeneration is not implemented yet. Your feedback
-        is stored and summarized, but the current plan has not changed.
+      <p className="mt-3 text-xs text-slate-500">
+        Feedback-driven regeneration is available once the &ldquo;Regeneration
+        readiness&rdquo; section below reports it is ready -- use its
+        &ldquo;Regenerate from feedback&rdquo; button. Your feedback is stored
+        and summarized here regardless; this section never applies it itself.
       </p>
 
       {summary.total_feedback_items === 0 ? (
@@ -3130,6 +3125,9 @@ function VersionHistorySection({
 }
 
 function planDiffPreviewStatusLabel(previewStatus: string): string {
+  if (previewStatus === "regeneration_available") {
+    return "Regeneration is available";
+  }
   if (previewStatus === "ready_for_future_regeneration_preview") {
     return "Ready for future regeneration preview";
   }
@@ -3146,10 +3144,14 @@ function formatNullableVersionLabel(version: string | null): string {
 /**
  * Plan-level readout of `PlanningState.plan_diff_preview` (Step 133). Purely
  * a restatement of the backend's deterministic, from-scratch-recomputed
- * preview of what a *future* regeneration would compare/change -- never
- * something this section applies itself. `regeneration_available` always
- * renders as "No" and `to_version` always renders as "None yet" today,
- * since real regeneration/diffing is not implemented.
+ * preview of what a regeneration would compare/change -- never something
+ * this section applies itself; only the real "Regenerate from feedback"
+ * button in `RegenerationReadinessSection` below does that. As of Step
+ * 174D, `regeneration_available` renders "Yes" only for the exact MVP
+ * scope the backend actually supports (generated plan + pending feedback
+ * + zero active locks + a real derivable affected stage); `to_version`
+ * still always renders "None yet" since this preview never fills it in
+ * (a completed diff's `to_version` isn't tracked by this model).
  */
 function PlanDiffPreviewSection({ preview }: { preview: PlanDiffPreview }) {
   return (
@@ -3282,63 +3284,68 @@ function PlanDiffPreviewSection({ preview }: { preview: PlanDiffPreview }) {
 }
 
 /**
- * Plan-level readout of `PlanningState.regeneration_readiness` (Step 136).
- * Purely a restatement of the backend's deterministic, from-scratch-
- * recomputed readiness gate -- never something this section applies
- * itself. `can_regenerate` always renders as "No" today since no real
- * regeneration engine is connected, and no clickable regenerate action is
- * ever rendered here, only a disabled placeholder button when blocked.
+ * Plan-level readout of `PlanningState.regeneration_readiness` (Step 136),
+ * plus (Step 174E) the one real regenerate action itself. Purely mirrors
+ * the backend's deterministic, from-scratch-recomputed readiness gate --
+ * this component never decides for itself whether regeneration is safe;
+ * it only enables the button when `readiness.can_regenerate` (computed
+ * entirely server-side, Step 174D) already says so, and the backend
+ * re-checks every condition again on the actual call regardless.
  *
- * The "Check backend refusal" control (Step 140, extended in Step 143) is a
- * separate, explicitly safe test action: it calls
- * `POST /trips/{trip_id}/regenerate` -- which the backend always refuses
- * with 409 REGENERATION_NOT_AVAILABLE today -- purely to surface that
- * refusal message locally. After the call settles it also refetches
- * `GET /trips/{trip_id}/regeneration-attempts` and reports the result via
- * `onRegenerationAttemptsChange`, which the caller uses to update *only*
- * `result.regenerationAttempts`. It never updates any other `result`
- * field, never reloads the rest of the plan, and never calls
- * `loadPlanResult`, so no other displayed plan field changes as a result
- * of clicking it.
+ * The "Regenerate from feedback" button calls
+ * `POST /trips/{trip_id}/regenerate` with `confirm: true` (Step 174B-174D
+ * contract). On success it shows the backend's own
+ * `RegenerateResponseData` (previous/current version, changed sections,
+ * applied feedback event ids -- never a frontend-computed diff) and calls
+ * `onRegenerateSuccess`, which the caller wires to a full `loadPlanResult`
+ * refresh so the itinerary, movement rows, route paths, version history,
+ * diff preview, and readiness panels all reflect the regenerated state
+ * together. On refusal, it shows the backend's own error `code`/`message`
+ * (via `ApiRequestError`) and refreshes only the attempt audit list via
+ * `onRegenerationAttemptsChange` -- never implying the plan changed, and
+ * never calling `loadPlanResult`.
  */
 function RegenerationReadinessSection({
   tripId,
   readiness,
   onRegenerationAttemptsChange,
+  onRegenerateSuccess,
 }: {
   tripId: string;
   readiness: RegenerationReadiness;
   onRegenerationAttemptsChange: (attempts: RegenerationAttempt[]) => void;
+  onRegenerateSuccess: () => Promise<void>;
 }) {
-  const [isCheckingRefusal, setIsCheckingRefusal] = useState(false);
-  const [refusalMessage, setRefusalMessage] = useState<string | null>(null);
-  const [refusalMessageIsWarning, setRefusalMessageIsWarning] =
-    useState(false);
+  const [isRegenerating, setIsRegenerating] = useState(false);
+  const [regenerateError, setRegenerateError] = useState<{
+    code: string;
+    message: string;
+  } | null>(null);
+  const [regenerateSuccess, setRegenerateSuccess] =
+    useState<RegenerateResponseData | null>(null);
 
-  async function handleCheckBackendRefusal() {
-    setIsCheckingRefusal(true);
-    setRefusalMessage(null);
-    setRefusalMessageIsWarning(false);
+  async function handleRegenerate() {
+    setIsRegenerating(true);
+    setRegenerateError(null);
+    setRegenerateSuccess(null);
     try {
-      await requestRegeneration(tripId);
-      // The backend is expected to always throw (409 REGENERATION_NOT_AVAILABLE).
-      // Reaching here means it unexpectedly returned success -- flag it as a
-      // warning rather than silently treating it as a good outcome.
-      setRefusalMessage(
-        "Unexpected success from regeneration endpoint. Please verify backend behavior before trusting this.",
-      );
-      setRefusalMessageIsWarning(true);
+      const data = await requestRegeneration(tripId);
+      setRegenerateSuccess(data);
+      // Full refresh so the itinerary, movement rows, route paths, version
+      // history, diff preview, and readiness all reflect the regenerated
+      // state together -- never just this section's own local state.
+      await onRegenerateSuccess();
     } catch (err) {
-      setRefusalMessage(
+      setRegenerateError(
         err instanceof ApiRequestError
-          ? err.message
-          : "Something went wrong while checking the backend refusal path.",
+          ? { code: err.code ?? "UNKNOWN_ERROR", message: err.message }
+          : {
+              code: "UNKNOWN_ERROR",
+              message: "Something went wrong while requesting regeneration.",
+            },
       );
-      setRefusalMessageIsWarning(false);
-    } finally {
-      // Refresh only the regeneration attempt audit list -- whether the
-      // call above threw (expected) or unexpectedly resolved. Never touch
-      // any other plan field, and never call loadPlanResult.
+      // Refusal only ever appends one audit attempt -- refresh just that
+      // list, never the rest of the plan, and never loadPlanResult.
       try {
         const attemptsData = await getRegenerationAttempts(tripId);
         onRegenerationAttemptsChange(attemptsData.regeneration_attempts);
@@ -3346,7 +3353,8 @@ function RegenerationReadinessSection({
         // If refreshing the audit list itself fails, leave the previously
         // displayed attempts as-is instead of clearing them.
       }
-      setIsCheckingRefusal(false);
+    } finally {
+      setIsRegenerating(false);
     }
   }
 
@@ -3354,8 +3362,9 @@ function RegenerationReadinessSection({
     <div className="rounded-2xl border border-white/10 bg-white/5 p-5">
       <h2 className="text-lg font-semibold">Regeneration readiness</h2>
       <p className="mt-1 text-xs text-amber-300/90">
-        This gate only explains whether feedback-driven regeneration can
-        run. It does not regenerate or change the plan.
+        This section explains whether feedback-driven regeneration can run
+        right now, and lets you apply it only when the backend says it is
+        available.
       </p>
 
       <dl className="mt-3 grid grid-cols-2 gap-3 text-sm sm:grid-cols-4">
@@ -3461,43 +3470,63 @@ function RegenerationReadinessSection({
         Next step: {readiness.next_step}
       </p>
 
-      {readiness.status === "blocked" && (
-        <div className="mt-4">
-          <button
-            type="button"
-            disabled
-            title="The regeneration engine is not implemented yet."
-            className="cursor-not-allowed rounded-lg border border-white/10 bg-slate-900 px-4 py-2 text-sm font-semibold text-slate-500 opacity-50"
-          >
-            Regeneration unavailable
-          </button>
-          <p className="mt-2 text-xs text-slate-500">
-            The regeneration engine is not implemented yet.
-          </p>
-        </div>
-      )}
-
       <div className="mt-4 border-t border-white/10 pt-4">
-        <p className="text-xs text-slate-500">
-          This only checks the backend refusal path. It will not
-          regenerate or change the plan.
-        </p>
         <button
           type="button"
-          onClick={() => void handleCheckBackendRefusal()}
-          disabled={isCheckingRefusal}
-          className="mt-2 rounded-lg border border-white/10 bg-slate-900 px-4 py-2 text-sm font-semibold text-slate-300 transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+          onClick={() => void handleRegenerate()}
+          disabled={!readiness.can_regenerate || isRegenerating}
+          title={
+            readiness.can_regenerate
+              ? undefined
+              : "Regeneration is available only when feedback is pending and no active locks exist."
+          }
+          className="rounded-lg border border-white/10 bg-emerald-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-emerald-500 disabled:cursor-not-allowed disabled:border-white/10 disabled:bg-slate-900 disabled:text-slate-500 disabled:opacity-50"
         >
-          {isCheckingRefusal ? "Checking refusal..." : "Check backend refusal"}
+          {isRegenerating ? "Regenerating..." : "Regenerate from feedback"}
         </button>
-        {refusalMessage && (
-          <p
-            className={`mt-2 text-xs ${
-              refusalMessageIsWarning ? "text-amber-300" : "text-red-300"
-            }`}
-          >
-            {refusalMessage}
-          </p>
+        <p className="mt-2 text-xs text-slate-500">
+          Regeneration is available only when feedback is pending and no
+          active locks exist.
+        </p>
+
+        {regenerateSuccess && (
+          <div className="mt-3 rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-3 text-sm">
+            <p className="font-semibold text-emerald-300">
+              Regeneration applied
+            </p>
+            <p className="mt-1 text-xs text-emerald-200">
+              {formatNullableVersionLabel(regenerateSuccess.previous_version)}
+              {" → "}
+              {regenerateSuccess.current_version}
+            </p>
+            {regenerateSuccess.changed_sections.length > 0 && (
+              <p className="mt-1 text-xs text-emerald-200">
+                Changed: {regenerateSuccess.changed_sections.join(", ")}
+              </p>
+            )}
+            {regenerateSuccess.preserved_sections.length > 0 && (
+              <p className="mt-1 text-xs text-emerald-200">
+                Preserved: {regenerateSuccess.preserved_sections.join(", ")}
+              </p>
+            )}
+            {regenerateSuccess.applied_feedback_event_ids.length > 0 && (
+              <p className="mt-1 text-xs text-emerald-200">
+                Applied feedback:{" "}
+                {regenerateSuccess.applied_feedback_event_ids.join(", ")}
+              </p>
+            )}
+          </div>
+        )}
+
+        {regenerateError && (
+          <div className="mt-3 rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-sm">
+            <p className="font-semibold text-red-300">
+              {regenerateError.code}
+            </p>
+            <p className="mt-1 text-xs text-red-200">
+              {regenerateError.message}
+            </p>
+          </div>
         )}
       </div>
     </div>
@@ -3505,13 +3534,14 @@ function RegenerationReadinessSection({
 }
 
 /**
- * Plan-level readout of `PlanningState.regeneration_attempts` (Step 143).
- * Purely a restatement of the backend's audit trail of blocked
- * `POST /trips/{trip_id}/regenerate` calls -- never itinerary content, and
- * never a claim that regeneration ran, a diff was generated, or a new plan
- * version was created. Only ever refreshed via the "Check backend refusal"
- * control in `RegenerationReadinessSection`, which updates
- * `result.regenerationAttempts` directly and never calls `loadPlanResult`.
+ * Plan-level readout of `PlanningState.regeneration_attempts` (Step 143,
+ * extended to real "applied" attempts in Step 174C/174D). Purely a
+ * restatement of the backend's audit trail -- never itinerary content
+ * beyond `attempt.status`/section-name-level bookkeeping the backend
+ * itself already recorded. A refusal from `RegenerationReadinessSection`'s
+ * "Regenerate from feedback" button refreshes only this list directly
+ * (`result.regenerationAttempts`, never `loadPlanResult`); a success
+ * refreshes it as part of that same button's full `loadPlanResult` call.
  */
 function RegenerationAttemptAuditSection({
   attempts,
@@ -4657,6 +4687,9 @@ export default function Home() {
                   previous ? { ...previous, regenerationAttempts } : previous,
                 )
               }
+              onRegenerateSuccess={async () => {
+                setResult(await loadPlanResult(result.summary.trip_id));
+              }}
             />
 
             <RegenerationAttemptAuditSection

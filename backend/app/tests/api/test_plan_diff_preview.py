@@ -40,6 +40,10 @@ def test_generated_trip_with_no_feedback_has_from_version_v1(
 def test_feedback_submission_updates_diff_preview(
     client: TestClient, generated_trip_id: str
 ) -> None:
+    """Step 174D: zero active locks + derivable feedback means
+    `regeneration_available` is honestly `True` -- exactly the MVP scope
+    `POST /trips/{trip_id}/regenerate` now actually supports.
+    """
     feedback_response = client.post(
         f"/trips/{generated_trip_id}/feedback",
         json={"feedback_text": "Make this less packed"},
@@ -48,7 +52,7 @@ def test_feedback_submission_updates_diff_preview(
     planning_state = feedback_response.json()["data"]["planning_state"]
     preview = planning_state["plan_diff_preview"]
 
-    assert preview["preview_status"] == "ready_for_future_regeneration_preview"
+    assert preview["preview_status"] == "regeneration_available"
     assert preview["from_version"] == "v1"
     assert preview["would_create_version"] == "v2"
     assert preview["pending_feedback_count"] == 1
@@ -59,8 +63,28 @@ def test_feedback_submission_updates_diff_preview(
     # "Make this less packed" matches the pace_change rule, which affects
     # experience_plan and validation.
     assert preview["would_consider_sections"] == ["experience_plan", "validation"]
-    assert preview["regeneration_available"] is False
+    assert preview["regeneration_available"] is True
+    assert preview["blocked_by"] == []
     assert preview["to_version"] is None
+
+
+def test_feedback_with_active_lock_diff_preview_is_not_available(
+    client: TestClient, generated_trip_id: str
+) -> None:
+    client.post(
+        f"/trips/{generated_trip_id}/feedback",
+        json={"feedback_text": "Make this less packed"},
+    )
+    lock_response = client.post(
+        f"/trips/{generated_trip_id}/locks",
+        json={"locked_item_type": "experience", "locked_item_id": "experience_test_1"},
+    )
+    assert lock_response.status_code == 201
+    preview = lock_response.json()["data"]["planning_state"]["plan_diff_preview"]
+
+    assert preview["regeneration_available"] is False
+    assert preview["active_lock_count"] == 1
+    assert preview["would_consider_sections"] == ["experience_plan", "validation"]
 
 
 def test_second_feedback_submission_increments_preview_counts(

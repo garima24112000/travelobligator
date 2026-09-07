@@ -4174,3 +4174,145 @@ Final state: the frontend never computes, infers, or estimates a route,
 distance, or duration; it only ever renders what
 `ProviderGateway.get_route` (via `OSRMRoutingAdapter` when connected)
 already decided and the backend already serialized.
+
+## 100. Regeneration Request Contract Exists, Real Mutation Does Not Yet (Step 174B)
+
+Step 174B gives `POST /trips/{trip_id}/regenerate` a real request shape
+(`RegenerateRequest`: `confirm`, `scope`) and a staged guardrail chain
+(blocked by active locks, blocked by no pending feedback, or an
+eligible-but-not-yet-enabled refusal), but adds no reasoning of any
+kind. Every branch is a fixed, deterministic check over already-stored
+`PlanningState` fields -- `confirm` is a boolean read verbatim from the
+request body, "blocked by locks" is `sum(lock.is_active for lock in
+user_locks) > 0`, "no pending feedback" is `len(feedback_history) == 0`
+-- there is no classification, no interpretation, and no AI/provider/
+network call anywhere in this endpoint. Even the branch that represents
+Section 174's eventual real-regeneration scope (confirm=true, feedback
+exists, zero active locks) still returns a fixed refusal in this step;
+no engine of any kind -- deterministic or AI -- runs yet. `docs/09_planning_state.md`'s
+"regeneration is intentionally not implemented" contract and this
+codebase's no-mock-data policy both continue to hold exactly as before.
+
+## 101. Real Regeneration Reruns Deterministic Stages Only, Never an LLM (Step 174C)
+
+Step 174C enables real plan mutation for exactly one narrow, deterministic
+scope (`confirm=true`, feedback exists, zero active locks, at least one
+real affected stage derivable), and every part of it is deterministic
+rule evaluation over already-stored data, not AI reasoning:
+
+- **Which stages get rerun is a fixed lookup, not a judgment call.**
+  `_derive_regeneration_affected_stages` (`backend/app/api/routes/trips.py`)
+  reads `pending_feedback_summary.affected_stages` -- itself already a
+  deterministic keyword-rule rollup `FeedbackService._classify` computed
+  when the feedback was submitted (docs/13 sections on feedback
+  classification, unchanged by this step) -- or, as a fallback, unions
+  `feedback_history[].affected_stages` the same way. No new
+  classification logic was added; this step only *consumes* an existing
+  deterministic result.
+- **The actual rerun is the same deterministic pipeline `POST /generate`
+  already uses.** `PlanningOrchestrator.rerun_affected_stages` (already
+  existing, previously unused -- see the Step 174A audit) maps each
+  affected `PlanningStage` to the orchestrator's own `run_*_stage`
+  method -- the identical `TravelerProfileService`/`DestinationContextService`/
+  .../`ExperiencePlannerService`/`PlanValidatorService` calls, with the
+  identical `RouteFeasibilityService`/`RouteAwareSequencingService`/
+  `TravelTimeBufferService` calls baked into `run_experience_plan_stage`
+  when `EXPERIENCE_PLAN` is among the affected stages. None of those
+  services changed in this step.
+- **No LLM, LangGraph, or AI candidate call is ever made.**
+  `LangGraphPlanningService` is never constructed or called by this
+  endpoint (verified by
+  `test_regenerate_success_does_not_call_langgraph_or_full_generation`);
+  neither `generate_full_plan` nor `generate_full_plan_via_langgraph` is
+  called either -- regeneration behaves identically regardless of
+  `PLANNING_ENGINE_MODE`, since `rerun_affected_stages` never touches the
+  LangGraph graph at all (matching the Step 174A audit's recommendation).
+- **No travel fact is fabricated.** The rerun stages only re-select from
+  candidate data already fetched by a real provider earlier in this
+  trip's lifecycle (`destination_context.candidate_*`) and only
+  recompute route/travel-time data via the same real
+  `ProviderGateway.get_route` path Section 165/166/173 already
+  established -- nothing in this step invents a price, rating, route,
+  route geometry, travel time, distance, opening hour, description, or
+  booking link.
+- **Version/diff/readiness bookkeeping after a successful rerun is
+  equally deterministic**: `VersioningService.create_version_after_feedback`
+  (already existing, previously unused) records exactly which stages
+  were rerun; `PlanDiffPreviewService.recompute`/
+  `RegenerationReadinessService.recompute` are the same functions every
+  other write path in this router already calls (Step 174D updates their
+  internal branching to honestly track the MVP scope -- see section 102
+  below -- without adding any new call, provider, or AI dependency).
+
+No LLM, provider, or network call beyond what the reran stage services
+already made before this step is added anywhere in Step 174C.
+
+## 102. Regeneration Availability Is Computed From Stored Feedback/Locks, Not AI (Step 174D)
+
+Step 174D wires the applied-feedback lifecycle and rewires
+`RegenerationReadinessService`/`PlanDiffPreviewService` so
+`can_regenerate`/`regeneration_available` honestly track the exact MVP
+scope Step 174C's mutation path supports -- and every part of this is
+deterministic rule evaluation over already-stored `PlanningState`
+fields, never AI reasoning:
+
+- **"Pending feedback" is a fixed predicate, not a judgment call.**
+  `feedback_service.pending_feedback_events` is `event.applied_at is
+  None` -- a null check, nothing else. `derive_pending_affected_stages`
+  unions `affected_stages` across those events using the same
+  deterministic keyword-rule classification `FeedbackService._classify`
+  already computed when each event was submitted (unchanged by this
+  step) -- no new classification logic exists anywhere.
+- **`can_regenerate`/`regeneration_available` are boolean AND-of-conditions,
+  computed the same way every other branch in these two services already
+  was**: version exists, pending feedback exists, `active_lock_count ==
+  0`, and `derive_pending_affected_stages(...)` is non-empty. There is no
+  heuristic, confidence score, or AI-derived judgment anywhere in this
+  chain -- it is the same "recompute from scratch, from stored fields"
+  pattern this codebase has used for `regeneration_readiness`/
+  `plan_diff_preview` since they were first introduced.
+- **Marking feedback "applied" is a fixed assignment, not an
+  interpretation.** `POST /trips/{trip_id}/regenerate` sets `applied_at`/
+  `applied_in_version`/`handling_status="applied"` on exactly the
+  pending events whose ids were captured before the stage rerun started
+  -- a direct field write, not a semantic judgment about what the
+  feedback "meant" or whether it was "satisfied."
+- **No LLM, provider, or network call is added anywhere in this step** --
+  every new function (`pending_feedback_events`,
+  `derive_pending_affected_stages`,
+  `FeedbackService.recompute_pending_feedback_summary`, the two rewired
+  `.recompute()` methods) operates purely on already-in-memory
+  `PlanningState` data.
+
+## 103. Section 174 Complete: Regeneration Is Deterministic Affected-Stage Rerun, Never LLM Generation (Step 174E, final Section 174 step)
+
+Step 174E adds the frontend UI for the regeneration lifecycle Sections
+174A-174D already built entirely server-side, and confirms end to end
+that nothing in that lifecycle is AI-generated at any layer:
+
+- **The frontend never classifies feedback, decides affected stages, or
+  computes a diff itself.** `RegenerationReadinessSection`
+  (`frontend/app/page.tsx`) only ever renders fields already computed by
+  the backend (`readiness.can_regenerate`, `readiness.blocked_by`, a
+  successful call's `RegenerateResponseData`) and gates its one button on
+  `readiness.can_regenerate` -- a boolean the backend already decided.
+  Clicking the button sends a fixed, static request body
+  (`{"confirm": true, "scope": "affected_stages"}`, `frontend/lib/api.ts`)
+  -- no request content is generated, inferred, or classified
+  client-side.
+- **The success message is a direct restatement of the response**,
+  nothing more: `previous_version`/`current_version`/`changed_sections`/
+  `preserved_sections`/`applied_feedback_event_ids` are printed exactly
+  as the backend returned them. No diff, summary, or explanation is
+  synthesized by the frontend.
+- **The one refresh the frontend performs after success**
+  (`loadPlanResult`) is the same set of `GET` calls the app already makes
+  on every trip load -- fetching, not generating, the plan's current
+  state.
+- **No new network call target was added anywhere in Section 174** --
+  end to end, `POST /trips/{trip_id}/regenerate` only ever reruns the
+  same deterministic `PlanningOrchestrator` stage methods
+  `POST /trips/{trip_id}/generate` already uses (Step 174C), gated by
+  fixed boolean checks over stored `PlanningState` fields (Step 174D),
+  and rendered by static UI copy reading those same fields (Step 174E).
+  No LLM, LangGraph, or AI candidate call exists anywhere in this path.

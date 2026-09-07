@@ -12,6 +12,22 @@ class TripResponseData(BaseModel):
     planning_state: PlanningState
 
 
+class RegenerateRequest(BaseModel):
+    """Request body for `POST /trips/{trip_id}/regenerate` (Step 174B).
+
+    Fully optional -- an absent body behaves identically to an explicit
+    `{"confirm": false}`, both producing today's exact
+    `REGENERATION_NOT_AVAILABLE` refusal (docs/17_regeneration_manual_qa.md).
+    `scope` is accepted now so a later step doesn't need a breaking
+    request-shape change, but `"affected_stages"` (whole-plan/stage-level
+    regeneration only) is the only value anything reads today -- Section
+    174 does not implement day-level or item-level regeneration scopes.
+    """
+
+    confirm: bool = False
+    scope: str = "affected_stages"
+
+
 class FeedbackRequest(BaseModel):
     feedback_text: str = Field(max_length=3000)
 

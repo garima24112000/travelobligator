@@ -172,6 +172,38 @@ _BLOCKED_BY: tuple[str, ...] = (
 )
 
 
+def pending_feedback_events(feedback_history: list[FeedbackEvent]) -> list[FeedbackEvent]:
+    """Feedback events not yet applied by a successful regeneration (Step
+    174D) -- `applied_at is None`. This is this codebase's single
+    definition of "pending feedback"; every place that gates or reports
+    on pending feedback (`FeedbackService` itself,
+    `RegenerationReadinessService`, `PlanDiffPreviewService`, and
+    `POST /trips/{trip_id}/regenerate`'s affected-stage derivation)
+    filters through this same function so none of them can silently
+    disagree about which events still count. An older persisted
+    `FeedbackEvent` (from before this step) has `applied_at` default to
+    `None`, so it is honestly still pending here.
+    """
+    return [event for event in feedback_history if event.applied_at is None]
+
+
+def derive_pending_affected_stages(feedback_history: list[FeedbackEvent]) -> list[PlanningStage]:
+    """Union of every pending (unapplied) feedback event's affected
+    stages, ordered to match `PlanningStage`'s own declaration order
+    (Step 174D). The single definition `RegenerationReadinessService`,
+    `PlanDiffPreviewService`, and `POST /trips/{trip_id}/regenerate` all
+    use to decide what a real regeneration would rerun -- never invents a
+    stage no pending feedback event actually named, and never considers
+    an already-applied event's stages (those were already rerun).
+    """
+    stage_set = {
+        stage
+        for event in pending_feedback_events(feedback_history)
+        for stage in event.affected_stages
+    }
+    return [stage for stage in _STAGE_ORDER if stage in stage_set]
+
+
 class FeedbackService:
     """Owns `feedback_history`, the affected-stages decision, the
     regeneration-strategy decision, and `change_summary`
@@ -226,6 +258,20 @@ class FeedbackService:
         )
 
         planning_state.feedback_history.append(feedback_event)
+        self.recompute_pending_feedback_summary(planning_state)
+        return planning_state
+
+    def recompute_pending_feedback_summary(self, planning_state: PlanningState) -> PlanningState:
+        """Recomputes `pending_feedback_summary` from scratch (Step 174D:
+        now filtered to pending/unapplied feedback only, `applied_at is
+        None`) -- the same recompute-from-scratch pattern
+        `PlanDiffPreviewService`/`RegenerationReadinessService` already
+        use. Called after feedback capture and, by
+        `POST /trips/{trip_id}/regenerate`, after a successful
+        regeneration marks the feedback it used as applied -- so this
+        summary never keeps advertising feedback that a real regeneration
+        already acted on.
+        """
         planning_state.pending_feedback_summary = self._compute_pending_feedback_summary(
             planning_state.feedback_history
         )
@@ -236,21 +282,29 @@ class FeedbackService:
     def _compute_pending_feedback_summary(
         feedback_history: list[FeedbackEvent],
     ) -> PendingFeedbackSummary:
-        """Deterministic rollup of `feedback_history`, recomputed from
-        scratch on every feedback submission -- purely a restatement of
-        already-computed `FeedbackEvent` fields. No AI call, no plan
-        regeneration, no invented travel fact.
+        """Deterministic rollup of pending (unapplied) feedback only (Step
+        174D) -- purely a restatement of already-computed `FeedbackEvent`
+        fields. No AI call, no plan regeneration, no invented travel fact.
         """
-        if not feedback_history:
-            return PendingFeedbackSummary()
+        pending_events = pending_feedback_events(feedback_history)
+        if not pending_events:
+            if not feedback_history:
+                return PendingFeedbackSummary()
+            # Feedback exists, but every event has already been applied by
+            # a successful regeneration -- distinct from "never captured
+            # any feedback", so the note says so honestly.
+            return PendingFeedbackSummary(
+                status="none",
+                note="All captured feedback has already been applied by a regeneration.",
+            )
 
         feedback_type_counts: dict[str, int] = {}
         latest_event_by_type: dict[str, FeedbackEvent] = {}
         stage_set: set[PlanningStage] = set()
         requires_regeneration = False
-        latest_feedback_at = feedback_history[0].created_at
+        latest_feedback_at = pending_events[0].created_at
 
-        for event in feedback_history:
+        for event in pending_events:
             feedback_type = event.feedback_type or "general_feedback"
             feedback_type_counts[feedback_type] = (
                 feedback_type_counts.get(feedback_type, 0) + 1
@@ -289,7 +343,7 @@ class FeedbackService:
 
         return PendingFeedbackSummary(
             status="captured_not_applied",
-            total_feedback_items=len(feedback_history),
+            total_feedback_items=len(pending_events),
             feedback_type_counts=ordered_type_counts,
             affected_stages=affected_stages,
             requires_regeneration=requires_regeneration,

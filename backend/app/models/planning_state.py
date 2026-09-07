@@ -855,14 +855,28 @@ class FeedbackEvent(BaseModel):
     # Stays None only if classification hasn't run at all.
     interpretation: dict[str, Any] | None = None
     # Lifecycle of this feedback event itself, independent of
-    # `regeneration_strategy` (e.g. "captured" now; later values like
-    # "interpreted"/"applied" once regeneration is implemented).
+    # `regeneration_strategy`: "captured" until a real regeneration
+    # actually reruns the stages this event named, then "applied" (Step
+    # 174D). Never set to "applied" by feedback capture itself.
     handling_status: str = "captured"
 
     change_summary: dict[str, Any] = Field(default_factory=dict)
     follow_up_question: str | None = None
 
     created_at: datetime = Field(default_factory=_utc_now)
+    # Step 174D: set together, only by a successful regeneration that
+    # actually reran the stage(s) this event named -- never by feedback
+    # capture itself, and never for a locked/skipped item (locks are
+    # disallowed entirely for the MVP regeneration scope, so there is
+    # never a partial-apply case to represent). `applied_at is None` is
+    # this codebase's definition of "pending" feedback everywhere else
+    # (`feedback_service.pending_feedback_events`,
+    # `RegenerationReadinessService`, `PlanDiffPreviewService`). Both
+    # default to `None` so an older persisted `FeedbackEvent` (from before
+    # this step) still loads as pending, honestly reflecting that it was
+    # never actually applied by any regeneration.
+    applied_at: datetime | None = None
+    applied_in_version: str | None = None
 
 
 class PendingFeedbackSummaryItem(BaseModel):

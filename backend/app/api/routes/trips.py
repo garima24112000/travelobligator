@@ -1,11 +1,19 @@
 from __future__ import annotations
 
+import logging
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, status
 
 from app.core.config import get_settings
 from app.core.errors import (
+    REGENERATION_BLOCKED_BY_LOCKS_MESSAGE,
+    REGENERATION_NO_PENDING_FEEDBACK_MESSAGE,
+    REGENERATION_NOT_AVAILABLE_MESSAGE,
     AppError,
     lock_not_found_error,
+    regeneration_blocked_by_locks_error,
+    regeneration_no_pending_feedback_error,
     regeneration_not_available_error,
     trip_not_found_error,
 )
@@ -25,17 +33,31 @@ from app.schemas.langgraph_shadow_run import LangGraphShadowRunResponseData
 from app.schemas.provider_coverage import ProviderCoverageResponseData
 from app.schemas.regeneration_attempts import RegenerationAttemptsResponseData
 from app.schemas.regeneration_readiness import RegenerationReadinessResponseData
+from app.schemas.regeneration_result import RegenerateResponseData
 from app.schemas.trip_summary import TripSummaryResponseData
-from app.schemas.trips import FeedbackRequest, LockRequest, TripResponseData
+from app.schemas.trips import (
+    FeedbackRequest,
+    LockRequest,
+    RegenerateRequest,
+    TripResponseData,
+)
 from app.schemas.validation_report import ValidationReportResponseData
 from app.services.ai_candidate_promotion_service import ai_candidate_promotion_service
 from app.services.ai_candidate_review_service import ai_candidate_review_service
+from app.services.feedback_service import (
+    derive_pending_affected_stages,
+    feedback_service,
+    pending_feedback_events,
+)
 from app.services.langgraph_planning_service import LangGraphPlanningService
 from app.services.plan_diff_preview_service import plan_diff_preview_service
 from app.services.planning_orchestrator import planning_orchestrator
 from app.services.regeneration_attempt_service import regeneration_attempt_service
 from app.services.regeneration_readiness_service import regeneration_readiness_service
 from app.services.user_lock_service import user_lock_service
+from app.services.versioning_service import versioning_service
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/trips", tags=["trips"])
 
@@ -101,29 +123,198 @@ def submit_trip_feedback(
 
 @router.post(
     "/{trip_id}/regenerate",
-    response_model=ApiResponse[None],
+    response_model=ApiResponse[RegenerateResponseData],
 )
-def regenerate_trip_plan(trip_id: str) -> ApiResponse[None]:
-    """Hard-refusal endpoint (Step 138), now also recording a minimal audit
-    trail of the attempt (Step 142). Feedback-driven regeneration has no
-    real engine connected yet, so this always refuses instead of silently
-    doing nothing or pretending to succeed. The *only* state mutation is
-    appending one `RegenerationAttempt` to `regeneration_attempts` (plus
-    the `metadata.updated_at` bump that comes with it) -- this never calls
-    `POST /generate`, never reruns any planning stage, never creates a new
-    plan version, and never touches `experience_plan`, `destination_context`,
-    `validation_report`, `provider_coverage`, `route_feasibility_context`,
-    `feedback_history`, `pending_feedback_summary`, `user_locks`,
-    `version_history`, `plan_diff_preview`, or `regeneration_readiness`.
+def regenerate_trip_plan(
+    trip_id: str, regenerate_request: RegenerateRequest | None = None
+) -> ApiResponse[RegenerateResponseData]:
+    """Feedback-driven regeneration (Step 138 hard refusal; Step 174B added
+    the real request contract and guardrails; Step 174C added the one
+    real mutation path for Section 174's audited MVP scope; Step 174D
+    wires the applied-feedback lifecycle around it so repeating the same
+    request after success is honestly refused rather than re-applying the
+    same feedback again).
+
+    Backward compatible by construction: an absent request body behaves
+    identically to an explicit `{"confirm": false}` -- both hit the first
+    guard below and return today's exact `REGENERATION_NOT_AVAILABLE`
+    refusal, byte-for-byte unchanged since before Step 174B (see
+    docs/17_regeneration_manual_qa.md).
+
+    "Pending feedback" everywhere in this function means
+    `feedback_service.pending_feedback_events` -- `applied_at is None`.
+    An event a previous successful regeneration already applied is never
+    reconsidered.
+
+    Five outcomes, in order:
+
+    1. `confirm` missing or `false` -- original blanket refusal.
+    2. `confirm=true` with at least one active lock -- distinct
+       `REGENERATION_BLOCKED_BY_LOCKS` refusal. Locks are bookkeeping only
+       (no planning stage service reads or respects them), so a confirmed
+       request must refuse outright rather than silently ignoring one.
+    3. `confirm=true` with no pending feedback (none ever submitted, or
+       every event already applied by a prior regeneration) -- distinct
+       `REGENERATION_NO_PENDING_FEEDBACK` refusal.
+    4. `confirm=true`, pending feedback exists, zero active locks, but no
+       affected stage can be derived from that feedback (e.g. every
+       pending event is unclassified `general_feedback`) or no plan has
+       ever been generated for this trip -- falls back to the original
+       `REGENERATION_NOT_AVAILABLE` refusal rather than rerunning nothing
+       or regenerating a trip that was never generated.
+    5. `confirm=true`, pending feedback exists, zero active locks, and at
+       least one real affected stage -- Section 174's MVP scope. Reruns
+       exactly those stages via the existing, unmodified
+       `PlanningOrchestrator.rerun_affected_stages` (never
+       `LangGraphPlanningService`, never a fresh `generate_full_plan`),
+       records a new `VersionHistoryItem`
+       (`VersioningService.create_version_after_feedback`), marks exactly
+       the pending feedback events used as applied (`applied_at`/
+       `applied_in_version`/`handling_status="applied"`), recomputes
+       `pending_feedback_summary`/`plan_diff_preview`/
+       `regeneration_readiness`, and returns `200` with a minimal
+       `RegenerateResponseData`. If the rerun itself raises unexpectedly,
+       no version is created, no feedback is marked applied, and a
+       `status="failed"` audit attempt is recorded instead of a `200`.
+
+    Every outcome appends exactly one `RegenerationAttempt` with a
+    `reason_code`/`status` matching what actually happened, so the audit
+    trail and the HTTP response can never disagree. `feedback_history`
+    itself is never deleted or shortened -- applied events stay in place,
+    just no longer counted as pending, so a repeated `{"confirm": true}`
+    call right after a success (with no new feedback submitted since)
+    correctly hits outcome 3 rather than creating another version from
+    the same feedback.
     """
     planning_state = planning_state_repository.get_by_trip_id(trip_id)
     if planning_state is None:
         raise trip_not_found_error(trip_id)
 
-    planning_state = regeneration_attempt_service.record_blocked_attempt(planning_state)
+    request = regenerate_request or RegenerateRequest()
+
+    if not request.confirm:
+        planning_state = regeneration_attempt_service.record_blocked_attempt(planning_state)
+        planning_state_repository.save(planning_state)
+        raise regeneration_not_available_error()
+
+    active_lock_count = sum(1 for lock in planning_state.user_locks if lock.is_active)
+    if active_lock_count > 0:
+        planning_state = regeneration_attempt_service.record_blocked_attempt(
+            planning_state,
+            reason_code=ErrorCode.REGENERATION_BLOCKED_BY_LOCKS.value,
+            message=REGENERATION_BLOCKED_BY_LOCKS_MESSAGE,
+        )
+        planning_state_repository.save(planning_state)
+        raise regeneration_blocked_by_locks_error()
+
+    pending_events = pending_feedback_events(planning_state.feedback_history)
+    if not pending_events:
+        planning_state = regeneration_attempt_service.record_blocked_attempt(
+            planning_state,
+            reason_code=ErrorCode.REGENERATION_NO_PENDING_FEEDBACK.value,
+            message=REGENERATION_NO_PENDING_FEEDBACK_MESSAGE,
+        )
+        planning_state_repository.save(planning_state)
+        raise regeneration_no_pending_feedback_error()
+
+    # confirm=true, pending feedback exists, zero active locks: Section
+    # 174's MVP scope. Two more safe-refusal conditions before any
+    # mutation is even attempted -- neither of these widens the MVP
+    # scope, both just avoid acting on a request this deterministic path
+    # cannot safely serve yet.
+    affected_stages = derive_pending_affected_stages(planning_state.feedback_history)
+    if not affected_stages or planning_state.experience_plan is None:
+        planning_state = regeneration_attempt_service.record_blocked_attempt(planning_state)
+        planning_state_repository.save(planning_state)
+        raise regeneration_not_available_error()
+
+    previous_version = planning_state.metadata.current_version
+    applied_feedback_event_ids = [event.feedback_event_id for event in pending_events]
+
+    try:
+        planning_state = planning_orchestrator.rerun_affected_stages(
+            planning_state, affected_stages
+        )
+    except Exception:
+        logger.warning(
+            "PlanningOrchestrator.rerun_affected_stages failed unexpectedly during "
+            "POST /trips/%s/regenerate; recording a failed attempt instead of "
+            "creating a new version or marking any feedback applied.",
+            trip_id,
+            exc_info=True,
+        )
+        planning_state = regeneration_attempt_service.record_blocked_attempt(
+            planning_state,
+            message=REGENERATION_NOT_AVAILABLE_MESSAGE,
+            status="failed",
+        )
+        planning_state_repository.save(planning_state)
+        raise regeneration_not_available_error()
+
+    changed_sections = [stage.value for stage in affected_stages]
+    # Locks are disallowed entirely for this MVP scope (guarded above), so
+    # there is never a locked item for this regeneration to have preserved.
+    preserved_sections: list[str] = []
+
+    planning_state = versioning_service.create_version_after_feedback(
+        planning_state,
+        # VersionHistoryItem.feedback_event_id is a single reference field;
+        # the most recent pending event is recorded there as the one that
+        # most directly triggered this regeneration, while every pending
+        # event's id is still reported in the response's
+        # applied_feedback_event_ids (all of them were considered, since
+        # this MVP scope has no per-event partial selection).
+        feedback_event_id=applied_feedback_event_ids[-1],
+        changed_sections=changed_sections,
+        preserved_sections=preserved_sections,
+        summary=(
+            "Plan regenerated from pending feedback. Rerun stages: "
+            f"{', '.join(changed_sections)}."
+        ),
+    )
+
+    # Step 174D: mark exactly the feedback events used in this run as
+    # applied, using the version just created -- re-looked-up by id on the
+    # `planning_state` returned by the calls above rather than relying on
+    # object identity surviving `rerun_affected_stages`/
+    # `create_version_after_feedback`. This is the only place
+    # `FeedbackEvent.applied_at`/`applied_in_version` are ever set; a
+    # blocked or failed attempt never reaches here, so those fields stay
+    # `None` on every event any refusal path touched.
+    new_version_label = planning_state.metadata.current_version
+    applied_at = datetime.now(timezone.utc)
+    applied_event_id_set = set(applied_feedback_event_ids)
+    for event in planning_state.feedback_history:
+        if event.feedback_event_id in applied_event_id_set:
+            event.applied_at = applied_at
+            event.applied_in_version = new_version_label
+            event.handling_status = "applied"
+
+    # Recomputed from scratch, in this order, so each reflects the
+    # just-created version and the feedback just marked applied -- same
+    # recompute-from-scratch pattern every other write path in this
+    # router already follows.
+    planning_state = feedback_service.recompute_pending_feedback_summary(planning_state)
+    planning_state = plan_diff_preview_service.recompute(planning_state)
+    planning_state = regeneration_readiness_service.recompute(planning_state)
+    planning_state = regeneration_attempt_service.record_applied_attempt(planning_state)
     planning_state_repository.save(planning_state)
 
-    raise regeneration_not_available_error()
+    data = RegenerateResponseData(
+        trip_id=trip_id,
+        status="applied",
+        previous_version=previous_version,
+        current_version=new_version_label,
+        changed_sections=changed_sections,
+        preserved_sections=preserved_sections,
+        applied_feedback_event_ids=applied_feedback_event_ids,
+        active_lock_count=active_lock_count,
+        message=(
+            "Regeneration applied. Rerun stages: "
+            f"{', '.join(changed_sections)}."
+        ),
+    )
+    return success_response(data)
 
 
 @router.post(

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import pytest
 from fastapi.testclient import TestClient
+
+import app.api.routes.trips as trips_route
 
 
 def _assert_refusal_body(body: dict) -> None:
@@ -698,3 +701,508 @@ def test_regeneration_attempt_field_contract_no_leaked_sections(
     attempt_text = str(attempt)
     for forbidden in _FORBIDDEN_AUDIT_SUBSTRINGS:
         assert forbidden not in attempt_text, f"'{forbidden}' leaked into attempt: {attempt}"
+
+
+# ---------------------------------------------------------------------------
+# Step 174B: real regeneration request contract, still guardrail-only.
+# ---------------------------------------------------------------------------
+
+
+def test_regenerate_confirm_false_explicit_matches_no_body_refusal(
+    client: TestClient, generated_trip_id: str
+) -> None:
+    """An explicit `{"confirm": false}` body must behave identically to no
+    body at all -- same code, same message, same audit trail shape.
+    """
+    response = client.post(
+        f"/trips/{generated_trip_id}/regenerate", json={"confirm": False}
+    )
+    assert response.status_code == 409
+    _assert_refusal_body(response.json())
+
+    state = client.get(f"/trips/{generated_trip_id}").json()["data"]["planning_state"]
+    assert len(state["regeneration_attempts"]) == 1
+    assert state["regeneration_attempts"][0]["reason_code"] == "REGENERATION_NOT_AVAILABLE"
+
+
+def test_regenerate_confirm_true_with_active_lock_is_blocked_by_locks(
+    client: TestClient, generated_trip_id: str
+) -> None:
+    client.post(
+        f"/trips/{generated_trip_id}/feedback",
+        json={"feedback_text": "Make this less packed"},
+    )
+    client.post(
+        f"/trips/{generated_trip_id}/locks",
+        json={"locked_item_type": "experience", "locked_item_id": "experience_test_1"},
+    )
+
+    before_state = client.get(f"/trips/{generated_trip_id}").json()["data"][
+        "planning_state"
+    ]
+
+    response = client.post(
+        f"/trips/{generated_trip_id}/regenerate", json={"confirm": True}
+    )
+    assert response.status_code == 409
+    body = response.json()
+    assert body["success"] is False
+    assert body["data"] is None
+    error = body["errors"][0]
+    assert error["code"] == "REGENERATION_BLOCKED_BY_LOCKS"
+    assert error["field"] == "regeneration"
+    assert "lock" in error["message"].lower()
+    assert "daily_plans" not in response.text
+    assert "v2" not in response.text
+
+    after_state = client.get(f"/trips/{generated_trip_id}").json()["data"][
+        "planning_state"
+    ]
+    assert after_state["experience_plan"] == before_state["experience_plan"]
+    assert after_state["version_history"] == before_state["version_history"]
+    assert len(after_state["version_history"]) == 1
+
+    attempts = after_state["regeneration_attempts"]
+    assert len(attempts) == 1
+    assert attempts[0]["reason_code"] == "REGENERATION_BLOCKED_BY_LOCKS"
+    assert attempts[0]["status"] == "blocked"
+    assert attempts[0]["active_lock_count"] == 1
+    assert attempts[0]["pending_feedback_count"] == 1
+
+
+def test_regenerate_confirm_true_with_no_feedback_is_blocked(
+    client: TestClient, generated_trip_id: str
+) -> None:
+    before_state = client.get(f"/trips/{generated_trip_id}").json()["data"][
+        "planning_state"
+    ]
+    assert before_state["feedback_history"] == []
+
+    response = client.post(
+        f"/trips/{generated_trip_id}/regenerate", json={"confirm": True}
+    )
+    assert response.status_code == 409
+    body = response.json()
+    error = body["errors"][0]
+    assert error["code"] == "REGENERATION_NO_PENDING_FEEDBACK"
+    assert error["field"] == "regeneration"
+    assert "feedback" in error["message"].lower()
+    assert "daily_plans" not in response.text
+    assert "v2" not in response.text
+
+    after_state = client.get(f"/trips/{generated_trip_id}").json()["data"][
+        "planning_state"
+    ]
+    assert after_state["experience_plan"] == before_state["experience_plan"]
+    assert after_state["version_history"] == before_state["version_history"]
+
+    attempts = after_state["regeneration_attempts"]
+    assert len(attempts) == 1
+    assert attempts[0]["reason_code"] == "REGENERATION_NO_PENDING_FEEDBACK"
+    assert attempts[0]["status"] == "blocked"
+    assert attempts[0]["pending_feedback_count"] == 0
+    assert attempts[0]["active_lock_count"] == 0
+
+
+def test_regenerate_confirm_true_with_unclassified_feedback_only_refuses_safely(
+    client: TestClient, generated_trip_id: str
+) -> None:
+    """`confirm=true`, zero locks, feedback exists, but every pending event
+    is unclassified `general_feedback` (no matched keywords, so
+    `affected_stages == []`) -- there is nothing derivable to rerun, so
+    this must still refuse (Step 174C) rather than rerun nothing or
+    silently do a full regeneration.
+    """
+    client.post(
+        f"/trips/{generated_trip_id}/feedback",
+        json={"feedback_text": "Please make it wonderful"},
+    )
+
+    before_state = client.get(f"/trips/{generated_trip_id}").json()["data"][
+        "planning_state"
+    ]
+    assert len(before_state["version_history"]) == 1
+
+    response = client.post(
+        f"/trips/{generated_trip_id}/regenerate", json={"confirm": True}
+    )
+    assert response.status_code == 409
+    _assert_refusal_body(response.json())
+
+    after_state = client.get(f"/trips/{generated_trip_id}").json()["data"][
+        "planning_state"
+    ]
+    assert after_state["experience_plan"] == before_state["experience_plan"]
+    assert after_state["version_history"] == before_state["version_history"]
+    assert len(after_state["version_history"]) == 1
+
+
+def test_regenerate_request_schema_ignores_unknown_scope_value_safely(
+    client: TestClient, generated_trip_id: str
+) -> None:
+    """`scope` is accepted but unused in Step 174B -- an unrecognized value
+    must not change refusal behavior or crash the request.
+    """
+    response = client.post(
+        f"/trips/{generated_trip_id}/regenerate",
+        json={"confirm": False, "scope": "day_level"},
+    )
+    assert response.status_code == 409
+    _assert_refusal_body(response.json())
+
+
+# ---------------------------------------------------------------------------
+# Step 174C: real, deterministic regeneration mutation for the MVP scope.
+# ---------------------------------------------------------------------------
+
+
+def _raise_assertion_174c(*args, **kwargs):
+    raise AssertionError("This must not be called by a successful POST /regenerate.")
+
+
+def _submit_pace_feedback(client: TestClient, trip_id: str) -> None:
+    response = client.post(
+        f"/trips/{trip_id}/feedback",
+        json={"feedback_text": "Make this less packed"},
+    )
+    assert response.status_code == 200
+
+
+def test_regenerate_confirm_true_with_feedback_and_zero_locks_returns_200(
+    client: TestClient, generated_trip_id: str
+) -> None:
+    _submit_pace_feedback(client, generated_trip_id)
+
+    response = client.post(
+        f"/trips/{generated_trip_id}/regenerate", json={"confirm": True}
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["success"] is True
+    assert body["errors"] == []
+
+    data = body["data"]
+    assert data["trip_id"] == generated_trip_id
+    assert data["status"] == "applied"
+    assert data["previous_version"] == "v1"
+    assert data["current_version"] == "v2"
+    assert data["changed_sections"] == ["experience_plan", "validation"]
+    assert data["preserved_sections"] == []
+    assert len(data["applied_feedback_event_ids"]) == 1
+    assert data["active_lock_count"] == 0
+    assert "regenerat" in data["message"].lower()
+
+
+def test_regenerate_success_calls_rerun_affected_stages_with_derived_stages(
+    client: TestClient, generated_trip_id: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The exact stage list passed to `rerun_affected_stages` must match
+    what `pending_feedback_summary.affected_stages` already derived for
+    this feedback -- never a hardcoded or full-pipeline stage list.
+    """
+    _submit_pace_feedback(client, generated_trip_id)
+
+    calls: list[list] = []
+    original = trips_route.planning_orchestrator.rerun_affected_stages
+
+    def spy(planning_state, affected_stages):
+        calls.append(list(affected_stages))
+        return original(planning_state, affected_stages)
+
+    monkeypatch.setattr(trips_route.planning_orchestrator, "rerun_affected_stages", spy)
+
+    response = client.post(
+        f"/trips/{generated_trip_id}/regenerate", json={"confirm": True}
+    )
+    assert response.status_code == 200
+    assert len(calls) == 1
+    assert [stage.value for stage in calls[0]] == ["experience_plan", "validation"]
+
+
+def test_regenerate_success_does_not_call_langgraph_or_full_generation(
+    client: TestClient, generated_trip_id: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A real, MVP-scope regeneration must rerun only the affected stages
+    via the orchestrator's existing stage-rerun helper -- never construct
+    `LangGraphPlanningService` and never call a full `generate_full_plan`/
+    `generate_full_plan_via_langgraph` re-generation from scratch.
+    """
+    _submit_pace_feedback(client, generated_trip_id)
+
+    monkeypatch.setattr(trips_route, "LangGraphPlanningService", _raise_assertion_174c)
+    monkeypatch.setattr(
+        trips_route.planning_orchestrator, "generate_full_plan", _raise_assertion_174c
+    )
+    monkeypatch.setattr(
+        trips_route.planning_orchestrator,
+        "generate_full_plan_via_langgraph",
+        _raise_assertion_174c,
+    )
+
+    response = client.post(
+        f"/trips/{generated_trip_id}/regenerate", json={"confirm": True}
+    )
+    assert response.status_code == 200
+
+
+def test_regenerate_success_creates_exactly_one_new_version(
+    client: TestClient, generated_trip_id: str
+) -> None:
+    _submit_pace_feedback(client, generated_trip_id)
+
+    before_state = client.get(f"/trips/{generated_trip_id}").json()["data"][
+        "planning_state"
+    ]
+    assert len(before_state["version_history"]) == 1
+
+    response = client.post(
+        f"/trips/{generated_trip_id}/regenerate", json={"confirm": True}
+    )
+    assert response.status_code == 200
+
+    after_state = client.get(f"/trips/{generated_trip_id}").json()["data"][
+        "planning_state"
+    ]
+    assert len(after_state["version_history"]) == 2
+    new_version = after_state["version_history"][-1]
+    assert new_version["version_label"] == "v2"
+    assert new_version["created_by"] == "user_feedback"
+    assert new_version["changed_sections"] == ["experience_plan", "validation"]
+    assert new_version["preserved_sections"] == []
+    assert "regenerat" in new_version["summary"].lower()
+    assert after_state["metadata"]["current_version"] == "v2"
+
+
+def test_regenerate_success_recomputes_plan_diff_preview_and_readiness(
+    client: TestClient, generated_trip_id: str
+) -> None:
+    _submit_pace_feedback(client, generated_trip_id)
+
+    before_preview = client.get(f"/trips/{generated_trip_id}").json()["data"][
+        "planning_state"
+    ]["plan_diff_preview"]
+    before_readiness = client.get(
+        f"/trips/{generated_trip_id}/regeneration-readiness"
+    ).json()["data"]["regeneration_readiness"]
+    assert before_preview["from_version"] == "v1"
+    assert before_readiness["current_version"] == "v1"
+
+    response = client.post(
+        f"/trips/{generated_trip_id}/regenerate", json={"confirm": True}
+    )
+    assert response.status_code == 200
+
+    after_preview = client.get(f"/trips/{generated_trip_id}").json()["data"][
+        "planning_state"
+    ]["plan_diff_preview"]
+    after_readiness = client.get(
+        f"/trips/{generated_trip_id}/regeneration-readiness"
+    ).json()["data"]["regeneration_readiness"]
+
+    assert after_preview != before_preview
+    assert after_preview["from_version"] == "v2"
+    assert after_readiness != before_readiness
+    assert after_readiness["current_version"] == "v2"
+
+
+def test_regenerate_success_records_applied_attempt(
+    client: TestClient, generated_trip_id: str
+) -> None:
+    _submit_pace_feedback(client, generated_trip_id)
+
+    response = client.post(
+        f"/trips/{generated_trip_id}/regenerate", json={"confirm": True}
+    )
+    assert response.status_code == 200
+
+    state = client.get(f"/trips/{generated_trip_id}").json()["data"]["planning_state"]
+    attempts = state["regeneration_attempts"]
+    assert len(attempts) == 1
+    attempt = attempts[0]
+    assert attempt["status"] == "applied"
+    assert attempt["reason_code"] == "REGENERATION_APPLIED"
+    assert attempt["current_version"] == "v2"
+
+
+def test_regenerate_failed_stage_rerun_does_not_create_version_and_records_failed_attempt(
+    client: TestClient, generated_trip_id: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If `rerun_affected_stages` raises unexpectedly, no version may be
+    created and the response must stay a safe refusal, never a `200`
+    pretending success happened.
+    """
+    _submit_pace_feedback(client, generated_trip_id)
+
+    before_state = client.get(f"/trips/{generated_trip_id}").json()["data"][
+        "planning_state"
+    ]
+    assert len(before_state["version_history"]) == 1
+
+    def _raise(planning_state, affected_stages):
+        raise RuntimeError("simulated unexpected stage rerun failure")
+
+    monkeypatch.setattr(
+        trips_route.planning_orchestrator, "rerun_affected_stages", _raise
+    )
+
+    response = client.post(
+        f"/trips/{generated_trip_id}/regenerate", json={"confirm": True}
+    )
+    assert response.status_code == 409
+    _assert_refusal_body(response.json())
+
+    after_state = client.get(f"/trips/{generated_trip_id}").json()["data"][
+        "planning_state"
+    ]
+    assert after_state["version_history"] == before_state["version_history"]
+    assert len(after_state["version_history"]) == 1
+    assert after_state["experience_plan"] == before_state["experience_plan"]
+    assert after_state["metadata"]["current_version"] == "v1"
+
+    attempts = after_state["regeneration_attempts"]
+    assert len(attempts) == 1
+    assert attempts[0]["status"] == "failed"
+    assert attempts[0]["reason_code"] == "REGENERATION_NOT_AVAILABLE"
+
+
+# ---------------------------------------------------------------------------
+# Step 174D: applied-feedback lifecycle and repeat-safety.
+# ---------------------------------------------------------------------------
+
+
+def test_regenerate_success_marks_used_feedback_as_applied(
+    client: TestClient, generated_trip_id: str
+) -> None:
+    _submit_pace_feedback(client, generated_trip_id)
+
+    response = client.post(
+        f"/trips/{generated_trip_id}/regenerate", json={"confirm": True}
+    )
+    assert response.status_code == 200
+    data = response.json()["data"]
+
+    state = client.get(f"/trips/{generated_trip_id}").json()["data"]["planning_state"]
+    events = state["feedback_history"]
+    assert len(events) == 1
+    event = events[0]
+    assert event["applied_at"] is not None
+    assert event["applied_in_version"] == "v2"
+    assert event["handling_status"] == "applied"
+    # The response's applied_feedback_event_ids matches exactly the
+    # feedback event(s) actually marked applied.
+    assert data["applied_feedback_event_ids"] == [event["feedback_event_id"]]
+
+
+def test_regenerate_success_pending_feedback_summary_reflects_zero_pending(
+    client: TestClient, generated_trip_id: str
+) -> None:
+    _submit_pace_feedback(client, generated_trip_id)
+
+    response = client.post(
+        f"/trips/{generated_trip_id}/regenerate", json={"confirm": True}
+    )
+    assert response.status_code == 200
+
+    state = client.get(f"/trips/{generated_trip_id}").json()["data"]["planning_state"]
+    summary = state["pending_feedback_summary"]
+    assert summary["total_feedback_items"] == 0
+    assert summary["affected_stages"] == []
+    # The feedback event itself is still present in feedback_history --
+    # only pending_feedback_summary's rollup excludes the now-applied event.
+    assert len(state["feedback_history"]) == 1
+
+
+def test_repeated_regenerate_after_success_refuses_with_no_pending_feedback(
+    client: TestClient, generated_trip_id: str
+) -> None:
+    _submit_pace_feedback(client, generated_trip_id)
+
+    first_response = client.post(
+        f"/trips/{generated_trip_id}/regenerate", json={"confirm": True}
+    )
+    assert first_response.status_code == 200
+
+    before_state = client.get(f"/trips/{generated_trip_id}").json()["data"][
+        "planning_state"
+    ]
+    assert len(before_state["version_history"]) == 2
+
+    second_response = client.post(
+        f"/trips/{generated_trip_id}/regenerate", json={"confirm": True}
+    )
+    assert second_response.status_code == 409
+    body = second_response.json()
+    assert body["errors"][0]["code"] == "REGENERATION_NO_PENDING_FEEDBACK"
+
+    after_state = client.get(f"/trips/{generated_trip_id}").json()["data"][
+        "planning_state"
+    ]
+    # No v3 -- the repeat call never reruns the same already-applied feedback.
+    assert after_state["version_history"] == before_state["version_history"]
+    assert len(after_state["version_history"]) == 2
+    assert after_state["metadata"]["current_version"] == "v2"
+    assert not any(
+        version["version_label"] == "v3" for version in after_state["version_history"]
+    )
+    assert after_state["experience_plan"] == before_state["experience_plan"]
+
+    attempts = after_state["regeneration_attempts"]
+    assert len(attempts) == 2
+    assert attempts[0]["status"] == "applied"
+    assert attempts[1]["status"] == "blocked"
+    assert attempts[1]["reason_code"] == "REGENERATION_NO_PENDING_FEEDBACK"
+
+
+def test_regenerate_new_feedback_after_success_is_regeneratable_again(
+    client: TestClient, generated_trip_id: str
+) -> None:
+    """New feedback submitted after a successful regeneration is its own,
+    freshly-pending event -- a second confirm=true call must succeed
+    again and create v3, distinct from the repeat-with-no-new-feedback
+    case above.
+    """
+    _submit_pace_feedback(client, generated_trip_id)
+    first_response = client.post(
+        f"/trips/{generated_trip_id}/regenerate", json={"confirm": True}
+    )
+    assert first_response.status_code == 200
+
+    _submit_pace_feedback(client, generated_trip_id)
+    second_response = client.post(
+        f"/trips/{generated_trip_id}/regenerate", json={"confirm": True}
+    )
+    assert second_response.status_code == 200
+    data = second_response.json()["data"]
+    assert data["previous_version"] == "v2"
+    assert data["current_version"] == "v3"
+
+    state = client.get(f"/trips/{generated_trip_id}").json()["data"]["planning_state"]
+    assert len(state["version_history"]) == 3
+    applied_versions = {event["applied_in_version"] for event in state["feedback_history"]}
+    assert applied_versions == {"v2", "v3"}
+
+
+def test_regenerate_failed_stage_rerun_does_not_mark_feedback_applied(
+    client: TestClient, generated_trip_id: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _submit_pace_feedback(client, generated_trip_id)
+
+    def _raise(planning_state, affected_stages):
+        raise RuntimeError("simulated unexpected stage rerun failure")
+
+    monkeypatch.setattr(
+        trips_route.planning_orchestrator, "rerun_affected_stages", _raise
+    )
+
+    response = client.post(
+        f"/trips/{generated_trip_id}/regenerate", json={"confirm": True}
+    )
+    assert response.status_code == 409
+
+    state = client.get(f"/trips/{generated_trip_id}").json()["data"]["planning_state"]
+    events = state["feedback_history"]
+    assert len(events) == 1
+    assert events[0]["applied_at"] is None
+    assert events[0]["applied_in_version"] is None
+    assert events[0]["handling_status"] == "captured"
+    assert state["pending_feedback_summary"]["total_feedback_items"] == 1

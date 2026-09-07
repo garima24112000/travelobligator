@@ -616,6 +616,12 @@ export type FeedbackEvent = {
   affected_stages: string[];
   interpretation: FeedbackInterpretation | null;
   created_at: string;
+  // Step 174D: set only by a successful regeneration that actually reran
+  // the stage(s) this event named -- never by feedback capture itself.
+  // `applied_at === null` is this codebase's definition of "pending"
+  // feedback; an older persisted event has both default to `null`.
+  applied_at: string | null;
+  applied_in_version: string | null;
 };
 
 // One feedback_type group inside PendingFeedbackSummary.summary_items
@@ -684,12 +690,15 @@ export type PreservedLockedItem = {
   reason: string;
 };
 
-// Deterministic, honest preview of what a *future* regeneration would
-// compare/change (backend: app.models.planning_state.PlanDiffPreview /
+// Deterministic, honest preview of what a regeneration would compare/
+// change (backend: app.models.planning_state.PlanDiffPreview /
 // app.services.plan_diff_preview_service.PlanDiffPreviewService). Recomputed
-// from scratch on the backend from version_history/feedback_history/
+// from scratch on the backend from version_history/pending feedback/
 // user_locks -- never something this endpoint applies itself, never a claim
-// that a new version or diff was actually generated.
+// that a new version or diff was actually generated. As of Step 174D,
+// `regeneration_available` is honestly `true` only for the exact MVP scope
+// `POST /trips/{trip_id}/regenerate` supports (generated plan + pending
+// feedback + zero active locks + a real derivable affected stage).
 export type PlanDiffPreview = {
   preview_status: string;
   from_version: string | null;
@@ -708,10 +717,14 @@ export type PlanDiffPreview = {
 // Deterministic, honest gate explaining whether feedback-driven
 // regeneration can run right now (backend: app.models.planning_state.
 // RegenerationReadiness / app.services.regeneration_readiness_service.
-// RegenerationReadinessService). `status` stays "blocked" and
-// `can_regenerate` stays false today because no real regeneration engine
-// is connected -- this is a readout only, never something applied by the
-// frontend, and never a claim that regeneration ran or a plan changed.
+// RegenerationReadinessService). As of Step 174D, `status`/`can_regenerate`
+// are honestly "ready"/`true` only for the exact MVP scope
+// `POST /trips/{trip_id}/regenerate` supports (generated plan + pending
+// feedback + zero active locks + a real derivable affected stage); every
+// other combination stays "blocked"/`false`. This is a readout only --
+// never something applied by the frontend itself, and never a claim that
+// regeneration ran or a plan changed (only a real `POST /regenerate` call
+// does that).
 export type RegenerationReadiness = {
   status: string;
   can_regenerate: boolean;
@@ -731,12 +744,41 @@ export type RegenerationReadinessData = {
   regeneration_readiness: RegenerationReadiness;
 };
 
-// One audit record of a blocked `POST /trips/{trip_id}/regenerate` call
-// (backend: app.models.planning_state.RegenerationAttempt /
+// Request body for `POST /trips/{trip_id}/regenerate` (backend:
+// app.schemas.trips.RegenerateRequest, Step 174B). The frontend only ever
+// sends `confirm: true` with the default `scope` -- no day-level or
+// item-level scope exists yet, matching the backend's own MVP boundary.
+export type RegenerateRequestInput = {
+  confirm: true;
+  scope: "affected_stages";
+};
+
+// Response payload for a successful `POST /trips/{trip_id}/regenerate`
+// (backend: app.schemas.regeneration_result.RegenerateResponseData, Step
+// 174C). Deliberately minimal -- no plan content, no fabricated diff;
+// `changed_sections`/`preserved_sections`/`applied_feedback_event_ids` are
+// restatements of what the backend actually reran, never a frontend-
+// computed value. The frontend follows up with `GET /trips/{trip_id}` (via
+// `loadPlanResult`) for the plan's actual current content.
+export type RegenerateResponseData = {
+  trip_id: string;
+  status: string;
+  previous_version: string | null;
+  current_version: string;
+  changed_sections: string[];
+  preserved_sections: string[];
+  applied_feedback_event_ids: string[];
+  active_lock_count: number;
+  message: string;
+};
+
+// One audit record of a `POST /trips/{trip_id}/regenerate` call (backend:
+// app.models.planning_state.RegenerationAttempt /
 // app.services.regeneration_attempt_service.RegenerationAttemptService).
-// Purely bookkeeping proving an attempt was requested and refused -- never
-// itinerary content, and never a claim that regeneration ran, a diff was
-// generated, or a new plan version was created.
+// `status` is `"blocked"` for every refusal, `"failed"` for an unexpected
+// error during a real rerun, or `"applied"` for the one real success case
+// (Step 174C/174D) -- never itinerary content, and never more than the
+// section-name-level bookkeeping `RegenerateResponseData` itself reports.
 export type RegenerationAttempt = {
   attempt_id: string;
   status: string;

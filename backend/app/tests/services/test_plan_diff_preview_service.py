@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from app.models.common import RegenerationStrategy
 from app.models.planning_state import (
     ExperiencePlan,
@@ -70,7 +72,11 @@ def test_recompute_after_generation_with_no_feedback() -> None:
     assert "no pending feedback" in preview.note.lower()
 
 
-def test_recompute_after_generation_with_feedback_is_ready_for_preview() -> None:
+def test_recompute_after_generation_with_feedback_is_regeneration_available() -> None:
+    """Step 174D: version exists, feedback exists and classifies to real
+    affected stages, zero active locks -- exactly the MVP scope
+    `POST /trips/{trip_id}/regenerate` now actually supports.
+    """
     planning_state = _planning_state()
     planning_state.experience_plan = ExperiencePlan()
     planning_state.validation_report = ValidationReport()
@@ -87,7 +93,7 @@ def test_recompute_after_generation_with_feedback_is_ready_for_preview() -> None
     result = plan_diff_preview_service.recompute(planning_state)
     preview = result.plan_diff_preview
 
-    assert preview.preview_status == "ready_for_future_regeneration_preview"
+    assert preview.preview_status == "regeneration_available"
     assert preview.from_version == "v1"
     assert preview.would_create_version == "v2"
     assert preview.triggered_by_feedback_event_ids == [feedback_event.feedback_event_id]
@@ -96,9 +102,83 @@ def test_recompute_after_generation_with_feedback_is_ready_for_preview() -> None
         PlanningStage.EXPERIENCE_PLAN,
         PlanningStage.VALIDATION,
     ]
-    assert preview.regeneration_available is False
+    assert preview.regeneration_available is True
+    assert preview.blocked_by == []
     assert preview.to_version is None
-    assert "no plan diff has been generated or applied" in preview.note.lower()
+    assert "confirm=true" in preview.note.lower()
+
+
+def test_recompute_blocked_by_active_locks_even_with_derivable_feedback() -> None:
+    planning_state = _planning_state()
+    planning_state.experience_plan = ExperiencePlan()
+    planning_state.validation_report = ValidationReport()
+    planning_state = VersioningService().create_initial_version(planning_state)
+    planning_state.feedback_history.append(
+        FeedbackEvent(
+            feedback_text="Make this less packed",
+            feedback_type="pace_change",
+            affected_stages=[PlanningStage.EXPERIENCE_PLAN, PlanningStage.VALIDATION],
+            regeneration_strategy=RegenerationStrategy.EXPLANATION_ONLY,
+        )
+    )
+    planning_state.user_locks.append(
+        UserLock(locked_item_type="experience", locked_item_id="experience_test_1")
+    )
+
+    result = plan_diff_preview_service.recompute(planning_state)
+    preview = result.plan_diff_preview
+
+    assert preview.regeneration_available is False
+    assert preview.active_lock_count == 1
+    assert preview.would_consider_sections == [
+        PlanningStage.EXPERIENCE_PLAN,
+        PlanningStage.VALIDATION,
+    ]
+    assert any("lock" in reason.lower() for reason in preview.blocked_by)
+
+
+def test_recompute_not_available_when_pending_feedback_has_no_derivable_stage() -> None:
+    planning_state = _planning_state()
+    planning_state.experience_plan = ExperiencePlan()
+    planning_state = VersioningService().create_initial_version(planning_state)
+    planning_state.feedback_history.append(
+        FeedbackEvent(
+            feedback_text="Please make it wonderful",
+            feedback_type="general_feedback",
+            affected_stages=[],
+            regeneration_strategy=RegenerationStrategy.EXPLANATION_ONLY,
+        )
+    )
+
+    result = plan_diff_preview_service.recompute(planning_state)
+    preview = result.plan_diff_preview
+
+    assert preview.regeneration_available is False
+    assert preview.would_consider_sections == []
+    assert preview.pending_feedback_count == 1
+
+
+def test_recompute_not_available_when_all_feedback_already_applied() -> None:
+    planning_state = _planning_state()
+    planning_state.experience_plan = ExperiencePlan()
+    planning_state = VersioningService().create_initial_version(planning_state)
+    applied_event = FeedbackEvent(
+        feedback_text="Make this less packed",
+        feedback_type="pace_change",
+        affected_stages=[PlanningStage.EXPERIENCE_PLAN],
+        regeneration_strategy=RegenerationStrategy.EXPLANATION_ONLY,
+    )
+    applied_event.applied_at = datetime.now(timezone.utc)
+    applied_event.applied_in_version = "v2"
+    planning_state.feedback_history.append(applied_event)
+
+    result = plan_diff_preview_service.recompute(planning_state)
+    preview = result.plan_diff_preview
+
+    assert preview.regeneration_available is False
+    assert preview.pending_feedback_count == 0
+    assert preview.would_create_version is None
+    assert "no pending feedback" in preview.note.lower()
 
 
 def test_would_consider_sections_is_union_ordered_by_stage_order() -> None:

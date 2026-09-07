@@ -2466,3 +2466,162 @@ Section 173, end to end: `route_geometry` is real, provider-backed data
 only, drawn only where it exists, never inferred, never faked, and
 never confused with the plain numbered stop markers that exist
 regardless of whether any path does.
+
+### 39.28 Backend Regeneration Guardrails Added, No Frontend Change (Step 174B)
+
+Step 174B is backend-only (`backend/app/api/routes/trips.py`,
+`backend/app/schemas/trips.py`, `backend/app/core/errors.py`,
+`backend/app/schemas/errors.py`,
+`backend/app/services/regeneration_attempt_service.py`) -- **no frontend
+file changed**. `POST /trips/{trip_id}/regenerate` gains a real
+`confirm`/`scope` request body and a staged guardrail chain (blocked by
+active locks, blocked by no pending feedback, or an eligible-but-not-
+yet-enabled refusal), but the frontend's existing `requestRegeneration`
+call (`frontend/lib/api.ts`) still sends no body at all, so it still
+receives byte-for-byte the same `409 REGENERATION_NOT_AVAILABLE`
+response it always has. `RegenerationReadinessSection`'s "Check backend
+refusal" button (`frontend/app/page.tsx`) is unchanged and still treats
+any non-409 response as an anomaly worth flagging.
+
+A real frontend UI for the new `confirm=true` guardrail outcomes
+(distinguishing "blocked by locks" from "no pending feedback" from an
+eventual real success) is planned for Step 174E, once Step 174C gives
+the "eligible" branch a real, mutating outcome to actually render.
+
+### 39.29 Backend Real Regeneration Enabled, No Frontend Change Yet (Step 174C)
+
+Step 174C is backend-only (`backend/app/api/routes/trips.py`,
+`backend/app/schemas/regeneration_result.py`,
+`backend/app/services/regeneration_attempt_service.py`,
+`backend/app/services/versioning_service.py` consumption) -- **no
+frontend file changed**. `POST /trips/{trip_id}/regenerate` now actually
+mutates the plan for one narrow request shape (`confirm=true`, feedback
+exists, zero active locks, at least one real affected stage) and returns
+`200` with a `RegenerateResponseData` payload, but the frontend's
+existing `requestRegeneration` call (`frontend/lib/api.ts`) still sends
+no body at all, so it still hits the unconditional `{"confirm": false}`
+branch and still receives byte-for-byte the same
+`409 REGENERATION_NOT_AVAILABLE` response it always has.
+`RegenerationReadinessSection`'s "Check backend refusal" button
+(`frontend/app/page.tsx`) is unchanged and still treats any non-409
+response as an anomaly worth flagging -- it has no code path yet that
+would recognize or render a real `200` regeneration result, a
+`REGENERATION_BLOCKED_BY_LOCKS`/`REGENERATION_NO_PENDING_FEEDBACK`
+refusal, or an updated `experience_plan` after regeneration.
+
+The existing frontend also has no way yet to send `{"confirm": true}` at
+all -- `requestRegeneration`'s signature takes no request body parameter.
+A real frontend UI covering the full guardrail/success matrix (locks,
+no feedback, applied result, and refreshing the itinerary/version
+history/diff-preview panels after a real regeneration) remains planned
+for Step 174E.
+
+### 39.30 Backend Regeneration Lifecycle Completed, Readiness/Diff Fields Now Honest, No Frontend Change Yet (Step 174D)
+
+Step 174D is backend-only (`backend/app/models/planning_state.py`,
+`backend/app/services/feedback_service.py`,
+`backend/app/services/regeneration_readiness_service.py`,
+`backend/app/services/plan_diff_preview_service.py`,
+`backend/app/api/routes/trips.py`) -- **no frontend file changed**. Two
+things a future frontend step should know both changed on the wire,
+even though nothing in `frontend/app/page.tsx` reads them differently
+yet:
+
+- `PlanningState.regeneration_readiness.can_regenerate`/`status` and
+  `PlanningState.plan_diff_preview.regeneration_available`/`preview_status`
+  now go `true`/`"ready"`/`"regeneration_available"` for a trip with a
+  generated plan, pending feedback, zero active locks, and a real
+  derivable affected stage -- the existing read-only
+  `RegenerationReadinessSection`/plan-diff-preview panels in
+  `frontend/app/page.tsx` already render whatever these fields say, so
+  they will start showing this new value for a matching trip without any
+  frontend code change -- but no button anywhere yet turns that "ready"
+  state into an actual `{"confirm": true}` call (see 39.29 above).
+  `RegenerationReadinessSection`'s copy ("This gate only explains whether
+  feedback-driven regeneration can run. It does not regenerate or change
+  the plan.") remains accurate either way. **Superseded by Step 174E**
+  (section 39.31 below), which adds the real button and rewords this
+  copy since the section now does let you apply it.
+- `FeedbackEvent` gained `applied_at`/`applied_in_version` (plus the
+  existing `handling_status` now actually reaching `"applied"`). The
+  frontend's feedback-history rendering (wherever it lists
+  `feedback_history`) will start seeing these fields as extra, currently
+  unused JSON keys on events a real regeneration has processed --
+  harmless for `frontend/lib/types.ts`'s existing `FeedbackEvent` type
+  mirror only once that type is updated to include them; until then they
+  are simply not read by the frontend, matching how new backend fields
+  have always been introduced ahead of the frontend type catching up in
+  this project.
+
+A real frontend UI update (rendering "ready to regenerate," a real
+`{"confirm": true}` button, and reflecting applied feedback distinctly
+from pending feedback) remains planned for Step 174E.
+
+### 39.31 Section 174 Complete: Real Regeneration UI (Step 174E, final Section 174 step)
+
+Step 174E is the frontend's part of Section 174: `frontend/lib/types.ts`,
+`frontend/lib/api.ts`, and `frontend/app/page.tsx` change; no backend
+file changes.
+
+- **New mirrored types** (`frontend/lib/types.ts`):
+  `RegenerateRequestInput` (`{confirm: true, scope: "affected_stages"}`)
+  and `RegenerateResponseData` (`trip_id`, `status`, `previous_version`,
+  `current_version`, `changed_sections`, `preserved_sections`,
+  `applied_feedback_event_ids`, `active_lock_count`, `message`) mirror
+  `backend/app/schemas/trips.RegenerateRequest`/
+  `backend/app/schemas/regeneration_result.RegenerateResponseData`
+  exactly. `FeedbackEvent` also gained `applied_at`/`applied_in_version`
+  (Step 174D's backend fields, now actually typed on the frontend).
+- **`ApiRequestError` gained a `code` field** (`frontend/lib/api.ts`),
+  populated from the backend's own `ApiError.code` -- previously only
+  `message`/`status` were captured, which was enough for a generic
+  refusal display but not enough to distinguish
+  `REGENERATION_BLOCKED_BY_LOCKS` from `REGENERATION_NO_PENDING_FEEDBACK`
+  from any other error.
+- **`requestRegeneration` now always sends `{"confirm": true, "scope":
+  "affected_stages"}`** and returns a typed `RegenerateResponseData` on
+  success instead of `unknown` -- it no longer sends an empty body
+  expecting only a refusal.
+- **`RegenerationReadinessSection` rewritten**: the old "Check backend
+  refusal" button and its "unexpected success is a warning" framing are
+  both gone. The section's one button, **"Regenerate from feedback,"** is
+  `disabled` whenever `readiness.can_regenerate` is `false` (with a
+  tooltip/helper text explaining the requirement) and calls
+  `requestRegeneration` when enabled. On success it renders a restrained
+  green panel restating `previous_version → current_version`,
+  `changed_sections`, `preserved_sections`, and
+  `applied_feedback_event_ids` -- values read directly from the
+  response, never computed by the frontend -- and calls a new
+  `onRegenerateSuccess` prop that the page wires to a full
+  `loadPlanResult` refresh (the same helper every trip load already
+  uses), so the itinerary, movement rows, route paths, version history,
+  diff preview, and readiness panels all update together. On refusal it
+  renders the backend's own `code`/`message` in a red panel and refreshes
+  only the attempt-audit list (`onRegenerationAttemptsChange`), exactly
+  matching the old refusal-path behavior -- never implying the plan
+  changed, never calling `loadPlanResult`.
+- **A second, previously-separate disabled button removed**:
+  `PendingRequestedChangesSection`'s own "Regenerate with feedback"
+  button (hardcoded `disabled`, title "not implemented yet") was a
+  second, now-inaccurate claim that regeneration was unavailable. It is
+  replaced with text pointing to the one real control in
+  `RegenerationReadinessSection` below -- there is now exactly one
+  regenerate action on the page, not two with different framings.
+  `PlanDiffPreviewSection`'s status-label helper also gained a friendly
+  label for the new `"regeneration_available"` `preview_status` value
+  (Step 174D); its rendering logic itself was already dynamic and needed
+  no other change.
+- **Preserved unchanged**: numbered stops (172B), movement rows (172D),
+  provider-backed route paths (173), the AI-promoted badge (170), and
+  the lock/version-history/diff-preview panels -- none of their code was
+  touched. Verified live: generated a trip, submitted feedback, watched
+  the button enable, clicked it, confirmed the success panel and full
+  refresh (version history, diff preview, and readiness all updated to
+  reflect the new version and the now-applied feedback), confirmed the
+  button disabled again immediately after (no pending feedback left),
+  and confirmed creating then removing an active lock correctly toggled
+  the button between blocked/enabled while feedback stayed pending.
+- **Frontend re-check gate, not the safety boundary**: the button being
+  enabled is a UX convenience only -- `POST /trips/{trip_id}/regenerate`
+  itself still re-validates every precondition server-side on every
+  call, unchanged from Steps 174B-174D.

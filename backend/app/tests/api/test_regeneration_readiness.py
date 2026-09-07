@@ -52,9 +52,13 @@ def test_generated_trip_with_no_feedback_is_blocked_with_v1(
     assert "regeneration_engine" in readiness["missing_capabilities"]
 
 
-def test_generated_trip_with_feedback_is_blocked_with_v2_hint(
+def test_generated_trip_with_feedback_and_zero_locks_is_ready(
     client: TestClient, generated_trip_id: str
 ) -> None:
+    """Step 174D: version exists, feedback exists and classifies to a real
+    affected stage, zero active locks -- exactly the MVP scope
+    `POST /trips/{trip_id}/regenerate` now actually supports.
+    """
     feedback_response = client.post(
         f"/trips/{generated_trip_id}/feedback",
         json={"feedback_text": "Make this less packed"},
@@ -65,12 +69,38 @@ def test_generated_trip_with_feedback_is_blocked_with_v2_hint(
     assert response.status_code == 200
     readiness = response.json()["data"]["regeneration_readiness"]
 
-    assert readiness["status"] == "blocked"
-    assert readiness["can_regenerate"] is False
+    assert readiness["status"] == "ready"
+    assert readiness["can_regenerate"] is True
     assert readiness["current_version"] == "v1"
     assert readiness["would_create_version"] == "v2"
     assert readiness["pending_feedback_count"] == 1
-    assert readiness["missing_capabilities"] == ["regeneration_engine"]
+    assert readiness["missing_capabilities"] == []
+    assert readiness["blocked_by"] == []
+
+
+def test_generated_trip_with_feedback_and_active_lock_is_blocked(
+    client: TestClient, generated_trip_id: str
+) -> None:
+    feedback_response = client.post(
+        f"/trips/{generated_trip_id}/feedback",
+        json={"feedback_text": "Make this less packed"},
+    )
+    assert feedback_response.status_code == 200
+
+    lock_response = client.post(
+        f"/trips/{generated_trip_id}/locks",
+        json={"locked_item_type": "experience", "locked_item_id": "experience_test_1"},
+    )
+    assert lock_response.status_code == 201
+
+    response = client.get(f"/trips/{generated_trip_id}/regeneration-readiness")
+    assert response.status_code == 200
+    readiness = response.json()["data"]["regeneration_readiness"]
+
+    assert readiness["status"] == "blocked"
+    assert readiness["can_regenerate"] is False
+    assert readiness["active_lock_count"] == 1
+    assert readiness["would_create_version"] == "v2"
 
 
 def test_user_lock_create_and_delete_updates_active_lock_count(

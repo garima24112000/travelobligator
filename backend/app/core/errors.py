@@ -64,10 +64,66 @@ def regeneration_not_available_error() -> AppError:
     pretending to succeed. The code/message/status are identical on every
     call, for every trip, so callers can rely on this being stable rather
     than trip-specific.
+
+    Step 174B: this is also the refusal returned for the one remaining
+    case real regeneration cannot yet handle -- `confirm=true`, feedback
+    exists, and there are zero active locks. That request shape is
+    exactly Section 174's chosen MVP scope, but no engine call has been
+    wired in yet (Step 174C does that); until then this transitional case
+    reuses this same error rather than inventing a fourth code for a
+    distinction with no real behavioral difference today.
     """
     return AppError(
         code=ErrorCode.REGENERATION_NOT_AVAILABLE,
         message=REGENERATION_NOT_AVAILABLE_MESSAGE,
+        status_code=status.HTTP_409_CONFLICT,
+        field="regeneration",
+    )
+
+
+# Step 174B: distinct refusal for confirm=true requests blocked specifically
+# by an active lock, so a caller (and the audit trail) can tell "regeneration
+# isn't implemented" apart from "regeneration would run, but a lock is in
+# the way." Shared with RegenerationAttempt.reason_code the same way
+# REGENERATION_NOT_AVAILABLE_MESSAGE already is, so the two can never drift.
+REGENERATION_BLOCKED_BY_LOCKS_MESSAGE = (
+    "Regeneration is blocked because one or more active locks exist. "
+    "Remove all active locks before requesting regeneration."
+)
+
+
+def regeneration_blocked_by_locks_error() -> AppError:
+    """Build the refusal for a confirmed regeneration request while at
+    least one active lock exists.
+
+    Locks today are bookkeeping only -- no planning stage service reads or
+    respects them -- so a confirmed regeneration request must refuse
+    outright rather than silently ignoring the lock or pretending it was
+    honored.
+    """
+    return AppError(
+        code=ErrorCode.REGENERATION_BLOCKED_BY_LOCKS,
+        message=REGENERATION_BLOCKED_BY_LOCKS_MESSAGE,
+        status_code=status.HTTP_409_CONFLICT,
+        field="regeneration",
+    )
+
+
+# Step 174B: distinct refusal for confirm=true requests with no pending
+# feedback -- there is nothing for a real regeneration to act on yet.
+REGENERATION_NO_PENDING_FEEDBACK_MESSAGE = (
+    "Regeneration requires at least one pending feedback item. Submit "
+    "feedback via POST /trips/{trip_id}/feedback before requesting "
+    "regeneration."
+)
+
+
+def regeneration_no_pending_feedback_error() -> AppError:
+    """Build the refusal for a confirmed regeneration request with an empty
+    `feedback_history`."""
+    return AppError(
+        code=ErrorCode.REGENERATION_NO_PENDING_FEEDBACK,
+        message=REGENERATION_NO_PENDING_FEEDBACK_MESSAGE,
         status_code=status.HTTP_409_CONFLICT,
         field="regeneration",
     )
