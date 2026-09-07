@@ -30,6 +30,7 @@ from app.models.common import (
     ValidationSeverity,
 )
 from app.models.routing import (
+    MovementDataProvenance,
     RouteAwareSequencingReport,
     RouteFeasibilityReport,
     TravelTimeBufferReport,
@@ -525,6 +526,39 @@ class ExperienceItem(BaseModel):
     original_ai_candidate_id: str | None = None
     provider_place_id: str | None = None
     provider_source: str | None = None
+
+    # Stable itinerary ordering metadata (Step 172A,
+    # docs/13_llm_reasoning_pipeline.md, docs/14_backend_architecture.md),
+    # so the frontend can later render numbered stops ("1. Stop A", "2.
+    # Stop B", ...) without depending on array position alone. Both are
+    # pure bookkeeping restating this item's own already-decided schedule
+    # position -- never a new travel fact, never a route/timing claim.
+    # `day_number` mirrors the parent `DailyPlan.day_number`; `stop_order`
+    # is this item's 1-based position within that day's `experiences`
+    # list. Both are set by `ExperiencePlannerService.run()` at initial
+    # scheduling time, and re-stamped by
+    # `RouteAwareSequencingService.apply_report()` if a provider-backed
+    # reorder actually changes a day's order afterward -- never left
+    # stale relative to the real `experiences` list order. `None` only
+    # ever means "not yet scheduled" (e.g. a bare `ExperienceItem()` built
+    # outside the normal scheduling path, as many existing test fixtures
+    # do).
+    day_number: int | None = None
+    stop_order: int | None = Field(default=None, ge=1)
+
+    # Honest, per-item route-aware provenance (Step 172A). Stays `None`
+    # (never fabricated) unless `RouteAwareSequencingService.apply_report`
+    # actually reordered this item's day using real, provider-backed
+    # route data, in which case it is set to
+    # `MovementDataProvenance.PROVIDER_BACKED` -- mirroring that same
+    # day's own `RouteAwareSequenceSuggestion.movement_data_provenance`
+    # value at the moment it was applied. This is never set to any other
+    # `MovementDataProvenance` value here: an item whose day was never
+    # (re)ordered by route-aware sequencing simply stays `None`, honestly
+    # saying nothing about movement data one way or the other, rather
+    # than guessing a status the day-level report doesn't itself support
+    # for this item.
+    route_aware_provenance: MovementDataProvenance | None = None
 
 
 class RestaurantOption(BaseModel):

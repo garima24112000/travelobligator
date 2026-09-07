@@ -1968,6 +1968,41 @@ shape regardless of which engine produced them -- the frontend consumes
 the same API shape either way and needed no changes to keep working.
 `npm run lint`/`npm run build` both still pass unmodified.
 
+### 39.18 Stable Itinerary Order Metadata Typed, Not Yet Rendered (Step 172A)
+
+Step 172A makes route-aware scheduling the backend default and adds
+stable ordering metadata to `ExperienceItem` (backend:
+`app.models.planning_state.ExperienceItem`) -- `day_number`,
+`stop_order`, and `route_aware_provenance` -- so a later Step 172 step
+can render numbered stops ("1. Stop A", "2. Stop B", ...) reliably
+(docs/13_llm_reasoning_pipeline.md section 90,
+docs/14_backend_architecture.md section 67).
+
+- **The only frontend change in this step is a type update.**
+  `frontend/lib/types.ts`'s `ExperienceItem` type gains the three new
+  fields (`day_number: number | null`, `stop_order: number | null`,
+  `route_aware_provenance: string | null`) so the hand-maintained type
+  mirror stays in sync with the backend response shape (CLAUDE.md's
+  "keep both in sync manually" rule) -- required because these are new
+  fields on an existing response shape, not because any rendering needs
+  them yet.
+- **`frontend/app/page.tsx` is completely unchanged.** No day/stop is
+  numbered visually yet -- these fields are present in every
+  `GET`/`POST .../generate` response today, but nothing on the page reads
+  them. A later Step 172 step is expected to use `day_number`/
+  `stop_order` (and, when present, `route_aware_provenance`) to render
+  the itinerary as numbered stops with optional movement/transition info
+  between them, matching the shape:
+  ```text
+  1. Stop A
+     travel/movement info if available
+  2. Stop B
+     travel/movement info if available
+  3. Stop C
+  ```
+  `npm run lint`/`npm run build` both still pass with only the type
+  addition.
+
 A future step could add a small, clearly-labeled panel showing the graph
 execution trace (`completed_nodes`/`failed_nodes`/`errors`/`warnings`
 from the shadow-run response) for comparison against the trip's official,
@@ -1975,3 +2010,235 @@ from the shadow-run response) for comparison against the trip's official,
 honestly (e.g. "Shadow run preview -- not saved") and must never let a
 user mistake the shadow `planning_state` preview for the trip's actual,
 stored plan, or trigger any itinerary update from it.
+
+### 39.19 Numbered Itinerary Stop Order Rendered (Step 172B, final Section 172A/172B step so far)
+
+Step 172B renders the `day_number`/`stop_order`/`route_aware_provenance`
+metadata Step 172A added (section 39.18) as numbered stops in each
+itinerary day card -- `frontend/app/page.tsx` reads these fields for the
+first time. Full map *path* visualization (turn-by-turn route geometry)
+remains out of scope -- that is Section 173; `DayMapPreview`'s existing
+dotted straight-line connector between markers (pre-dating this step) is
+unchanged.
+
+- **The backend remains the sole source of truth for sequencing.** The
+  day loop still renders `day.experiences` in the exact order the
+  backend returned it -- the frontend never calls `.sort()` or otherwise
+  reorders that array itself. Each `ScheduledExperienceCard`'s
+  `orderNumber` prop is `experience.stop_order ?? index + 1`: the
+  backend's own `stop_order` is preferred whenever it is set (which is
+  every experience scheduled since Step 172A), and only a `null`
+  `stop_order` (e.g. a state persisted before Step 172A) falls back to
+  the 1-based array-index numbering the app already used. `DayMapPreview`'s
+  marker labels use the identical `stop_order ?? index + 1` expression,
+  so the numbered list and the map markers can never disagree.
+- **Route-order wording stays honest and unalarming.** Above each day's
+  list of scheduled-experience cards, a small caption reads "Suggested
+  stop order" by default, or "Provider-grounded route order" only when
+  at least one experience in that day has
+  `route_aware_provenance === "provider_backed"` (i.e.
+  `RouteAwareSequencingService.apply_report` actually reordered that day
+  with real routing-provider data, Step 172A). A `null`
+  `route_aware_provenance` -- the common case, since most environments
+  have no routing
+  provider connected -- shows the neutral default wording, never an
+  "unavailable"/alarming message: the frontend has no `route_aware_
+  sequencing_report.status` field in its fetched data to justify that
+  claim, so it doesn't make one. The existing caption below the list
+  (already there before this step) gained one clause: "Stop numbers
+  reflect the backend's current schedule order only -- not a claim about
+  route certainty, safety, or speed" -- deliberately reworded to steer
+  clear of this codebase's own forbidden-phrase guardrail list, even
+  while explaining the same thing in negative framing.
+- **No movement/travel-time/distance data is rendered.** This step does
+  not fetch or display `route_feasibility_report`/
+  `travel_time_buffer_report`/`route_aware_sequencing_report` at all --
+  those aren't in `TripData`'s declared shape, and adding them is out of
+  scope here. No dummy "travel time to next stop" row, walking/driving/
+  transit estimate, or distance figure was added anywhere.
+- **The Section 170 AI-promoted badge is completely unchanged.**
+  `AIPromotedBadge` (rendered when `experience.promoted_from_ai` is
+  `true`) and `ScheduledExperienceCard`'s existing provider-grounding
+  wording are untouched by this step -- a promoted experience gets the
+  exact same `stop_order ?? index + 1` numbering as any other scheduled
+  experience, plus its existing AI-suggested/provider-grounded badge
+  underneath.
+- **Verified live**, not just via `npm run build`: a real generated trip
+  (deterministic OpenStreetMap-backed candidates, no routing provider
+  connected) was loaded in a browser and showed "Suggested stop order"
+  with stops numbered 1/2/3 matching both the card list and the map
+  markers, and no fabricated movement data anywhere on the page.
+
+### 39.20 Route-Aware Sequencing Status and Movement Transparency (Step 172C)
+
+Step 172C adds a compact, honest route-aware sequencing status to the
+"Day-wise experiences" card, reading three backend fields the frontend
+never fetched before -- `PlanningState.route_aware_sequencing_report`
+and `PlanningState.route_feasibility_report` (both already serialized on
+every `GET`/`POST .../generate` response; only `frontend/lib/types.ts`'s
+type mirror was missing them) and the already-typed
+`experience.route_aware_provenance` (Step 172A). Full map *path*
+visualization (turn-by-turn route geometry) remains deferred to Section
+173, unchanged from Step 172B's scope note.
+
+- **Per-day status label, now three-way.** `routeAwareDayStatusLabel`
+  (`frontend/app/page.tsx`) extends Step 172B's two-way caption:
+  - **"Provider-grounded route order"** -- unchanged from Step 172B --
+    shown when at least one experience in that day has
+    `route_aware_provenance === "provider_backed"` (a real,
+    provider-backed reorder was actually applied to that day).
+  - **"Route order needs review"** (new) -- shown only when no
+    provider-backed reorder happened for that day, *and* that day's own
+    entry in `route_aware_sequencing_report.suggestions` (matched by
+    `day_index === day.day_number`) honestly reports
+    `partial`/`unavailable`/`failed` -- i.e. a real sequencing attempt
+    was made and ran into a genuine issue.
+  - **"Suggested stop order"** -- the safe default -- covers a missing
+    report, no matching day suggestion, or a `not_connected`/
+    `success`-but-unapplied day suggestion. This remains the common case
+    in any environment with no routing provider connected.
+- **A new plan-level movement-data note.** A fixed, always-safe
+  sentence -- "Route-aware sequencing uses provider-backed movement data
+  when available. If unavailable, the itinerary keeps a fallback
+  order." -- sits once above the day list. Below it, "Movement data
+  unavailable for this trip -- no connected routing provider could
+  supply real distances or travel times between stops." appears only
+  when `movementDataIsUnavailable(routeFeasibilityReport)` is true (no
+  report at all, or its `status` is `not_connected`/`unavailable`/
+  `failed`) -- never shown when real route-feasibility data exists
+  (`success`/`partial`), since showing it then would understate what is
+  actually available.
+- **No numeric travel-time/distance/route figure is ever rendered.**
+  The new `RouteAwareSequencingReport`/`RouteFeasibilityReport` frontend
+  types (`frontend/lib/types.ts`) deliberately declare only `status`-
+  level fields (plus `suggestions[].day_index`/`status`/`applied` for
+  the per-day report) -- `route_duration_seconds`/`route_distance_meters`/
+  `improvement_seconds` and `RouteLegFeasibility`'s own distance/duration
+  fields are intentionally left undeclared, since nothing in this step
+  displays them. No dummy movement row between stops was added.
+- **Sequencing/numbering ownership is unchanged.** The frontend still
+  never reorders `day.experiences` itself, and `ScheduledExperienceCard`/
+  `DayMapPreview`'s `stop_order ?? index + 1` numbering (Step 172B) is
+  untouched. The Section 170 `AIPromotedBadge` and its wording are
+  likewise completely untouched.
+- **Backend change: none.** Both new report fields were already present
+  on the wire (`PlanningState` already serializes them); this step is a
+  frontend type-and-render addition only.
+
+### 39.21 Stop-to-Stop Movement Transparency (Step 172D)
+
+Step 172D adds a small movement row between consecutive scheduled-
+experience cards, showing whatever provider-backed travel-time/distance
+data the backend already computed for that specific leg -- reading
+`PlanningState.travel_time_buffer_report` (Step 166C), which was already
+serialized on every `GET`/`POST .../generate` response before this step;
+only `frontend/lib/types.ts`'s type mirror was missing it (new
+`TravelTimeBuffer`/`TravelTimeBufferReport` types, declaring only
+`from_experience_id`/`to_experience_id`/`provider`/`status`/
+`route_duration_seconds`/`route_distance_meters` -- no travel *mode*
+field exists on the backend model at all, so none is declared or
+rendered). Full map *path* visualization (turn-by-turn route geometry,
+polylines) remains deferred to Section 173, unchanged from Step
+172B/172C's scope notes -- this step draws no polyline of its own.
+
+- **A row renders only when the backend already has a matching entry.**
+  `TravelTimeBufferService` builds one `TravelTimeBuffer` per consecutive
+  pair of scheduled experiences in every day, regardless of whether a
+  routing provider is connected -- `findMovementBetweenStops` (`frontend/
+  app/page.tsx`) looks that entry up by `(from_experience_id,
+  to_experience_id)`, and `shouldRenderMovementRow` renders a `MovementRow`
+  only when a match exists. A missing report (e.g. an older persisted
+  trip from before Step 166C) or no match for a given pair renders
+  nothing -- never a dummy row.
+- **`formatMovementSummary` maps every real `TravelTimeBufferStatus`
+  value onto one safe line, never inventing a fact the backend didn't
+  provide:**
+  - `success` with a real duration: "Provider-backed movement data:
+    ~N min · D.D km (via provider)" -- `route_duration_seconds`/
+    `route_distance_meters` are only ever shown when the backend itself
+    set them (never `null`-filled). `formatDurationSeconds`/
+    `formatDistanceMeters` only convert units (seconds -> minutes,
+    meters -> kilometers) on a real backend number -- the frontend never
+    computes a distance or duration from `experience.coordinates`
+    itself.
+  - `not_computable` (one or both stops missing coordinates, so the
+    routing provider was never even called): "No movement details
+    returned".
+  - `failed` (a real request was attempted and broke): "Route details
+    need review".
+  - `not_connected`/`unavailable`/anything else: "Movement data
+    unavailable" -- the common case in any environment with no routing
+    provider connected.
+- **Sequencing, numbering, and route-aware status are all unchanged.**
+  The day loop still renders `day.experiences` in exactly the order the
+  backend returned it; inserting a `MovementRow` between two
+  `ScheduledExperienceCard`s (via a keyed `Fragment` per experience) adds
+  a sibling list item, it never reorders the underlying array. Step
+  172B's `stop_order ?? index + 1` numbering and Step 172C's per-day
+  "Provider-grounded route order"/"Route order needs review"/"Suggested
+  stop order" caption and plan-level movement-data note are all
+  untouched. The Section 170 `AIPromotedBadge` is likewise untouched.
+- **Verified live**, not just via `npm run build`: a real generated trip
+  (no routing provider connected, the default) was loaded in a browser
+  and showed a "Movement data unavailable" row between every pair of
+  consecutive stops, alongside the unchanged numbered stops, "Suggested
+  stop order" caption, and map markers -- confirming the defensive
+  (missing-report-safe, old-trip-safe) rendering works end to end.
+- **Backend change: none.** `travel_time_buffer_report` was already on
+  the wire; this step is a frontend type-and-render addition only.
+
+### 39.22 Section 172 Complete: Final Frontend Summary (Step 172E, final Section 172 step)
+
+Step 172E is a review-and-polish pass over Steps 172B-172D's itinerary
+UI, plus one small in-code clarifying comment
+(`frontend/app/page.tsx`) documenting why a single-stop day never shows
+a movement row -- no other frontend behavior changed. Full map *path*
+visualization (turn-by-turn route geometry, polylines connecting real
+road/walking segments) remains deferred to Section 173; `DayMapPreview`'s
+pre-existing dotted straight-line connector between markers is
+unchanged throughout all of Section 172.
+
+Final "Day-wise experiences" card behavior, confirmed coherent end to
+end (re-verified live in a browser, and by direct source inspection):
+
+- **Numbered stops** (Step 172B): each `ScheduledExperienceCard`'s
+  circle number is `experience.stop_order ?? index + 1`; `DayMapPreview`'s
+  markers use the identical expression, so the card list and the map
+  can never disagree. The frontend never reorders `day.experiences`
+  itself anywhere -- confirmed by source inspection finding zero
+  `.sort()`/`.reverse()` calls in `frontend/app/page.tsx`.
+- **Per-day route-order caption** (Step 172C): "Provider-grounded route
+  order" / "Route order needs review" / "Suggested stop order",
+  computed by `routeAwareDayStatusLabel` from
+  `experience.route_aware_provenance` and the day's own
+  `route_aware_sequencing_report` suggestion -- shown only for a day
+  with at least one scheduled experience (an empty day shows "No
+  experiences scheduled for this day." instead, never a route-order
+  claim about nothing).
+- **Plan-level movement-data note** (Step 172C): a fixed explanatory
+  sentence, plus a conditional "Movement data unavailable" line gated on
+  `route_feasibility_report.status`.
+- **Movement rows between stops** (Step 172D): rendered only when
+  `travel_time_buffer_report` already has a matching `(from_experience_id,
+  to_experience_id)` entry for that specific leg -- a single-stop day
+  (or the last stop in any day) has no next stop to look up, so it
+  never shows a movement row, never a "crowded" empty placeholder.
+- **AI-promoted badge** (Section 170): `AIPromotedBadge` and its
+  "AI-suggested · Provider-grounded" wording are untouched anywhere in
+  Section 172 -- a promoted experience gets the exact same numbering,
+  route-order caption, and movement-row treatment as any other scheduled
+  experience.
+- **Old persisted trips never crash.** Every Section 172 field on
+  `ExperienceItem`/`PlanningState` is typed nullable in
+  `frontend/lib/types.ts` (`| null`), and every helper function
+  (`routeAwareDayStatusLabel`, `movementDataIsUnavailable`,
+  `findMovementBetweenStops`, `shouldRenderMovementRow`) treats a
+  missing report/field as the safe "nothing to show" case rather than
+  throwing -- backed, as of this step, by dedicated backend tests
+  proving an old `PlanningState` missing these fields entirely still
+  deserializes cleanly (docs/14_backend_architecture.md section 71).
+- **Wording stays restrained throughout.** No itinerary/movement string
+  anywhere in Section 172 makes an unqualified superlative, official-
+  status, or completion claim about a route, stop order, or travel time
+  -- confirmed by the repository-wide forbidden-phrase grep passing clean
+  on every Section 172 step, including this one.

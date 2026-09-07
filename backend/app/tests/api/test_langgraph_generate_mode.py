@@ -360,14 +360,19 @@ def test_langgraph_mode_generate_updates_generation_progress(
 # ---------------------------------------------------------------------------
 
 
-def test_langgraph_mode_route_aware_scheduling_disabled_by_default(
+def test_langgraph_mode_route_aware_scheduling_enabled_by_default_with_no_routing_provider(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Settings.route_aware_scheduling_enabled defaults to False -- same
-    config flag, read the same way, in both engines -- so a langgraph-mode
-    generate's route_aware_sequencing_report stays shadow/report-only,
-    never applied to the real schedule, exactly like legacy's default."""
+    """As of Step 172A, Settings.route_aware_scheduling_enabled defaults
+    to True -- same config flag, read the same way, in both engines. With
+    the default routing_provider="not_connected" (no fake routing
+    provider stubbed in for this test), apply_report's own safety
+    contract still means nothing gets applied: a langgraph-mode generate's
+    route_aware_sequencing_report stays shadow/report-only, exactly like
+    legacy's -- see test_trips_smoke.py's dedicated fake-routing-provider
+    tests for the case where a reorder actually happens by default."""
     _set_engine_mode(monkeypatch, "langgraph")
+    assert get_settings().route_aware_scheduling_enabled is True
 
     trip_id = _create_trip(client)
     response = client.post(f"/trips/{trip_id}/generate")
@@ -377,14 +382,15 @@ def test_langgraph_mode_route_aware_scheduling_disabled_by_default(
     assert report["applied_to_itinerary"] is False
 
 
-def test_langgraph_mode_route_aware_scheduling_config_flag_read_identically(
+def test_langgraph_mode_route_aware_scheduling_explicit_opt_out_read_identically(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Enabling Settings.route_aware_scheduling_enabled must not crash a
-    langgraph-mode generate -- it reads the exact same config flag legacy
-    reads (see build_route_aware_sequencing_node)."""
-    monkeypatch.setenv("ROUTE_AWARE_SCHEDULING_ENABLED", "true")
+    """Explicitly disabling Settings.route_aware_scheduling_enabled must
+    not crash a langgraph-mode generate -- it reads the exact same config
+    flag legacy reads (see build_route_aware_sequencing_node)."""
+    monkeypatch.setenv("ROUTE_AWARE_SCHEDULING_ENABLED", "false")
     _set_engine_mode(monkeypatch, "langgraph")
+    assert get_settings().route_aware_scheduling_enabled is False
 
     trip_id = _create_trip(client)
     response = client.post(f"/trips/{trip_id}/generate")
@@ -392,6 +398,7 @@ def test_langgraph_mode_route_aware_scheduling_config_flag_read_identically(
     assert response.status_code == 200
     planning_state = response.json()["data"]["planning_state"]
     assert planning_state["route_aware_sequencing_report"] is not None
+    assert planning_state["route_aware_sequencing_report"]["is_shadow_only"] is True
     assert planning_state["route_feasibility_report"] is not None
 
 

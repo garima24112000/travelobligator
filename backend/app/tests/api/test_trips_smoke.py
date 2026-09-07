@@ -382,16 +382,20 @@ def _create_route_aware_single_day_trip(client: TestClient) -> str:
     return create_response.json()["data"]["trip_id"]
 
 
-def test_route_aware_scheduling_disabled_by_default_preserves_order_even_with_favorable_route_data(
+def test_route_aware_scheduling_explicit_opt_out_preserves_order_even_with_favorable_route_data(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Step 166B, requirement 1: even when real, provider-backed route data
-    would make a reorder genuinely faster, the default
-    (route_aware_scheduling_enabled=False) must never apply it."""
+    """Step 166B, requirement 1, re-pointed at the explicit opt-out as of
+    Step 172A (route_aware_scheduling_enabled now defaults to True): even
+    when real, provider-backed route data would make a reorder genuinely
+    faster, an explicit ROUTE_AWARE_SCHEDULING_ENABLED=false must never
+    apply it."""
     monkeypatch.setattr(provider_gateway, "places", _RouteAwareApplicationTestPlacesProvider())
     monkeypatch.setattr(
         provider_gateway, "routing", _CustomDurationRoutingProvider(_ROUTE_AWARE_DURATIONS)
     )
+    monkeypatch.setenv("ROUTE_AWARE_SCHEDULING_ENABLED", "false")
+    get_settings.cache_clear()
     assert get_settings().route_aware_scheduling_enabled is False
 
     trip_id = _create_route_aware_single_day_trip(client)
@@ -418,6 +422,124 @@ def test_route_aware_scheduling_disabled_by_default_preserves_order_even_with_fa
     assert report["suggestions"][0]["movement_data_provenance"] == "not_applied"
     assert report["is_shadow_only"] is True
     assert report["applied_to_itinerary"] is False
+
+
+# ---------------------------------------------------------------------------
+# Step 172A: route-aware scheduling is now the default (no config override
+# needed) -- exercised for both the default (LangGraph) engine and the
+# explicit legacy fallback, since both must respect the same setting.
+# ---------------------------------------------------------------------------
+
+
+def test_route_aware_scheduling_enabled_by_default_langgraph_engine_applies_favorable_route_data(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Step 172A: with no PLANNING_ENGINE_MODE or ROUTE_AWARE_SCHEDULING_ENABLED
+    override at all, POST /generate uses the default LangGraph engine and
+    now applies a genuinely favorable, provider-backed reorder by
+    default."""
+    monkeypatch.setattr(provider_gateway, "places", _RouteAwareApplicationTestPlacesProvider())
+    monkeypatch.setattr(
+        provider_gateway, "routing", _CustomDurationRoutingProvider(_ROUTE_AWARE_DURATIONS)
+    )
+    assert get_settings().planning_engine_mode == "langgraph"
+    assert get_settings().route_aware_scheduling_enabled is True
+
+    trip_id = _create_route_aware_single_day_trip(client)
+    generate_response = client.post(f"/trips/{trip_id}/generate")
+    assert generate_response.status_code == 200
+
+    experience_response = client.get(f"/trips/{trip_id}/experience-plan")
+    day_plan = experience_response.json()["data"]["experience_plan"]["daily_plans"][0]
+    scheduled_names = [experience["name"] for experience in day_plan["experiences"]]
+    # Same route-aware nearest-next result as the explicit-enabled test.
+    assert scheduled_names == ["Alpha", "Gamma", "Beta"]
+
+    trip_response = client.get(f"/trips/{trip_id}")
+    report = trip_response.json()["data"]["planning_state"]["route_aware_sequencing_report"]
+    assert report["is_shadow_only"] is False
+    assert report["applied_to_itinerary"] is True
+
+
+def test_route_aware_scheduling_enabled_by_default_legacy_engine_applies_favorable_route_data(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Step 172A: the legacy engine, selected explicitly, respects the
+    exact same route-aware-scheduling default as the LangGraph engine --
+    only PLANNING_ENGINE_MODE is overridden here, not
+    ROUTE_AWARE_SCHEDULING_ENABLED."""
+    monkeypatch.setattr(provider_gateway, "places", _RouteAwareApplicationTestPlacesProvider())
+    monkeypatch.setattr(
+        provider_gateway, "routing", _CustomDurationRoutingProvider(_ROUTE_AWARE_DURATIONS)
+    )
+    monkeypatch.setenv("PLANNING_ENGINE_MODE", "legacy")
+    get_settings.cache_clear()
+    assert get_settings().planning_engine_mode == "legacy"
+    assert get_settings().route_aware_scheduling_enabled is True
+
+    trip_id = _create_route_aware_single_day_trip(client)
+    generate_response = client.post(f"/trips/{trip_id}/generate")
+    assert generate_response.status_code == 200
+
+    experience_response = client.get(f"/trips/{trip_id}/experience-plan")
+    day_plan = experience_response.json()["data"]["experience_plan"]["daily_plans"][0]
+    scheduled_names = [experience["name"] for experience in day_plan["experiences"]]
+    assert scheduled_names == ["Alpha", "Gamma", "Beta"]
+
+    trip_response = client.get(f"/trips/{trip_id}")
+    report = trip_response.json()["data"]["planning_state"]["route_aware_sequencing_report"]
+    assert report["is_shadow_only"] is False
+    assert report["applied_to_itinerary"] is True
+
+
+# ---------------------------------------------------------------------------
+# Step 172A: stable itinerary ordering metadata (day_number/stop_order/
+# route_aware_provenance) is present, correct, and stays in sync with the
+# real, final scheduled order -- both before and after a route-aware
+# reorder is applied.
+# ---------------------------------------------------------------------------
+
+
+def test_scheduled_experiences_expose_stable_order_metadata_without_route_aware_reorder(
+    client: TestClient, generated_trip_id: str
+) -> None:
+    response = client.get(f"/trips/{generated_trip_id}/experience-plan")
+    daily_plans = response.json()["data"]["experience_plan"]["daily_plans"]
+
+    for day_plan in daily_plans:
+        for stop_index, experience in enumerate(day_plan["experiences"], start=1):
+            assert experience["day_number"] == day_plan["day_number"]
+            assert experience["stop_order"] == stop_index
+            # No route-aware reorder happened for this deterministic-test
+            # fixture (no routing provider is stubbed in), so provenance
+            # honestly stays unset rather than guessed.
+            assert experience["route_aware_provenance"] is None
+
+
+def test_scheduled_experiences_order_metadata_reflects_applied_route_aware_reorder(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(provider_gateway, "places", _RouteAwareApplicationTestPlacesProvider())
+    monkeypatch.setattr(
+        provider_gateway, "routing", _CustomDurationRoutingProvider(_ROUTE_AWARE_DURATIONS)
+    )
+    assert get_settings().route_aware_scheduling_enabled is True
+
+    trip_id = _create_route_aware_single_day_trip(client)
+    generate_response = client.post(f"/trips/{trip_id}/generate")
+    assert generate_response.status_code == 200
+
+    experience_response = client.get(f"/trips/{trip_id}/experience-plan")
+    day_plan = experience_response.json()["data"]["experience_plan"]["daily_plans"][0]
+    experiences = day_plan["experiences"]
+
+    # Reordered to Alpha -> Gamma -> Beta; stop_order must match the new,
+    # final position -- never the pre-reorder haversine position.
+    assert [experience["name"] for experience in experiences] == ["Alpha", "Gamma", "Beta"]
+    for stop_index, experience in enumerate(experiences, start=1):
+        assert experience["day_number"] == day_plan["day_number"]
+        assert experience["stop_order"] == stop_index
+        assert experience["route_aware_provenance"] == "provider_backed"
 
 
 def test_route_aware_scheduling_enabled_applies_successful_provider_backed_suggestion(
@@ -606,16 +728,19 @@ def test_travel_time_buffer_report_reflects_final_order_after_route_aware_schedu
     assert regenerate_response.json()["errors"][0]["code"] == "REGENERATION_NOT_AVAILABLE"
 
 
-def test_travel_time_buffer_report_reflects_unchanged_order_when_scheduling_disabled(
+def test_travel_time_buffer_report_reflects_unchanged_order_when_scheduling_explicitly_disabled(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Step 166C, requirement 12: with route-aware scheduling disabled by
-    default, the buffer report must reflect the *original*, unmodified
-    schedule -- even though real, favorable route data exists."""
+    """Step 166C, requirement 12, re-pointed at the explicit opt-out as of
+    Step 172A: with route-aware scheduling explicitly disabled, the buffer
+    report must reflect the *original*, unmodified schedule -- even though
+    real, favorable route data exists."""
     monkeypatch.setattr(provider_gateway, "places", _RouteAwareApplicationTestPlacesProvider())
     monkeypatch.setattr(
         provider_gateway, "routing", _CustomDurationRoutingProvider(_ROUTE_AWARE_DURATIONS)
     )
+    monkeypatch.setenv("ROUTE_AWARE_SCHEDULING_ENABLED", "false")
+    get_settings.cache_clear()
     assert get_settings().route_aware_scheduling_enabled is False
 
     trip_id = _create_route_aware_single_day_trip(client)

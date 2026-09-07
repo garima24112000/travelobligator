@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import type * as Leaflet from "leaflet";
 import {
   ApiRequestError,
@@ -51,10 +51,14 @@ import type {
   RegenerationAttempt,
   RegenerationReadiness,
   RestaurantSuggestion,
+  RouteAwareSequencingReport,
   RouteFeasibilityContext,
+  RouteFeasibilityReport,
   ScrapedAccommodationProvenance,
   ScrapedFlightProvenance,
   StayAreaGuidance,
+  TravelTimeBuffer,
+  TravelTimeBufferReport,
   TripRequestInput,
   TripSummary,
   UserLock,
@@ -105,6 +109,9 @@ type PlanResult = {
   flightInventoryReport: FlightInventoryReport | null;
   aiCandidateReviewReport: AICandidateReviewReport | null;
   aiCandidatePromotionReport: AICandidatePromotionReport | null;
+  routeAwareSequencingReport: RouteAwareSequencingReport | null;
+  routeFeasibilityReport: RouteFeasibilityReport | null;
+  travelTimeBufferReport: TravelTimeBufferReport | null;
 };
 
 function parseCommaList(value: string): string[] {
@@ -119,6 +126,183 @@ function readinessLabel(status: string | null): string {
   if (status === "needs_review") return "Needs Review";
   if (status === "blocked") return "Blocked";
   return "Unknown";
+}
+
+/**
+ * Compact, honest route-aware sequencing status label for one day (Step
+ * 172C, docs/16_frontend_architecture.md). Reads only fields the backend
+ * already computed -- `experience.route_aware_provenance` (Step 172A) and
+ * `RouteAwareSequencingReport.suggestions` (Step 166A/166B) -- and never
+ * reorders `day.experiences` or invents a status the backend data doesn't
+ * support.
+ *
+ * - "Provider-grounded route order": at least one experience in this day
+ *   has `route_aware_provenance === "provider_backed"`, meaning
+ *   `RouteAwareSequencingService.apply_report` actually reordered this
+ *   day using a real, successful, provider-backed route.
+ * - "Route order needs review": no provider-backed reorder happened, but
+ *   this day's own sequencing suggestion exists and honestly reports
+ *   `partial`/`unavailable`/`failed` -- a real attempt was made and ran
+ *   into a genuine issue (e.g. some but not all routes succeeded).
+ * - "Suggested stop order": the safe default -- no provider-backed
+ *   reorder happened and there is no report, no matching day suggestion,
+ *   or the day suggestion is `not_connected`/`success`-but-unapplied.
+ *   This is the common case whenever no routing provider is connected.
+ */
+function routeAwareDayStatusLabel(
+  day: DailyPlan,
+  report: RouteAwareSequencingReport | null,
+): string {
+  const hasProviderBackedOrder = day.experiences.some(
+    (experience) => experience.route_aware_provenance === "provider_backed",
+  );
+  if (hasProviderBackedOrder) {
+    return "Provider-grounded route order";
+  }
+
+  const daySuggestion = report?.suggestions.find(
+    (suggestion) => suggestion.day_index === day.day_number,
+  );
+  if (
+    daySuggestion &&
+    (daySuggestion.status === "partial" ||
+      daySuggestion.status === "unavailable" ||
+      daySuggestion.status === "failed")
+  ) {
+    return "Route order needs review";
+  }
+
+  return "Suggested stop order";
+}
+
+/**
+ * Whether to show an honest "movement data unavailable" note near the
+ * itinerary (Step 172C). `true` whenever there is no
+ * `RouteFeasibilityReport` at all, or its own `status` says no usable
+ * route data exists (`not_connected`/`unavailable`/`failed`) -- `false`
+ * (no note shown) when real route data exists (`success`/`partial`),
+ * since showing the note then would understate what is actually
+ * available. This never renders a distance/duration value itself --
+ * only whether movement data exists at all.
+ */
+function movementDataIsUnavailable(report: RouteFeasibilityReport | null): boolean {
+  if (!report) return true;
+  return (
+    report.status === "not_connected" ||
+    report.status === "unavailable" ||
+    report.status === "failed"
+  );
+}
+
+/**
+ * Looks up the backend's own travel-time-buffer entry for the leg
+ * between two consecutive scheduled experiences (Step 172D,
+ * docs/16_frontend_architecture.md). `TravelTimeBufferService` (backend)
+ * already builds one `TravelTimeBuffer` per consecutive pair in every
+ * scheduled day, regardless of whether a routing provider is connected --
+ * this only reads that existing entry by experience id; it never computes
+ * a distance/duration itself and never invents an entry that isn't
+ * already there. Returns `null` when there is no report at all (e.g. an
+ * older trip persisted before Step 166C) or no matching entry, so a
+ * caller can render nothing rather than guessing.
+ */
+function findMovementBetweenStops(
+  fromExperienceId: string,
+  toExperienceId: string,
+  report: TravelTimeBufferReport | null,
+): TravelTimeBuffer | null {
+  if (!report) return null;
+  return (
+    report.buffers.find(
+      (buffer) =>
+        buffer.from_experience_id === fromExperienceId &&
+        buffer.to_experience_id === toExperienceId,
+    ) ?? null
+  );
+}
+
+/** Whether a movement row should render at all for this leg (Step 172D)
+ * -- only when the backend already has a matching `TravelTimeBuffer`
+ * entry. A missing report/entry renders nothing, never a dummy row.
+ */
+function shouldRenderMovementRow(buffer: TravelTimeBuffer | null): buffer is TravelTimeBuffer {
+  return buffer !== null;
+}
+
+/** Rounds a real, provider-backed duration in seconds to whole minutes
+ * (or hours + minutes past 60) for display -- a unit conversion of an
+ * existing backend number, never an invented or padded value. The `~`
+ * prefix signals this is a rounded approximation of the real figure, not
+ * extra precision the backend didn't provide.
+ */
+function formatDurationSeconds(seconds: number): string {
+  const totalMinutes = Math.round(seconds / 60);
+  if (totalMinutes < 60) {
+    return `~${totalMinutes} min`;
+  }
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  return minutes > 0 ? `~${hours} h ${minutes} min` : `~${hours} h`;
+}
+
+/** Converts a real, provider-backed distance in meters to kilometers for
+ * display -- a unit conversion only, never a straight-line/haversine
+ * estimate computed by the frontend.
+ */
+function formatDistanceMeters(meters: number): string {
+  return `${(meters / 1000).toFixed(1)} km`;
+}
+
+/**
+ * Compact, honest one-line summary for a single stop-to-stop movement
+ * row (Step 172D). Never invents a duration/distance the backend left
+ * `null`, never computes one from coordinates, and never states a travel
+ * mode (the backend does not record one per leg at all). Covers every
+ * `TravelTimeBufferStatus` value the backend can return:
+ *
+ * - `success` (with a real duration): shows the real, provider-backed
+ *   duration/distance under the "Provider-backed movement data" label.
+ * - `not_computable` (one or both stops missing coordinates, so the
+ *   routing provider was never even called): "No movement details
+ *   returned".
+ * - `failed` (a real request was attempted and broke): "Route details
+ *   need review".
+ * - `not_connected`/`unavailable`/anything else: "Movement data
+ *   unavailable" -- the safe default when no usable route data exists.
+ */
+function formatMovementSummary(buffer: TravelTimeBuffer): string {
+  if (buffer.status === "success" && buffer.route_duration_seconds !== null) {
+    const parts = [formatDurationSeconds(buffer.route_duration_seconds)];
+    if (buffer.route_distance_meters !== null) {
+      parts.push(formatDistanceMeters(buffer.route_distance_meters));
+    }
+    const figures = parts.join(" · ");
+    return buffer.provider
+      ? `Provider-backed movement data: ${figures} (via ${buffer.provider})`
+      : `Provider-backed movement data: ${figures}`;
+  }
+  if (buffer.status === "not_computable") {
+    return "No movement details returned";
+  }
+  if (buffer.status === "failed") {
+    return "Route details need review";
+  }
+  return "Movement data unavailable";
+}
+
+/**
+ * Small row rendered between two consecutive stop cards showing
+ * stop-to-stop movement transparency (Step 172D). Rendered only by a
+ * caller that already confirmed (via `shouldRenderMovementRow`) that a
+ * real backend `TravelTimeBuffer` entry exists for this leg -- this
+ * component itself never fetches, computes, or guesses movement data.
+ */
+function MovementRow({ buffer }: { buffer: TravelTimeBuffer }) {
+  return (
+    <li className="ml-3 border-l border-white/10 pl-3 text-[11px] text-slate-500">
+      {formatMovementSummary(buffer)}
+    </li>
+  );
 }
 
 function ValidationIssueList({
@@ -767,12 +951,18 @@ function DayMapPreview({ experiences }: { experiences: ExperienceItem[] }) {
         maxZoom: 19,
       }).addTo(map);
 
-      // Marker labels are the full-day itinerary order number (1-based
-      // index into `experiences`), not a renumbering of only the
-      // coordinate-backed ones -- e.g. if experience #2 has no
-      // coordinates but #3 does, #3's marker still says "3".
+      // Marker labels (Step 172B) prefer the backend's own
+      // `experience.stop_order`, falling back to the 1-based index into
+      // `experiences` only when `stop_order` is absent -- not a
+      // renumbering of only the coordinate-backed ones, and never a
+      // frontend-computed reordering -- e.g. if experience #2 has no
+      // coordinates but #3 does, #3's marker still says "3" (or its own
+      // `stop_order`, if set).
       const points = experiences
-        .map((experience, index) => ({ experience, orderNumber: index + 1 }))
+        .map((experience, index) => ({
+          experience,
+          orderNumber: experience.stop_order ?? index + 1,
+        }))
         .filter((item) => item.experience.coordinates !== null);
 
       const latLngs: [number, number][] = points.map(({ experience }) => [
@@ -915,10 +1105,15 @@ function AIPromotedBadge({ experience }: { experience: ExperienceItem }) {
 }
 
 /**
- * Compact card for a single scheduled experience. `orderNumber` is the
- * full-day itinerary position (1-based index into the day's `experiences`
- * array), matching the numbering used by `DayMapPreview`'s markers -- not a
- * renumbering of only coordinate-backed items.
+ * Compact card for a single scheduled experience. `orderNumber` (Step
+ * 172B) is the backend's own `experience.stop_order` when the backend has
+ * set it, falling back to the 1-based index of this experience within the
+ * day's `experiences` array only when `stop_order` is absent (e.g. an
+ * older/partial planning state) -- the frontend never independently
+ * reorders `experiences` itself, so this number always matches the
+ * backend's own current schedule position. Matches the numbering used by
+ * `DayMapPreview`'s markers -- not a renumbering of only coordinate-backed
+ * items.
  *
  * `activeLock` and `onLockChange` (Step 128) let this card create/remove its
  * own UserLock directly against POST/DELETE /trips/{trip_id}/locks. This
@@ -3401,6 +3596,10 @@ async function loadPlanResult(tripId: string): Promise<PlanResult> {
     aiCandidateReviewReport: aiCandidateReview.ai_candidate_review_report,
     aiCandidatePromotionReport:
       trip.planning_state.ai_candidate_promotion_report,
+    routeAwareSequencingReport:
+      trip.planning_state.route_aware_sequencing_report,
+    routeFeasibilityReport: trip.planning_state.route_feasibility_report,
+    travelTimeBufferReport: trip.planning_state.travel_time_buffer_report,
   };
 }
 
@@ -4292,6 +4491,18 @@ export default function Home() {
                 Keep markers are stored for future regeneration. They do not
                 change the current plan.
               </p>
+              <p className="mt-1 text-[11px] text-slate-500">
+                Route-aware sequencing uses provider-backed movement data
+                when available. If unavailable, the itinerary keeps a
+                fallback order.
+              </p>
+              {movementDataIsUnavailable(result.routeFeasibilityReport) && (
+                <p className="mt-1 text-[11px] text-amber-300/90">
+                  Movement data unavailable for this trip -- no connected
+                  routing provider could supply real distances or travel
+                  times between stops.
+                </p>
+              )}
               {result.dailyPlans.length === 0 && (
                 <p className="mt-2 text-sm text-slate-400">
                   No daily plans returned yet.
@@ -4312,41 +4523,72 @@ export default function Home() {
                       </p>
                     ) : (
                       <>
+                        <p className="mt-1 text-[11px] uppercase tracking-wide text-slate-500">
+                          {routeAwareDayStatusLabel(
+                            day,
+                            result.routeAwareSequencingReport,
+                          )}
+                        </p>
                         <ul className="mt-2 flex flex-col gap-2">
-                          {day.experiences.map((experience, index) => (
-                            <ScheduledExperienceCard
-                              key={experience.experience_id}
-                              experience={experience}
-                              orderNumber={index + 1}
-                              tripId={result.summary.trip_id}
-                              activeLock={findActiveLockForExperience(
-                                result.userLocks,
-                                experience.experience_id,
-                              )}
-                              onLockChange={(
-                                userLocks,
-                                planDiffPreview,
-                                regenerationReadiness,
-                              ) =>
-                                setResult((previous) =>
-                                  previous
-                                    ? {
-                                        ...previous,
-                                        userLocks,
-                                        planDiffPreview,
-                                        regenerationReadiness,
-                                      }
-                                    : previous,
+                          {/* Step 172E: the last stop in a day (or the
+                              only stop in a single-stop day) has no
+                              `nextExperience`, so `movement` stays `null`
+                              and no row is rendered after it -- a
+                              single-stop day never shows a movement row
+                              at all. */}
+                          {day.experiences.map((experience, index) => {
+                            const nextExperience = day.experiences[index + 1];
+                            const movement = nextExperience
+                              ? findMovementBetweenStops(
+                                  experience.experience_id,
+                                  nextExperience.experience_id,
+                                  result.travelTimeBufferReport,
                                 )
-                              }
-                            />
-                          ))}
+                              : null;
+                            return (
+                              <Fragment key={experience.experience_id}>
+                                <ScheduledExperienceCard
+                                  experience={experience}
+                                  orderNumber={experience.stop_order ?? index + 1}
+                                  tripId={result.summary.trip_id}
+                                  activeLock={findActiveLockForExperience(
+                                    result.userLocks,
+                                    experience.experience_id,
+                                  )}
+                                  onLockChange={(
+                                    userLocks,
+                                    planDiffPreview,
+                                    regenerationReadiness,
+                                  ) =>
+                                    setResult((previous) =>
+                                      previous
+                                        ? {
+                                            ...previous,
+                                            userLocks,
+                                            planDiffPreview,
+                                            regenerationReadiness,
+                                          }
+                                        : previous,
+                                    )
+                                  }
+                                />
+                                {shouldRenderMovementRow(movement) && (
+                                  <MovementRow buffer={movement} />
+                                )}
+                              </Fragment>
+                            );
+                          })}
                         </ul>
                         <p className="mt-2 text-[11px] text-slate-500">
                           Scheduled place cards use backend-returned
                           provider-backed fields only. They do not include
-                          ratings, prices, opening hours, duration, or route
-                          timing yet.
+                          ratings, prices, or opening hours yet. Movement
+                          rows between stops only ever show provider-backed
+                          duration/distance when the backend already has
+                          it -- never an invented or frontend-computed
+                          figure. Stop numbers reflect the backend&apos;s
+                          current schedule order only -- not a claim about
+                          route certainty, safety, or speed.
                         </p>
                       </>
                     )}

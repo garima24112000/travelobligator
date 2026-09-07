@@ -157,6 +157,22 @@ export type CurrencyContext = {
 // normally-scheduled real provider candidate. They never carry a rating,
 // opening hour, price, route, or booking link; they only ever restate
 // identifiers already present on the underlying PromotedAICandidate.
+// `day_number`/`stop_order`/`route_aware_provenance` (Step 172A, backend:
+// app.models.planning_state.ExperienceItem) are stable ordering metadata,
+// not new travel facts -- `day_number`/`stop_order` restate this item's
+// own already-decided schedule position (set by ExperiencePlannerService,
+// re-stamped by RouteAwareSequencingService.apply_report if a
+// provider-backed reorder changes the order), and `route_aware_provenance`
+// stays `null` unless that reorder actually happened for this item's day.
+// Rendered as numbered stops as of Step 172B (see ScheduledExperienceCard/
+// DayMapPreview in app/page.tsx) -- the frontend prefers `stop_order` and
+// only falls back to array index + 1 when it is `null`; it never
+// reorders `experiences` itself, so the backend stays the sole source of
+// truth for sequencing. `route_aware_provenance === "provider_backed"`
+// is shown as "Provider-grounded route order"; any other value (almost
+// always `null`, since most trips have no connected routing provider)
+// shows the neutral "Suggested stop order" instead -- never an alarming
+// "unavailable" claim the frontend has no status data to support.
 export type ExperienceItem = {
   experience_id: string;
   name: string;
@@ -171,6 +187,9 @@ export type ExperienceItem = {
   original_ai_candidate_id: string | null;
   provider_place_id: string | null;
   provider_source: string | null;
+  day_number: number | null;
+  stop_order: number | null;
+  route_aware_provenance: string | null;
 };
 
 export type RestaurantSuggestion = {
@@ -416,6 +435,80 @@ export type RouteFeasibilityContext = {
   daily_route_feasibility: DailyRouteFeasibility[];
   assumptions: string[];
   warnings: string[];
+};
+
+// One day's route-aware sequencing suggestion (Step 166A/166B; backend:
+// app.models.routing.RouteAwareSequenceSuggestion). Only the fields
+// needed for a compact, honest status label are declared -- deliberately
+// omitting `route_duration_seconds`/`route_distance_meters`/
+// `improvement_seconds`, since Step 172C never renders a travel-time or
+// distance figure. `status` mirrors the same four-state provider-honesty
+// contract used everywhere else (`success`/`partial`/`unavailable`/
+// `not_connected`/`failed`); `applied` is `true` only once
+// RouteAwareSequencingService.apply_report has actually reordered this
+// day using real, provider-backed route data.
+export type RouteAwareSequenceSuggestion = {
+  day_index: number;
+  status: string;
+  applied: boolean;
+};
+
+// Plan-level route-aware sequencing report (Step 166A/166B, made the
+// backend default in Step 172A; backend:
+// app.models.routing.RouteAwareSequencingReport /
+// PlanningState.route_aware_sequencing_report). Building it is always a
+// pure, read-only shadow computation; whether anything was actually
+// applied to the schedule is `applied_to_itinerary` (and, per day,
+// `RouteAwareSequenceSuggestion.applied`) -- Step 172C reads this only to
+// render an honest status label, never to reorder anything itself.
+export type RouteAwareSequencingReport = {
+  status: string;
+  suggestions: RouteAwareSequenceSuggestion[];
+  is_shadow_only: boolean;
+  applied_to_itinerary: boolean;
+};
+
+// Plan-level route feasibility report across scheduled days (Step 165E;
+// backend: app.models.routing.RouteFeasibilityReport /
+// PlanningState.route_feasibility_report) -- distinct from the older,
+// always-empty `RouteFeasibilityContext` data-model-foundation type
+// above. Only `status` is declared: Step 172C uses it purely to decide
+// whether to show an honest "movement data unavailable" note, never to
+// display a real distance/duration figure (those live on
+// `RouteLegFeasibility`, not declared here since nothing renders them).
+export type RouteFeasibilityReport = {
+  status: string;
+};
+
+// Travel-time/movement data between two consecutive scheduled experiences
+// within the same day (Step 166C; backend: app.models.routing.
+// TravelTimeBuffer, one entry per PlanningState.travel_time_buffer_report.
+// buffers). Built by TravelTimeBufferService from a real
+// ProviderGateway.get_route call -- never a straight-line/haversine
+// estimate. `route_duration_seconds`/`route_distance_meters` are only
+// ever non-null when `status === "success"`; Step 172D never fills
+// either in when the backend left them `null`. The backend does not
+// record a travel mode (walking/driving/transit) per leg at all, so Step
+// 172D never renders one -- this is an absent field, not an omitted
+// one.
+export type TravelTimeBuffer = {
+  from_experience_id: string;
+  to_experience_id: string;
+  provider: string;
+  status: string;
+  route_duration_seconds: number | null;
+  route_distance_meters: number | null;
+};
+
+// Plan-level travel-time buffer report across every scheduled day (Step
+// 166C; backend: app.models.routing.TravelTimeBufferReport /
+// PlanningState.travel_time_buffer_report). `buffers` has one entry per
+// consecutive pair of scheduled experiences in every day (regardless of
+// whether a routing provider is connected), so Step 172D can look up the
+// specific leg between any two stops by experience id.
+export type TravelTimeBufferReport = {
+  status: string;
+  buffers: TravelTimeBuffer[];
 };
 
 export type ExperiencePlanData = {
@@ -767,9 +860,15 @@ export type AICandidatePromotionData = {
 // Full PlanningState is much larger than this; only feedback_history,
 // pending_feedback_summary, user_locks, version_history, plan_diff_preview,
 // regeneration_readiness, regeneration_attempts,
-// accommodation_inventory_report, flight_inventory_report, and
-// ai_candidate_promotion_report are declared here since that's the only
-// part of it the frontend reads.
+// accommodation_inventory_report, flight_inventory_report,
+// ai_candidate_promotion_report, route_aware_sequencing_report (Step
+// 172C), route_feasibility_report (Step 172C), and
+// travel_time_buffer_report (Step 172D) are declared here since that's
+// the only part of it the frontend reads. All three Step 172C/172D
+// fields were already present on every GET /trips/{trip_id} and
+// POST /trips/{trip_id}/generate response before those steps -- the
+// backend serializes the full PlanningState already; each was purely a
+// frontend type addition, not a new backend field.
 export type TripData = {
   trip_id: string;
   planning_state: {
@@ -783,5 +882,8 @@ export type TripData = {
     accommodation_inventory_report: AccommodationInventoryReport | null;
     flight_inventory_report: FlightInventoryReport | null;
     ai_candidate_promotion_report: AICandidatePromotionReport | null;
+    route_aware_sequencing_report: RouteAwareSequencingReport | null;
+    route_feasibility_report: RouteFeasibilityReport | null;
+    travel_time_buffer_report: TravelTimeBufferReport | null;
   };
 };

@@ -691,3 +691,46 @@ def test_promoted_candidate_experience_item_has_no_forbidden_factual_fields() ->
     plan_dump = planning_state.experience_plan.model_dump(mode="json")
 
     _assert_no_forbidden_fields(plan_dump)
+
+
+# ---------------------------------------------------------------------------
+# Step 172A: stable itinerary ordering metadata (day_number/stop_order) is
+# stamped by initial scheduling, and route_aware_provenance stays honestly
+# unset until an actual route-aware reorder happens (never this service's
+# job to set it).
+# ---------------------------------------------------------------------------
+
+
+def test_initial_scheduling_stamps_day_number_and_stop_order() -> None:
+    candidates = [
+        _place("p1", "Museum One", "museum", lat=0.0, lng=0.0),
+        _place("p2", "Museum Two", "museum", lat=0.0, lng=0.001),
+        _place("p3", "Museum Three", "museum", lat=0.0, lng=0.002),
+    ]
+    planning_state = _planning_state(
+        candidate_pois=candidates,
+        pace=TripPace.PACKED,
+        start_date="2026-08-10",
+        end_date="2026-08-11",
+    )
+
+    ExperiencePlannerService().run(planning_state)
+
+    for day_plan in planning_state.experience_plan.daily_plans:
+        for stop_index, experience in enumerate(day_plan.experiences, start=1):
+            assert experience.day_number == day_plan.day_number
+            assert experience.stop_order == stop_index
+            # Never this service's job to claim route-aware provenance --
+            # only RouteAwareSequencingService.apply_report ever sets this.
+            assert experience.route_aware_provenance is None
+
+
+def test_empty_day_has_no_experiences_to_stamp() -> None:
+    """No candidates at all -- every day is empty, so there is nothing to
+    stamp, and this never raises."""
+    planning_state = _planning_state(candidate_pois=[])
+
+    ExperiencePlannerService().run(planning_state)
+
+    for day_plan in planning_state.experience_plan.daily_plans:
+        assert day_plan.experiences == []

@@ -489,12 +489,24 @@ def _apply_day_order(day_plan: DailyPlan, suggested_order: list[str]) -> None:
     Only ever called after `_is_safe_to_apply` has already verified
     `suggested_order` is an exact permutation of the day's current
     experience IDs -- every `ExperienceItem` object is reused as-is (never
-    rebuilt, never mutated field-by-field), so only schedule order
-    changes, never any experience's own content, and no experience is
-    added, removed, or duplicated.
+    rebuilt, never mutated field-by-field except the two ordering-metadata
+    fields below), so only schedule order changes, never any experience's
+    other content, and no experience is added, removed, or duplicated.
+
+    Step 172A: also re-stamps `stop_order` (this item's new 1-based
+    position in the reordered list) and `route_aware_provenance` (set to
+    `MovementDataProvenance.PROVIDER_BACKED`, mirroring the day's own
+    suggestion at the moment it is applied -- see `apply_report`) on every
+    experience in this day, so `stop_order` never goes stale relative to
+    the real, just-changed order. `day_number` is left untouched -- a
+    route-aware reorder only ever changes position within a day, never
+    which day an experience belongs to.
     """
     experiences_by_id = {experience.experience_id: experience for experience in day_plan.experiences}
     day_plan.experiences = [experiences_by_id[experience_id] for experience_id in suggested_order]
+    for stop_index, experience in enumerate(day_plan.experiences, start=1):
+        experience.stop_order = stop_index
+        experience.route_aware_provenance = MovementDataProvenance.PROVIDER_BACKED
 
 
 def _safe_get_route(gateway: ProviderGateway, request: RouteRequest) -> RouteResult:

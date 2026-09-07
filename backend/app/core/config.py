@@ -212,15 +212,25 @@ class Settings(BaseSettings):
     )
 
     # Config gate for RouteAwareSequencingService.apply_report (Step 166B,
-    # docs/12_provider_architecture.md, docs/13_llm_reasoning_pipeline.md,
-    # docs/14_backend_architecture.md). Default is False so normal
-    # generation is completely unaffected -- when disabled,
-    # PlanningOrchestrator never calls apply_report, and
-    # route_aware_sequencing_report stays exactly as Step 166A left it
-    # (is_shadow_only=True, applied_to_itinerary=False, scheduled
-    # itinerary order unchanged).
+    # made the default in Step 172A once its safety contract was judged
+    # solid enough to trust by default -- docs/12_provider_architecture.md,
+    # docs/13_llm_reasoning_pipeline.md, docs/14_backend_architecture.md).
+    # Default `True` as of Step 172A: PlanningOrchestrator (and the
+    # LangGraph engine's equivalent node) now calls apply_report by
+    # default, but apply_report's own safety contract is unchanged and
+    # still the only thing that decides whether anything actually
+    # happens -- with the default `routing_provider="not_connected"`, no
+    # routing provider is configured, every suggestion's status stays
+    # non-`success`, and apply_report remains a complete no-op exactly as
+    # before this step: route_aware_sequencing_report stays
+    # `is_shadow_only=True`/`applied_to_itinerary=False`/
+    # `status="not_connected"` and the scheduled itinerary order is
+    # unchanged. Set ROUTE_AWARE_SCHEDULING_ENABLED=false for the explicit
+    # opt-out back to Step 166A's original shadow/report-only-forever
+    # behavior, matching every other config flag's fallback convention in
+    # this codebase.
     route_aware_scheduling_enabled: bool = Field(
-        default=False,
+        default=True,
         alias="ROUTE_AWARE_SCHEDULING_ENABLED",
     )
 

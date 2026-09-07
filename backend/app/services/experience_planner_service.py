@@ -708,6 +708,14 @@ class ExperiencePlannerService(PlanningStageService):
             experiences = [
                 _build_experience_item(poi, must_visit_ids, interest_ids) for poi in day_pois
             ]
+            # Step 172A: stable ordering metadata, restating this day's own
+            # already-decided schedule position -- see ExperienceItem's own
+            # docstring/comment. Re-stamped later by
+            # RouteAwareSequencingService.apply_report if a provider-backed
+            # reorder changes this day's order.
+            for stop_index, experience in enumerate(experiences, start=1):
+                experience.day_number = day_number
+                experience.stop_order = stop_index
 
             restaurant_suggestions = _suggest_nearby_restaurants(
                 experiences, candidate_restaurants, warnings, restaurant_quality_lookup

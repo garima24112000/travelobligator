@@ -738,6 +738,70 @@ def test_apply_report_never_adds_removes_or_changes_experience_content() -> None
         assert experience is original_experiences_by_id[experience.experience_id]
 
 
+# ---------------------------------------------------------------------------
+# Step 172A: stable itinerary ordering metadata (stop_order/
+# route_aware_provenance) is re-stamped to match the new order whenever
+# apply_report actually reorders a day -- never left stale relative to the
+# real, just-changed schedule.
+# ---------------------------------------------------------------------------
+
+
+def test_apply_report_restamps_stop_order_and_route_aware_provenance() -> None:
+    fake_provider = _LngBasedFakeRoutingProvider()
+    service = RouteAwareSequencingService(gateway=ProviderGateway(routing=fake_provider))
+    planning_state = _planning_state_with_experiences(
+        [
+            _experience("Anchor", lat=0.0, lng=0.0),
+            _experience("Far", lat=0.0, lng=5.0),
+            _experience("Near", lat=0.0, lng=1.0),
+        ]
+    )
+    day_plan = planning_state.experience_plan.daily_plans[0]
+    for stop_index, experience in enumerate(day_plan.experiences, start=1):
+        experience.day_number = day_plan.day_number
+        experience.stop_order = stop_index
+        assert experience.route_aware_provenance is None
+
+    report = service.build_report(planning_state)
+    applied = service.apply_report(planning_state, report, min_improvement_seconds=0.0)
+    assert applied is True
+
+    reordered = planning_state.experience_plan.daily_plans[0].experiences
+    assert [experience.name for experience in reordered] == ["Anchor", "Near", "Far"]
+    for stop_index, experience in enumerate(reordered, start=1):
+        assert experience.stop_order == stop_index
+        assert experience.route_aware_provenance == MovementDataProvenance.PROVIDER_BACKED
+        # day_number is untouched -- a reorder never moves an experience
+        # to a different day.
+        assert experience.day_number == day_plan.day_number
+
+
+def test_apply_report_does_not_touch_order_metadata_when_nothing_is_applied() -> None:
+    """A day that stays unapplied (not_connected routing) must never have
+    its stop_order/route_aware_provenance touched -- both stay exactly as
+    ExperiencePlannerService originally stamped them."""
+    service = RouteAwareSequencingService()  # default not_connected routing
+    planning_state = _planning_state_with_experiences(
+        [
+            _experience("Anchor", lat=0.0, lng=0.0),
+            _experience("Far", lat=0.0, lng=5.0),
+            _experience("Near", lat=0.0, lng=1.0),
+        ]
+    )
+    day_plan = planning_state.experience_plan.daily_plans[0]
+    for stop_index, experience in enumerate(day_plan.experiences, start=1):
+        experience.day_number = day_plan.day_number
+        experience.stop_order = stop_index
+
+    report = service.build_report(planning_state)
+    applied = service.apply_report(planning_state, report, min_improvement_seconds=0.0)
+
+    assert applied is False
+    for stop_index, experience in enumerate(day_plan.experiences, start=1):
+        assert experience.stop_order == stop_index
+        assert experience.route_aware_provenance is None
+
+
 def test_apply_report_does_not_apply_not_connected_suggestion() -> None:
     service = RouteAwareSequencingService(gateway=ProviderGateway(routing=NotConnectedRoutingProvider()))
     planning_state = _planning_state_with_experiences(

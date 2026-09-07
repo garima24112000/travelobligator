@@ -2973,3 +2973,178 @@ the product-facing rationale.
   status-to-label mapping constants) was added. No LLM/provider/network
   call was added, and no fake attraction/restaurant/hotel/flight/price/
   rating/route/opening-hour/description/booking-link data was introduced.
+
+## 67. Route-Aware Scheduling as the Backend Default (Step 172A)
+
+**Step 172A flips `Settings.route_aware_scheduling_enabled`'s default
+from `False` to `True`** (`backend/app/core/config.py`) and adds stable
+itinerary ordering metadata to `ExperienceItem`
+(`backend/app/models/planning_state.py`). docs/13_llm_reasoning_pipeline.md
+section 90 has the product-facing rationale.
+
+- **Default behavior.** `PlanningOrchestrator.run_experience_plan_stage`
+  (legacy) and the LangGraph engine's `route_aware_sequencing` node
+  (`planning_graph_nodes.py`, Section 66) both call
+  `RouteAwareSequencingService.apply_report` unconditionally now that the
+  gate defaults to `True` -- but `apply_report`'s own safety contract
+  (Section 60, completely unchanged) is still the only thing that decides
+  whether a schedule actually changes: `status == success`, a real
+  positive improvement past `route_aware_scheduling_min_improvement_seconds`
+  (still default `0.0`), and a verified exact permutation of the day's
+  current experience IDs. With the default `routing_provider=
+  "not_connected"`, no suggestion ever reaches `status == success`, so
+  this default alone changes nothing in an environment with no routing
+  provider configured -- `route_aware_sequencing_report` stays
+  `is_shadow_only=True`/`applied_to_itinerary=False`/`status=
+  "not_connected"`, identical to before this step.
+- **Explicit opt-out.** `ROUTE_AWARE_SCHEDULING_ENABLED=false` restores
+  Step 166A's original behavior exactly: `apply_report` is never called
+  by either engine, and the scheduled itinerary order is completely
+  unchanged. `backend/app/tests/core/test_route_aware_scheduling_config.py`
+  covers the config surface itself (default `True`, explicit `False`
+  override, no-env-var construction); `backend/app/tests/api/
+  test_trips_smoke.py` covers the explicit opt-out end to end with a fake
+  routing provider that would otherwise produce a genuinely favorable
+  reorder.
+- **Fallback behavior when route data is missing.** Unchanged from
+  Section 60/63: `RouteAwareSequencingReport.status`/
+  `movement_data_provenance` (and each day's own
+  `RouteAwareSequenceSuggestion.status`/`movement_data_provenance`)
+  already honestly report `not_connected`/`unavailable`/`partial`/
+  `failed` -- never a fabricated duration/distance, and never treated as
+  eligible for `apply_report` unless `status == success`. A day that
+  can't be sequenced falls back to `ExperiencePlannerService`'s existing
+  haversine-grouped order, exactly as before this step.
+  `PlanValidatorService`'s existing `route_feasibility_report`/
+  `travel_time_buffer_report`-driven warnings (`_build_feasibility_
+  warning`/`_build_travel_time_buffer_warnings`, both completely
+  untouched by this step) already surface this honestly in
+  `validation_report.warnings` -- Step 172A adds no new validator logic
+  because the existing one already does this correctly.
+- **Stable itinerary ordering metadata, new `ExperienceItem` fields:**
+  `day_number: int | None`, `stop_order: int | None` (`ge=1`), and
+  `route_aware_provenance: MovementDataProvenance | None`. All three
+  default to `None` (never fabricated for an `ExperienceItem` built
+  outside the normal scheduling path, which many existing test fixtures
+  do). `ExperiencePlannerService.run()` stamps `day_number`/`stop_order`
+  right after building each day's `experiences` list (mirroring that
+  day's own `DailyPlan.day_number` and the item's 1-based position).
+  `RouteAwareSequencingService._apply_day_order` re-stamps `stop_order`
+  (the new position) and sets `route_aware_provenance =
+  MovementDataProvenance.PROVIDER_BACKED` for every experience in a day
+  it actually reorders -- `day_number` is left untouched, since a
+  reorder only changes position within a day, never which day an
+  experience belongs to. A day that is never reordered keeps whatever
+  `route_aware_provenance` it already had (`None`, from
+  `ExperiencePlannerService`) -- never guessed. This gives the frontend
+  everything it needs to render `"Day {day_number}, Stop {stop_order}"`
+  reliably in a later Step 172 step, without depending on array
+  position alone.
+- **Promoted AI candidates (Section 83/60) are unaffected.** A promoted
+  candidate is merged into the same `ExperiencePlannerService` scheduling
+  pool as any other candidate (unchanged), so it receives the exact same
+  `day_number`/`stop_order` stamping, and route-aware reordering treats
+  it identically to any other scheduled experience -- Section 170's
+  promotion rules (provider-grounded, quality-approved, deterministic
+  eligibility) are the only thing that ever got it there in the first
+  place, and remain completely untouched.
+- **No regeneration/accommodation/flight-provider behavior changed.**
+  `POST /regenerate` still always `409`s;
+  `AccommodationInventoryService`/`FlightInventoryService` and their own
+  coverage-mapping logic are untouched; `ProviderCoverageService`'s
+  existing honest-reporting contract is untouched. No LLM/provider/
+  network call was added -- `apply_report` still only ever reaches a
+  provider through the pre-existing `RouteAwareSequencingService.
+  _get_route -> ProviderGateway.get_route` path.
+
+## 68. Numbered Itinerary Stop Order Rendered in the Frontend (Step 172B)
+
+Step 172B is a frontend-only consumer of Section 67's `day_number`/
+`stop_order`/`route_aware_provenance` fields -- no backend file changed.
+`frontend/app/page.tsx` now reads `experience.stop_order` (falling back
+to array index + 1 only when `null`) to number each scheduled
+experience's card, and reads `experience.route_aware_provenance` to
+choose between "Suggested stop order" and "Provider-grounded route
+order" captions per day. The frontend still renders `day.experiences` in
+exactly the order the backend returned it -- it never reorders that
+array itself, so the backend's `ExperiencePlannerService`/
+`RouteAwareSequencingService.apply_report` ordering (Section 67) remains
+authoritative. See docs/16_frontend_architecture.md section 39.19 for
+the full rendering details.
+
+## 69. Frontend Route-Aware Provenance/Report Consumption for Status Display (Step 172C)
+
+Step 172C is another frontend-only consumer, this time of
+`PlanningState.route_aware_sequencing_report` and
+`PlanningState.route_feasibility_report` -- both already returned on
+every `GET /trips/{trip_id}`/`POST /trips/{trip_id}/generate` response
+before this step (no backend serialization change was needed); only
+`frontend/lib/types.ts`'s hand-maintained type mirror was missing them.
+The frontend reads `route_aware_sequencing_report.suggestions[].status`
+(matched per day by `day_index`) alongside the existing
+`experience.route_aware_provenance` to choose a three-way per-day status
+label, and `route_feasibility_report.status` to decide whether to show
+an honest "movement data unavailable" note -- see
+docs/16_frontend_architecture.md section 39.20 for the full behavior.
+No backend file changed.
+
+## 70. Frontend Stop-to-Stop Movement Data Consumption (Step 172D)
+
+Step 172D is a further frontend-only consumer of
+`PlanningState.travel_time_buffer_report` (Step 166C) -- already
+returned on every `GET`/`POST .../generate` response before this step;
+only `frontend/lib/types.ts` was missing a type for it. The frontend
+looks up the `TravelTimeBuffer` entry matching each pair of consecutive
+scheduled experiences by `(from_experience_id, to_experience_id)` and
+renders its `status`/`route_duration_seconds`/`route_distance_meters`
+directly -- it never computes a distance from `experience.coordinates`
+itself, and never fills in a duration/distance the backend left `null`.
+See docs/16_frontend_architecture.md section 39.21 for the full
+rendering behavior. No backend file changed.
+
+## 71. Section 172 Complete: Final Backend Summary (Step 172E, final Section 172 step)
+
+Step 172E closes Section 172 with a small backward-compatibility test
+addition (`backend/app/tests/models/test_planning_state_backward_
+compatibility.py`) and no other backend code change. Final Section 172
+backend behavior, all confirmed still passing by the full test suite:
+
+- **Default route-aware scheduling.**
+  `Settings.route_aware_scheduling_enabled` defaults to `True` (Step
+  172A) -- `RouteAwareSequencingService.apply_report` is called by both
+  the LangGraph engine's `route_aware_sequencing` node and
+  `PlanningOrchestrator.run_experience_plan_stage` (legacy), but only
+  ever reorders a schedule when a suggestion is `status == success`
+  with a real positive improvement past the configured minimum and a
+  verified exact permutation of the day's current experience IDs
+  (Section 60's safety contract, unchanged since Step 166B).
+- **Explicit opt-out.** `ROUTE_AWARE_SCHEDULING_ENABLED=false` restores
+  the original Step 166A shadow/report-only-forever behavior in both
+  engines identically -- `test_route_aware_scheduling_explicit_opt_out_
+  preserves_order_even_with_favorable_route_data` (`test_trips_smoke.py`)
+  verifies this even when a fake routing provider would otherwise make
+  a reorder genuinely favorable.
+- **Order metadata, stable across both engines and after a reorder.**
+  `ExperienceItem.day_number`/`stop_order`/`route_aware_provenance`
+  (Step 172A) are stamped at initial scheduling
+  (`ExperiencePlannerService.run`) and re-stamped by
+  `RouteAwareSequencingService._apply_day_order` for any day it
+  actually reorders -- `test_route_aware_scheduling_enabled_by_
+  default_langgraph_engine_applies_favorable_route_data` and its
+  `..._legacy_engine_...` sibling confirm both engines produce the
+  identical final scheduled order and report state under the same
+  config.
+- **Old persisted trips never crash.** A trip's `PlanningState` missing
+  every Step 166C/172A field entirely (not just `null` -- the key
+  absent) still loads through `PlanningState.model_validate` --
+  `PlanningStateRepository.__init__`'s own deserialization call -- with
+  every missing field honestly `None`, confirmed end to end through a
+  real `PlanningStateRepository`/`LocalJsonStore` round trip in the new
+  backward-compatibility test module.
+- **Everything else is untouched.** Regeneration refusal
+  (`POST /regenerate` still always `409`), accommodation/flight
+  inventory reporting, provider coverage, and LangGraph's own stage
+  parity (Section 66) are all unaffected by Section 172 end to end --
+  Section 172 only ever added new orchestration-adjacent metadata
+  (order stamping) and a config default flip, never new scheduling,
+  regeneration, or provider logic.
