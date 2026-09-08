@@ -234,6 +234,25 @@ export type ScrapedAccommodationProvenance = {
   official_provider: false;
 };
 
+// Provider-backed hotel rating snapshot (backend:
+// app.models.hotel_ratings.AccommodationRating, Step 177B/177C).
+// Deliberately separate from the bare `rating` field below -- populated
+// only when `HotelRatingEnrichmentService` (Step 177C) found a safe,
+// exact identity match via a real, connected hotel ratings provider.
+// With the default not_connected provider, this stays `null` on every
+// offer. Never rendered as verified/official/confirmed -- it is exactly
+// what one provider returned for one exactly-matched property.
+export type AccommodationRatingDetails = {
+  value: number | null;
+  scale_max: number;
+  review_count: number | null;
+  provider: string | null;
+  source_name: string | null;
+  source_url: string | null;
+  data_status: string;
+  retrieved_at: string | null;
+};
+
 // Bookable accommodation inventory offer (backend:
 // app.models.accommodation.AccommodationOffer). This is a wholly separate
 // concept from `AccommodationSuggestion`/`CandidatePoi` above (open-data
@@ -246,6 +265,8 @@ export type ScrapedAccommodationProvenance = {
 // disabled by default) rather than an official, connected lodging
 // provider -- when present, this offer must be labeled as scraped/
 // experimental/fragile and never presented as official-provider data.
+// `rating_details` (Step 177D) is a separate, richer rating snapshot from
+// the bare `rating` number below -- see `AccommodationRatingDetails`.
 export type AccommodationOffer = {
   provider: string;
   provider_property_id: string;
@@ -256,6 +277,7 @@ export type AccommodationOffer = {
   availability_status: string;
   booking_url: string | null;
   rating: number | null;
+  rating_details: AccommodationRatingDetails | null;
   amenities: string[];
   cancellation_policy: string | null;
   source_name: string | null;
@@ -269,12 +291,19 @@ export type AccommodationOffer = {
 // only be non-empty when `status === "success"` -- with the default
 // not_connected accommodation provider, this is always `status:
 // "not_connected"` with an empty `offers` list, and the frontend never
-// invents a different value client-side.
+// invents a different value client-side. `hotel_ratings_*` fields (Step
+// 177C/177D) describe the separate hotel-ratings enrichment pass that may
+// run after the base offers are found -- all stay `null`/`0` whenever
+// enrichment was never attempted (e.g. no offers to enrich).
 export type AccommodationInventoryReport = {
   provider: string;
   status: "success" | "not_connected" | "unavailable" | "failed";
   offers: AccommodationOffer[];
   message: string | null;
+  hotel_ratings_status: "success" | "not_connected" | "unavailable" | "failed" | null;
+  hotel_ratings_provider: string | null;
+  hotel_ratings_message: string | null;
+  hotel_ratings_enriched_offer_count: number;
 };
 
 // Provenance for one scraped (not official-provider) flight offer

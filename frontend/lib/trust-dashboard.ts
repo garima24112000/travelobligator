@@ -332,6 +332,79 @@ function buildPlacesAndExperiencesCategory(
   };
 }
 
+/**
+ * Step 177D: hotel-ratings enrichment supporting facts for the lodging
+ * inventory category. Deliberately additive/informational only -- this
+ * never feeds into `buildLodgingInventoryCategory`'s own `statusKind`
+ * (which stays driven by lodging inventory availability alone, exactly
+ * as it was before this step), because hotel-rating enrichment is an
+ * optional, separate enrichment axis (like `accommodations` vs.
+ * `hotel_prices`), not a precondition for lodging inventory itself being
+ * available. With the default not_connected hotel ratings provider, this
+ * is expected, common state -- folding it into the card's overall status
+ * would make nearly every otherwise-healthy lodging card read as
+ * "needs review" for a reason unrelated to lodging inventory itself.
+ *
+ * Never implies a rating affects ranking/recommendation quality, and
+ * never implies a rating is verified/official/confirmed -- every
+ * sentence here only restates what `provider_coverage.hotel_ratings`/
+ * `accommodation_inventory_report.hotel_ratings_*` already say.
+ */
+function hotelRatingsSupportingFacts(result: TrustDashboardSourceResult): string[] {
+  const coverageValue = result.providerCoverage.provider_coverage.hotel_ratings ?? null;
+  const report = result.accommodationInventoryReport;
+  const totalOffers = report?.offers.length ?? 0;
+  const enrichedCount = report?.hotel_ratings_enriched_offer_count ?? 0;
+  const providerName = report?.hotel_ratings_provider ?? "the hotel ratings provider";
+  const facts: string[] = [];
+
+  switch (coverageValue) {
+    case null:
+      facts.push(
+        "Hotel ratings: not attempted yet -- no accommodation offers exist to check for provider-backed ratings.",
+      );
+      break;
+    case "not_connected":
+      facts.push(
+        "Hotel ratings provider is not connected -- accommodation offers were not checked for provider-backed rating data.",
+      );
+      break;
+    case "failed":
+      facts.push("Hotel ratings provider request failed -- needs review.");
+      break;
+    case "unavailable":
+      facts.push(
+        "Hotel ratings provider was checked, but no offer could be safely, exactly matched -- needs review.",
+      );
+      break;
+    case "partial":
+      facts.push(
+        `${enrichedCount} of ${totalOffers} accommodation inventory offer(s) include provider-backed rating metadata via ${providerName}; the rest could not be safely, exactly matched -- needs review.`,
+      );
+      break;
+    case "success":
+      if (enrichedCount > 0) {
+        facts.push(
+          `${enrichedCount} accommodation inventory offer(s) include provider-backed rating metadata via ${providerName}. This is not a claim that any rating is verified, official, or confirmed, and ratings are not used to rank or recommend any offer.`,
+        );
+      }
+      break;
+    default:
+      break;
+  }
+
+  const sourceLimitedOnlyCount = (report?.offers ?? []).filter(
+    (offer) => offer.rating !== null && offer.rating_details === null,
+  ).length;
+  if (sourceLimitedOnlyCount > 0) {
+    facts.push(
+      `${sourceLimitedOnlyCount} offer(s) carry only a source-limited rating value from their own lodging source -- not provider-backed rating metadata.`,
+    );
+  }
+
+  return facts;
+}
+
 function buildLodgingInventoryCategory(
   result: TrustDashboardSourceResult,
 ): TrustDashboardCategoryView {
@@ -370,6 +443,11 @@ function buildLodgingInventoryCategory(
     }
   }
 
+  supportingFacts.push(
+    `provider_coverage.hotel_ratings: ${coverageValueDisplay(coverage.hotel_ratings)}`,
+  );
+  supportingFacts.push(...hotelRatingsSupportingFacts(result));
+
   return {
     id: "lodging_inventory",
     title: "Lodging inventory",
@@ -379,7 +457,10 @@ function buildLodgingInventoryCategory(
       "Bookable lodging inventory is a separate concept from open-data accommodation-like location candidates. Prices, availability, ratings, amenities, and booking links are only ever present when an offer explicitly carries them.",
     supportingFacts,
     relatedValidationIssues: [
-      ...issuesByCategory(result.validationReport.warnings, ["accommodation_inventory"]),
+      ...issuesByCategory(result.validationReport.warnings, [
+        "accommodation_inventory",
+        "hotel_ratings",
+      ]),
       ...issuesByCategory(result.validationReport.warnings, ["provider_coverage_consistency"]).filter(
         (issue) => issueMentions(issue, ["hotel_prices"]),
       ),

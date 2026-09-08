@@ -9,6 +9,10 @@ from app.models.accommodation import (
 )
 from app.models.planning_state import PlanningState
 from app.providers.gateway import ProviderGateway, provider_gateway
+from app.services.hotel_rating_enrichment_service import (
+    HotelRatingEnrichmentService,
+    hotel_rating_enrichment_service,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +30,14 @@ logger = logging.getLogger(__name__)
 # fabricated: with the default `not_connected` accommodation provider,
 # `build_report` always returns an honest `not_connected` result with an
 # empty `offers` list, without any network call.
+#
+# Step 177C: after the base provider returns, `build_report` additionally
+# runs the result through `HotelRatingEnrichmentService.enrich`, which may
+# conservatively attach `rating_details` to individual offers -- see that
+# module's own docstring for the full matching contract. With the default
+# `not_connected` hotel ratings provider (`Settings.hotel_ratings_provider`),
+# this enrichment step is a complete no-op, so default behavior (status,
+# offer count, and every existing offer field) is unchanged.
 
 _DEFAULT_ROOMS = 1
 _NOT_ENOUGH_NIGHTS_MESSAGE = (
@@ -54,8 +66,15 @@ class AccommodationInventoryService:
     offer.
     """
 
-    def __init__(self, gateway: ProviderGateway | None = None) -> None:
+    def __init__(
+        self,
+        gateway: ProviderGateway | None = None,
+        hotel_rating_enrichment_service_override: HotelRatingEnrichmentService | None = None,
+    ) -> None:
         self.gateway = gateway or provider_gateway
+        self.hotel_rating_enrichment_service = (
+            hotel_rating_enrichment_service_override or hotel_rating_enrichment_service
+        )
 
     def build_report(self, planning_state: PlanningState) -> AccommodationSearchResult:
         provider_name = _provider_name(self.gateway)
@@ -77,7 +96,8 @@ class AccommodationInventoryService:
             rooms=_DEFAULT_ROOMS,
             currency=trip_request.budget_currency,
         )
-        return _safe_search_accommodations(self.gateway, request)
+        result = _safe_search_accommodations(self.gateway, request)
+        return self.hotel_rating_enrichment_service.enrich(result)
 
 
 def _provider_name(gateway: ProviderGateway) -> str:

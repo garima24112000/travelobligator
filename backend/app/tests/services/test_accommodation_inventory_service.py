@@ -9,10 +9,19 @@ from app.models.accommodation import (
     AccommodationSearchResult,
     AccommodationSearchStatus,
 )
+from app.models.common import DataStatus
+from app.models.hotel_ratings import (
+    HotelRatingLookupItem,
+    HotelRatingsRequest,
+    HotelRatingsResult,
+    HotelRatingsStatus,
+)
 from app.models.planning_state import DestinationContext, PlanningState, TravelGroupType, TripRequest
 from app.providers.accommodation.base import AccommodationInventoryProvider
 from app.providers.gateway import ProviderGateway
+from app.providers.hotel_ratings import HotelRatingsProvider
 from app.services.accommodation_inventory_service import AccommodationInventoryService
+from app.services.hotel_rating_enrichment_service import HotelRatingEnrichmentService
 
 # Step 167D: AccommodationInventoryService tests. Every test here injects a
 # ProviderGateway with either the default not_connected accommodation
@@ -219,3 +228,101 @@ def test_build_report_returns_injected_provider_success_unmodified() -> None:
     assert result.status == AccommodationSearchStatus.SUCCESS
     assert len(result.offers) == 1
     assert result.offers[0].property_name == "Fake Property"
+
+
+# ---------------------------------------------------------------------------
+# Step 177C: hotel-rating enrichment wiring. Default (not_connected) hotel
+# ratings provider changes nothing; an injected fake enrichment provider
+# can attach rating_details without touching offer count/status.
+# ---------------------------------------------------------------------------
+
+
+def test_build_report_with_default_hotel_ratings_provider_leaves_offers_unchanged() -> None:
+    """Required test 2: with the default not_connected hotel ratings
+    provider, build_report's offer count/status/fields are identical to
+    Step 167D's pre-177C behavior -- rating_details stays None."""
+    from app.models.accommodation import AccommodationOffer
+
+    offer = AccommodationOffer(
+        provider="fake_accommodation_inventory_provider",
+        provider_property_id="prop_1",
+        property_name="Fake Property",
+        data_status=DataStatus.LIVE,
+    )
+    fake_result = AccommodationSearchResult(
+        provider="fake_accommodation_inventory_provider",
+        status=AccommodationSearchStatus.SUCCESS,
+        offers=[offer],
+    )
+    fake_accommodation_provider = _FakeAccommodationInventoryProvider(result=fake_result)
+    gateway = ProviderGateway(accommodation_inventory=fake_accommodation_provider)
+    service = AccommodationInventoryService(gateway=gateway)
+    planning_state = _planning_state(_trip_request())
+
+    result = service.build_report(planning_state)
+
+    assert result.status == AccommodationSearchStatus.SUCCESS
+    assert len(result.offers) == 1
+    assert result.offers[0].property_name == "Fake Property"
+    assert result.offers[0].rating_details is None
+    assert result.hotel_ratings_status == HotelRatingsStatus.NOT_CONNECTED
+    assert result.hotel_ratings_enriched_offer_count == 0
+
+
+class _FakeHotelRatingsProviderForInventoryWiring(HotelRatingsProvider):
+    provider_name = "fake_hotel_ratings_provider"
+
+    def __init__(self, result: HotelRatingsResult) -> None:
+        self._result = result
+
+    def get_ratings(self, requests: list[HotelRatingsRequest]) -> HotelRatingsResult:
+        return self._result
+
+
+def test_build_report_attaches_rating_details_via_injected_enrichment_provider() -> None:
+    """The enrichment path is wired into build_report end to end via
+    constructor injection -- no fake provider is ever registered in the
+    production hotel_ratings factory."""
+    from app.models.accommodation import AccommodationOffer
+    from app.models.hotel_ratings import AccommodationRating
+
+    offer = AccommodationOffer(
+        provider="fake_accommodation_inventory_provider",
+        provider_property_id="prop_1",
+        property_name="Fake Property",
+        data_status=DataStatus.LIVE,
+    )
+    fake_result = AccommodationSearchResult(
+        provider="fake_accommodation_inventory_provider",
+        status=AccommodationSearchStatus.SUCCESS,
+        offers=[offer],
+    )
+    fake_accommodation_provider = _FakeAccommodationInventoryProvider(result=fake_result)
+    gateway = ProviderGateway(accommodation_inventory=fake_accommodation_provider)
+
+    fake_ratings_provider = _FakeHotelRatingsProviderForInventoryWiring(
+        result=HotelRatingsResult(
+            provider="fake_hotel_ratings_provider",
+            status=HotelRatingsStatus.SUCCESS,
+            items=[
+                HotelRatingLookupItem(
+                    offer_id="offer_0",
+                    matched=True,
+                    rating=AccommodationRating(value=4.6, data_status=DataStatus.LIVE),
+                )
+            ],
+        )
+    )
+    enrichment_service = HotelRatingEnrichmentService(provider=fake_ratings_provider)
+    service = AccommodationInventoryService(
+        gateway=gateway, hotel_rating_enrichment_service_override=enrichment_service
+    )
+    planning_state = _planning_state(_trip_request())
+
+    result = service.build_report(planning_state)
+
+    assert result.status == AccommodationSearchStatus.SUCCESS
+    assert len(result.offers) == 1
+    assert result.offers[0].rating_details is not None
+    assert result.offers[0].rating_details.value == pytest.approx(4.6)
+    assert result.hotel_ratings_enriched_offer_count == 1

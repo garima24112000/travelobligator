@@ -9,6 +9,7 @@ from app.models.accommodation import (
     AccommodationSearchStatus,
 )
 from app.models.common import DataStatus, ProviderStatus, RegenerationStrategy, ValidationSeverity
+from app.models.hotel_ratings import HotelRatingsStatus
 from app.models.flight import (
     FlightOffer,
     FlightSearchResult,
@@ -858,6 +859,279 @@ def test_accommodation_inventory_warning_never_blocks_generation() -> None:
         issue.category == "accommodation_inventory"
         for issue in planning_state.validation_report.critical_issues
     )
+
+
+# ---------------------------------------------------------------------------
+# Step 177D: hotel-ratings enrichment visibility in PlanValidatorService.
+# Every case here is a non-blocking WARNING/SUGGESTION -- missing/failed/
+# partial hotel-ratings enrichment never produces a critical_issue.
+# ---------------------------------------------------------------------------
+
+
+def _hotel_ratings_issues(planning_state: PlanningState) -> list[Any]:
+    return [
+        issue
+        for issue in planning_state.validation_report.warnings
+        if issue.category == "hotel_ratings"
+    ]
+
+
+def _accommodation_offer(**overrides: object) -> AccommodationOffer:
+    fields: dict[str, object] = {
+        "provider": "fake_accommodation_inventory_provider",
+        "provider_property_id": "prop_1",
+        "property_name": "Fake Property",
+        "data_status": DataStatus.LIVE,
+    }
+    fields.update(overrides)
+    return AccommodationOffer(**fields)
+
+
+def test_hotel_ratings_issue_absent_when_no_accommodation_report() -> None:
+    planning_state = _planning_state()
+    planning_state.accommodation_inventory_report = None
+
+    PlanValidatorService().run(planning_state)
+
+    assert _hotel_ratings_issues(planning_state) == []
+
+
+def test_hotel_ratings_issue_absent_when_no_offers() -> None:
+    planning_state = _planning_state()
+    planning_state.accommodation_inventory_report = AccommodationSearchResult(
+        provider="fake_accommodation_inventory_provider",
+        status=AccommodationSearchStatus.UNAVAILABLE,
+        offers=[],
+    )
+
+    PlanValidatorService().run(planning_state)
+
+    assert _hotel_ratings_issues(planning_state) == []
+
+
+def test_hotel_ratings_issue_absent_when_enrichment_never_attempted() -> None:
+    """hotel_ratings_status stays None (its default) whenever
+    HotelRatingEnrichmentService never ran -- no noisy warning."""
+    planning_state = _planning_state()
+    planning_state.accommodation_inventory_report = AccommodationSearchResult(
+        provider="fake_accommodation_inventory_provider",
+        status=AccommodationSearchStatus.SUCCESS,
+        offers=[_accommodation_offer()],
+    )
+    assert planning_state.accommodation_inventory_report.hotel_ratings_status is None
+
+    PlanValidatorService().run(planning_state)
+
+    assert _hotel_ratings_issues(planning_state) == []
+
+
+def test_hotel_ratings_suggestion_when_not_connected() -> None:
+    """Required test 6: not_connected produces a suggestion/warning
+    naming that no hotel ratings provider is configured."""
+    planning_state = _planning_state()
+    planning_state.accommodation_inventory_report = AccommodationSearchResult(
+        provider="fake_accommodation_inventory_provider",
+        status=AccommodationSearchStatus.SUCCESS,
+        offers=[_accommodation_offer()],
+        hotel_ratings_status=HotelRatingsStatus.NOT_CONNECTED,
+        hotel_ratings_provider="hotel_ratings_provider",
+        hotel_ratings_message="No hotel ratings provider is configured.",
+    )
+
+    PlanValidatorService().run(planning_state)
+
+    issues = _hotel_ratings_issues(planning_state)
+    assert len(issues) == 1
+    assert issues[0].severity in (ValidationSeverity.SUGGESTION, ValidationSeverity.WARNING)
+    message_lower = issues[0].message.lower()
+    assert "no hotel ratings provider is configured" in message_lower
+    assert not any(
+        issue.category == "hotel_ratings"
+        for issue in planning_state.validation_report.critical_issues
+    )
+
+
+def test_hotel_ratings_warning_when_failed() -> None:
+    """Required test 7: a failed hotel ratings provider request produces
+    a warning."""
+    planning_state = _planning_state()
+    planning_state.accommodation_inventory_report = AccommodationSearchResult(
+        provider="fake_accommodation_inventory_provider",
+        status=AccommodationSearchStatus.SUCCESS,
+        offers=[_accommodation_offer()],
+        hotel_ratings_status=HotelRatingsStatus.FAILED,
+        hotel_ratings_provider="fake_hotel_ratings_provider",
+        hotel_ratings_message="The hotel ratings provider request failed.",
+    )
+
+    PlanValidatorService().run(planning_state)
+
+    issues = _hotel_ratings_issues(planning_state)
+    assert len(issues) == 1
+    assert issues[0].severity == ValidationSeverity.WARNING
+    assert "failed" in issues[0].message.lower()
+    assert not any(
+        issue.category == "hotel_ratings"
+        for issue in planning_state.validation_report.critical_issues
+    )
+
+
+def test_hotel_ratings_issue_when_unavailable() -> None:
+    """Required test 8: an unavailable (checked, no safe match) hotel
+    ratings result produces a suggestion/warning, never a claim that a
+    missing rating means low quality."""
+    planning_state = _planning_state()
+    planning_state.accommodation_inventory_report = AccommodationSearchResult(
+        provider="fake_accommodation_inventory_provider",
+        status=AccommodationSearchStatus.SUCCESS,
+        offers=[_accommodation_offer()],
+        hotel_ratings_status=HotelRatingsStatus.UNAVAILABLE,
+        hotel_ratings_provider="fake_hotel_ratings_provider",
+        hotel_ratings_message="No matched offers were returned.",
+    )
+
+    PlanValidatorService().run(planning_state)
+
+    issues = _hotel_ratings_issues(planning_state)
+    assert len(issues) == 1
+    message_lower = issues[0].message.lower()
+    assert "matched" in message_lower
+    assert "low quality" not in message_lower
+    assert "poor quality" not in message_lower
+    assert not any(
+        issue.category == "hotel_ratings"
+        for issue in planning_state.validation_report.critical_issues
+    )
+
+
+def test_hotel_ratings_warning_when_success_but_zero_enriched() -> None:
+    """A success status with zero enriched offers must never be described
+    as a success -- it gets the same 'no safe match' treatment as
+    unavailable."""
+    planning_state = _planning_state()
+    planning_state.accommodation_inventory_report = AccommodationSearchResult(
+        provider="fake_accommodation_inventory_provider",
+        status=AccommodationSearchStatus.SUCCESS,
+        offers=[_accommodation_offer()],
+        hotel_ratings_status=HotelRatingsStatus.SUCCESS,
+        hotel_ratings_provider="fake_hotel_ratings_provider",
+        hotel_ratings_enriched_offer_count=0,
+    )
+
+    PlanValidatorService().run(planning_state)
+
+    issues = _hotel_ratings_issues(planning_state)
+    assert len(issues) == 1
+    message_lower = issues[0].message.lower()
+    assert "safely, exactly matched" in message_lower
+    for banned_word in ("verified", "official", "confirmed"):
+        assert banned_word not in message_lower
+
+
+def test_hotel_ratings_warning_when_partial() -> None:
+    """Required test 9: some (but not all) offers enriched produces a
+    warning naming both counts."""
+    planning_state = _planning_state()
+    planning_state.accommodation_inventory_report = AccommodationSearchResult(
+        provider="fake_accommodation_inventory_provider",
+        status=AccommodationSearchStatus.SUCCESS,
+        offers=[_accommodation_offer(provider_property_id="prop_1"), _accommodation_offer(provider_property_id="prop_2")],
+        hotel_ratings_status=HotelRatingsStatus.SUCCESS,
+        hotel_ratings_provider="fake_hotel_ratings_provider",
+        hotel_ratings_enriched_offer_count=1,
+    )
+
+    PlanValidatorService().run(planning_state)
+
+    issues = _hotel_ratings_issues(planning_state)
+    assert len(issues) == 1
+    assert issues[0].severity == ValidationSeverity.WARNING
+    message_lower = issues[0].message.lower()
+    assert "1 of 2" in message_lower
+
+
+def test_hotel_ratings_suggestion_when_all_enriched() -> None:
+    planning_state = _planning_state()
+    planning_state.accommodation_inventory_report = AccommodationSearchResult(
+        provider="fake_accommodation_inventory_provider",
+        status=AccommodationSearchStatus.SUCCESS,
+        offers=[_accommodation_offer()],
+        hotel_ratings_status=HotelRatingsStatus.SUCCESS,
+        hotel_ratings_provider="fake_hotel_ratings_provider",
+        hotel_ratings_enriched_offer_count=1,
+    )
+
+    PlanValidatorService().run(planning_state)
+
+    issues = _hotel_ratings_issues(planning_state)
+    assert len(issues) == 1
+    assert issues[0].severity == ValidationSeverity.SUGGESTION
+    message_lower = issues[0].message.lower()
+    assert "1" in message_lower
+
+
+def test_hotel_ratings_never_creates_critical_issue() -> None:
+    """Required test 10: no combination of hotel_ratings_status ever
+    produces a critical_issue."""
+    for status in (
+        HotelRatingsStatus.NOT_CONNECTED,
+        HotelRatingsStatus.FAILED,
+        HotelRatingsStatus.UNAVAILABLE,
+        HotelRatingsStatus.SUCCESS,
+    ):
+        planning_state = _planning_state()
+        planning_state.accommodation_inventory_report = AccommodationSearchResult(
+            provider="fake_accommodation_inventory_provider",
+            status=AccommodationSearchStatus.SUCCESS,
+            offers=[_accommodation_offer()],
+            hotel_ratings_status=status,
+            hotel_ratings_provider="fake_hotel_ratings_provider",
+            hotel_ratings_enriched_offer_count=1 if status == HotelRatingsStatus.SUCCESS else 0,
+        )
+
+        PlanValidatorService().run(planning_state)
+
+        assert not any(
+            issue.category == "hotel_ratings"
+            for issue in planning_state.validation_report.critical_issues
+        )
+
+
+def test_hotel_ratings_never_overclaims_or_implies_low_quality() -> None:
+    """Required test 11: across every status branch, no message ever
+    claims a rating is verified/official/confirmed, and no message ever
+    implies a missing rating means low quality."""
+    banned_phrases = (
+        "has been verified",
+        "is officially verified",
+        "confirmed rating",
+        "low quality",
+        "poor quality",
+    )
+    for status, enriched_count in (
+        (HotelRatingsStatus.NOT_CONNECTED, 0),
+        (HotelRatingsStatus.FAILED, 0),
+        (HotelRatingsStatus.UNAVAILABLE, 0),
+        (HotelRatingsStatus.SUCCESS, 0),
+        (HotelRatingsStatus.SUCCESS, 1),
+    ):
+        planning_state = _planning_state()
+        planning_state.accommodation_inventory_report = AccommodationSearchResult(
+            provider="fake_accommodation_inventory_provider",
+            status=AccommodationSearchStatus.SUCCESS,
+            offers=[_accommodation_offer()],
+            hotel_ratings_status=status,
+            hotel_ratings_provider="fake_hotel_ratings_provider",
+            hotel_ratings_enriched_offer_count=enriched_count,
+        )
+
+        PlanValidatorService().run(planning_state)
+
+        issues = _hotel_ratings_issues(planning_state)
+        assert len(issues) == 1
+        message_lower = issues[0].message.lower()
+        for banned_phrase in banned_phrases:
+            assert banned_phrase not in message_lower
 
 
 # ---------------------------------------------------------------------------

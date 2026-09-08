@@ -9,6 +9,7 @@ from app.models.accommodation import AccommodationSearchResult, AccommodationSea
 from app.models.ai_candidate_proposal import AICandidateProposalBatch
 from app.models.candidate_grounding import CandidateGroundingBatch
 from app.models.common import ProviderStatus
+from app.models.hotel_ratings import HotelRatingsStatus
 from app.models.flight import FlightSearchResult, FlightSearchStatus
 from app.models.planning_state import (
     GENERATION_STAGE_KEYS,
@@ -96,6 +97,42 @@ def _accommodation_coverage_value(result: AccommodationSearchResult) -> str:
     if result.status == AccommodationSearchStatus.SUCCESS and not result.offers:
         return "unavailable"
     return _ACCOMMODATION_STATUS_TO_COVERAGE_VALUE.get(result.status, "not_connected")
+
+
+# Maps AccommodationSearchResult.hotel_ratings_status (Step 177C's
+# HotelRatingEnrichmentService metadata) onto the new
+# ProviderCoverage.hotel_ratings string field (Step 177D) -- honest
+# reporting only, distinct from both `hotel_prices` (bookable price/
+# availability inventory) and `accommodations` (OSM-backed open-data
+# location candidates, never rated). `hotel_ratings_status` is `None`
+# whenever enrichment was never attempted (no accommodation offers to
+# enrich) -- that case leaves `provider_coverage.hotel_ratings` at `None`
+# too, never a guessed "not_connected"/"unavailable" value. A `success`
+# status is only ever reported as coverage `"success"` when every offer
+# that could be enriched actually was; zero enriched offers is reported
+# `"unavailable"` (never upgraded to imply a rating exists), and some-but-
+# not-all enriched offers is reported `"partial"`.
+_HOTEL_RATINGS_STATUS_TO_COVERAGE_VALUE = {
+    HotelRatingsStatus.NOT_CONNECTED: "not_connected",
+    HotelRatingsStatus.FAILED: "failed",
+    HotelRatingsStatus.UNAVAILABLE: "unavailable",
+}
+
+
+def _hotel_ratings_coverage_value(result: AccommodationSearchResult) -> str | None:
+    status = result.hotel_ratings_status
+    if status is None:
+        return None
+    if status != HotelRatingsStatus.SUCCESS:
+        return _HOTEL_RATINGS_STATUS_TO_COVERAGE_VALUE.get(status, "not_connected")
+
+    total_offers = len(result.offers)
+    enriched = result.hotel_ratings_enriched_offer_count
+    if enriched <= 0:
+        return "unavailable"
+    if enriched < total_offers:
+        return "partial"
+    return "success"
 
 
 # Maps FlightSearchResult.status (Step 169E) onto the existing
@@ -553,14 +590,17 @@ class PlanningOrchestrator:
 
     def _build_accommodation_inventory_report_safe(self, planning_state: PlanningState) -> None:
         """Builds and stores `accommodation_inventory_report` plus the
-        derived `ProviderCoverage.hotel_prices` value (Step 167D), failing
-        safe (mirroring Step 166D's route-report hardening): an unexpected
+        derived `ProviderCoverage.hotel_prices` value (Step 167D) and
+        `ProviderCoverage.hotel_ratings` value (Step 177D), failing safe
+        (mirroring Step 166D's route-report hardening): an unexpected
         exception from `AccommodationInventoryService.build_report` is
         never allowed to crash generation. On such a failure, a safe
         `status=failed` result with no offers is stored instead -- never a
         fabricated property/price/rating/availability/booking link, and
         never raw exception text or a provider payload in any stored
-        field.
+        field. A failed/exception result never ran hotel-rating
+        enrichment, so its `hotel_ratings_status` is `None` and
+        `provider_coverage.hotel_ratings` is left `None` too.
         """
         try:
             planning_state.accommodation_inventory_report = (
@@ -581,6 +621,9 @@ class PlanningOrchestrator:
                 provider_name
             )
         planning_state.provider_coverage.hotel_prices = _accommodation_coverage_value(
+            planning_state.accommodation_inventory_report
+        )
+        planning_state.provider_coverage.hotel_ratings = _hotel_ratings_coverage_value(
             planning_state.accommodation_inventory_report
         )
 

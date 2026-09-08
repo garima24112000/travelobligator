@@ -3887,3 +3887,283 @@ changed anywhere in Section 176; `PlanningState`, `PlanValidatorService`,
 remain exactly as Section 175 left them. `python -m compileall`/`pytest`
 were run one final time for this section and are byte-for-byte
 unaffected (2104 tests passing, unchanged since 175E).
+
+## 89. Hotel Ratings Provider Foundation, not_connected Default (Step 177B)
+
+Step 177B adds a safe backend foundation for hotel ratings, following
+177A's audit finding that three separate accommodation concepts already
+exist (`DestinationContext.candidate_accommodation_pois` open-data
+location candidates; the vestigial, never-constructed
+`StayTransportDecision.accommodation_recommendations: list[AccommodationOption]`;
+and the live `accommodation_inventory_report`/`AccommodationOffer` path)
+and that no external hotel-rating provider (Google Places, Tripadvisor,
+Amadeus Hotel Ratings, Yelp) can be safely wired in without first solving
+conservative property-identity matching -- which this step deliberately
+does not attempt.
+
+`backend/app/models/hotel_ratings.py` adds `AccommodationRating` (`value:
+float | None` bounded 0.0-5.0, `scale_max` fixed at this app's own 5.0
+normalization convention -- not a provider-returned fact, `review_count:
+int | None` >= 0, `provider`/`source_name`/`source_url`, `data_status`,
+`retrieved_at`), plus a small request/response contract mirroring
+`AccommodationSearchRequest`/`AccommodationSearchResult`'s own shape:
+`HotelRatingsRequest` (conservative identity fields only -- `offer_id`
+[a caller-assigned correlation id; `AccommodationOffer` has no such
+field itself], `provider_property_id`, `provider`, `property_name`,
+`address`, `latitude`/`longitude`, `source_name` -- no fuzzy-matching
+input of any kind), `HotelRatingLookupItem` (`matched: bool = False`,
+`rating: AccommodationRating | None`, with a model validator rejecting a
+non-`None` rating whenever `matched=False` -- an unmatched lookup can
+never carry a guessed value), and `HotelRatingsResult` (`status:
+HotelRatingsStatus`, `items`, mirroring `AccommodationSearchResult`'s own
+"offers/items only when status=success" validator).
+
+`AccommodationOffer` (`backend/app/models/accommodation.py`) gains one
+new optional field, `rating_details: AccommodationRating | None = None`.
+This is purely additive: the pre-existing bare `rating: float | None`
+field (populated only by `ScrapedAccommodationProvider`'s free-form HTML
+parsing, Step 168B) is completely untouched -- no upper bound was added
+to it, no renaming, no behavior change -- and `rating_details` is never
+auto-copied from it or from anywhere else. Every existing
+`AccommodationOffer` construction across the whole test suite (built
+with no `rating_details` kwarg at all) continues to validate unchanged,
+confirmed by `test_offer_without_rating_details_remains_valid`.
+
+`backend/app/providers/hotel_ratings/` adds the provider boundary
+itself, mirroring `app/providers/accommodation/`'s exact shape:
+`base.py` (`HotelRatingsProvider(ABC)`, one abstract method
+`get_ratings(requests: list[HotelRatingsRequest]) -> HotelRatingsResult`),
+`not_connected.py` (`NotConnectedHotelRatingsProvider` -- always returns
+`status=not_connected`, `items=[]`, and the message "No hotel ratings
+provider is configured."), and `factory.py`
+(`get_hotel_ratings_provider`, reading the new
+`Settings.hotel_ratings_provider` field, default and only currently
+supported value `"not_connected"` -- an unsupported/unrecognized name
+falls back to `NotConnectedHotelRatingsProvider` rather than raising,
+exactly like `get_accommodation_provider`/`get_flight_provider`). As of
+this step, `_SUPPORTED_PROVIDERS` in this factory holds exactly one
+entry -- no real Google Places/Tripadvisor/Amadeus/Yelp adapter exists to
+select, and none is added by this step.
+
+This whole subsystem is, deliberately, not wired into anything yet:
+`ProviderGateway`, `PlanningOrchestrator`, the LangGraph planning nodes,
+`AccommodationInventoryService`, and `ProviderCoverage` are all untouched
+-- confirmed by dedicated tests asserting none of those modules'
+source even mentions `hotel_ratings`. `ProviderCoverage.hotel_ratings`
+is intentionally *not* added in this step (deferred to 177D, once a
+real enrichment/report shape exists to justify a dedicated coverage
+field -- see docs/13_llm_reasoning_pipeline.md and 177A's audit for the
+reasoning). No API key, network call, LLM call, or live scrape was added
+anywhere in this step; every new module was checked for disallowed
+vendor/network imports the same way every other provider skeleton in
+this codebase is.
+
+## 90. Conservative Hotel-Rating Enrichment Path (Step 177C)
+
+Step 177C adds `backend/app/services/hotel_rating_enrichment_service.py`
+(`HotelRatingEnrichmentService.enrich`), the first thing in this codebase
+that actually calls the Step 177B `HotelRatingsProvider` contract, and
+wires it into `AccommodationInventoryService.build_report` immediately
+after the base accommodation provider returns. **No real external ratings
+adapter exists yet** -- the only concrete provider is still
+`NotConnectedHotelRatingsProvider`, so with the default
+`Settings.hotel_ratings_provider="not_connected"`, every existing
+accommodation-inventory behavior (status, offer count, every offer field)
+is unchanged; the only visible effect is that `AccommodationSearchResult`
+gains `hotel_ratings_status=not_connected`/`hotel_ratings_provider=
+"hotel_ratings_provider"`/`hotel_ratings_message="No hotel ratings
+provider is configured."` metadata whenever there was at least one
+`success` offer to attempt enrichment for (see below).
+
+**Matching is conservative by construction, never fuzzy.** `enrich`
+builds one `HotelRatingsRequest` per offer, carrying only fields the
+offer already has (`provider_property_id`, `provider`, `property_name`,
+`address`, `latitude`/`longitude`, `source_name`) plus a synthetic,
+per-call-only `offer_id` (`"offer_<list index>"`) that exists purely to
+correlate a response item back to the exact offer it was requested for --
+this id is never read from or written onto `AccommodationOffer`, and
+never persisted anywhere. A returned `HotelRatingLookupItem` is only ever
+attached to an offer's `rating_details` when *all* of the following hold:
+`matched=True` and `rating` is non-`None` (the model itself already
+forbids the opposite combination); the item's `offer_id` exactly matches
+one of this call's own request `offer_id`s (an unknown/stale id is
+ignored); exactly one item references that `offer_id` (two or more is
+ambiguous and *none* of them is attached -- never an arbitrary pick); and,
+when both sides state a `provider_property_id`, they agree exactly (a
+mismatch is ignored even if the `offer_id` matched). **Any failure of
+these checks leaves that offer's `rating_details` at `None` -- "ambiguous
+or unmatched" always means "leave it null," never "guess."** There is no
+name/address text-similarity matching, no nearest-coordinate matching,
+and no confidence-threshold matching anywhere in this function -- only
+exact equality checks over fields the offer already carried.
+
+`enrich` also never overwrites an offer's `rating_details` if it is
+already non-`None` when enrichment runs (documented and tested via
+`test_existing_rating_details_is_never_overwritten`) -- in the one call
+path wired up by this step, `rating_details` is always `None` going in
+(no earlier stage sets it), so this only matters for a future caller that
+might run enrichment more than once over the same offers. It never
+touches the pre-existing bare `AccommodationOffer.rating` field in any
+way (neither reading it to seed a rating, per
+`test_legacy_rating_is_never_copied_into_rating_details`, nor overwriting
+it, per `test_legacy_rating_is_never_overwritten_by_enrichment`), never
+mutates its input `AccommodationSearchResult`/`AccommodationOffer`
+objects in place (uses `model_copy(update=...)` throughout, returning the
+exact same objects for every offer that wasn't enriched), and is a
+complete no-op (`return result` unchanged, no metadata stamped) whenever
+the base result's `status != success` or it has no offers at all -- there
+is nothing to enrich in that case, so nothing is attempted. A provider
+exception is caught and logged, leaving the result unenriched, exactly
+like `AccommodationInventoryService`'s own existing
+`_safe_search_accommodations` exception handling.
+
+`AccommodationSearchResult` gains four small, additive, backward-compatible
+metadata fields for this: `hotel_ratings_status`, `hotel_ratings_provider`,
+`hotel_ratings_message`, and `hotel_ratings_enriched_offer_count` (counts
+only offers that actually received a `rating_details`, never a raw
+"items returned" count). All default to `None`/`0`, so every
+`AccommodationSearchResult` built anywhere before this step -- and every
+result enrichment never touched -- stays fully valid.
+**`ProviderCoverage.hotel_ratings` is still not added** (deferred to
+177D, unchanged from 177A's/177B's stated reasoning).
+`AccommodationInventoryService` gained one new, optional constructor
+keyword (`hotel_rating_enrichment_service_override`) purely for test
+injection -- no fake/test provider is registered in
+`app.providers.hotel_ratings.factory._SUPPORTED_PROVIDERS`, and
+`get_hotel_ratings_provider()` is still the only way production code
+resolves a real provider.
+
+## 91. Hotel-Ratings Provider Coverage and Validation Visibility (Step 177D)
+
+Step 177D surfaces the Step 177C hotel-ratings enrichment outcome in two
+more places -- `ProviderCoverage` and `PlanValidatorService` -- still with
+**no real external ratings adapter wired in anywhere**; every behavior
+below is driven entirely by `AccommodationSearchResult.hotel_ratings_*`
+metadata that a test double already had to construct explicitly (or, in
+production, that stays at its `None`/`not_connected` default).
+
+**`ProviderCoverage.hotel_ratings: str | None = None`** (`app/models/
+common.py`) is a new, purely additive field -- old, already-persisted
+`ProviderCoverage` data built without it still validates, defaulting to
+`None`. It is deliberately a third, separate axis from `hotel_prices`
+(bookable price/availability inventory) and `accommodations` (OSM-backed
+open-data location candidates, never bookable or rated) -- never
+conflated with either. `_hotel_ratings_coverage_value` (duplicated,
+intentionally, in both `planning_orchestrator.py` and
+`planning_graph_nodes.py`, mirroring every other coverage-mapping helper
+in this codebase for the same circular-import reason) maps
+`hotel_ratings_status` onto this field: `None` stays `None` (enrichment
+was never attempted -- never guessed as `not_connected`);
+`not_connected`/`failed`/`unavailable` map straight across; a `success`
+status is only ever reported as coverage `"success"` when *every*
+offer that could be enriched actually was (`hotel_ratings_enriched_
+offer_count == len(offers)`) -- zero enriched offers is reported
+`"unavailable"` (never upgraded to imply a rating exists), and
+some-but-not-all enriched is reported `"partial"`. Both
+`PlanningOrchestrator._build_accommodation_inventory_report_safe` and
+the LangGraph `accommodation_inventory_node` set this value right
+alongside the pre-existing `hotel_prices` value, from the same already-
+computed `accommodation_inventory_report` -- no new provider call, no
+third inconsistent write path, and `hotel_prices`/`accommodations` are
+completely untouched by this addition (confirmed by dedicated tests that
+assert `hotel_prices` stays exactly what it was, and that the OSM-backed
+`accommodations` value is unaffected by an unrelated hotel-ratings
+outcome).
+
+**`PlanValidatorService`** gains one additive, read-only check
+(`category="hotel_ratings"`, `_build_hotel_ratings_issue`) that restates
+`accommodation_inventory_report.hotel_ratings_*` honestly: no accommodation
+report or no offers -> no issue at all (nothing to say); `hotel_ratings_
+status is None` (enrichment never attempted) -> no issue either (the
+pre-existing `accommodation_inventory` warning already covers the
+lodging-inventory-itself case); `not_connected` -> a `SUGGESTION` naming
+that no hotel ratings provider is configured; `failed` -> a `WARNING`;
+`unavailable`, or `success` with zero enriched offers -> a `SUGGESTION`
+saying no offer could be safely, exactly matched; `success` with some
+(not all) offers enriched -> a `WARNING` naming both counts; `success`
+with every offer enriched -> a low-severity `SUGGESTION` restating that.
+Every branch is `WARNING`/`SUGGESTION` only, never `CRITICAL` -- hotel
+ratings (connected or not) never affects `readiness_status`. No message
+in any branch ever claims a rating's accuracy has been independently
+checked or that a rating carries any kind of official endorsement, and
+no message ever describes a missing rating as a signal about an offer's
+quality -- each message
+explicitly disclaims this where relevant, mirroring the same negated-
+disclaimer pattern already used throughout this file (e.g. the existing
+scraped-accommodation warning's "not been verified for price,
+availability, rating, or booking-link accuracy").
+
+This step changes no matching behavior from Step 177C: the exact-offer-id
+requirement, duplicate-match-ignore rule, `provider_property_id`-mismatch
+rule, no-overwrite rule, and no-legacy-rating-auto-copy rule are all
+untouched -- `HotelRatingEnrichmentService` itself was not modified in
+this step.
+
+## 92. Section 177 Complete: Hotel Ratings Provider Foundation and Enrichment Layer, Not a Live Ratings Integration (Step 177E, final Section 177 step)
+
+Step 177E closes Section 177 with a full safety re-review (no code
+behavior change -- Section 177's model/provider/enrichment/coverage/
+validation logic is exactly what 177B-177D left it) plus this final docs
+pass. To be unambiguous for anyone reading this later: **everything built
+across 177A-177E is a provider foundation and conservative enrichment
+layer, not a live hotel-ratings integration.** No real Google Places,
+Tripadvisor, Amadeus Hotel Ratings, Yelp, or any other external ratings
+API is connected, called, or scraped anywhere in this codebase --
+`Settings.hotel_ratings_provider` defaults to (and, absent an operator's
+own future adapter, can only ever resolve to) `"not_connected"`, and the
+only concrete `HotelRatingsProvider` implementation that exists is
+`NotConnectedHotelRatingsProvider`.
+
+Re-confirmed line by line for this step's safety review, every item
+below verified by re-reading the actual current code (not assumed from
+memory of 177B-177D):
+
+- **Model**: `AccommodationOffer` still validates with no `rating_details`
+  kwarg at all (fully backward compatible); the legacy `rating: float |
+  None` field is untouched (no upper bound added, never auto-copied into
+  `rating_details`); `AccommodationRating.value` is bounded `[0.0, 5.0]`;
+  `review_count` is bounded `>= 0`; `rating_details` defaults to `None`
+  and is never defaulted to a fabricated value anywhere in this codebase.
+- **Provider**: `hotel_ratings_provider` defaults to `"not_connected"`;
+  `get_hotel_ratings_provider` falls back to
+  `NotConnectedHotelRatingsProvider` for any unrecognized name, never
+  raising or guessing; `_SUPPORTED_PROVIDERS` holds exactly one entry;
+  neither `base.py` nor `not_connected.py` imports any network/vendor
+  library (confirmed by both the existing no-disallowed-imports tests and
+  a fresh grep for `google_places`/`tripadvisor`/`amadeus hotel
+  ratings`/`yelp`/`requests.get`/`httpx`/`aiohttp`/`fetch(` across
+  `app/providers/hotel_ratings/` and
+  `app/services/hotel_rating_enrichment_service.py` -- zero hits).
+- **Enrichment**: `rating_details` attaches only on an exact `offer_id`
+  correlation; a duplicate match for the same `offer_id` is ignored
+  entirely (never an arbitrary pick); an unknown/stale `offer_id` is
+  ignored; a `provider_property_id` mismatch (when both sides state one)
+  is ignored; an offer that already carries `rating_details` is never
+  overwritten; the legacy `rating` field is never read to seed
+  `rating_details`; and `not_connected`/`unavailable`/`failed` provider
+  results never populate any offer's `rating_details`.
+- **Coverage**: `ProviderCoverage.hotel_ratings` is a field fully
+  independent of `hotel_prices` (bookable inventory) and `accommodations`
+  (OSM-backed open-data candidates); `hotel_prices` is byte-for-byte
+  unaffected by this section's additions; both
+  `PlanningOrchestrator`/the LangGraph `accommodation_inventory_node` set
+  `hotel_ratings` from the same mapping rule; a `success`
+  `hotel_ratings_status` with zero enriched offers is reported
+  `"unavailable"`, never `"success"`.
+- **Validation**: every `category="hotel_ratings"` issue is `WARNING`/
+  `SUGGESTION`, never `CRITICAL` -- missing/failed/partial hotel ratings
+  never block a trip or change `readiness_status`; no message infers
+  hotel quality, claims a rating's accuracy was independently checked or
+  officially endorsed, or says a missing rating means low quality.
+- **Existing behavior preservation**: `AccommodationInventoryService`'s
+  base search behavior is unchanged except for the additive enrichment
+  step and its metadata fields; no routing/experience-planning/
+  regeneration/feedback service was touched anywhere in Section 177; no
+  new backend API route was added; `python -m compileall`/`pytest` pass
+  with **2194 tests** (up from 2104 before Section 176, with every net-new
+  test added across 176-177 accounted for and zero regressions).
+
+Section 177 (177A-177E) is now feature-complete for its stated scope: a
+safe, inert foundation ready for a future step to wire in one real,
+conservatively-matched external provider -- which remains explicitly out
+of scope for this section.

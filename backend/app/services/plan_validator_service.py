@@ -3,6 +3,7 @@ from __future__ import annotations
 from app.models.accommodation import AccommodationSearchResult, AccommodationSearchStatus
 from app.models.common import DataStatus, ProviderStatus, ReadinessStatus, ValidationSeverity
 from app.models.flight import FlightSearchResult, FlightSearchStatus
+from app.models.hotel_ratings import HotelRatingsStatus
 from app.models.planning_state import (
     DailyPlan,
     PlanningStage,
@@ -153,6 +154,17 @@ class PlanValidatorService(PlanningStageService):
       defaults on a trip's very first generation -- exactly like every
       other check in this class; it is never re-derived independently.
       Always `WARNING`/`SUGGESTION` severity, never critical.
+    * (Step 177D) When an accommodation inventory report with real offers
+      exists and hotel-rating enrichment (`HotelRatingEnrichmentService`,
+      Step 177C) was attempted for it, one additive, read-only check
+      (`category="hotel_ratings"`) restates that enrichment's outcome:
+      whether no ratings provider is configured, the provider request
+      failed, no offer could be safely/exactly matched, some (but not
+      all) offers were matched, or every offer was matched. It never
+      recomputes a match itself, never claims a rating is verified,
+      official, or confirmed, and never treats a missing rating as a
+      signal about an offer's quality. Always `WARNING`/`SUGGESTION`,
+      never critical.
     """
 
     def run(self, planning_state: PlanningState) -> PlanningState:
@@ -399,6 +411,12 @@ class PlanValidatorService(PlanningStageService):
         warnings.append(
             _build_accommodation_inventory_warning(planning_state.accommodation_inventory_report)
         )
+
+        hotel_ratings_issue = _build_hotel_ratings_issue(
+            planning_state.accommodation_inventory_report
+        )
+        if hotel_ratings_issue is not None:
+            warnings.append(hotel_ratings_issue)
 
         warnings.append(
             _build_flight_inventory_warning(planning_state.flight_inventory_report)
@@ -761,6 +779,153 @@ def _build_accommodation_inventory_warning(
         message=message,
         affected_section="stay_transport",
         suggested_fix=_ACCOMMODATION_SUGGESTED_FIX,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Step 177D: hotel-ratings enrichment visibility. Every branch below is a
+# pure, additive read of `AccommodationSearchResult.hotel_ratings_*`
+# metadata (Step 177C) -- no provider call, no AI/LLM call, no matching
+# logic of its own (matching already happened in
+# `HotelRatingEnrichmentService`, before validation runs), and this never
+# mutates `accommodation_inventory_report`. Always `WARNING`/`SUGGESTION`
+# severity, never a critical issue -- missing/partial/unconnected hotel
+# ratings never block generation by themselves. No message here ever
+# claims a rating is verified, official, or confirmed, and a missing
+# rating is never described as a signal about an offer's quality --
+# `HotelRatingEnrichmentService` only ever reports whether a
+# conservative, exact identity match happened, not a judgment about the
+# property itself.
+# ---------------------------------------------------------------------------
+
+_HOTEL_RATINGS_NOT_CONNECTED_MESSAGE = (
+    "No hotel ratings provider is configured, so accommodation offers were not "
+    "checked for provider-backed rating data. This is separate from any bare "
+    "rating value an offer's own source (e.g. a scraped listing) may already carry."
+)
+_HOTEL_RATINGS_FAILED_MESSAGE = (
+    "The hotel ratings provider request failed, so accommodation offers were not "
+    "checked for provider-backed rating data."
+)
+_HOTEL_RATINGS_NO_SAFE_MATCH_MESSAGE_TEMPLATE = (
+    "The hotel ratings provider was checked, but no accommodation offer could be "
+    "safely, exactly matched to a rating ({detail}). No rating was attached to any "
+    "offer; this says nothing about the quality of any offer."
+)
+_HOTEL_RATINGS_PARTIAL_MESSAGE_TEMPLATE = (
+    "{enriched} of {total} accommodation offer(s) have a provider-backed rating "
+    "via {provider}; the rest could not be safely, exactly matched and were left "
+    "without one. A missing rating is not a signal about an offer's quality, and "
+    "no attached rating here is claimed to be verified, official, or confirmed."
+)
+_HOTEL_RATINGS_ALL_ENRICHED_MESSAGE_TEMPLATE = (
+    "All {total} accommodation offer(s) have a provider-backed rating via "
+    "{provider}. This only restates that a rating value exists on each offer; it "
+    "is not a claim that any rating is verified, official, or confirmed, and "
+    "ratings are not used to rank or recommend any offer."
+)
+_HOTEL_RATINGS_SUGGESTED_FIX = (
+    "Connect a real hotel ratings provider with a conservative, exact-match-only "
+    "identity adapter, or manually review ratings for these accommodation offers."
+)
+
+
+def _build_hotel_ratings_issue(
+    accommodation_inventory_report: AccommodationSearchResult | None,
+) -> ValidationIssue | None:
+    """Deterministic, additive review visibility for the Step 177C hotel-
+    ratings enrichment pass, built purely from
+    `accommodation_inventory_report.hotel_ratings_*` metadata -- no
+    provider call, no matching logic, and never mutates the report.
+
+    Returns `None` (no noisy issue) when there is no accommodation
+    inventory report yet, it has no offers, or `hotel_ratings_status` is
+    `None` -- all three mean enrichment was never attempted, so there is
+    nothing honest to report about it (the pre-existing
+    `_build_accommodation_inventory_warning` already covers the
+    no-offers/not-connected/failed accommodation-inventory case itself).
+
+    Otherwise returns exactly one `category="hotel_ratings"` issue: a
+    `SUGGESTION` when no hotel ratings provider is configured (the
+    default, expected state, not an error); a `WARNING` when the
+    provider request itself failed; a `SUGGESTION` when the provider was
+    checked but no offer could be safely, exactly matched; a `WARNING`
+    when some (but not all) offers were matched (worth a closer look);
+    and a low-severity `SUGGESTION` restating that every offer was
+    matched when that's the case. Always `WARNING`/`SUGGESTION`, never
+    `CRITICAL`, so this never affects `readiness_status` by itself.
+    """
+    if accommodation_inventory_report is None or not accommodation_inventory_report.offers:
+        return None
+
+    status = accommodation_inventory_report.hotel_ratings_status
+    if status is None:
+        return None
+
+    if status == HotelRatingsStatus.NOT_CONNECTED:
+        return ValidationIssue(
+            severity=ValidationSeverity.SUGGESTION,
+            category="hotel_ratings",
+            message=_HOTEL_RATINGS_NOT_CONNECTED_MESSAGE,
+            affected_section="stay_transport",
+            suggested_fix=_HOTEL_RATINGS_SUGGESTED_FIX,
+        )
+
+    if status == HotelRatingsStatus.FAILED:
+        return ValidationIssue(
+            severity=ValidationSeverity.WARNING,
+            category="hotel_ratings",
+            message=_HOTEL_RATINGS_FAILED_MESSAGE,
+            affected_section="stay_transport",
+            suggested_fix=_HOTEL_RATINGS_SUGGESTED_FIX,
+        )
+
+    if status == HotelRatingsStatus.UNAVAILABLE:
+        return ValidationIssue(
+            severity=ValidationSeverity.SUGGESTION,
+            category="hotel_ratings",
+            message=_HOTEL_RATINGS_NO_SAFE_MATCH_MESSAGE_TEMPLATE.format(
+                detail=accommodation_inventory_report.hotel_ratings_message
+                or "no matched offers were returned"
+            ),
+            affected_section="stay_transport",
+            suggested_fix=_HOTEL_RATINGS_SUGGESTED_FIX,
+        )
+
+    # status == HotelRatingsStatus.SUCCESS
+    total = len(accommodation_inventory_report.offers)
+    enriched = accommodation_inventory_report.hotel_ratings_enriched_offer_count
+    provider = accommodation_inventory_report.hotel_ratings_provider or "the hotel ratings provider"
+
+    if enriched <= 0:
+        return ValidationIssue(
+            severity=ValidationSeverity.SUGGESTION,
+            category="hotel_ratings",
+            message=_HOTEL_RATINGS_NO_SAFE_MATCH_MESSAGE_TEMPLATE.format(
+                detail="no offer could be safely, exactly matched"
+            ),
+            affected_section="stay_transport",
+            suggested_fix=_HOTEL_RATINGS_SUGGESTED_FIX,
+        )
+
+    if enriched < total:
+        return ValidationIssue(
+            severity=ValidationSeverity.WARNING,
+            category="hotel_ratings",
+            message=_HOTEL_RATINGS_PARTIAL_MESSAGE_TEMPLATE.format(
+                enriched=enriched, total=total, provider=provider
+            ),
+            affected_section="stay_transport",
+            suggested_fix=_HOTEL_RATINGS_SUGGESTED_FIX,
+        )
+
+    return ValidationIssue(
+        severity=ValidationSeverity.SUGGESTION,
+        category="hotel_ratings",
+        message=_HOTEL_RATINGS_ALL_ENRICHED_MESSAGE_TEMPLATE.format(
+            total=total, provider=provider
+        ),
+        affected_section="stay_transport",
     )
 
 

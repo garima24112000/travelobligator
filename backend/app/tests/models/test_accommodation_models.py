@@ -13,6 +13,7 @@ from app.models.accommodation import (
     AccommodationSearchStatus,
 )
 from app.models.common import DataStatus
+from app.models.hotel_ratings import AccommodationRating
 from app.models.scraping import ScrapedDataConfidence, ScrapedDataProvenance
 
 # Model/contract tests for Step 167A's accommodation inventory foundation.
@@ -155,6 +156,7 @@ def test_offer_allows_missing_optional_fields_as_none() -> None:
     assert offer.amenities == []
     assert offer.source_name is None
     assert offer.source_url is None
+    assert offer.rating_details is None
 
 
 # ---------------------------------------------------------------------------
@@ -324,3 +326,36 @@ def test_offer_rejects_scraped_provenance_with_official_looking_data_status() ->
     data must never be presented as official-provider data."""
     with pytest.raises(ValidationError):
         _offer(data_status=DataStatus.LIVE, scraped_provenance=_scraped_provenance())
+
+
+# ---------------------------------------------------------------------------
+# 12. AccommodationOffer.rating_details (Step 177B) is a wholly optional,
+#     additive field -- existing offers built without it remain valid, the
+#     pre-existing bare `rating` field is completely unaffected, and this
+#     step never auto-populates rating_details from anywhere.
+# ---------------------------------------------------------------------------
+
+
+def test_offer_without_rating_details_remains_valid() -> None:
+    """An `AccommodationOffer` built exactly like every pre-Step-177B test
+    in this file (no `rating_details` kwarg at all) must still validate,
+    with `rating_details` defaulting to `None` and the pre-existing bare
+    `rating` field untouched."""
+    offer = _offer(rating=4.2)
+    assert offer.rating == pytest.approx(4.2)
+    assert offer.rating_details is None
+
+
+def test_offer_accepts_valid_rating_details() -> None:
+    offer = _offer(
+        rating_details=AccommodationRating(
+            value=4.5,
+            review_count=128,
+            provider="fake_ratings_provider",
+            data_status=DataStatus.LIVE,
+        )
+    )
+    assert offer.rating_details is not None
+    assert offer.rating_details.value == pytest.approx(4.5)
+    assert offer.rating_details.review_count == 128
+    assert offer.rating_details.scale_max == pytest.approx(5.0)

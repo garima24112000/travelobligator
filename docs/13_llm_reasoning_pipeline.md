@@ -4612,3 +4612,95 @@ direct read or a fixed, documented aggregation rule (never a free-text
 summary a model produced) over a field the backend's own deterministic
 services (`ProviderCoverageService`, `PlanValidatorService`, and the
 rest) already computed before Section 176 began.
+
+## 112. Hotel Ratings Are Deterministic Provider Data Only, Not AI Reasoning (Step 177B)
+
+Step 177B adds a hotel ratings provider foundation (`backend/app/models/
+hotel_ratings.py`, `backend/app/providers/hotel_ratings/`) -- see
+docs/14_backend_architecture.md for the full model/provider writeup. Like
+every other provider contract in this codebase (`AccommodationInventoryProvider`,
+`RoutingProvider`, the flight/weather/holiday/currency adapters), a hotel
+rating is, and will remain, **provider fact data, never an AI-reasoned or
+AI-inferred value**. `AccommodationRating.value`/`review_count` are typed
+to be populated only from a real rating provider's own response; nothing
+in this step (or planned for any future step) passes an offer through an
+LLM to produce, estimate, or paraphrase a rating, a review summary, or a
+"quality" judgment. `HotelRatingLookupItem.matched` is a plain boolean an
+adapter sets after an exact identity check -- not a model's confidence
+score -- and the validator rejecting a `rating` on an unmatched item
+exists precisely so a future adapter can never substitute an AI guess for
+a real, exact match.
+
+As of this step, the only implemented adapter is
+`NotConnectedHotelRatingsProvider`, which makes no call of any kind (no
+network, no LLM, no scrape) and returns an honest `not_connected` result
+unconditionally. No Google Places/Tripadvisor/Amadeus Hotel Ratings/Yelp
+integration exists yet; per 177A's audit, every one of those requires its
+own provider-specific identity ID and a conservative (never fuzzy)
+matching design before it can be safely wired in -- deferred to a later
+step, and in any case a matching/lookup concern, not a reasoning one, so
+it stays outside the LLM/AI reasoning pipeline entirely.
+
+## 113. Hotel-Rating Enrichment Is Deterministic Matching, Not AI Reasoning (Step 177C)
+
+Step 177C's `HotelRatingEnrichmentService`
+(`backend/app/services/hotel_rating_enrichment_service.py`, see
+docs/14_backend_architecture.md for the full writeup) is, like every
+other stage/enrichment service in this codebase, plain deterministic
+Python: dict lookups and exact-equality string comparisons over fields
+`AccommodationOffer` already has, plus a synthesized list-index
+correlation id. There is no embedding, no similarity score, no LLM call,
+and no free-text reasoning anywhere in it -- an item either exactly
+correlates to one request and (when both sides state it)
+`provider_property_id`-matches, or it doesn't, and there is no
+in-between "probably the same hotel" judgment for a model to make. This
+is the same "matching/lookup is not a reasoning problem" boundary 177B
+already drew: whether ambiguous-match resolution ever becomes AI-assisted
+in some future step is an open question deliberately left alone here,
+but this step's own matcher is 100% rule-based and exact-only, with every
+non-exact case (unknown offer_id, duplicate/ambiguous items, a
+`provider_property_id` mismatch) resolving to "leave `rating_details`
+null," never a probabilistic guess.
+
+## 114. Hotel-Ratings Coverage and Validation Are Provider Metadata, Not AI Reasoning (Step 177D)
+
+Step 177D's two additions -- `ProviderCoverage.hotel_ratings` (a plain
+dict-lookup status mapping, `planning_orchestrator.py`/
+`planning_graph_nodes.py`) and `PlanValidatorService._build_hotel_ratings_issue`
+(a plain if/elif branch over already-computed `hotel_ratings_*` fields,
+`plan_validator_service.py`) -- are exactly like every other status-
+mapping and validation check in this codebase: deterministic Python
+reading fields a provider (real or, today, always the `not_connected`
+default) already returned. Neither makes a provider call, an LLM call, or
+any judgment call of its own -- both only restate what
+`HotelRatingEnrichmentService` (Step 177C, itself already established as
+non-AI matching, see Step 113 above) already recorded. No hotel quality,
+recommendation ranking, or "this is a good/bad rating" judgment is made
+anywhere in either addition; a rating value is treated purely as an
+opaque, provider-attributed fact to relay honestly, exactly the same way
+a price or an availability flag is treated elsewhere in this file's
+validation checks.
+
+## 115. Section 177 Complete: Hotel Ratings Are Provider Metadata End to End, Never AI-Generated or AI-Inferred (Step 177E, final Section 177 step)
+
+Across all of Section 177 (177A's audit through 177D's coverage/
+validation/frontend integration), no step added an LLM call, an
+embedding, a similarity score, or any model-generated text describing a
+rating, a review, or a property's quality. Every rating value that could
+ever appear anywhere in this codebase's data model
+(`AccommodationRating.value`/`review_count`) is typed to come from
+exactly one place: a real `HotelRatingsProvider.get_ratings` response,
+exactly matched to a specific offer. Today that provider is always
+`NotConnectedHotelRatingsProvider`, so no rating value exists anywhere in
+a running instance of this app unless a test explicitly constructs one.
+
+This step is a documentation/safety-review step only -- it makes no
+change to `HotelRatingEnrichmentService`, `PlanValidatorService`, or any
+other Section 177 module's actual reasoning-relevant behavior. Restated
+plainly for anyone auditing this pipeline later: **hotel ratings are, and
+remain, optional provider metadata. A missing rating is never treated as
+a quality signal, and no rating anywhere in this app is ever generated,
+paraphrased, summarized, or inferred by an LLM** -- the same "provider
+supplies facts, AI supplies reasoning only" rule this whole pipeline
+document already enforces for price, availability, route data, and every
+other factual field.

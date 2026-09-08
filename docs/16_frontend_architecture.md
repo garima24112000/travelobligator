@@ -3043,3 +3043,114 @@ file touched.
   facts -- every value the dashboard shows is a direct read, count, or
   fixed-vocabulary relabel of a field the backend already computed and
   already served before Section 176 began.
+
+## Step 177B: Hotel Ratings Provider Foundation, No Frontend Change
+
+Step 177B adds a backend-only hotel ratings foundation (`AccommodationRating`/
+`rating_details` on `AccommodationOffer`, plus a new, always-`not_connected`
+`backend/app/providers/hotel_ratings/` provider contract) -- see
+docs/14_backend_architecture.md for the full writeup. **No frontend file
+was touched by this step.** `frontend/app/page.tsx`'s
+`AccommodationInventorySection` continues to render exactly what it did
+before this step (the pre-existing bare `offer.rating`, still gated behind
+`offer.rating !== null`), and `frontend/lib/types.ts`'s `AccommodationOffer`
+type is deliberately left unchanged here -- with no provider populating
+`rating_details` anywhere in the backend yet, there is nothing new for the
+frontend to read or display. Any UI for `rating_details` (a rating value,
+review count, and source label distinct from today's bare number), and the
+corresponding `frontend/lib/types.ts` mirror update CLAUDE.md's
+manual-sync convention requires, is explicitly deferred to a later Section
+177 step, once a real enrichment path exists to populate the field.
+
+## Step 177C: Hotel-Rating Enrichment Path Exists, Still No Frontend Change
+
+Step 177C adds a backend-only conservative enrichment service
+(`HotelRatingEnrichmentService`, wired into
+`AccommodationInventoryService.build_report`) that *can* attach
+`rating_details` to an offer, but only when a real, connected hotel
+ratings provider returns an exact match -- with the default
+`not_connected` provider, it still never does. **No frontend file was
+touched by this step either.** `AccommodationInventorySection` and
+`frontend/lib/types.ts`'s `AccommodationOffer`/`AccommodationInventoryReport`
+types remain exactly as 177B left them -- the new
+`hotel_ratings_status`/`hotel_ratings_provider`/`hotel_ratings_message`/
+`hotel_ratings_enriched_offer_count` metadata fields added to the backend's
+`AccommodationSearchResult` this step are not yet mirrored into
+`AccommodationInventoryReport`, and nothing renders them. Frontend
+display of `rating_details` (and of this new metadata) stays deferred to
+177D, alongside the `ProviderCoverage.hotel_ratings` field also deferred
+to that step.
+
+## Step 177D: Hotel-Rating Metadata Now Displayed, Still No Real Provider
+
+Step 177D wires the backend's Step 177B/177C/177D hotel-ratings fields
+into the frontend for the first time. `frontend/lib/types.ts` gains a new
+`AccommodationRatingDetails` type (mirroring `app.models.hotel_ratings.
+AccommodationRating`) plus `rating_details: AccommodationRatingDetails |
+null` on `AccommodationOffer` and four new `hotel_ratings_*` fields on
+`AccommodationInventoryReport` -- `ProviderCoverage` needed no type
+change since it was already the fully generic `Record<string, string |
+null>`.
+
+`AccommodationInventorySection` (`frontend/app/page.tsx`) gains a new
+`AccommodationRatingDetailsCard`, rendered only when an offer's
+`rating_details.value` is non-null -- it shows `"{value} / {scale_max}"`
+using the backend's own `scale_max` (never assumed to be 5), the review
+count and source only when the backend actually returned them, and a
+fixed disclaimer that this is provider-reported data, not a claim that it
+is verified, official, or confirmed, and not used to rank or recommend
+any offer. With the default not_connected hotel ratings provider, this
+card never renders (`rating_details` stays `null` on every offer) -- no
+fake placeholder is ever shown in its place. The pre-existing bare
+`offer.rating` number (Step 167A) is no longer rendered bare: a new
+`legacyOfferRatingLabel` helper labels it "Rating from scraped/manual
+source" or "Rating from lodging source" depending on whether the offer
+carries `scraped_provenance`, since that number's scale is unknown and
+was never something this app should present without saying where it came
+from.
+
+`frontend/lib/trust-dashboard.ts`'s `buildLodgingInventoryCategory` gains
+a new `hotelRatingsSupportingFacts` helper appending informational lines
+about `provider_coverage.hotel_ratings`/`hotel_ratings_enriched_offer_count`/
+offers with only a source-limited legacy rating -- deliberately **not**
+folded into the category's own `statusKind` computation (which stays
+driven by lodging-inventory availability alone, exactly as before this
+step), since hotel-rating enrichment is optional add-on metadata, not a
+precondition for lodging inventory being usable; with the default
+not_connected provider, treating it as a status-affecting signal would
+make every otherwise-healthy lodging card read as "needs review" for an
+unrelated reason. The category's `relatedValidationIssues` now also picks
+up the new backend `category="hotel_ratings"` validation issues. No
+message anywhere in this step implies a rating affects ranking or
+recommendation quality, or that a rating is verified/official/confirmed.
+
+## Step 177E (final Section 177 step): Frontend Safety Re-Review, No Behavior Change
+
+Step 177E re-verified (by re-reading the current `frontend/app/page.tsx`
+and `frontend/lib/trust-dashboard.ts` source, not from memory of 177D)
+every frontend safety property Section 177 depends on, and made no
+frontend code change:
+
+- `AccommodationRatingDetailsCard` still renders only when
+  `ratingDetails.value !== null` -- no fake placeholder for a missing/
+  unmatched rating.
+- `review_count`/`source_name`/`provider`/`data_status` still render only
+  when the backend actually returned them.
+- The legacy `offer.rating` number is still never shown bare --
+  `legacyOfferRatingLabel` still labels it "Rating from scraped/manual
+  source" or "Rating from lodging source" depending on
+  `scraped_provenance`.
+- `hotelRatingsSupportingFacts` in `trust-dashboard.ts` still only adds
+  informational lines and is still **not** folded into
+  `buildLodgingInventoryCategory`'s own `statusKind` -- confirmed by
+  re-reading that `statusKind` is computed solely from
+  `report.status`/`report.offers`/`scraped_provenance`, unchanged from
+  177D.
+- No `frontend/lib/api.ts` fetch call, endpoint, or request shape changed
+  anywhere across Section 177 -- every field this section displays was
+  already present on responses the frontend fetches today.
+
+`npx tsc --noEmit`, `npm run lint`, and `npm run build` all pass cleanly
+with zero frontend files modified in this step, confirming Section 177's
+frontend work (177D only -- 177A/B/C touched no frontend file) is stable
+and ready to ship alongside the rest of Section 177.

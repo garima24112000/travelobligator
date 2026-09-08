@@ -30,6 +30,8 @@ import type {
 } from "@/lib/trust-dashboard";
 import type {
   AccommodationInventoryReport,
+  AccommodationOffer,
+  AccommodationRatingDetails,
   AccommodationSuggestion,
   AICandidatePromotionReport,
   AICandidateReviewItem,
@@ -2448,22 +2450,76 @@ function ScrapedProvenanceBadge({
   );
 }
 
+// Labels the pre-existing bare `offer.rating` number (Step 167A) with
+// where it came from -- Step 177D hardening. This number has no known
+// scale (the scraped parser reads whatever free-form text a source page
+// used) and is a wholly different concept from `offer.rating_details`
+// (Step 177B/177C's richer, bounded-0-5, provider-attributed snapshot),
+// so it is never rendered as a bare, context-free number.
+function legacyOfferRatingLabel(offer: AccommodationOffer): string {
+  return offer.scraped_provenance
+    ? "Rating from scraped/manual source"
+    : "Rating from lodging source";
+}
+
+/**
+ * One offer's provider-backed hotel rating snapshot (Step 177D), rendered
+ * only when `HotelRatingEnrichmentService` (Step 177C) attached a real,
+ * exactly-matched `rating_details` with a non-null `value` -- this never
+ * shows a placeholder for a missing/unmatched rating. `scale_max` always
+ * comes from the backend, never assumed to be 5 by this component.
+ * Review count and source are shown only when the backend actually
+ * returned them. This is never labeled verified/official/confirmed, and
+ * never used to imply one offer is better than another.
+ */
+function AccommodationRatingDetailsCard({
+  ratingDetails,
+}: {
+  ratingDetails: AccommodationRatingDetails;
+}) {
+  if (ratingDetails.value === null) {
+    return null;
+  }
+  return (
+    <div className="mt-1 rounded-md border border-white/10 bg-slate-950/40 p-2 text-xs text-slate-300">
+      <p>
+        Provider-backed rating: {ratingDetails.value} / {ratingDetails.scale_max}
+        {ratingDetails.review_count !== null
+          ? ` · ${ratingDetails.review_count} review(s)`
+          : ""}
+      </p>
+      {(ratingDetails.source_name || ratingDetails.provider) && (
+        <p className="mt-0.5 text-slate-400">
+          Source: {ratingDetails.source_name ?? ratingDetails.provider} ·{" "}
+          {ratingDetails.data_status}
+        </p>
+      )}
+      <p className="mt-0.5 text-slate-500">
+        Provider-reported rating data -- not a claim that it is verified,
+        official, or confirmed, and not used to rank or recommend this
+        offer.
+      </p>
+    </div>
+  );
+}
+
 /**
  * Bookable accommodation inventory panel (Step 167E, extended in Step
- * 168E for scraped-data labeling, docs/16_frontend_architecture.md).
- * Renders only backend-returned `AccommodationInventoryReport` fields --
- * it never invents a property, price, rating, availability, amenity,
- * cancellation policy, or booking link, and it never upgrades a
- * `not_connected`/`unavailable`/`failed` status into an implied "checked"
- * claim. This is deliberately a separate concept from the open-data
- * accommodation-like location candidates rendered elsewhere on this page
- * (`CandidatePoiSection`, `AccommodationSuggestionCard`,
- * `StayAreaAccommodationCard`) -- an OSM POI never appears here, and a
- * real bookable offer here is never merged into those location-candidate
- * lists. When an offer carries `scraped_provenance` (Step 168C's
- * disabled-by-default local/manual scraped provider), it is visibly
- * labeled "Scraped public page" with its experimental/fragile confidence
- * -- never presented as if it were official, verified provider data.
+ * 168E for scraped-data labeling, Step 177D for hotel-rating enrichment
+ * display, docs/16_frontend_architecture.md). Renders only backend-
+ * returned `AccommodationInventoryReport` fields -- it never invents a
+ * property, price, rating, availability, amenity, cancellation policy,
+ * or booking link, and it never upgrades a `not_connected`/`unavailable`/
+ * `failed` status into an implied "checked" claim. This is deliberately a
+ * separate concept from the open-data accommodation-like location
+ * candidates rendered elsewhere on this page (`CandidatePoiSection`,
+ * `AccommodationSuggestionCard`, `StayAreaAccommodationCard`) -- an OSM
+ * POI never appears here, and a real bookable offer here is never merged
+ * into those location-candidate lists. When an offer carries
+ * `scraped_provenance` (Step 168C's disabled-by-default local/manual
+ * scraped provider), it is visibly labeled "Scraped public page" with its
+ * experimental/fragile confidence -- never presented as if it were
+ * official, verified provider data.
  */
 function AccommodationInventorySection({
   report,
@@ -2508,8 +2564,11 @@ function AccommodationInventorySection({
               )}
               {offer.rating !== null && (
                 <p className="mt-1 text-xs text-slate-300">
-                  Rating: {offer.rating}
+                  {legacyOfferRatingLabel(offer)}: {offer.rating}
                 </p>
+              )}
+              {offer.rating_details && (
+                <AccommodationRatingDetailsCard ratingDetails={offer.rating_details} />
               )}
               <p className="mt-1 text-xs text-slate-400">
                 Availability: {offer.availability_status}

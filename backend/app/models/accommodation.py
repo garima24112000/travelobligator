@@ -6,6 +6,7 @@ from enum import Enum
 from pydantic import BaseModel, Field, model_validator
 
 from app.models.common import DataStatus
+from app.models.hotel_ratings import AccommodationRating, HotelRatingsStatus
 from app.models.scraping import ScrapedDataProvenance
 
 
@@ -93,6 +94,17 @@ class AccommodationOffer(BaseModel):
     provenance while claiming a `live`/`cached`/other official-looking
     `data_status`, and `scraped_provenance.official_provider` is itself
     structurally fixed to `False` (see `ScrapedDataProvenance`).
+
+    `rating_details` (Step 177B) is a separate, optional, richer rating
+    snapshot (`AccommodationRating`: bounded 0-5 value, review count,
+    provider/source, data status, retrieval time) for a future hotel
+    ratings provider to populate -- distinct from the pre-existing bare
+    `rating: float | None` field above, which this step leaves completely
+    unchanged (no upper bound added, no renaming, still populated only by
+    `ScrapedAccommodationProvider`'s free-form HTML parsing). This step
+    never auto-copies `rating` into `rating_details`, and never
+    constructs a non-`None` `rating_details` anywhere in this codebase --
+    it stays `None` until a real hotel ratings provider adapter exists.
     """
 
     provider: str
@@ -112,6 +124,7 @@ class AccommodationOffer(BaseModel):
     )
     booking_url: str | None = None
     rating: float | None = Field(default=None, ge=0.0)
+    rating_details: AccommodationRating | None = None
     amenities: list[str] = Field(default_factory=list)
     cancellation_policy: str | None = None
 
@@ -142,6 +155,18 @@ class AccommodationSearchResult(BaseModel):
     `offers` may only be non-empty when `status == success` -- a
     `not_connected`/`unavailable`/`failed` result must never carry a
     fabricated or leftover offer alongside its honest failure status.
+
+    `hotel_ratings_*` fields (Step 177C) are optional, additive metadata
+    describing the separate hotel-ratings enrichment pass
+    (`HotelRatingEnrichmentService`) that may run *after* this result is
+    first built -- they say nothing about the base inventory lookup
+    itself. All default to `None`/`0`, so every result built before Step
+    177C (and every result for which enrichment never ran, e.g. an empty/
+    non-success base result) stays fully backward compatible.
+    `hotel_ratings_enriched_offer_count` counts only offers that actually
+    received a conservatively-matched `rating_details` -- never a raw
+    "items returned" count, which could include unmatched/ambiguous
+    items that were correctly ignored.
     """
 
     provider: str
@@ -149,6 +174,11 @@ class AccommodationSearchResult(BaseModel):
     offers: list[AccommodationOffer] = Field(default_factory=list)
     message: str | None = None
     generated_at: datetime = Field(default_factory=_utc_now)
+
+    hotel_ratings_status: HotelRatingsStatus | None = None
+    hotel_ratings_provider: str | None = None
+    hotel_ratings_message: str | None = None
+    hotel_ratings_enriched_offer_count: int = Field(default=0, ge=0)
 
     @model_validator(mode="after")
     def validate_offers_match_status(self) -> "AccommodationSearchResult":

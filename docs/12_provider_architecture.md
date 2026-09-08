@@ -3092,3 +3092,31 @@ local HTML fixture, every resulting offer is labeled
 from ever claiming `official_provider=true`, and a flight is never
 scheduled into the itinerary as a daily experience -- this remains
 inventory reporting only.
+
+## 57. Hotel Ratings Provider Foundation (Section 177, Steps 177A-177E)
+
+A brief note for this document's own provider-catalog purpose (full
+detail lives in docs/13_llm_reasoning_pipeline.md and
+docs/14_backend_architecture.md, Section 177): `backend/app/models/
+hotel_ratings.py` and `backend/app/providers/hotel_ratings/` add a
+**provider foundation and conservative enrichment layer for hotel
+ratings, not a live ratings integration.**
+
+- `Settings.hotel_ratings_provider` defaults to `"not_connected"`, and
+  the only implemented adapter is `NotConnectedHotelRatingsProvider` --
+  no real Google Places, Tripadvisor, Amadeus Hotel Ratings, Yelp, or
+  any other external ratings API is wired in anywhere in this codebase.
+- A future external adapter would need its own provider-specific
+  hotel/property identity (a Google Place ID, a Tripadvisor
+  `location_id`, an Amadeus hotel ID, a Yelp `business_id`, etc.) and
+  must resolve it only through **exact, conservative property identity
+  matching** -- never fuzzy name/address/coordinate matching, and never
+  a confidence-threshold "probably the same hotel" heuristic.
+- `HotelRatingEnrichmentService` (Step 177C) already enforces this
+  contract structurally: a lookup result is only ever attached to an
+  offer when it echoes back the exact identity correlation the request
+  carried, with no duplicate/ambiguous match and no `provider_property_id`
+  conflict. **Any ambiguous, unmatched, or conflicting result leaves
+  `AccommodationOffer.rating_details` at `null`** -- ratings are optional
+  metadata, and a missing rating is never treated as a signal about a
+  property's quality.

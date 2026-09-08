@@ -259,6 +259,21 @@ class Settings(BaseSettings):
         default="scraped_local", alias="ACCOMMODATION_PROVIDER"
     )
 
+    # Config gate for get_hotel_ratings_provider (Step 177B,
+    # docs/13_llm_reasoning_pipeline.md, docs/14_backend_architecture.md).
+    # "not_connected" (default, and the only supported value as of Step
+    # 177B) -- see backend/app/providers/hotel_ratings/factory.py. An
+    # unsupported/unrecognized value falls back to "not_connected" rather
+    # than raising or fabricating rating data. No real Google Places/
+    # Tripadvisor/Amadeus/Yelp rating provider is wired in yet -- every
+    # such adapter would require its own conservative identity-matching
+    # design (no fuzzy matching), deferred to a later step. Not wired
+    # into ProviderGateway, PlanningOrchestrator, or
+    # AccommodationInventoryService yet.
+    hotel_ratings_provider: str = Field(
+        default="not_connected", alias="HOTEL_RATINGS_PROVIDER"
+    )
+
     # Scraping policy foundation (Step 168A, default flipped to enabled in
     # Step 168F, docs/12_provider_architecture.md, docs/14_backend_architecture.md).
     # Enabled by default so `ScrapedAccommodationProvider` (the default

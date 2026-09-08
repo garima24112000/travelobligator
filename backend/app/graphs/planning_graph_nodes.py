@@ -7,6 +7,7 @@ from app.graphs.planning_graph_state import PlanningGraphState
 from app.models.accommodation import AccommodationSearchResult, AccommodationSearchStatus
 from app.models.common import ProviderStatus
 from app.models.flight import FlightSearchResult, FlightSearchStatus
+from app.models.hotel_ratings import HotelRatingsStatus
 from app.services.accommodation_inventory_service import AccommodationInventoryService
 from app.services.ai_candidate_promotion_service import AICandidatePromotionService
 from app.services.candidate_quality_service import CandidateQualityService
@@ -101,6 +102,35 @@ def _accommodation_coverage_value(result: AccommodationSearchResult) -> str:
     if result.status == AccommodationSearchStatus.SUCCESS and not result.offers:
         return "unavailable"
     return _ACCOMMODATION_STATUS_TO_COVERAGE_VALUE.get(result.status, "not_connected")
+
+
+# Step 177D: mirrors planning_orchestrator.py's own
+# _HOTEL_RATINGS_STATUS_TO_COVERAGE_VALUE/_hotel_ratings_coverage_value
+# exactly (see that module's comment for the full mapping rationale) --
+# duplicated here for the same circular-import reason as the other
+# coverage-mapping helpers in this module (see the module docstring
+# above).
+_HOTEL_RATINGS_STATUS_TO_COVERAGE_VALUE = {
+    HotelRatingsStatus.NOT_CONNECTED: "not_connected",
+    HotelRatingsStatus.FAILED: "failed",
+    HotelRatingsStatus.UNAVAILABLE: "unavailable",
+}
+
+
+def _hotel_ratings_coverage_value(result: AccommodationSearchResult) -> str | None:
+    status = result.hotel_ratings_status
+    if status is None:
+        return None
+    if status != HotelRatingsStatus.SUCCESS:
+        return _HOTEL_RATINGS_STATUS_TO_COVERAGE_VALUE.get(status, "not_connected")
+
+    total_offers = len(result.offers)
+    enriched = result.hotel_ratings_enriched_offer_count
+    if enriched <= 0:
+        return "unavailable"
+    if enriched < total_offers:
+        return "partial"
+    return "success"
 
 
 _FLIGHT_STATUS_TO_COVERAGE_VALUE = {
@@ -305,7 +335,8 @@ def build_accommodation_inventory_node(
     Never schedules lodging into the itinerary, never adds hotel
     recommendation logic, never fabricates a property/price/rating/
     availability/booking link -- only records an honest inventory status,
-    plus the derived `ProviderCoverage.hotel_prices` value.
+    plus the derived `ProviderCoverage.hotel_prices` value and (Step
+    177D) `ProviderCoverage.hotel_ratings` value.
     """
     resolved_service = service or AccommodationInventoryService()
 
@@ -320,6 +351,7 @@ def build_accommodation_inventory_node(
             }
         planning_state.accommodation_inventory_report = report
         planning_state.provider_coverage.hotel_prices = _accommodation_coverage_value(report)
+        planning_state.provider_coverage.hotel_ratings = _hotel_ratings_coverage_value(report)
         return {"planning_state": planning_state, "completed_nodes": ["accommodation_inventory"]}
 
     return accommodation_inventory_node

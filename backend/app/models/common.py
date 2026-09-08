@@ -162,6 +162,14 @@ class ProviderCoverage(BaseModel):
     restaurants: str | None = None
     accommodations: str | None = None
     hotel_prices: str | None = None
+    # Step 177D: separate from `hotel_prices` (bookable price/availability
+    # inventory) and `accommodations` (OSM-backed open-data location
+    # candidates, never bookable/rated inventory) -- this tracks the Step
+    # 177B/177C hotel-ratings enrichment outcome specifically. Stays
+    # `None` whenever `accommodation_inventory_report.hotel_ratings_status`
+    # itself is `None` (enrichment was never attempted, e.g. no
+    # accommodation offers exist yet), never defaulted to a guessed value.
+    hotel_ratings: str | None = None
     vacation_rentals: str | None = None
     airbnb: str | None = None
     flights: str | None = None
