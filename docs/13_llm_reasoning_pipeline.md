@@ -4704,3 +4704,113 @@ paraphrased, summarized, or inferred by an LLM** -- the same "provider
 supplies facts, AI supplies reasoning only" rule this whole pipeline
 document already enforces for price, availability, route data, and every
 other factual field.
+
+## 116. Kiwi MCP Tool Discovery Is a Protocol Handshake, Not an LLM Call (Step 178B)
+
+Step 178B's `KiwiMcpClient`/`KiwiMcpFlightProvider`
+(`backend/app/providers/flights/kiwi_mcp_client.py`,
+`kiwi_mcp_adapter.py`; see docs/12_provider_architecture.md and
+docs/14_backend_architecture.md for the full writeup) are worth stating
+plainly here because "MCP" and "Model Context Protocol" sit adjacent to
+this document's usual subject matter (LLM-backed candidate proposals),
+but this step is not that. `discover_tools()` performs the MCP protocol's
+own `initialize`/`list_tools` handshake -- a structured request/response
+exchange with a server, normalized by the official `mcp` SDK -- and reads
+back structured metadata (a tool's declared name, description, and JSON
+input schema) exactly as the server returned it. **No LLM is called
+anywhere in this step, no free-form natural-language model output is
+parsed as data, and the tool metadata returned is never treated as
+authoritative flight data** -- it is inert capability metadata about what
+the server can do, not a travel fact.
+
+The one piece of text-matching in this step -- deciding whether a
+discovered tool "looks like" a flight-search tool, when no exact
+`Settings.kiwi_mcp_tool_name` is configured -- is a plain,
+deterministic `str.lower()`/substring check against a tool's own *name*
+field, the same category of operation `coverageValueToStatusKind` or any
+other fixed-vocabulary classifier elsewhere in this codebase performs. It
+is not natural-language understanding and it makes no judgment about the
+tool's actual behavior beyond what its own declared name suggests --
+Step 178B never calls the tool to find out.
+
+This step also does not touch the AI-candidate-proposal/discovery
+pipeline (`ai_candidate_proposal_batch`/`candidate_grounding_batch`,
+Groq/Anthropic) in any way -- `KiwiMcpClient` and that subsystem are
+fully independent code paths with no shared state, and this step confirms
+via a dedicated import-safety test that neither Kiwi MCP module
+references `anthropic`/`groq`/`openai`/`gemini`/`langgraph`.
+
+## 117. Kiwi's Structured Result Is Parsed, Its LLM-Facing Prose Is Never Touched (Step 178C)
+
+Step 178C's real `search-flight` call surfaced something worth stating
+precisely for this document: Kiwi's tool result carries **two separate
+parts**, and this codebase only ever reads one of them. The MCP SDK's
+`CallToolResult` has `content` (free-form text blocks -- in Kiwi's case,
+the tool's own description literally instructs an LLM client to "render
+a markdown table... give a recommendation... wish the user a nice trip
+with a short fun fact") and `structured_content` (a separate,
+machine-readable JSON field holding the same data with no prose at all).
+**`kiwi_mcp_parser.py` reads only `structured_content`.** `content` is
+never fetched into this codebase's memory for any purpose, let alone
+parsed as data -- there is no code path here that could accidentally
+treat Kiwi's LLM-facing narration as a flight fact, because that
+narration is never read in the first place.
+
+This is the concrete embodiment of this document's core "provider
+supplies facts, AI supplies reasoning only" rule for Section 178: Kiwi's
+`structured_content` is the provider fact, parsed by ordinary
+deterministic Python (type checks, `.get()` calls, a unit conversion of
+a duration already in seconds) -- there is no LLM call anywhere in
+`KiwiMcpClient.call_tool` or `kiwi_mcp_parser.py`, and no summarization,
+paraphrasing, or inference step between Kiwi's JSON and a constructed
+`FlightOffer`. `build_search_flight_arguments`'s own text-matching (the
+one place this step reads a schema *description* string, to decide
+whether `flyFrom`/`flyTo` accept free-form places) is a fixed substring
+check against already-returned server metadata describing the tool's own
+input contract -- not natural-language understanding, and it makes no
+claim about a flight itself.
+
+## 118. Kiwi MCP Labels Restate Existing Structured Data, No New Reasoning (Step 178D)
+
+Step 178D's additions -- a third validation-message branch, two new
+frontend label/badge components, and two new trust-dashboard supporting
+facts -- are all plain conditional string selection over a field
+(`FlightOffer.provider == "kiwi_mcp"`) that Step 178C's deterministic
+parser already set from Kiwi's own structured response. None of it reads
+Kiwi's free-form `content` text blocks (still only ever read by nothing
+in this codebase, per Step 117 above), none of it calls an LLM, and none
+of it infers anything about a flight beyond what the offer's own already-
+parsed fields state. Labeling an offer "third-party provider data, not a
+TravelObligator booking confirmation" is not a reasoning step -- it is
+this app restating, honestly and consistently, a fact about *where the
+data came from* that was already true the moment Step 178C's parser set
+`provider="kiwi_mcp"`; this step only makes that fact visible to a reader
+in three places (validation, the flight inventory panel, and the trust
+dashboard) where it wasn't shown distinctly before.
+
+## 119. Section 178 Complete: No LLM Call Anywhere in the Kiwi MCP Path, End to End (Step 178E, final Section 178 step)
+
+Restated plainly, end to end, now that Section 178 is complete: no step
+in this section -- discovery (178B), the real search-flight call and
+structured-JSON parsing (178C), or the labeling work (178D) -- ever calls
+an LLM, ever treats Kiwi's free-form `content` text blocks (the part of
+the tool's response written for an LLM/human to read and narrate) as
+data, or ever lets any model-generated text influence a `FlightOffer`
+field. Every fact this section's `KiwiMcpFlightProvider` can return
+traces to `structured_content`, Kiwi's own machine-readable JSON, read by
+plain deterministic Python (`isinstance` checks, `.get()` calls, a
+straightforward seconds-to-minutes unit conversion) -- the same category
+of operation every other provider adapter in this codebase already
+performs on its own provider's response. This is "provider supplies
+facts, AI supplies reasoning only" applied to Section 178's own subject
+matter exactly as it has been applied to every other provider integration
+in this document.
+
+Also confirmed this step: Claude Code's own local MCP configuration
+(`claude mcp add --transport http kiwi-com-flight-search
+https://mcp.kiwi.com`) remains completely separate from, and has no
+bearing on, this backend's own `KiwiMcpClient`/`KiwiMcpFlightProvider` --
+the former configures an interactive coding-session tool; the latter is
+an independently built, independently tested, config-gated runtime
+integration this application makes on its own, verified live multiple
+times across 178B-178D without ever touching Claude Code's MCP setup.

@@ -28,7 +28,19 @@ langgraph-prebuilt==1.1.0
 langgraph-sdk==0.4.2
 h11==0.16.0
 httpx==0.28.1
-idna==3.13
+idna==3.19
+# Official Model Context Protocol Python SDK (Step 178B) -- backs
+# backend/app/providers/flights/kiwi_mcp_client.py, used only for MCP
+# *tool discovery* (initialize/list_tools) against Kiwi's hosted MCP
+# endpoint, config-gated off by default (Settings.kiwi_mcp_enabled).
+# Like the anthropic/groq adapters above, this package is only imported
+# lazily inside KiwiMcpClient's own method, so the app and test suite
+# both work whether or not it is actually installed; every unit test
+# injects a fake client/session instead of using this package directly.
+# Pulls its own vendored httpx2/httpcore2 (a separate namespace from this
+# project's own pinned httpx==0.28.1 above) and requires idna>=3.18,
+# hence the idna bump above.
+mcp==2.2.0
 pydantic==2.13.3
 pydantic_core==2.46.3
 pydantic-settings==2.7.1

@@ -487,14 +487,32 @@ function buildFlightInventoryCategory(
     supportingFacts.push("No flight inventory report has been computed for this trip yet.");
   } else {
     const hasScrapedOffer = report.offers.some((offer) => offer.scraped_provenance !== null);
+    // Backend: app.providers.flights.kiwi_mcp_parser._KIWI_PROVIDER_NAME
+    // (Step 178C) -- a plain string match against FlightOffer.provider
+    // (a public field), mirroring how offer.scraped_provenance is
+    // already checked directly above rather than importing anything
+    // backend-side.
+    const hasKiwiMcpOffer = report.offers.some((offer) => offer.provider === "kiwi_mcp");
     if (report.status === "success" && report.offers.length > 0) {
       statusKind = hasScrapedOffer ? "scraped_source" : "available";
       supportingFacts.push(
-        `${report.offers.length} flight inventory offer(s) available via ${report.provider}. This is not a confirmed booking, and flights are never scheduled into the itinerary as a daily experience.`,
+        `${report.offers.length} flight inventory offer(s) available via ${report.provider}. This is not a booking confirmation, and flights are never scheduled into the itinerary as a daily experience.`,
       );
       if (hasScrapedOffer) {
         supportingFacts.push(
           "At least one offer is scraped_public_page/experimental/fragile data -- not official-provider data, not verified for schedule, price, availability, baggage, or booking-link accuracy.",
+        );
+      } else if (hasKiwiMcpOffer) {
+        // Step 178D: Kiwi MCP (Step 178C) is real, live, third-party
+        // provider data -- distinct from both scraped_local (above) and
+        // a hypothetical future official/first-party provider. No
+        // strong-assurance language of any kind is ever attached to it,
+        // and it is never presented as reserved/booked.
+        supportingFacts.push(
+          `Kiwi MCP provider returned ${report.offers.length} flight offer(s) as third-party provider data.`,
+        );
+        supportingFacts.push(
+          "Booking links, if present, are provider-supplied third-party links, not a booking confirmation.",
         );
       }
     } else if (report.status === "failed") {

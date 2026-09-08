@@ -1312,6 +1312,129 @@ def test_flight_inventory_warning_for_scraped_offer_calls_out_non_official_statu
     )
 
 
+def _kiwi_mcp_offer(**overrides: object) -> FlightOffer:
+    fields: dict[str, object] = {
+        "offer_id": "22f525c35142000074e76ad3_0",
+        "provider": "kiwi_mcp",
+        "data_status": DataStatus.LIVE,
+        "outbound_segments": [
+            FlightSegment(
+                origin_airport="LGW",
+                destination_airport="CDG",
+                carrier_name="easyJet",
+                flight_number="U28407",
+                data_status=DataStatus.LIVE,
+            )
+        ],
+        "source_name": "Kiwi MCP",
+        "total_price_amount": 53,
+        "currency": "EUR",
+        "booking_url": "https://kiwi.com/u/m9fxvz",
+    }
+    fields.update(overrides)
+    return FlightOffer(**fields)
+
+
+def test_flight_inventory_warning_for_kiwi_mcp_offer_uses_distinct_wording() -> None:
+    """Required test 1: a real Kiwi MCP offer (Step 178C) gets its own
+    third-party-provider wording, distinct from both the generic
+    provider-backed template and the scraped/manual template."""
+    planning_state = _planning_state()
+    planning_state.flight_inventory_report = FlightSearchResult(
+        provider="kiwi_mcp",
+        status=FlightSearchStatus.SUCCESS,
+        offers=[_kiwi_mcp_offer()],
+        destination="Lisbon, Portugal",
+        departure_date="2026-08-10",
+    )
+
+    PlanValidatorService().run(planning_state)
+
+    warnings = _flight_inventory_warnings(planning_state)
+    assert len(warnings) == 1
+    message_lower = warnings[0].message.lower()
+    assert "kiwi mcp" in message_lower
+    assert "third-party provider data" in message_lower
+    assert "not a travelobligator booking confirmation" in message_lower
+    assert not any(
+        issue.category == "flight_inventory"
+        for issue in planning_state.validation_report.critical_issues
+    )
+
+
+def test_flight_inventory_warning_kiwi_mcp_wording_differs_from_scraped_wording() -> None:
+    """Required test 2: scraped_local wording remains separate -- a Kiwi
+    MCP offer never gets the "scraped_public_page/experimental/fragile"
+    phrasing, and vice versa."""
+    planning_state = _planning_state()
+    planning_state.flight_inventory_report = FlightSearchResult(
+        provider="kiwi_mcp",
+        status=FlightSearchStatus.SUCCESS,
+        offers=[_kiwi_mcp_offer()],
+        destination="Lisbon, Portugal",
+        departure_date="2026-08-10",
+    )
+
+    PlanValidatorService().run(planning_state)
+
+    message_lower = _flight_inventory_warnings(planning_state)[0].message.lower()
+    assert "scraped_public_page" not in message_lower
+    assert "experimental/fragile" not in message_lower
+
+
+def test_flight_inventory_warning_kiwi_mcp_never_overclaims() -> None:
+    """Required test 5: no banned overclaim terms appear in the Kiwi MCP
+    branch's message."""
+    planning_state = _planning_state()
+    planning_state.flight_inventory_report = FlightSearchResult(
+        provider="kiwi_mcp",
+        status=FlightSearchStatus.SUCCESS,
+        offers=[_kiwi_mcp_offer()],
+        destination="Lisbon, Portugal",
+        departure_date="2026-08-10",
+    )
+
+    PlanValidatorService().run(planning_state)
+
+    message_lower = _flight_inventory_warnings(planning_state)[0].message.lower()
+    for banned_phrase in (
+        "verified",
+        "guaranteed",
+        "confirmed booking",
+        "travel-ready",
+        "final recommendation",
+        "official",
+    ):
+        assert banned_phrase not in message_lower
+
+
+def test_flight_inventory_warning_kiwi_mcp_not_connected_failed_unavailable_unchanged() -> None:
+    """Required test 3: not_connected/failed/unavailable behavior is
+    unaffected by adding the Kiwi MCP success branch -- these paths never
+    even look at offer.provider."""
+    planning_state = _planning_state()
+    planning_state.flight_inventory_report = FlightSearchResult(
+        provider="kiwi_mcp_flight_provider",
+        status=FlightSearchStatus.FAILED,
+        offers=[],
+        message="The Kiwi MCP search-flight call failed (timeout).",
+        destination="Lisbon, Portugal",
+        departure_date="2026-08-10",
+    )
+
+    PlanValidatorService().run(planning_state)
+
+    warnings = _flight_inventory_warnings(planning_state)
+    assert len(warnings) == 1
+    message_lower = warnings[0].message.lower()
+    assert "flight inventory provider request failed" in message_lower
+    assert "kiwi" not in message_lower
+    assert not any(
+        issue.category == "flight_inventory"
+        for issue in planning_state.validation_report.critical_issues
+    )
+
+
 def test_flight_inventory_warning_never_blocks_generation() -> None:
     """Missing/unconnected flight inventory never contributes a
     critical_issue on its own, regardless of scheduling outcome."""

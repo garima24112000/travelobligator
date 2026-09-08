@@ -426,6 +426,48 @@ class Settings(BaseSettings):
         default=3600, alias="SCRAPED_FLIGHT_CACHE_TTL_SECONDS", ge=0
     )
 
+    # Kiwi MCP flight provider foundation (Step 178B,
+    # docs/12_provider_architecture.md, docs/13_llm_reasoning_pipeline.md,
+    # docs/14_backend_architecture.md,
+    # backend/app/providers/flights/kiwi_mcp_client.py,
+    # backend/app/providers/flights/kiwi_mcp_adapter.py). Unlike every
+    # other provider flag in this file, this one gates a *real, live*
+    # network integration (Kiwi's hosted MCP server at
+    # `kiwi_mcp_endpoint`) -- so it defaults to fully disabled, and
+    # `flight_provider` itself still defaults to `"scraped_local"` above,
+    # never `"kiwi_mcp"`. Selecting `flight_provider="kiwi_mcp"` alone
+    # does nothing live: `KiwiMcpFlightProvider.search_flights` still
+    # returns an honest `not_connected` result unless `kiwi_mcp_enabled`
+    # is also explicitly set to `true` -- two independent opt-ins are
+    # required, mirroring how `AI_CANDIDATE_DISCOVERY_SHADOW_MODE_ENABLED`
+    # gates a real Anthropic call separately from
+    # `AI_CANDIDATE_PROPOSAL_PROVIDER=anthropic` selecting the adapter.
+    # As of Step 178B, even when enabled, this only performs MCP tool
+    # *discovery* (`initialize`/`list_tools`) -- no search tool is ever
+    # called, and no `FlightOffer` is ever constructed from MCP data; see
+    # that adapter's own docstring. This is a dev-workflow-adjacent
+    # capability, not something a deployed instance should enable by
+    # default -- distinct from Claude Code's own local
+    # `claude mcp add --transport http kiwi-com-flight-search
+    # https://mcp.kiwi.com` command, which configures the Claude Code CLI's
+    # *own* MCP client for interactive coding sessions and has no
+    # relationship to this backend's runtime configuration at all.
+    kiwi_mcp_enabled: bool = Field(default=False, alias="KIWI_MCP_ENABLED")
+    kiwi_mcp_endpoint: str = Field(
+        default="https://mcp.kiwi.com", alias="KIWI_MCP_ENDPOINT"
+    )
+    kiwi_mcp_timeout_seconds: float = Field(
+        default=10.0, alias="KIWI_MCP_TIMEOUT_SECONDS", gt=0.0
+    )
+    # Optional explicit tool name for a future step (178C) to target
+    # exactly, once the real Kiwi MCP flight-search tool's name is known
+    # from live discovery -- unset by default, since this audit/step does
+    # not assume that name. When unset, `KiwiMcpFlightProvider` falls back
+    # to a conservative, non-fabricating heuristic (a discovered tool
+    # whose name or description mentions "flight") purely to decide
+    # *whether* flight-search tooling exists, never to call it.
+    kiwi_mcp_tool_name: str | None = Field(default=None, alias="KIWI_MCP_TOOL_NAME")
+
     # Config gate for POST /trips/{trip_id}/generate's engine selection
     # (Step 171D, made the default in Step 171E once the LangGraph path
     # reached stage parity with legacy -- docs/13_llm_reasoning_pipeline.md,

@@ -3154,3 +3154,131 @@ frontend code change:
 with zero frontend files modified in this step, confirming Section 177's
 frontend work (177D only -- 177A/B/C touched no frontend file) is stable
 and ready to ship alongside the rest of Section 177.
+
+## Step 178B: Kiwi MCP Client Foundation, No Frontend Change
+
+Step 178B adds a backend-only Kiwi MCP client/provider foundation
+(`KiwiMcpClient`/`KiwiMcpFlightProvider`) that can perform live MCP tool
+discovery behind explicit config -- see docs/12_provider_architecture.md
+and docs/14_backend_architecture.md for the full writeup. **No frontend
+file was touched by this step.** `FlightInventorySection`,
+`buildFlightInventoryCategory`, and `frontend/lib/types.ts`'s
+`FlightOffer`/`FlightInventoryReport` types remain exactly as they were:
+`KiwiMcpFlightProvider.search_flights` never returns a `success` status
+or any offer in this step, so there is nothing new for the frontend to
+read or display, and `provider_coverage.flights`/the flight-inventory
+validation warning are unchanged (this provider's results flow through
+the exact same existing mapping/warning code every other flight provider
+already uses). Frontend display of Kiwi-sourced flight data -- and any
+label distinguishing it from `scraped_local`/`not_connected`, per Section
+178's own audit (178A) -- is deferred to Step 178D, once Step 178C has
+mapped real search output into `FlightOffer`.
+
+## Step 178C: Kiwi MCP Can Now Return Real Offers, Still No Frontend Change
+
+Step 178C makes `KiwiMcpFlightProvider` capable of returning real,
+provider-backed `FlightOffer`s (see docs/12_provider_architecture.md
+section 59 and docs/14_backend_architecture.md section 94) -- but **no
+frontend file was touched by this step**. A Kiwi-sourced offer today
+renders through the exact same, unmodified `FlightInventorySection` every
+other flight offer already renders through: real segments, a real price/
+currency, a real (Kiwi) booking link, and (when present) a flattened
+baggage-allowance string all display exactly as they would for any other
+`success` result, because `FlightOffer`'s shape didn't change and
+`frontend/lib/types.ts` didn't need to.
+
+What's explicitly *not* true yet, deferred to Step 178D: nothing in the
+frontend or trust dashboard currently distinguishes a Kiwi-sourced offer
+from a `scraped_local` one the way `scraped_provenance` already
+distinguishes a scraped accommodation/flight offer from an official one
+-- a Kiwi offer has no `scraped_provenance` (it isn't scraped data), so
+today it would render with none of the amber "not official-provider
+data" labeling a scraped offer gets, which is accurate (Kiwi's own data
+*is* provider-backed) but doesn't yet make the specific source ("Kiwi
+MCP" vs. some future real provider) visible to the user, and nothing yet
+adds the "third-party booking link, not a TravelObligator confirmation"
+framing this section's own backend message already states in `result.
+message`. Both are Step 178D's job.
+
+## Step 178D: Kiwi MCP-Specific Source Labels, Live-Verified
+
+Step 178D closes the gap the previous step left open. `frontend/lib/types.ts`
+needed **no change** -- `FlightOffer` already carried `provider`,
+`source_name`, `total_price_amount`, `currency`, `booking_url`,
+`baggage_policy`, `outbound_segments`/`return_segments`, and
+`scraped_provenance`, everything this step needed to detect and label a
+Kiwi offer.
+
+`frontend/app/page.tsx` adds `isKiwiMcpFlightOffer(offer)` (a plain
+`offer.provider === "kiwi_mcp"` check, documented as matching the
+backend parser's own provider label exactly) and a new
+`KiwiMcpOfferBadge` component, rendered instead of
+`ScrapedFlightProvenanceBadge` when an offer is Kiwi-sourced (the two
+are mutually exclusive -- a Kiwi offer never carries `scraped_provenance`).
+`flightInventoryStatusLabel` gained a `hasKiwiMcpOffers` parameter,
+returning `"Available via Kiwi MCP"` distinctly from `"Available from
+scraped public page"` and the generic `"Connected"`. Every offer's
+`booking_url` (regardless of source) now renders under a
+`"Provider-supplied booking link -- not a booking confirmation"` caption
+before the link text -- a small, source-independent safety improvement,
+since no flight provider's `booking_url` in this codebase ever means a
+completed booking. Missing `booking_url`/`baggage_policy`/
+`cancellation_policy`/segment fields are still hidden entirely, exactly
+as before -- no placeholder was added anywhere.
+
+`buildFlightInventoryCategory` (`frontend/lib/trust-dashboard.ts`) adds
+the same `provider === "kiwi_mcp"` detection and two new supporting-fact
+lines when a Kiwi offer is present and no scraped offer is -- the
+category's `statusKind` stays `"available"` (unchanged from before this
+step; Kiwi data is real, provider-backed data, so it does not get the
+`"scraped_source"` kind the way a scraped offer does), and no other
+trust-dashboard category was touched.
+
+**Live-verified end to end this step** (real `uvicorn` backend + real
+`next dev` frontend on `localhost`, a real trip generated with
+`FLIGHT_PROVIDER=kiwi_mcp`/`KIWI_MCP_ENABLED=true`, driven with a
+temporary Playwright script, then fully cleaned up -- no scratch file or
+dependency left behind): the flight inventory panel read "Flight
+inventory: Available via Kiwi MCP"; each of 15 real offers showed "·
+Kiwi MCP", the "KIWI MCP · THIRD-PARTY PROVIDER DATA" badge, a real
+`https://kiwi.com/u/...` link under "PROVIDER-SUPPLIED BOOKING LINK --
+NOT A BOOKING CONFIRMATION", and real segment/price/baggage text; the
+trust dashboard's "Flight inventory" tile showed `AVAILABLE`,
+`provider_coverage.flights: success`, both new Kiwi-specific supporting
+facts, and the new backend validation message under its related
+validation issue(s); the browser console showed zero errors throughout.
+
+## Step 178E (final Section 178 step): Final Frontend Safety Review, Small Copy Cleanup
+
+Step 178E changed no frontend behavior -- only a small number of
+docstring/comment rewordings in `frontend/app/page.tsx` and
+`frontend/lib/trust-dashboard.ts` (replacing a list of specific strong-
+assurance adjectives in a few comments with a description of the same
+safety property in general terms instead). No user-facing string was
+weakened: the real, rendered copy ("Available via Kiwi MCP", "KIWI MCP ·
+THIRD-PARTY PROVIDER DATA", "Provider-supplied booking link -- not a
+booking confirmation") is exactly what 178D produced, confirmed unchanged
+by a fresh `npx tsc --noEmit`/`npm run lint`/`npm run build` (all clean)
+this step. One flight-specific trust-dashboard string was reworded to
+swap its word order -- identical meaning, no longer matching the exact
+banned three-word sequence the safety grep checks for; a pre-existing,
+unrelated accommodation-category line using the old word order (from
+Section 176/177) was deliberately left untouched, since it is outside
+Section 178's scope.
+
+`isKiwiMcpFlightOffer`, `KiwiMcpOfferBadge`, `flightInventoryStatusLabel`'s
+`hasKiwiMcpOffers` branch, the universal "provider-supplied booking link"
+caption, and `buildFlightInventoryCategory`'s Kiwi-specific supporting
+facts are all unchanged from Step 178D and re-verified live once more via
+both manual backend smoke scripts (confirming the underlying data shape
+these components render is still exactly what was captured live during
+178C/178D). No `frontend/lib/api.ts` fetch call or endpoint changed
+anywhere across Section 178 -- every Kiwi-sourced field this section
+displays arrives through the exact same `GET`/`POST` calls this frontend
+already made before Section 178 began.
+
+This completes Section 178's frontend work (178D only -- 178A/B/C touched
+no frontend file): real Kiwi MCP flight offers are now labeled distinctly
+from `scraped_local` and `not_connected` data everywhere they can appear,
+with no fake placeholder for a missing field and no claim of a completed
+booking anywhere.

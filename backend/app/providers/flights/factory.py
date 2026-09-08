@@ -2,13 +2,14 @@ from __future__ import annotations
 
 from app.core.config import get_settings
 from app.providers.flights.base import FlightInventoryProvider
+from app.providers.flights.kiwi_mcp_adapter import KiwiMcpFlightProvider
 from app.providers.flights.not_connected_adapter import NotConnectedFlightProvider
 from app.providers.flights.scraped_adapter import ScrapedLocalFlightProvider
 
-# Config-gated provider-selection boundary (Step 169B), mirroring
-# app.providers.accommodation.factory. No Amadeus/Duffel/Kiwi/Google
-# Flights dependency is added here -- this module only selects between
-# `FlightInventoryProvider` adapters that already exist.
+# Config-gated provider-selection boundary (Step 169B, extended in Step
+# 178B), mirroring app.providers.accommodation.factory. No Amadeus/
+# Duffel/Google Flights dependency is added here -- this module only
+# selects between `FlightInventoryProvider` adapters that already exist.
 #
 # `Settings.flight_provider` defaults to `"scraped_local"`, which selects
 # `ScrapedLocalFlightProvider` -- itself still safe by default: with no
@@ -22,12 +23,22 @@ from app.providers.flights.scraped_adapter import ScrapedLocalFlightProvider
 # `flight_provider="not_connected"` still selects the always-
 # `not_connected` `NotConnectedFlightProvider`.
 #
-# Not wired into `ProviderGateway` or `PlanningOrchestrator` yet --
-# nothing in the app calls this factory outside its own tests.
+# `"kiwi_mcp"` (Step 178B) selects `KiwiMcpFlightProvider`, the first
+# provider in this factory backed by a real, live external service --
+# still never selected by default, and even when selected, never causes a
+# network call unless `Settings.kiwi_mcp_enabled` is also explicitly
+# `True` (see that adapter's own docstring).
+#
+# Wired into `ProviderGateway.flight_inventory` (Step 169E), which
+# `FlightInventoryService`/`PlanningOrchestrator` already call for every
+# trip generation -- this factory decides which adapter that path
+# actually reaches, so its own default (`"scraped_local"`, never
+# `"kiwi_mcp"`) is what runs in production today.
 
 _SUPPORTED_PROVIDERS: dict[str, type[FlightInventoryProvider]] = {
     "not_connected": NotConnectedFlightProvider,
     "scraped_local": ScrapedLocalFlightProvider,
+    "kiwi_mcp": KiwiMcpFlightProvider,
 }
 
 

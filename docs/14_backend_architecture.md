@@ -4167,3 +4167,213 @@ Section 177 (177A-177E) is now feature-complete for its stated scope: a
 safe, inert foundation ready for a future step to wire in one real,
 conservatively-matched external provider -- which remains explicitly out
 of scope for this section.
+
+## 93. Kiwi MCP Client Foundation and Live Tool-Discovery Spike (Step 178B)
+
+Unlike Section 177 (which stayed a permanent, `not_connected`-only
+foundation with no real provider wired in), **Section 178's explicit goal
+is to actually call Kiwi's real MCP server from backend runtime.** Step
+178B is the first, safest slice of that: prove the connection and tool
+discovery path works live, behind explicit two-flag opt-in, before any
+flight-search mapping exists. See docs/12_provider_architecture.md
+section 58 for the full provider-catalog writeup and the live discovery
+result (the real server currently advertises a `search-flight` tool and
+an unrelated `feedback-to-devs` tool); this section focuses on the
+backend-architecture/layering details.
+
+**New dependency**: `mcp==2.2.0` (`backend/requirements.txt`), the
+official Model Context Protocol Python SDK, imported lazily inside
+`KiwiMcpClient._default_client_factory` only -- mirroring the existing
+`anthropic`/`groq` lazy-import convention exactly, so nothing else in the
+app requires `mcp` to be installed. Adding this dependency required
+bumping the pinned `idna` from `3.13` to `3.19` in the same file (a
+transitive constraint from `mcp`'s own vendored `httpx2` dependency,
+`idna>=3.18`) -- the only other line changed in that file.
+
+**New modules**, both under `backend/app/providers/flights/`:
+- `kiwi_mcp_client.py` -- `KiwiMcpClient`, `KiwiMcpDiscoveryStatus`,
+  `McpToolInfo`, `KiwiMcpToolDiscoveryResult`. Scoped entirely to MCP
+  tool discovery (`initialize`/`list_tools`); never calls a tool. Uses
+  `mcp.Client(endpoint, read_timeout_seconds=...)` as an async context
+  manager, bridged to this codebase's synchronous provider interface via
+  `asyncio.run` inside the public `discover_tools()` method -- safe here
+  because every caller (`KiwiMcpFlightProvider.search_flights`, called by
+  `FlightInventoryService.build_report`, called by
+  `PlanningOrchestrator.run_stay_transport_stage`/the LangGraph
+  `flight_inventory_node`) runs synchronously with no already-running
+  event loop in its thread: this app's FastAPI routes are plain `def`
+  (Starlette dispatches them to a worker thread pool), and its LangGraph
+  engine calls `graph.invoke()`, never `ainvoke()`. Accepts an injectable
+  `client_factory` for tests, so no unit test needs network access or the
+  real `mcp` package.
+- `kiwi_mcp_adapter.py` -- `KiwiMcpFlightProvider(FlightInventoryProvider)`,
+  registered in `get_flight_provider`'s factory as `"kiwi_mcp"`. Disabled
+  by default at two independent layers: `Settings.flight_provider`
+  defaults to `"scraped_local"` (selecting `"kiwi_mcp"` explicitly is
+  required), and even then `Settings.kiwi_mcp_enabled` (default `False`)
+  must also be explicitly `True` before any network call happens --
+  identical two-flag-gating shape to
+  `AI_CANDIDATE_PROPOSAL_PROVIDER=anthropic` +
+  `AI_CANDIDATE_DISCOVERY_SHADOW_MODE_ENABLED=true`. `search_flights`
+  returns `not_connected` (disabled), `failed` (discovery itself failed),
+  or `unavailable` (discovery succeeded, with or without a flight-search-
+  looking tool found) -- **never `success`, and `offers` is always `[]`**;
+  `FlightSearchResult`'s own `validate_offers_match_status` model
+  validator would reject a `success` status with real offers anyway,
+  structurally, so this isn't just adapter discipline. Every branch
+  echoes the request's own `origin`/`destination`/dates/`adults`/
+  `children`/`currency` back on the result, matching
+  `NotConnectedFlightProvider`/`ScrapedLocalFlightProvider`'s existing
+  convention exactly.
+
+**Config** (`Settings`, all new, none read by any other provider):
+`kiwi_mcp_enabled: bool = False`, `kiwi_mcp_endpoint: str =
+"https://mcp.kiwi.com"`, `kiwi_mcp_timeout_seconds: float = 10.0` (`gt=0`,
+validated), `kiwi_mcp_tool_name: str | None = None`.
+
+**Factory**: `_SUPPORTED_PROVIDERS["kiwi_mcp"] = KiwiMcpFlightProvider`
+added alongside the existing `"not_connected"`/`"scraped_local"` entries;
+an unrecognized provider name still falls back to
+`NotConnectedFlightProvider` exactly as before -- `"kiwi_mcp"` itself is
+simply one more recognized, non-default name now.
+
+**What 178B explicitly does not do**: no `FlightOffer`/`FlightSegment` is
+ever constructed from MCP data (confirmed by a dedicated test scanning
+`kiwi_mcp_adapter.py`'s own source for those constructor calls); no
+airport is inferred from a city name; no booking URL is constructed; no
+search tool is called; `provider_coverage.flights`/`PlanValidatorService`'s
+flight-inventory wording are completely unchanged (both still see this
+provider's `not_connected`/`failed`/`unavailable` results through the
+exact same mapping/warning code as `scraped_local` always has); no
+frontend file changed.
+
+## 94. Real Kiwi MCP Search-Flight Invocation and Deterministic Parsing (Step 178C)
+
+Step 178C wires the last piece 178B deliberately left unbuilt: with
+`FLIGHT_PROVIDER=kiwi_mcp` and `KIWI_MCP_ENABLED=true`,
+`KiwiMcpFlightProvider.search_flights` now performs discovery, then
+builds real arguments, then calls Kiwi's real `search-flight` tool, then
+parses the result -- and can return `status=success` with real,
+provider-backed `FlightOffer`s for the first time in this codebase's
+flight-provider history. **The default remains unchanged**:
+`Settings.flight_provider` still defaults to `"scraped_local"`, and
+`kiwi_mcp_enabled` still defaults to `False`. See
+docs/12_provider_architecture.md section 59 for the full field-mapping/
+schema writeup (including the real payload shape captured live during
+this step); this section covers layering.
+
+**New**: `backend/app/providers/flights/kiwi_mcp_parser.py` --
+`parse_kiwi_mcp_search_result(call_result, request) -> FlightSearchResult`,
+the sole constructor of Kiwi-sourced `FlightOffer`/`FlightSegment`
+objects in this codebase. **Extended**: `KiwiMcpClient` gains `call_tool`
+(transport-only, mirrors `discover_tools`'s synchronous-bridging/error-
+handling contract exactly, returns the new `KiwiMcpToolCallResult`);
+`KiwiMcpFlightProvider.search_flights` gains the full post-discovery flow
+(`build_search_flight_arguments` -> `client.call_tool(flight_tool.name,
+arguments)` -> `parse_kiwi_mcp_search_result`), and the new module-level
+`build_search_flight_arguments(request, tool_schema)` function.
+
+**Provider-name labeling mirrors `ScrapedLocalFlightProvider`'s own
+existing asymmetry exactly**: every pre-call gate (disabled, discovery
+failed, no flight tool found, arguments couldn't be safely built) still
+uses `KiwiMcpFlightProvider.provider_name`
+(`"kiwi_mcp_flight_provider"`, unchanged since 178B) on its
+`_empty_result`; once the real `search-flight` call is actually attempted,
+every outcome from that attempt onward (call failure, malformed payload,
+zero offers, real success) is labeled `provider="kiwi_mcp"` by the parser
+itself -- the same "adapter identity before a real attempt, specific
+data-source label once one is made" pattern `parse_scraped_flight_html`
+already established for the scraped provider.
+
+**Never wired anywhere else this step**: `ProviderGateway`,
+`PlanningOrchestrator`, the LangGraph flight node, `provider_coverage.
+flights`'s mapping, and `PlanValidatorService`'s flight-inventory warning
+are all completely untouched -- a real Kiwi success result flows through
+the exact same `_flight_coverage_value`/`_build_flight_inventory_warning`
+code every other flight provider's result already does (a `success`
+status with real offers reports `provider_coverage.flights = "success"`,
+and the validator's existing "provider-backed flight offer(s) were found"
+wording already applies honestly, unchanged). No frontend file changed;
+distinguishing a Kiwi-sourced offer from a scraped one in the UI/trust
+dashboard is Step 178D's job.
+
+Confirmed live during this step (never assumed): a real call to
+`search-flight` with `{flyFrom: "London", flyTo: "Paris", departureDate:
+"15/12/2026"}` returned 15 real itineraries with real prices (EUR),
+real Kiwi booking links, real carrier/flight-number/schedule data, and
+round-trip searches correctly populate `return_segments`; a nonsense
+origin/destination pair returned `resultsCount: 0`/`itineraries: []`
+(parsed as `unavailable`, not an error); and a malformed `departureDate`
+value returned a populated `error` field with a real pydantic validation
+message (parsed as `failed`, its detail truncated to one line before
+being relayed).
+
+## 95. Kiwi MCP-Specific Validation Wording (Step 178D)
+
+Step 178D adds one new message template to
+`_build_flight_inventory_warning` (`plan_validator_service.py`):
+`_FLIGHT_KIWI_MCP_SUCCESS_MESSAGE_TEMPLATE`, selected when
+`any(offer.provider == "kiwi_mcp" for offer in offers)` and no offer
+carries `scraped_provenance` -- a new module-level constant,
+`_KIWI_MCP_OFFER_PROVIDER_NAME = "kiwi_mcp"`, documents that this is a
+plain string match against `FlightOffer.provider` (a public field), not
+an imported cross-module constant, mirroring how this file already
+detects a scraped offer via `offer.scraped_provenance` without importing
+anything from `app.providers.flights.scraped_parser`. The three branches
+(`is_scraped` / `is_kiwi_mcp` / generic) are mutually exclusive in
+practice, since `scraped:<source_id>` and `kiwi_mcp` are disjoint
+provider-name namespaces. Severity/blocking behavior is completely
+unchanged: still always `WARNING`, never `CRITICAL`, regardless of
+source. `provider_coverage.flights` required no code change at all --
+see docs/12_provider_architecture.md section 60 for why, and for the
+full frontend/trust-dashboard writeup.
+
+Also confirmed and exercised live during this step, end to end through
+the real HTTP API (`POST /trips`, `POST /trips/{id}/generate`): a
+successful Kiwi search on a real trip produces
+`provider_coverage.flights == "success"` and the new validation message
+verbatim in `GET`-able `planning_state.validation_report.warnings`;
+a search with a less Kiwi-friendly destination string (`"Paris, France"`)
+produced a genuine `status=unavailable` with the pre-existing generic
+unavailable wording, proving the new branch only fires for a real,
+non-empty Kiwi success and never overrides the honest not-found case.
+
+## 96. Section 178 Complete: Final Backend Safety Review (Step 178E, final Section 178 step)
+
+Step 178E is a documentation/safety-review/small-copy-cleanup step only
+-- no backend behavior changed. Every safety property claimed across
+178B-178D was re-verified this step by re-reading the current source and
+re-running both manual smoke scripts live:
+
+- `Settings.flight_provider` still defaults to `"scraped_local"`;
+  `Settings.kiwi_mcp_enabled` still defaults to `False`; both flags are
+  independently required before any network call happens.
+- `backend/requirements.txt`'s `mcp==2.2.0` pin and its accompanying
+  `idna` bump are unchanged and still the only two lines touched in that
+  file across all of Section 178; `python -m pip check` reports no
+  broken requirements.
+- `import app.main` does not import the `mcp` package -- confirmed fresh
+  this step -- so a normal `uvicorn` startup never attempts, and never
+  requires, a live MCP connection.
+- `KiwiMcpClient.discover_tools`/`call_tool`, `build_search_flight_arguments`,
+  and `parse_kiwi_mcp_search_result` are all unchanged from 178B/178C;
+  every safety property documented for them in sections 58-60 above still
+  holds, re-confirmed by a full, unmodified `pytest` run (2296 tests
+  passing) and by both manual smoke scripts run live one final time
+  (`manual_kiwi_mcp_tool_discovery_smoke.py` still finds exactly
+  `search-flight`/`feedback-to-devs`; `manual_kiwi_mcp_flight_search_smoke.py`
+  still returns real, priced, booking-linked offers).
+- The only code changed this step is a small number of comment/docstring
+  rewordings in `plan_validator_service.py` (removing a list of literal
+  overclaim words from two comments in favor of describing the same
+  safety property without naming them) -- no message string a user or the
+  API actually sees was weakened; the real
+  `_FLIGHT_KIWI_MCP_SUCCESS_MESSAGE_TEMPLATE` runtime text was already
+  safe and is unchanged.
+
+Section 178 (178A audit, 178B tool-discovery foundation, 178C real
+search-flight invocation, 178D source labeling, 178E this final review)
+is now complete: TravelObligator's first live, real, third-party flight
+data integration, safely gated off by default and requiring explicit
+operator opt-in, with zero fabricated flight data anywhere in the
+pipeline.

@@ -929,6 +929,13 @@ def _build_hotel_ratings_issue(
     )
 
 
+# Matches app.providers.flights.kiwi_mcp_parser's own provider label
+# exactly -- a plain string comparison against FlightOffer.provider (a
+# public field), not an imported cross-module constant, mirroring how
+# this file already detects a scraped offer via offer.scraped_provenance
+# rather than importing anything from the scraped parser module.
+_KIWI_MCP_OFFER_PROVIDER_NAME = "kiwi_mcp"
+
 _FLIGHT_NOT_CONNECTED_MESSAGE = (
     "No flight inventory provider is connected, so airline, flight number, "
     "schedule, price, availability, baggage, and booking link data could not "
@@ -957,6 +964,22 @@ _FLIGHT_SCRAPED_SUCCESS_MESSAGE_TEMPLATE = (
     "schedule, price, availability, baggage-policy, or booking-link "
     "accuracy. It is not scheduled into the itinerary and needs manual "
     "review before being trusted."
+)
+# Step 178D: distinct wording for a real, live Kiwi MCP search-flight
+# result (Step 178C) -- separate from both the generic
+# _FLIGHT_SUCCESS_MESSAGE_TEMPLATE (used for a hypothetical future
+# official/first-party provider) and _FLIGHT_SCRAPED_SUCCESS_MESSAGE_TEMPLATE
+# (a manually-supplied local HTML file). Kiwi MCP is real, live,
+# third-party provider data -- not scraped, but also not this app's own
+# booking system -- so its own price/schedule/baggage/booking-link data
+# is honestly labeled as Kiwi's, with no strong-assurance language of any
+# kind attached to it, and a booking_url is explicitly never implied to
+# mean a reservation has already been made.
+_FLIGHT_KIWI_MCP_SUCCESS_MESSAGE_TEMPLATE = (
+    "{count} flight offer(s) were returned by Kiwi MCP as third-party provider data via "
+    "{provider}. Prices, schedules, baggage, and booking links are provider-supplied and "
+    "are not a TravelObligator booking confirmation; they have not been reviewed for "
+    "accuracy and are not scheduled into the itinerary."
 )
 _FLIGHT_SUGGESTED_FIX = (
     "Connect a real flight inventory provider, or manually review flight "
@@ -987,7 +1010,15 @@ def _build_flight_inventory_warning(
     scraped_public_page/experimental/fragile data, not official-provider
     data, and needs manual review -- it never claims official schedule/
     price/availability/baggage/booking-link verification for scraped
-    data.
+    data. When any offer instead carries `provider="kiwi_mcp"` (Step
+    178C's real, live search-flight integration) and none carries
+    `scraped_provenance`, a third, distinct message names Kiwi MCP
+    explicitly as third-party provider data and states plainly that its
+    price/schedule/baggage/booking-link fields are provider-supplied and
+    are not this app's own booking confirmation -- with no strong-
+    assurance language attached to any of it, and never implying a
+    `booking_url` means a reservation has already been made. Always a
+    `WARNING`, never critical, regardless of source.
     """
     if (
         flight_inventory_report is None
@@ -1006,11 +1037,13 @@ def _build_flight_inventory_warning(
     else:
         offers = flight_inventory_report.offers
         is_scraped = any(offer.scraped_provenance is not None for offer in offers)
-        message_template = (
-            _FLIGHT_SCRAPED_SUCCESS_MESSAGE_TEMPLATE
-            if is_scraped
-            else _FLIGHT_SUCCESS_MESSAGE_TEMPLATE
-        )
+        is_kiwi_mcp = any(offer.provider == _KIWI_MCP_OFFER_PROVIDER_NAME for offer in offers)
+        if is_scraped:
+            message_template = _FLIGHT_SCRAPED_SUCCESS_MESSAGE_TEMPLATE
+        elif is_kiwi_mcp:
+            message_template = _FLIGHT_KIWI_MCP_SUCCESS_MESSAGE_TEMPLATE
+        else:
+            message_template = _FLIGHT_SUCCESS_MESSAGE_TEMPLATE
         message = message_template.format(
             count=len(offers),
             provider=flight_inventory_report.provider,

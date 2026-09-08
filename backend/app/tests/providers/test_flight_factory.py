@@ -7,6 +7,7 @@ import pytest
 
 from app.core.config import Settings
 from app.providers.flights import (
+    KiwiMcpFlightProvider,
     NotConnectedFlightProvider,
     ScrapedLocalFlightProvider,
     get_flight_provider,
@@ -95,14 +96,38 @@ def test_factory_returns_not_connected_when_explicitly_selected_even_if_scraping
 
 
 # ---------------------------------------------------------------------------
+# Step 178B: factory explicit "kiwi_mcp" returns KiwiMcpFlightProvider --
+# never selected by default, never causes a network call by itself
+# (KiwiMcpFlightProvider only connects when Settings.kiwi_mcp_enabled is
+# also explicitly True; construction alone never connects to anything).
+# ---------------------------------------------------------------------------
+
+
+def test_factory_returns_kiwi_mcp_provider_for_explicit_name() -> None:
+    provider = get_flight_provider("kiwi_mcp")
+    assert isinstance(provider, KiwiMcpFlightProvider)
+
+
+def test_factory_default_is_not_kiwi_mcp(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("FLIGHT_PROVIDER", raising=False)
+    monkeypatch.setattr(factory_module, "get_settings", lambda: Settings(_env_file=None))
+
+    provider = get_flight_provider()
+
+    assert not isinstance(provider, KiwiMcpFlightProvider)
+    assert isinstance(provider, ScrapedLocalFlightProvider)
+
+
+# ---------------------------------------------------------------------------
 # 15. Factory unknown provider falls back safely to
-#     NotConnectedFlightProvider.
+#     NotConnectedFlightProvider. "kiwi_mcp" itself is now a *supported*
+#     name (Step 178B) so it is deliberately not included below.
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
     "unsupported_name",
-    ["amadeus", "duffel", "kiwi", "made_up_provider", "", "NOT_CONNECTED"],
+    ["amadeus", "duffel", "kiwi", "made_up_provider", "", "NOT_CONNECTED", "KIWI_MCP"],
 )
 def test_factory_falls_back_to_not_connected_for_unsupported_names(
     unsupported_name: str,
@@ -134,9 +159,19 @@ def test_factory_falls_back_when_settings_hold_unsupported_value(
         "app.providers.flights.factory",
         "app.providers.flights.not_connected_adapter",
         "app.providers.flights.scraped_adapter",
+        "app.providers.flights.kiwi_mcp_adapter",
+        "app.providers.flights.kiwi_mcp_parser",
     ],
 )
 def test_flight_provider_modules_have_no_disallowed_imports(module_name: str) -> None:
+    """Note: `app.providers.flights.kiwi_mcp_adapter`/`kiwi_mcp_parser`
+    are included here deliberately -- both modules import only internal
+    `app.*` modules (never `mcp` directly; see
+    test_kiwi_mcp_adapter.py::test_only_kiwi_mcp_client_module_imports_the_mcp_sdk),
+    so they pass this same strict check every other flight provider
+    module does. `app.providers.flights.kiwi_mcp_client` is intentionally
+    NOT included in this list -- that module's whole job is to import the
+    real `mcp` SDK (lazily), which this check would otherwise flag."""
     import importlib
 
     module = importlib.import_module(module_name)

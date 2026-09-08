@@ -45,6 +45,7 @@ import type {
   FeedbackChangePreview,
   FeedbackEvent,
   FlightInventoryReport,
+  FlightOffer,
   FlightSegment,
   GenerationProgress,
   GeoPoint,
@@ -2595,17 +2596,30 @@ function AccommodationInventorySection({
   );
 }
 
+// Backend: app.providers.flights.kiwi_mcp_parser._KIWI_PROVIDER_NAME.
+// A plain string match against FlightOffer.provider (a public field) --
+// mirrors how offer.scraped_provenance is already checked directly
+// rather than importing anything backend-side.
+const KIWI_MCP_FLIGHT_PROVIDER_NAME = "kiwi_mcp";
+
+function isKiwiMcpFlightOffer(offer: FlightOffer): boolean {
+  return offer.provider === KIWI_MCP_FLIGHT_PROVIDER_NAME;
+}
+
 // Human-readable label for the flight inventory report's status (Step
-// 169E, docs/16_frontend_architecture.md). Distinguishes a scraped
-// success (never official-provider data) from a hypothetical future
-// official-provider success, mirroring accommodationInventoryStatusLabel's
+// 169E, extended in Step 178D for Kiwi MCP, docs/16_frontend_architecture.md).
+// Distinguishes a scraped success and a real Kiwi MCP success (Step 178C)
+// from a hypothetical future official-provider success -- three distinct
+// trust tiers, never conflated, mirroring accommodationInventoryStatusLabel's
 // status set but with wording specific to flights.
 function flightInventoryStatusLabel(
   status: string,
   hasScrapedOffers: boolean,
+  hasKiwiMcpOffers: boolean,
 ): string {
   switch (status) {
     case "success":
+      if (hasKiwiMcpOffers) return "Available via Kiwi MCP";
       return hasScrapedOffers
         ? "Available from scraped public page"
         : "Connected";
@@ -2617,6 +2631,31 @@ function flightInventoryStatusLabel(
     default:
       return "Not connected";
   }
+}
+
+/**
+ * One real Kiwi MCP flight offer's third-party-provider badge (Step
+ * 178D). Kiwi MCP data (Step 178C) is real, live, provider-backed data --
+ * not scraped -- so it is deliberately never shown with the
+ * `ScrapedFlightProvenanceBadge`'s "not official-provider data" framing.
+ * It still gets its own explicit disclaimer: this is third-party data
+ * TravelObligator has not itself reviewed for accuracy, and no strong-
+ * assurance language (booking confirmation, official status, or
+ * readiness claims of any kind) is ever attached to it.
+ */
+function KiwiMcpOfferBadge() {
+  return (
+    <div className="mt-2 rounded-md border border-sky-300/30 bg-sky-950/20 p-2 text-[11px] text-sky-200/90">
+      <p className="font-semibold uppercase tracking-wide">
+        Kiwi MCP · Third-party provider data
+      </p>
+      <p className="mt-1 text-sky-200/80">
+        This offer was returned by Kiwi via the Model Context Protocol. It
+        has not been reviewed by TravelObligator for schedule, price,
+        availability, baggage-policy, or booking-link accuracy.
+      </p>
+    </div>
+  );
 }
 
 /**
@@ -2700,18 +2739,23 @@ function FlightSegmentSummary({ segment }: { segment: FlightSegment }) {
 }
 
 /**
- * Bookable flight inventory panel (Step 169E,
- * docs/16_frontend_architecture.md). Renders only backend-returned
- * `FlightInventoryReport` fields -- it never invents an airline, flight
- * number, airport, departure/arrival time, duration, price, availability,
- * baggage policy, cancellation policy, or booking link, and it never
- * upgrades a `not_connected`/`unavailable`/`failed` status into an
- * implied "checked" claim. Flights are never scheduled into daily
- * itinerary experiences -- this panel is inventory reporting only. When
- * an offer carries `scraped_provenance` (the default `scraped_local`
- * provider, Step 169D), it is visibly labeled "Scraped public page" with
- * its experimental/fragile confidence -- never presented as if it were
- * official, verified provider data.
+ * Bookable flight inventory panel (Step 169E, extended in Step 178D for
+ * Kiwi MCP labeling, docs/16_frontend_architecture.md). Renders only
+ * backend-returned `FlightInventoryReport` fields -- it never invents an
+ * airline, flight number, airport, departure/arrival time, duration,
+ * price, availability, baggage policy, cancellation policy, or booking
+ * link, and it never upgrades a `not_connected`/`unavailable`/`failed`
+ * status into an implied "checked" claim. Flights are never scheduled
+ * into daily itinerary experiences -- this panel is inventory reporting
+ * only. Three source trust tiers are labeled distinctly and never
+ * conflated: an offer carrying `scraped_provenance` (the `scraped_local`
+ * provider, Step 169D) is labeled "Scraped public page" with its
+ * experimental/fragile confidence; a real Kiwi MCP offer (`provider ===
+ * "kiwi_mcp"`, Step 178C) is labeled "Third-party provider data" via
+ * `KiwiMcpOfferBadge`; neither is ever presented with any strong-
+ * assurance language, and neither is ever presented as reserved/booked.
+ * Any `booking_url` present is always labeled "provider-supplied ... not
+ * a booking confirmation," regardless of source.
  */
 function FlightInventorySection({
   report,
@@ -2722,12 +2766,13 @@ function FlightInventorySection({
   const offers = report?.offers ?? [];
   const isConnectedWithOffers = status === "success" && offers.length > 0;
   const hasScrapedOffers = offers.some((offer) => offer.scraped_provenance !== null);
+  const hasKiwiMcpOffers = offers.some(isKiwiMcpFlightOffer);
 
   return (
     <div id="flight-inventory" className="rounded-2xl border border-white/10 bg-white/5 p-5">
       <h2 className="text-lg font-semibold">Flight inventory</h2>
       <p className="mt-2 text-sm text-slate-200">
-        Flight inventory: {flightInventoryStatusLabel(status, hasScrapedOffers)}
+        Flight inventory: {flightInventoryStatusLabel(status, hasScrapedOffers, hasKiwiMcpOffers)}
       </p>
 
       {!isConnectedWithOffers ? (
@@ -2786,15 +2831,19 @@ function FlightInventorySection({
                 </p>
               )}
               {offer.booking_url && (
-                <p className="mt-1 break-all text-xs text-cyan-200">
-                  {offer.booking_url}
-                </p>
+                <div className="mt-1 text-xs text-cyan-200">
+                  <p className="text-[10px] uppercase tracking-wide text-slate-500">
+                    Provider-supplied booking link -- not a booking confirmation
+                  </p>
+                  <p className="break-all">{offer.booking_url}</p>
+                </div>
               )}
               {offer.scraped_provenance && (
                 <ScrapedFlightProvenanceBadge
                   provenance={offer.scraped_provenance}
                 />
               )}
+              {!offer.scraped_provenance && isKiwiMcpFlightOffer(offer) && <KiwiMcpOfferBadge />}
             </li>
           ))}
         </ul>
