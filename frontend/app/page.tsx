@@ -22,6 +22,12 @@ import {
   requestRegeneration,
   submitTripFeedback,
 } from "@/lib/api";
+import { buildTrustDashboardModel } from "@/lib/trust-dashboard";
+import type {
+  TrustDashboardCategoryView,
+  TrustDashboardModel,
+  TrustDashboardStatusKind,
+} from "@/lib/trust-dashboard";
 import type {
   AccommodationInventoryReport,
   AccommodationSuggestion,
@@ -720,7 +726,7 @@ function ReadinessChecklistSection({
   checklist: ReadinessChecklist;
 }) {
   return (
-    <div className="rounded-2xl border border-white/10 bg-white/5 p-5">
+    <div id="readiness-checklist" className="rounded-2xl border border-white/10 bg-white/5 p-5">
       <h2 className="text-lg font-semibold">Readiness checklist</h2>
       <p className="mt-2 text-sm text-slate-300">{checklist.summary}</p>
 
@@ -750,6 +756,172 @@ const CHECKLIST_STATUS_GROUPS: { title: string; status: ChecklistItemStatus }[] 
   { title: "Missing data", status: "missing_data" },
   { title: "Not implemented", status: "not_implemented" },
 ];
+
+// Purely presentational status-kind -> tone mapping (Step 176C). Reads only
+// `category.statusKind`, a value `buildTrustDashboardModel` already
+// computed -- this never decides a category's status itself, it only picks
+// a border/badge color for a status the helper already assigned. Three
+// tones only, matching the dashboard's restrained-wording goal: a neutral/
+// positive tone for `available`, a review/attention tone for
+// `needs_review`/`partial`/`scraped_source`/`open_data_only`, and one
+// muted tone shared by every "nothing to claim yet" state
+// (`not_connected`/`unavailable`/`failed`/`blocked_by_locks`/
+// `no_pending_feedback`) -- deliberately not colored as an alarming error,
+// since most of these are this app's ordinary default state (e.g. no
+// routing provider connected) rather than something having gone wrong.
+function trustDashboardToneClassName(statusKind: TrustDashboardStatusKind): {
+  border: string;
+  badge: string;
+} {
+  if (statusKind === "available") {
+    return { border: "border-emerald-500/20 bg-slate-900/60", badge: "text-emerald-300/90" };
+  }
+  if (
+    statusKind === "needs_review" ||
+    statusKind === "partial" ||
+    statusKind === "scraped_source" ||
+    statusKind === "open_data_only"
+  ) {
+    return { border: "border-amber-500/20 bg-slate-900/60", badge: "text-amber-300/90" };
+  }
+  return { border: "border-white/10 bg-slate-900/60", badge: "text-slate-400" };
+}
+
+/**
+ * One trust-dashboard category tile (Step 176C). Renders only fields
+ * already present on `TrustDashboardCategoryView` -- `title`,
+ * `statusLabel` (via `statusKind`'s tone), `detail`, `supportingFacts`,
+ * `relatedValidationIssues`, and `detailAnchorId` -- reusing the existing
+ * `SummaryList` component for both list fields rather than duplicating its
+ * rendering logic. This component computes no status, count, or label of
+ * its own; every value shown was already decided by
+ * `buildTrustDashboardModel` before this ever renders.
+ */
+// A front-door card shows at most this many related-issue messages
+// verbatim before pointing at the full list instead -- a display-only cap
+// (the count in the title is always the real, untruncated total) so the
+// "Validation summary" category's card, whose `relatedValidationIssues`
+// intentionally includes every issue, doesn't dwarf its sibling cards.
+// This never drops or reorders an issue -- the rest are still fully
+// listed in the "Validation report"/"Validation summary" sections below,
+// which the card's own "View details" link points at.
+const TRUST_DASHBOARD_MAX_RELATED_ISSUES_SHOWN = 3;
+
+/**
+ * Compact fact/issue list for one trust-dashboard card (Step 176E
+ * readability polish). Mirrors `SummaryList`'s structure (a title plus a
+ * bulleted list) at a smaller, denser text size appropriate for a
+ * front-door summary card rather than a full detail section -- this
+ * never changes `SummaryList` itself, which stays exactly as-is for
+ * every other section on the page that already uses it. Renders only
+ * strings already computed by `buildTrustDashboardModel` or already
+ * passed in by the caller; it creates no new fact and reorders nothing.
+ */
+function TrustDashboardFactList({ title, items }: { title: string; items: string[] }) {
+  if (items.length === 0) return null;
+
+  return (
+    <div className="mt-2">
+      <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+        {title}
+      </p>
+      <ul className="mt-1 list-disc break-words pl-4 text-[11px] leading-snug text-slate-400">
+        {items.map((item, index) => (
+          <li key={`${title}-${index}`}>{item}</li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function TrustDashboardCategoryCard({
+  category,
+}: {
+  category: TrustDashboardCategoryView;
+}) {
+  const tone = trustDashboardToneClassName(category.statusKind);
+  const shownIssues = category.relatedValidationIssues.slice(
+    0,
+    TRUST_DASHBOARD_MAX_RELATED_ISSUES_SHOWN,
+  );
+  const hiddenIssueCount = category.relatedValidationIssues.length - shownIssues.length;
+
+  return (
+    <div className={`rounded-lg border p-4 text-sm ${tone.border}`}>
+      <div className="flex items-start justify-between gap-2">
+        <p className="font-semibold text-slate-100">{category.title}</p>
+        <span
+          className={`shrink-0 whitespace-nowrap rounded-full border border-white/10 bg-slate-950 px-2 py-0.5 text-[11px] uppercase tracking-wide ${tone.badge}`}
+        >
+          {category.statusLabel}
+        </span>
+      </div>
+      <p className="mt-2 text-xs text-slate-300">{category.detail}</p>
+
+      <TrustDashboardFactList title="Supporting facts" items={category.supportingFacts} />
+
+      {category.relatedValidationIssues.length > 0 && (
+        <TrustDashboardFactList
+          title={`Related validation issue(s) (${category.relatedValidationIssues.length})`}
+          items={
+            hiddenIssueCount > 0
+              ? [
+                  ...shownIssues.map((issue) => issue.message),
+                  `+${hiddenIssueCount} more -- see the Validation report section below.`,
+                ]
+              : shownIssues.map((issue) => issue.message)
+          }
+        />
+      )}
+
+      {category.detailAnchorId && (
+        <a
+          href={`#${category.detailAnchorId}`}
+          className="mt-3 inline-block text-[11px] text-cyan-200 hover:text-cyan-100"
+        >
+          View details
+        </a>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Trust dashboard card (Step 176C, docs/16_frontend_architecture.md) -- a
+ * front-door summary built entirely from `buildTrustDashboardModel(result)`
+ * (Step 176B, `frontend/lib/trust-dashboard.ts`). This component creates no
+ * dashboard fact of its own: every status, label, detail sentence,
+ * supporting fact, and related-issue list rendered here was already
+ * decided by that pure helper from fields the backend already returned.
+ * It never replaces the detailed sections below (validation report,
+ * provider coverage, accommodation/flight inventory, etc.) -- each card's
+ * optional "View details" link points at one of those sections' own
+ * existing anchor ids.
+ */
+function TrustDashboardSection({ model }: { model: TrustDashboardModel }) {
+  return (
+    <div className="rounded-2xl border border-white/10 bg-white/5 p-5">
+      <h2 className="text-lg font-semibold">Trust dashboard</h2>
+      <p className="mt-1 text-sm text-slate-300">
+        A source-based summary of what is available, missing, or needs
+        review. This does not replace the detailed sections below -- every
+        fact here is read directly from them.
+      </p>
+      <p className="mt-2 text-xs text-slate-500">
+        Overall readiness:{" "}
+        <span className="font-semibold text-slate-300">
+          {readinessLabel(model.readinessStatus)}
+        </span>
+      </p>
+
+      <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        {model.categories.map((category) => (
+          <TrustDashboardCategoryCard key={category.id} category={category} />
+        ))}
+      </div>
+    </div>
+  );
+}
 
 function trustSummaryAnswer(validationStatus: string | null): string {
   if (validationStatus === "ready") {
@@ -1115,7 +1287,7 @@ function RouteFeasibilitySection({
   routeFeasibility: RouteFeasibilityContext;
 }) {
   return (
-    <div className="rounded-2xl border border-white/10 bg-white/5 p-5">
+    <div id="route-feasibility" className="rounded-2xl border border-white/10 bg-white/5 p-5">
       <h2 className="text-lg font-semibold">Route feasibility</h2>
       <p className="mt-1 text-sm text-slate-300">
         Status: <span className="font-semibold">{routeFeasibility.data_status}</span>
@@ -1683,7 +1855,7 @@ function ValidationSection({ report }: { report: ValidationReport }) {
     report.unavailable_data_notes.length === 0;
 
   return (
-    <div className="rounded-2xl border border-white/10 bg-white/5 p-5">
+    <div id="validation-report" className="rounded-2xl border border-white/10 bg-white/5 p-5">
       <h2 className="text-lg font-semibold">Validation report</h2>
       <p className="mt-1 text-sm text-slate-300">
         Readiness:{" "}
@@ -2052,7 +2224,7 @@ function ProviderCoverageSection({ coverage }: { coverage: ProviderCoverageData 
   const groupedStatus = groupProviderStatusByType(coverage.provider_status);
 
   return (
-    <div className="rounded-2xl border border-white/10 bg-white/5 p-5">
+    <div id="provider-coverage" className="rounded-2xl border border-white/10 bg-white/5 p-5">
       <h2 className="text-lg font-semibold">Provider coverage</h2>
 
       <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-3">
@@ -2303,7 +2475,7 @@ function AccommodationInventorySection({
   const isConnectedWithOffers = status === "success" && offers.length > 0;
 
   return (
-    <div className="rounded-2xl border border-white/10 bg-white/5 p-5">
+    <div id="accommodation-inventory" className="rounded-2xl border border-white/10 bg-white/5 p-5">
       <h2 className="text-lg font-semibold">Bookable lodging inventory</h2>
       <p className="mt-2 text-sm text-slate-200">
         Bookable lodging inventory: {accommodationInventoryStatusLabel(status)}
@@ -2493,7 +2665,7 @@ function FlightInventorySection({
   const hasScrapedOffers = offers.some((offer) => offer.scraped_provenance !== null);
 
   return (
-    <div className="rounded-2xl border border-white/10 bg-white/5 p-5">
+    <div id="flight-inventory" className="rounded-2xl border border-white/10 bg-white/5 p-5">
       <h2 className="text-lg font-semibold">Flight inventory</h2>
       <p className="mt-2 text-sm text-slate-200">
         Flight inventory: {flightInventoryStatusLabel(status, hasScrapedOffers)}
@@ -2748,7 +2920,7 @@ function AICandidateReviewSection({
   const skippedIds = promotionReport?.skipped_candidate_ids ?? [];
 
   return (
-    <div className="rounded-2xl border border-white/10 bg-white/5 p-5">
+    <div id="ai-candidate-review" className="rounded-2xl border border-white/10 bg-white/5 p-5">
       <h2 className="text-lg font-semibold">AI candidate review</h2>
       <p className="mt-1 text-xs text-amber-300/90">
         AI-suggested candidates are never scheduled directly. Only
@@ -3194,7 +3366,7 @@ function VersionHistorySection({
   versionHistory: VersionHistoryItem[];
 }) {
   return (
-    <div className="rounded-2xl border border-white/10 bg-white/5 p-5">
+    <div id="version-history" className="rounded-2xl border border-white/10 bg-white/5 p-5">
       <h2 className="text-lg font-semibold">Version history</h2>
       <p className="mt-1 text-xs text-amber-300/90">
         Version history records backend bookkeeping only. It does not add
@@ -3282,7 +3454,7 @@ function formatNullableVersionLabel(version: string | null): string {
  */
 function PlanDiffPreviewSection({ preview }: { preview: PlanDiffPreview }) {
   return (
-    <div className="rounded-2xl border border-white/10 bg-white/5 p-5">
+    <div id="plan-diff-preview" className="rounded-2xl border border-white/10 bg-white/5 p-5">
       <h2 className="text-lg font-semibold">Plan diff preview</h2>
       <p className="mt-1 text-xs text-amber-300/90">
         This is a preview only. No new version or plan diff has been
@@ -3486,7 +3658,7 @@ function RegenerationReadinessSection({
   }
 
   return (
-    <div className="rounded-2xl border border-white/10 bg-white/5 p-5">
+    <div id="regeneration-readiness" className="rounded-2xl border border-white/10 bg-white/5 p-5">
       <h2 className="text-lg font-semibold">Regeneration readiness</h2>
       <p className="mt-1 text-xs text-amber-300/90">
         This section explains whether feedback-driven regeneration can run
@@ -4776,6 +4948,8 @@ export default function Home() {
               title="Plan overview"
               description="Start here. This section explains whether the generated plan is usable as a draft and what still needs review."
             />
+
+            <TrustDashboardSection model={buildTrustDashboardModel(result)} />
 
             <UserTrustSummarySection
               validationStatus={result.summary.validation_status}

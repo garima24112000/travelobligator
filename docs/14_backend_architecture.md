@@ -3812,3 +3812,78 @@ movement/geometry visibility, 175D regeneration lifecycle visibility,
   accommodation/flight provider, or regeneration *behavior* changed
   anywhere in Section 175 -- only what the validator honestly reports
   about state those systems already produce.
+
+## 85. Step 176B: No Backend Endpoint or Model Added
+
+Step 176A's audit (frontend-only) found that every field a Section 176
+trust dashboard needs is already returned by existing endpoints
+(`GET /trips/{trip_id}`, `/validation-report`, `/provider-coverage`,
+`/regeneration-readiness`, `/regeneration-attempts`, `/ai-candidate-review`)
+-- the frontend's own `loadPlanResult` already fetches and assembles all
+of them into one `PlanResult` object before any dashboard code runs. Step
+176B accordingly added **no backend file, no new Pydantic model, and no
+new route** -- it is a single new frontend module,
+`frontend/lib/trust-dashboard.ts`, that only reads fields already
+serialized by existing backend responses. `python -m compileall`/
+`pytest` were re-run and are byte-for-byte unaffected (2104 tests
+passing, unchanged from the end of Section 175). If a future Section 176
+step finds a genuine need for a backend-computed value not already
+expressible as a plain field/count on existing responses, that would be
+proposed as a small, additive, read-only model mirroring
+`ProviderCoverageService.summarize`'s pattern -- not before.
+
+## 86. Step 176C: Trust Dashboard Rendered, Backend Still the Sole Source of Truth
+
+Step 176C renders the Step 176B helper's output in the frontend
+(`frontend/app/page.tsx` -- see docs/16_frontend_architecture.md for the
+full detail). No backend file, model, route, or response shape changed;
+no new endpoint was called. The new `TrustDashboardSection` is built from
+`buildTrustDashboardModel(result)`, where `result` is the same
+`PlanResult` object already assembled from the existing
+`GET /trips/{trip_id}`, `/validation-report`, `/provider-coverage`,
+`/regeneration-readiness`, `/regeneration-attempts`, and
+`/ai-candidate-review` responses -- the backend remains the sole source
+of every fact the dashboard displays; the frontend only groups, labels,
+and re-renders values the backend already computed and already served
+before this step existed. `python -m compileall`/`pytest` were re-run
+and are byte-for-byte unaffected (2104 tests passing, unchanged from
+175E/176B).
+
+## 87. Step 176D: Dashboard Navigation/Copy Hardening, Backend Untouched
+
+Step 176D adds ten HTML `id` attributes to existing frontend section
+elements and reworks some dashboard wording (see
+docs/16_frontend_architecture.md for the full detail) -- no backend
+file, model, route, or response shape changed, and no new endpoint was
+called. The `id` attributes and the reworded strings are purely a
+client-side rendering/navigation concern; the backend continues to be
+the sole source of every value the dashboard's copy restates (e.g. the
+new "route data available only when this is a connected/successful
+status" phrasing still reads the exact same `provider_coverage.routes`
+string the backend already returns -- it explains that value more
+clearly, it doesn't change or reinterpret it). `python -m compileall`/
+`pytest` were re-run and are byte-for-byte unaffected (2104 tests
+passing, unchanged since 175E/176B/176C).
+
+## 88. Section 176 Complete: Trust Dashboard Is Frontend-Only, Backend Unchanged (Step 176E, final Section 176 step)
+
+Step 176E closes Section 176 with a CSS/typography polish pass over the
+frontend trust-dashboard cards (`frontend/app/page.tsx`) -- see
+docs/16_frontend_architecture.md for the full detail, including one real
+layout bug found and fixed (a long local file-path string overflowing
+its card into a neighboring grid column) and one polish attempt that was
+tried and reverted after live screenshots showed it broke word-wrapping.
+None of this touches a backend file.
+
+**Section 176's net effect on the backend, end to end (176A-176E): zero.**
+176A's audit confirmed every field a trust dashboard needs already
+existed on responses `frontend/app/page.tsx`'s `loadPlanResult` already
+fetched; 176B-176E built the entire dashboard -- a pure data-shaping
+helper, its rendering, ten new HTML anchors, copy hardening, and this
+step's visual polish -- as pure frontend work reading those existing
+responses. No backend model, route, or response shape was added or
+changed anywhere in Section 176; `PlanningState`, `PlanValidatorService`,
+`ProviderCoverageService`, and every provider/regeneration service
+remain exactly as Section 175 left them. `python -m compileall`/`pytest`
+were run one final time for this section and are byte-for-byte
+unaffected (2104 tests passing, unchanged since 175E).

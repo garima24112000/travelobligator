@@ -4519,3 +4519,96 @@ was ever added to validation, and none is added now:
   regeneration will improve the trip. Every quoted status, count, or
   reason traces back to a field that already existed on `PlanningState`
   before the message was built.
+
+---
+
+## 108. Step 176B: Trust Dashboard Shaping Is Deterministic Frontend Logic, Not AI Reasoning
+
+Step 176B adds `frontend/lib/trust-dashboard.ts`, a pure TypeScript
+data-shaping module with no AI/LLM involvement of any kind -- consistent
+with every prior step's no-AI validation/display work.
+
+- **No model call, no prompt, no reasoning step.** `buildTrustDashboardModel`
+  is ordinary deterministic code: `switch` statements over already-known
+  string values, `Array.filter`/`.some`/`.reduce` over already-fetched
+  arrays, and string-template restatement of counts/statuses that already
+  exist on the backend's own response objects. There is no branch in this
+  file that calls out to any language model, and no branch whose output
+  depends on anything other than the exact `PlanResult`-shaped object
+  passed in.
+- **A relabeling layer, not an inference layer.** Every `statusKind` this
+  module assigns is a lookup from a fixed, closed mapping
+  (`coverageValueToStatusKind`) or the single documented "worst of a
+  known list" aggregation (`worstStatusKind`) -- never a judgment call
+  synthesized from free text, and never something that could produce a
+  different answer for the same input on a different run.
+- **No new travel/provider/regeneration fact is created.** Every string in
+  every category's `supportingFacts`/`detail` is either a verbatim field
+  value, a plain count, or boilerplate explanatory prose describing what
+  a status kind does and doesn't mean (mirroring the same style already
+  used throughout `frontend/app/page.tsx`, e.g.
+  `AccommodationInventorySection`'s scraped-offer disclaimers) -- nothing
+  here is a claim this module itself originated.
+
+---
+
+## 109. Step 176C: Dashboard Rendering Is Deterministic UI, Not AI Reasoning
+
+Step 176C renders Step 176B's output (`TrustDashboardSection`,
+`TrustDashboardCategoryCard`, `frontend/app/page.tsx`) with the same
+no-AI guarantee the helper itself already carries. The new components add
+no reasoning of their own: `trustDashboardToneClassName` is a fixed
+`switch`-style lookup from an already-decided `statusKind` to a CSS class
+string, and the related-issue display cap
+(`TRUST_DASHBOARD_MAX_RELATED_ISSUES_SHOWN`) is a plain `Array.slice`
+with a count-based "+N more" line -- both are ordinary deterministic
+JSX, not a summarization or inference step, and neither reorders,
+filters by content, or drops an issue from the underlying model (the
+heading count is always the real, untruncated total). No LLM, prompt, or
+AI provider call exists anywhere in this rendering path, matching every
+other step in this codebase's validation/display layers.
+
+---
+
+## 110. Step 176D: Dashboard Links and Copy Remain Deterministic UI
+
+Step 176D's two changes -- adding `id` attributes to existing section
+elements, and rewording some dashboard strings -- are both ordinary,
+deterministic frontend work with no AI/LLM involvement:
+
+- **Anchors are static HTML, decided at build/edit time.** Every new
+  `id="..."` was hand-placed on an already-existing element by directly
+  editing `frontend/app/page.tsx`; nothing computes, infers, or
+  generates an anchor id at runtime, and no anchor id is derived from
+  any AI output.
+- **Reworded copy is fixed string literals, not generated text.** Every
+  hardened phrase (e.g. "accommodation inventory offer(s) available ...
+  This is not a confirmed booking", "Route path geometry present on N of
+  M scheduled leg(s)") is a plain template-literal string interpolating
+  only already-known counts/values -- the same category of deterministic
+  string-building every prior validation/dashboard step in this codebase
+  already uses. No prompt, no model call, and no free-text generation
+  produced any of this wording; a human reviewed and wrote it precisely
+  to avoid the overclaims Section 176A's audit and this step's own
+  requirements called out.
+
+---
+
+## 111. Section 176 Complete: Trust Dashboard Is Deterministic UI/Data-Shaping End to End (Step 176E, final Section 176 step)
+
+Step 176E's polish pass (`frontend/app/page.tsx` -- a new
+`TrustDashboardFactList` component, one CSS class fix for a genuine text-
+overflow bug, and one reverted CSS attempt) is exactly as deterministic
+as every prior Section 176 step: fixed JSX, fixed Tailwind class strings,
+and a plain `Array.slice`/template-literal count -- no AI/LLM call
+anywhere in it.
+
+**Across all of Section 176 (176A-176E), no AI/LLM call was ever added.**
+The audit (176A) was research; the helper (176B) is a pure function over
+already-fetched data; the rendering (176C), the anchors/copy hardening
+(176D), and this step's polish (176E) are all ordinary deterministic
+frontend code. Every label, count, and status the dashboard shows is a
+direct read or a fixed, documented aggregation rule (never a free-text
+summary a model produced) over a field the backend's own deterministic
+services (`ProviderCoverageService`, `PlanValidatorService`, and the
+rest) already computed before Section 176 began.

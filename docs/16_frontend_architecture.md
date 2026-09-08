@@ -2741,3 +2741,305 @@ creating a single new validation fact.
   function mutates provider/planning/regeneration state -- every one of
   them is a pure read returning a list of `ValidationIssue`. No backend
   bug was found, so no backend file changed in this step.
+
+## Step 176B: Trust Dashboard Data-Shaping Helper (No UI Yet)
+
+Step 176B adds one new frontend-only module, `frontend/lib/trust-dashboard.ts`
+-- following Step 176A's audit finding that every field a trust dashboard
+needs is already present on the `PlanResult` object `page.tsx`'s
+`loadPlanResult` already assembles from existing `GET` endpoints. This step
+adds no new fetch, no new backend model, no new backend endpoint, and no
+render of any kind -- `page.tsx` itself is completely unmodified in this
+step (confirmed by `git status`/`git diff`).
+
+- **`TrustDashboardSourceResult`** is a locally-declared type naming the
+  slice of `PlanResult` this module reads (`summary`, `validationReport`,
+  `providerCoverage`, `readinessChecklist`, `dailyPlans`,
+  `accommodationInventoryReport`, `flightInventoryReport`,
+  `routeFeasibilityReport`, `routeAwareSequencingReport`,
+  `travelTimeBufferReport`, `aiCandidateReviewReport`,
+  `aiCandidatePromotionReport`, `regenerationReadiness`,
+  `planDiffPreview`, `regenerationAttempts`, `pendingFeedbackSummary`,
+  `versionHistory`) -- deliberately declared here rather than imported
+  from `page.tsx` (a React component module) so this file stays
+  React-free. Because `PlanResult` already has every one of these fields
+  with these exact types, a real `PlanResult` value satisfies this type
+  structurally with zero coupling; wiring an actual call site into
+  `page.tsx` is deferred to a later step.
+- **`buildTrustDashboardModel(result: TrustDashboardSourceResult):
+  TrustDashboardModel`** is a pure function -- no `fetch`, no
+  `XMLHttpRequest`, no browser API (`window`/`document`/`localStorage`),
+  no React import, no hook, no `Math`/haversine/distance computation, no
+  coordinate or route-path construction, confirmed by source-inspection
+  grep as well as by `tsc --noEmit`/`next build` compiling the file
+  cleanly even though nothing calls it yet. It never mutates `result` or
+  any nested object -- every category builder only reads and returns new
+  plain objects/arrays.
+- **Nine categories** (`TrustDashboardCategoryId`): `core_trip_grounding`,
+  `places_and_experiences`, `lodging_inventory`, `flight_inventory`,
+  `routes_and_movement`, `weather_holiday_currency`,
+  `ai_suggested_candidates`, `regeneration_and_change_safety`,
+  `validation_summary`. Each produces a `TrustDashboardCategoryView`
+  (`id`, `title`, `statusKind`, `statusLabel`, `detail`,
+  `supportingFacts`, `relatedValidationIssues`, `detailAnchorId`) built
+  only from fields named in Step 176A's own per-category source-field
+  guidance -- e.g. lodging inventory reads
+  `providerCoverage.provider_coverage.hotel_prices`,
+  `accommodationInventoryReport.status`, `.offers.length`, and whether
+  any offer carries `scraped_provenance`; routes-and-movement counts
+  `route_geometry` presence only from `travelTimeBufferReport.buffers`
+  (mirroring the backend's own `_route_geometry_leg_counts` preference,
+  Step 175C) and never touches a coordinate.
+- **A closed, 10-value status vocabulary** (`TrustDashboardStatusKind`:
+  `available`, `needs_review`, `not_connected`, `unavailable`, `failed`,
+  `partial`, `open_data_only`, `scraped_source`, `no_pending_feedback`,
+  `blocked_by_locks`) with a single label lookup
+  (`STATUS_KIND_LABELS`) is the only source of `statusLabel` text --
+  every category picks one of these ten kinds, never a freeform string,
+  matching Step 176A's restrained-wording recommendation. A small
+  `coverageValueToStatusKind` maps existing raw
+  `provider_coverage`/report `status` strings (including the synthetic
+  `open_poi_available` value) onto this vocabulary, falling back to
+  `needs_review` (never a guessed good/bad verdict) for anything
+  unrecognized; `worstStatusKind` combines several already-known statuses
+  into one category's status using a fixed, documented severity
+  ordering -- an aggregation rule, not a new fact.
+- **No-fake-data guarantees, concretely**: lodging/flight tiles only ever
+  say "bookable"-equivalent language (reusing the existing
+  `AccommodationSearchResult`/`FlightSearchResult` "bookable inventory"
+  vocabulary already used by `AccommodationInventorySection`/
+  `FlightInventorySection`) when `status === "success"` and at least one
+  offer exists, and separately flag `scraped_source` whenever any offer
+  carries `scraped_provenance`, with explicit "not official-provider
+  data, not verified" wording; open-data `accommodations` coverage is
+  always described as "open-data location candidates, not bookable
+  lodging inventory" alongside `hotel_prices`, never merged with it; the
+  AI-candidates category only reports a "scheduled" count by summing
+  `dailyPlans[].experiences[].promoted_from_ai === true`, never treating
+  "eligible" or "promoted" as "scheduled"; the regeneration category
+  restates `regeneration_readiness`/`plan_diff_preview`'s own booleans
+  and `blocked_by` text verbatim, and its `detail` string explicitly
+  disclaims that locks are not preserved and the plan is not claimed to
+  improve.
+- **`relatedValidationIssues`** cross-links each category to the matching
+  slice of `validationReport.warnings`/`critical_issues` by `category`
+  (and, for `provider_coverage_consistency`, by a substring match against
+  that issue's own message mentioning `hotel_prices`/`flights`/`routes`)
+  -- a plain filter over already-existing objects, never a new issue.
+  `ai_suggested_candidates` legitimately returns an empty list today,
+  since `PlanValidatorService` has no dedicated category for AI
+  candidates yet -- an honest reflection of current state, not a bug.
+- **Not wired into any component.** No `import` of this module exists
+  anywhere in `frontend/app/page.tsx` after this step -- rendering the
+  dashboard card is deferred to a later Section 176 step.
+
+## Step 176C: Trust Dashboard Card Rendered
+
+Step 176C wires Step 176B's pure helper into the page for the first time.
+`frontend/app/page.tsx` now imports `buildTrustDashboardModel` (and its
+`TrustDashboardModel`/`TrustDashboardCategoryView`/`TrustDashboardStatusKind`
+types) from `@/lib/trust-dashboard`, and adds three new components:
+`trustDashboardToneClassName` (a pure status-kind -> border/badge color
+mapping), `TrustDashboardCategoryCard` (one category tile), and
+`TrustDashboardSection` (the card wrapping all nine tiles in a responsive
+grid). No backend file, model, or endpoint was touched, and no new
+`fetch`/API-helper call was added -- the section is rendered from
+`buildTrustDashboardModel(result)`, called inline where `result: PlanResult`
+is already in scope from the plan the page already loaded.
+
+- **Placement**: immediately after the existing `plan-overview`
+  `ResultGroupHeader` and immediately before `UserTrustSummarySection` --
+  the first thing a user sees in "Plan overview," ahead of the pre-existing
+  trust/readiness UI it complements.
+- **Renders only `TrustDashboardCategoryView` fields**: `title`,
+  `statusLabel` (colored via `statusKind`, never recomputed in JSX --
+  `trustDashboardToneClassName` only maps an already-decided `statusKind`
+  to a border/badge class, it never decides status itself), `detail`,
+  `supportingFacts` (via the pre-existing `SummaryList` component, reused
+  rather than reimplemented), `relatedValidationIssues` (also via
+  `SummaryList`, capped at `TRUST_DASHBOARD_MAX_RELATED_ISSUES_SHOWN = 3`
+  messages with a "+N more -- see the Validation report section below"
+  line when there are more -- a display-only truncation; the heading
+  always shows the real, untruncated count), and `detailAnchorId` (an
+  optional "View details" link). No field is invented, recomputed, or
+  reinterpreted by the component -- every value was already decided by
+  `buildTrustDashboardModel` before this ever renders.
+- **Status tone is a closed, three-bucket mapping**: `available` ->
+  emerald (neutral/positive); `needs_review`/`partial`/`scraped_source`/
+  `open_data_only` -> amber (review/attention, matching the existing
+  warning tone from `validationSeverityToneClassName`); every other kind
+  (`not_connected`/`unavailable`/`failed`/`blocked_by_locks`/
+  `no_pending_feedback`) -> a muted slate tone, deliberately *not* colored
+  as an alarming error, since most of these are this app's ordinary
+  default state (no routing/lodging/flight provider connected) rather
+  than something having gone wrong.
+- **"View details" links point at real, pre-existing anchors only** --
+  `detailAnchorId` values (`plan-overview`, `data-sources`,
+  `travel-context`, `review-required`) are exactly the `id`s
+  `ResultGroupHeader` already renders elsewhere on the page (Step 175's
+  jump-link groups); no new anchor was added, and none was needed.
+- **Front door, not a replacement**: the section's own subtitle says so
+  explicitly ("This does not replace the detailed sections below"), and
+  every other pre-existing section (`ValidationSection`,
+  `ProviderCoverageSection`, `AccommodationInventorySection`,
+  `FlightInventorySection`, `RegenerationReadinessSection`, numbered
+  stops, movement rows, route paths, the AI-promoted badge, etc.) is
+  completely unchanged -- confirmed both by `git diff` (only the new
+  import, three new component definitions, and one new render call were
+  added) and by live verification: generated a trip, loaded it via "Load
+  existing trip," confirmed all nine category tiles render with the
+  correct status/tone, confirmed every pre-existing section title is
+  still present on the page, and confirmed zero console errors.
+
+## Step 176D: Trust Dashboard Cross-Links and Copy Hardening
+
+Step 176D makes the trust dashboard a more useful front door and tightens
+its wording, without touching any backend file, adding any fetch, or
+changing any existing section's own behavior.
+
+- **Ten new stable section anchors.** `frontend/app/page.tsx`'s existing
+  section components each already rendered a single root
+  `<div className="rounded-2xl border border-white/10 bg-white/5 p-5">`
+  with no early return before it, so adding `id="..."` directly to that
+  existing element was safe and behavior-neutral -- no section was
+  moved, wrapped, or restructured. New ids: `readiness-checklist`
+  (`ReadinessChecklistSection`), `route-feasibility`
+  (`RouteFeasibilitySection`), `validation-report` (`ValidationSection`),
+  `provider-coverage` (`ProviderCoverageSection`),
+  `accommodation-inventory` (`AccommodationInventorySection`),
+  `flight-inventory` (`FlightInventorySection`), `ai-candidate-review`
+  (`AICandidateReviewSection`), `version-history`
+  (`VersionHistorySection`), `plan-diff-preview`
+  (`PlanDiffPreviewSection`), `regeneration-readiness`
+  (`RegenerationReadinessSection`). The pre-existing `ResultGroupHeader`
+  jump-link anchors (`plan-overview`, `travel-context`,
+  `draft-itinerary`, `review-required`, `data-sources`) are untouched --
+  every one of the ten new ids was verified unique (no collision) via a
+  live per-id `document.querySelector` count check.
+- **Every dashboard category's `detailAnchorId` now points at the most
+  specific matching section** (`frontend/lib/trust-dashboard.ts`):
+  `core_trip_grounding` and `validation_summary` -> `validation-report`;
+  `places_and_experiences` -> `provider-coverage` (its own
+  `supportingFacts` are literally `provider_coverage.*` values);
+  `lodging_inventory` -> `accommodation-inventory`; `flight_inventory` ->
+  `flight-inventory`; `ai_suggested_candidates` -> `ai-candidate-review`;
+  `regeneration_and_change_safety` -> `regeneration-readiness`;
+  `weather_holiday_currency` -> `travel-context` (unchanged -- no single
+  section combines weather/holiday/currency, so the existing group
+  anchor remains the right target). `routes_and_movement` deliberately
+  links to `draft-itinerary`, not the newly-anchored
+  `route-feasibility` section -- `RouteFeasibilitySection` renders the
+  older, always-`not_connected` `RouteFeasibilityContext` data-model
+  foundation, a different concept from the real
+  `route_feasibility_report`/`route_aware_sequencing_report`/
+  `travel_time_buffer_report` data this category actually summarizes;
+  the real per-day movement rows, route-aware order badges, and
+  provider-backed route paths live inline in "Draft itinerary" instead.
+  Live verification clicked/resolved all nine "View details" links and
+  confirmed every `href="#..."` target exists on the page.
+- **Copy hardening, concretely**: "bookable accommodation/flight offer(s)
+  found" was reworded to "accommodation/flight inventory offer(s)
+  available ... This is not a confirmed booking" (the word "bookable"
+  alone, reused verbatim from the backend's own "Bookable lodging
+  inventory" section title, risked reading as a stronger claim than
+  intended); the route-geometry supporting fact now reads "Route path
+  geometry present on N of M scheduled leg(s)" / "Route path geometry
+  unavailable -- no scheduled legs to report on" instead of "available
+  for N of M"; the `routes` coverage line now explicitly notes "(route
+  data available only when this is a connected/successful status)"; and
+  the regeneration category adds "Pending feedback can be applied
+  through deterministic regeneration" (mirroring `PlanValidatorService`'s
+  own Step 175D wording almost verbatim) only when
+  `regeneration_readiness.can_regenerate` is actually `true`. No
+  category's status/count/label logic changed -- only wording.
+- **Front door, still not a duplicate.** The related-validation-issue
+  preview introduced in 176C remains capped at
+  `TRUST_DASHBOARD_MAX_RELATED_ISSUES_SHOWN = 3` with a "+N more" note
+  (unchanged this step); no category renders a full provider-status
+  table, a full validation report, or a full inventory offer list --
+  each links out to its own detailed section instead.
+- **Preservation confirmed.** `UserTrustSummarySection`,
+  `PlanStatusSection`, `ValidationSection`, `ProviderCoverageSection`,
+  `AccommodationInventorySection`, `FlightInventorySection`,
+  `AICandidateReviewSection`, `RegenerationReadinessSection`,
+  `PlanDiffPreviewSection`, `VersionHistorySection`,
+  `ReadinessChecklistSection`, `DayMapPreview`, `MovementRow`, and
+  `AIPromotedBadge` are all still present and unmodified beyond the
+  single `id` attribute added to ten of their root elements -- confirmed
+  by `git diff` and by live verification (all pre-existing section
+  titles still found on the page, zero console errors).
+
+## Step 176E (final Section 176 step): Visual Polish and Final Safety Review
+
+Step 176E closes out Section 176 with a small readability polish pass
+and a full re-verification -- no new category, no new anchor, no wording
+change beyond what 176D already hardened, and (after review) no backend
+file touched.
+
+- **Compact, dashboard-only fact list.** `TrustDashboardCategoryCard`'s
+  "Supporting facts"/"Related validation issue(s)" lists previously
+  reused the shared `SummaryList` component at its normal `text-sm` size
+  -- appropriate for a full-width detail section, but too bulky for a
+  nine-card front-door grid. A new, dashboard-local
+  `TrustDashboardFactList` component (same title-plus-bulleted-list
+  structure, denser `text-[11px]` type) replaces those two call sites
+  only -- `SummaryList` itself is untouched and still renders exactly as
+  before everywhere else on the page (roughly fifteen other sections).
+  This alone made every card noticeably shorter and the nine-card grid
+  visibly more balanced.
+- **A real overflow bug found and fixed.** Live screenshots surfaced a
+  genuine layout defect, not just a style nit: a long unbroken string
+  (the local scraped-accommodation/flight HTML path, e.g.
+  `/Users/.../backend/.data/manual_scrapes/flights.html`) failed to wrap
+  inside its own card and visually spilled into the neighboring grid
+  column, appearing as ghosted text overlapping the adjacent card's
+  content. Fixed by adding `break-words` to
+  `TrustDashboardFactList`'s `<ul>` only -- scoped to the new dashboard
+  list, not applied to `SummaryList` or any other existing list on the
+  page, so no other section's wrapping behavior changed.
+- **A polish attempt that was reverted.** An initial `min-w-0` added to
+  the card's title `<p>` (intended to let a long title share space with
+  a wide status badge more gracefully) instead caused the title to
+  shrink far enough to trigger mid-word line breaks (e.g. "Regenerati" /
+  "on and change safety") on cards with both a long title and a wide
+  badge. Live screenshots caught this immediately; the `min-w-0` was
+  removed, restoring clean word-boundary wrapping. The badge itself
+  keeps a small, harmless `whitespace-nowrap` addition so its own label
+  text never splits across two lines.
+- **Live verification matrix.** Generated one `needs_review` trip
+  (Lisbon, normal candidate/provider data) and one `blocked` trip (a
+  nonexistent destination, zero attraction candidates), then loaded each
+  via "Load existing trip" at both a desktop (1280px) and a mobile
+  (390px) viewport. Confirmed for every combination: all nine category
+  titles present; all nine "View details" `href` targets resolve to a
+  real element on the page; every pre-existing section title
+  (`Validation report`, `Provider coverage`, `Readiness checklist`,
+  `Can I use this plan?`, `Regeneration readiness`, `Bookable lodging
+  inventory`, `Flight inventory`, `AI candidate review`, `Day-wise
+  experiences`, `Plan diff preview`, `Version history`, `Route
+  feasibility`) still present; zero console errors. The `blocked` trip
+  correctly shows `Overall readiness: Blocked`, a `FAILED`
+  `Validation summary` tile, and `UNAVAILABLE` tiles for core grounding/
+  places/lodging/flights/weather -- never a false "available" reading
+  when the underlying data genuinely isn't there.
+- **Final copy re-review.** Re-grepped `frontend/lib/trust-dashboard.ts`
+  and the new `page.tsx` components for `bookable`/`will `/`always`/
+  `confirmed`/`final`/`guarant`/`verified`/`official`/`booked` -- every
+  remaining hit is either a negation ("not a confirmed booking," "not
+  official-provider data, not verified," "never claims ... will be
+  preserved," "never claims the resulting plan will be better," "never
+  marks a plan ready by itself") or an unrelated code comment. No new
+  overclaim was introduced by this step's polish changes.
+- **This is the last Section 176 step.** `TrustDashboardSourceResult`/
+  `TrustDashboardModel`/`TrustDashboardCategoryView`/
+  `TrustDashboardStatusKind`/`buildTrustDashboardModel`
+  (`frontend/lib/trust-dashboard.ts`, Step 176B), `TrustDashboardSection`/
+  `TrustDashboardCategoryCard`/`TrustDashboardFactList`/
+  `trustDashboardToneClassName` (`frontend/app/page.tsx`, Steps 176C-E),
+  ten new section anchors and nine specific "View details" links (Step
+  176D), and this step's readability polish together make up the
+  complete trust dashboard. Across all of 176A-176E: zero backend files
+  changed, zero new endpoints, zero new fetch calls, and zero new travel
+  facts -- every value the dashboard shows is a direct read, count, or
+  fixed-vocabulary relabel of a field the backend already computed and
+  already served before Section 176 began.
