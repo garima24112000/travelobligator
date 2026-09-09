@@ -3282,3 +3282,368 @@ no frontend file): real Kiwi MCP flight offers are now labeled distinctly
 from `scraped_local` and `not_connected` data everywhere they can appear,
 with no fake placeholder for a missing field and no claim of a completed
 booking anywhere.
+
+## Step 179B: Visual Hierarchy and Section Polish
+
+Following 179A's read-only audit (which found the result page functionally
+correct but visually dense -- a single long flat scroll through 33+ major
+blocks), Step 179B is a visual-only pass over `frontend/app/page.tsx`. No
+backend file changed, no `frontend/lib/api.ts` fetch or endpoint changed, no
+provider/validation/trust-dashboard data-derivation function changed, and no
+travel data was fabricated -- every change is spacing, headings, borders, or
+copy that clarifies structure without altering what is shown.
+
+**Plan overview subgrouping.** A new, deliberately lighter-weight
+`PlanOverviewSubheading` component (distinct from `ResultGroupHeader`, which
+still owns the five broad group anchors used by `ResultJumpLinks`) now marks
+two subgroups inside the existing "Plan overview" group: "Trust & readiness
+status" immediately before `TrustDashboardSection`/`UserTrustSummarySection`/
+`PlanStatusSection`, and "Feedback & regeneration workflow" immediately
+before `FeedbackPanel`/`PendingRequestedChangesSection`/
+`VersionHistorySection`/`PlanDiffPreviewSection`/`RegenerationReadinessSection`/
+`RegenerationAttemptAuditSection`. All nine sections render in their
+pre-existing order, fully expanded, exactly as before -- only two heading+
+spacing markers were added between them.
+
+**Entry form hierarchy.** The "Create a new trip" form is now the visually
+primary action (a heading was added above it, its border tinted cyan) and
+now renders *before* the "Load an existing trip" box, which was restyled as
+visually secondary (muted "ALREADY HAVE A TRIP?" label, neutral border,
+neutral button color) and moved to render after the form. Both flows keep
+their exact pre-existing behavior, state, and handlers (`handlePlanTrip`/
+`handleLoadExistingTrip` are unchanged) -- only DOM order and Tailwind
+classes changed.
+
+**ResultJumpLinks polish.** The nav heading changed from "Jump to" to "Jump
+to a broad section", and a new helper line was added directing readers to
+the trust dashboard's own finer "View details" links for
+validation/provider-coverage/inventory/regeneration detail. The five
+existing anchors/labels are unchanged, and no anchor id used by the trust
+dashboard's detail links was touched.
+
+**Validation density softening.** `ValidationIssueList` (used for the
+Critical issues / Warnings / Suggestions buckets) gained a severity-toned
+count badge next to each bucket's title (reusing the exact same
+`validationSeverityToneClassName` colors already used per-issue -- no new
+color mapping) and each category group is now wrapped in a soft
+`rounded-xl border` card with its own category-level issue count badge.
+Every category and every issue still renders fully expanded by default --
+no accordion/collapse was added in this step, per the 179A plan's explicit
+179C-vs-179B boundary.
+
+**Accessibility.** `focus-visible` ring classes were added to the jump-link
+anchors, the "Create trip and generate plan" submit button, and the "Load
+existing trip" button/input (previously zero `focus:` classes existed
+anywhere in the file). No form control's visible label text changed.
+
+**Verified live.** A real trip was created and generated against a local
+backend with no external providers connected; both a desktop (1400px) and a
+mobile (390px) Playwright render of the result page were screenshotted,
+confirming the create-form-first/load-existing-second ordering, both plan-
+overview subheadings rendering in place, the validation report's category
+badges and softened card boundaries, and zero browser console/page errors
+at either width. `npx tsc --noEmit`, `npm run lint`, and `npm run build` all
+passed clean. The banned-phrase safety grep found the same pre-existing
+negations/disclaimers as before Step 179B and no new overclaim.
+
+## Step 179C: Mobile/Responsive Polish and Long-Text Overflow Fixes
+
+Step 179C is a CSS/layout-only pass fixing the exact mobile overflow risk
+179B's live check found (a long, space-free local file path in an
+accommodation/flight-inventory validation warning overflowing its card at
+390px) and sweeping the rest of `frontend/app/page.tsx` for the same class
+of risk. No backend file changed, no `frontend/lib/api.ts` fetch or
+endpoint changed, no provider/validation/trust-dashboard data-derivation
+function changed, no section was removed/hidden/collapsed/reordered, and no
+travel data was fabricated.
+
+**Long-text overflow fixes.** `break-words` (prose that may contain one
+long unbroken token: messages, reasons, notes, summaries, user-submitted
+feedback text) or `break-all` (content that is inherently one unbroken
+token: IDs, URLs, `font-mono` provider/source strings, the trip-id banner)
+was added at every render site handling backend-returned free text,
+including: `ValidationIssueCard` (`issue.message`/`affected_section`/
+`suggested_fix` -- the exact spot from 179B's screenshot), `SummaryList`
+(reused by 17 call sites: weather/holiday/currency/route-feasibility
+assumptions and warnings, decision summary, implementation gaps, plan
+status), every remaining `list-disc` bullet list sitewide (provider
+coverage notes, unavailable-data notes, AI candidate eligibility/rejection/
+warning reasons, promotion reasons, regeneration/plan-diff/pending-changes
+`blocked_by` lists), the accommodation/flight offer cards (`property_name`,
+`provider`/`source_name`, `offer_id`, and the existing `booking_url`
+handling), both `ScrapedProvenanceBadge`/`ScrapedFlightProvenanceBadge`'s
+`source_url` line, candidate/POI/suggestion card names and addresses
+(`CandidatePoiCard`, `RestaurantSuggestionCard`, `AccommodationSuggestionCard`,
+`StayAreaAccommodationCard`, `ScheduledExperienceCard`,
+`LockedItemsSummarySection`), the AI candidate review/promoted-candidate
+name and skipped-candidate-id fallback, every regeneration/version/diff
+section's error/message/note/summary fields and event/lock IDs, the
+feedback history's raw `feedback_text`/interpretation summary/note, and the
+top-level error banner and trip-id banner. None of this changes what text
+is shown -- only whether a genuinely unbroken long string can wrap instead
+of pushing its card wider than the viewport.
+
+**Mobile layout polish.** Four repeated `flex items-center justify-between`
+label+badge rows (readiness checklist items, pending-feedback-by-type
+cards, version history entries, regeneration attempt audit entries) gained
+`flex-wrap` plus `min-w-0 break-words` on the label and `shrink-0` on the
+badge, so a long label wraps to a second line instead of squeezing the
+badge. The validation report's bucket-title and per-category-title rows
+gained the same `flex-wrap`/`shrink-0` treatment. The `TrustDashboardCategoryCard`
+title gained `min-w-0 break-words` so a long category title can no longer
+force its status badge out of the card. No grid breakpoint, spacing scale,
+or component was restructured -- every existing `sm:`/`lg:` responsive grid
+(trip stats, trust dashboard, provider coverage, validation summary tiles,
+etc.) was already correctly responsive and is unchanged.
+
+**Safety-note readability.** A small, targeted set of the most safety-
+relevant disclaimers -- previously sized `text-[10px]`/`text-[11px]`, the
+hardest to read on a phone -- were bumped to `text-xs` (12px) with no
+wording change: the flight offer's "Provider-supplied booking link -- not a
+booking confirmation" label (previously the single smallest safety string
+on the page, at 10px), both scraped-provenance badges' "This is not
+official-provider data..." disclaimer, the Kiwi MCP badge's "has not been
+reviewed by TravelObligator..." disclaimer, `DayMapPreview`'s "Numbered
+markers show... not route geometry" note, and the day-wise-experiences
+block's four map/keep-marker/route-aware/movement-data disclaimers
+(including the itinerary's key "Stop numbers reflect the backend's current
+schedule order only -- not a claim about route certainty, safety, or
+speed" sentence). Purely decorative/metadata text (timestamps, raw
+provider-coverage keys, count badges) was deliberately left small.
+
+**Map/mobile.** `DayMapPreview`'s Leaflet lifecycle, marker numbering,
+route-path-only-when-provider-backed rendering, and fixed 260px height are
+completely unchanged -- only its adjacent safety-note paragraph's text size
+changed (above). No fallback line, computed path, or distance/duration was
+added.
+
+**Badge wrapping.** The validation bucket/category badges and
+`TrustDashboardCategoryCard`'s status badge now stay legible next to a
+wrapped label (`shrink-0` added); `AIPromotedBadge`'s candidate-id line
+gained `break-all`. Every other existing badge row (lodging/flight offer
+badges, Kiwi MCP badge, scraped-provenance badges, provider-coverage
+"unavailable fields" pills, AI-promoted badge, lock-status pills) already
+used `flex-wrap` and needed no change.
+
+**Verified live.** Re-loaded the same trip created for Step 179B's
+verification (backend still running with no external providers connected,
+so `blocked`/`not_connected` remains the honest state) and re-screenshotted
+the validation report, provider coverage, accommodation/flight inventory,
+day-wise itinerary, and plan-overview sections at 1400px and 390px. The
+exact file-path overflow from 179B's mobile check is now fixed -- the path
+wraps inside its card instead of extending past it. Jump links wrap
+correctly into two rows on narrow width; the plan-overview subheadings,
+trust dashboard cards, and all badges from Step 179B remain intact and
+unaffected. Zero browser console/page errors at either width.
+`python -m compileall`/`pytest` (2296 passed, unchanged since no backend
+file changed) and `npx tsc --noEmit`/`npm run lint`/`npm run build` all
+passed clean. The banned-phrase safety grep found the same pre-existing
+negations/disclaimers as before Step 179C and no new overclaim. No
+accommodation/flight offer existed in this local run (no provider
+connected) to visually confirm the offer-card-level fixes against real
+data -- those fixes were verified by code review and by the successful
+type-check/build/lint instead.
+
+## Step 179D: Copy/Accessibility Polish and Small Component Extraction
+
+Step 179D is a maintainability and accessibility pass over
+`frontend/app/page.tsx`. No backend file changed, no `frontend/lib/api.ts`
+fetch or endpoint changed, no provider/validation/trust-dashboard
+data-derivation function changed, no route/map/path logic changed, no
+section was removed/hidden/collapsed/reordered, and no travel data was
+fabricated.
+
+**Component extraction.** `ScrapedProvenanceBadge` and
+`ScrapedFlightProvenanceBadge` -- flagged since 179A as structurally
+byte-for-byte identical except their prop type and one clause of
+disclaimer text -- are now one generic `ProvenanceBadge` component.
+`ScrapedAccommodationProvenance`/`ScrapedFlightProvenance` are
+structurally identical types (confirmed in `frontend/lib/types.ts`), so
+`ProvenanceBadge` accepts either; the one thing that legitimately differs
+between an accommodation and a flight offer -- the exact list of
+not-yet-verified fields -- is now a `notVerifiedFor` prop, so both call
+sites still render their own exact, unchanged wording
+("price, availability, rating, or booking-link accuracy" for lodging;
+"schedule, price, availability, baggage-policy, or booking-link accuracy"
+for flights). `KiwiMcpOfferBadge` was not touched and stays a fully
+separate component with its own distinct "Third-party provider data"
+framing -- scraped/manual and Kiwi MCP provenance remain visibly distinct,
+exactly as Section 178 established. A new `DisclaimerNote` component (pure
+style wrapper, `tone: "amber" | "slate"`, optional `spacingClassName`) now
+backs nine previously hand-duplicated single-paragraph disclaimer intros
+(accommodation/flight "not connected" notes, the AI candidate review
+intro, both pending-requested-changes intros, version history, plan diff
+preview, regeneration readiness, and regeneration attempt audit) --
+every one keeps its exact prior wording, condition, and spacing; only the
+styling boilerplate was deduplicated. A shared `FOCUS_RING_CLASSNAME`
+constant now backs every keyboard-focus ring added in Steps 179B-179D.
+The large day-card/itinerary loop was deliberately left un-extracted, per
+this step's boundary.
+
+**Copy polish.** `VALIDATION_CATEGORY_LABELS` was missing `hotel_ratings`
+(a real category `PlanValidatorService` can emit, confirmed by grepping
+the backend) -- confirmed this is now the only category without an
+explicit label, added as `"Hotel ratings"`. A new
+`regenerationReasonCodeLabel` function (mirroring the existing
+`validationCategoryLabel`/`checklistStatusLabel` fallback pattern) now
+relabels the backend's raw `REGENERATION_*` reason/error codes
+(`RegenerationAttemptAuditSection`'s `reason_code`,
+`RegenerationReadinessSection`'s `regenerateError.code`) into short human
+phrases (e.g. `REGENERATION_BLOCKED_BY_LOCKS` -> "Blocked by active
+locks") while leaving the full `message`/error text right below it
+completely unchanged -- the raw code is relabeled, not hidden, and an
+unrecognized code still displays as-is. No disclaimer was shortened,
+removed, or had its safety meaning changed.
+
+**Accessibility polish.** All 13 create-trip form controls (10 inputs, 2
+selects, 1 textarea) and the feedback textarea gained visible
+`focus-visible` rings -- previously zero form controls had any focus
+styling. Six additional buttons/links (`ScheduledExperienceCard`'s
+keep/remove-keep buttons, `LockedItemsSummarySection`'s remove-keep
+button, the AI-promotion refresh button, the regenerate button, and both
+`ExperienceMapLinks` map-open links) gained the same shared ring.
+`aria-label`s were added only where link/button text repeats identically
+many times on one page with no other distinguishing text nearby: the
+trust dashboard's "View details" link (now
+`aria-label="View details: {category title}"`), and the per-experience
+"Keep this place"/"Remove keep" buttons (now naming the specific place).
+No badge gained a hover/cursor-pointer style -- confirmed no non-interactive
+badge anywhere in the file was styled to look clickable. No label
+association on any form control changed.
+
+**Verified live.** Re-loaded the same trip used for 179B/179C's
+verification. Tabbing through the create-trip form with the keyboard
+showed a visible focus ring on every control. The plan-overview
+subgroups, jump links (including the new "View details" `aria-label`,
+confirmed to still navigate to its real anchor), trust dashboard, and
+validation report all rendered identically to 179C's screenshots --
+confirming the `ProvenanceBadge` merge, `DisclaimerNote` conversions, and
+label additions changed no visible section content or structure. Zero
+browser console/page errors. `python -m compileall`/`pytest` (2296
+passed, unchanged) and `npx tsc --noEmit`/`npm run lint`/`npm run build`
+all passed clean. The banned-phrase safety grep found the same
+pre-existing negations/disclaimers as before this step and no new
+overclaim. As in 179C, no accommodation/flight offer existed in this
+local run (no provider connected), so the merged `ProvenanceBadge`'s and
+`KiwiMcpOfferBadge`'s exact rendered wording could not be visually
+re-confirmed against live data this step -- verified instead by direct
+source comparison against the pre-merge components (the wording is
+character-for-character unchanged) and the clean type-check/build/lint.
+
+## Section 179 Complete (Step 179E, Final Step)
+
+Step 179E is a full review-and-verification pass, not a new round of
+changes -- it made zero code edits to `frontend/app/page.tsx` (all files
+listed in this section's read set were re-inspected, not rewritten). Its
+job was to confirm the 179A-179D stack is internally consistent, still
+safe, and ready to commit as one unit.
+
+**What 179B-179D actually changed, summarized:**
+- **179B (visual hierarchy):** Split "Plan overview" into two subheadings
+  ("Trust & readiness status", "Feedback & regeneration workflow") without
+  moving or hiding any of its nine sections; made "Create a new trip" the
+  visually primary path (cyan-bordered, renders first) and "Load an
+  existing trip" visually secondary (muted, renders after the form);
+  clarified `ResultJumpLinks`' heading and added a note distinguishing it
+  from the trust dashboard's finer "View details" links; gave
+  `ValidationSection`'s Critical/Warnings/Suggestions buckets and their
+  categories severity-toned count badges and softer card boundaries, with
+  every issue still expanded by default.
+- **179C (mobile/overflow):** Fixed the exact long-file-path overflow bug
+  179B's own mobile check found, then swept the whole file for the same
+  risk -- `break-words`/`break-all` on every backend-free-text render site
+  (validation issues, `SummaryList`'s 17 call sites, every `list-disc`
+  list, offer cards and provenance badges, candidate/POI names and
+  addresses, regeneration/version/diff-preview fields and IDs, feedback
+  text, the trip-id and error banners); `flex-wrap`/`min-w-0`/`shrink-0`
+  on four repeated label+badge rows; a small set of the most
+  safety-relevant disclaimers bumped from 10-11px to 12px with no wording
+  change. `DayMapPreview`'s Leaflet/marker/route-path logic was never
+  touched.
+- **179D (copy/accessibility/extraction):** Merged
+  `ScrapedProvenanceBadge`/`ScrapedFlightProvenanceBadge` (flagged as
+  near-duplicates since 179A) into one `ProvenanceBadge` taking a
+  `notVerifiedFor` prop, preserving each call site's exact prior wording;
+  `KiwiMcpOfferBadge` untouched and fully separate. Added a `DisclaimerNote`
+  style-only wrapper behind nine previously duplicated disclaimer intros.
+  Filled the one missing validation category label (`hotel_ratings`) and
+  added `regenerationReasonCodeLabel` to relabel raw `REGENERATION_*`
+  codes without touching the message text beside them. Gave all 13
+  create-trip form controls plus the feedback textarea (previously zero)
+  and six more buttons/links visible keyboard-focus rings via a shared
+  `FOCUS_RING_CLASSNAME`; added `aria-label`s only where link/button text
+  repeats identically many times (trust-dashboard "View details" links,
+  per-experience keep/remove-keep buttons).
+
+**179E's own verification, beyond re-confirming 179B-179D's claims:**
+Every code-cleanup check passed: no dead component remains after the
+`ProvenanceBadge` merge (`ScrapedProvenanceBadge`/
+`ScrapedFlightProvenanceBadge` have zero remaining references anywhere,
+including comments -- one stale docstring reference was caught and fixed
+this step), both provenance types are still imported and used in the
+merged component's union parameter type, no `console.log`/`eslint-disable`/
+leftover `TODO 179` markers exist, and no temporary script or screenshot
+is tracked in the repository (`git status` shows only the three files this
+section touches).
+
+Unlike every prior 179 step, this step closed a real verification gap:
+179C and 179D could only confirm the merged `ProvenanceBadge` and the
+booking-link/rating-details rendering by reading source code, because
+every trip generated in those steps had no accommodation/flight offers
+(no scraped-data file present locally). For 179E, two local, clearly
+fictional (`TEST_ONLY_`-prefixed) HTML fixtures were placed at the
+already-default, already-gitignored `scraped_accommodation_html_path`/
+`scraped_flight_html_path` locations -- the same fixture shape the
+backend's own `test_scraped_accommodation_parser.py`/
+`test_scraped_flight_parser.py` already use -- to exercise the existing,
+already-enabled-by-default `scraped_local` provider for real, live,
+end-to-end. This produced one real trip with two real accommodation
+offers and one real flight offer, screenshotted at desktop and 390px:
+the merged `ProvenanceBadge` rendered the exact accommodation wording
+("...verified for price, availability, rating, or booking-link accuracy")
+and the exact flight wording ("...verified for schedule, price,
+availability, baggage-policy, or booking-link accuracy") side by side
+with no conflation; the flight offer's booking link showed "PROVIDER-SUPPLIED
+BOOKING LINK -- NOT A BOOKING CONFIRMATION" at readable size; the
+minimal "Beta" accommodation offer (no price/rating in its source HTML)
+correctly showed no price and "Availability: unknown" rather than a
+fabricated value; and `AccommodationRatingDetailsCard` correctly rendered
+nothing for either offer, since `hotel_ratings_provider` is still
+`not_connected` and `rating_details` stayed `null` on both -- only the
+pre-existing bare `rating` field (now correctly labeled "Rating from
+scraped/manual source") showed for the offer whose fixture HTML included
+one. At 390px, every long string (property name, source/parser line,
+booking URL, provenance source URL) wrapped inside its card with zero
+horizontal page overflow (`document.documentElement.scrollWidth ===
+clientWidth`, confirmed via direct DOM measurement). Both fixture files
+were deleted immediately after this check -- `git status` and a repo-wide
+`.data/` gitignore confirm nothing from this verification was ever
+trackable, and the repository is left in the same "no scrape file
+present" default state it was in before Section 179 began. The Kiwi MCP
+badge itself was not re-verified live this step (that would require a
+real, live, network call to Kiwi's hosted MCP server, out of scope for a
+docs/polish step) -- its separation from `ProvenanceBadge` was instead
+re-confirmed by source review, unchanged since Step 178D.
+
+Also re-confirmed this step: the actual "Create trip and generate plan"
+button (not just "Load existing trip") was exercised end-to-end through
+the real UI for the first time in Section 179's own verification history,
+generating a real plan; all 5 `ResultJumpLinks` anchors and all 9
+trust-dashboard "View details" links (each now carrying its
+Step-179D-added `aria-label`) were checked programmatically against the
+live DOM and every one resolved to a real, existing element.
+
+**This completes Section 179 (179A-179E).** The frontend result page is
+visually grouped into scannable subsections, long backend-returned text
+wraps instead of overflowing at mobile widths, the most safety-critical
+disclaimers are legible, keyboard users get visible focus feedback
+throughout the create/load/feedback/regeneration flows, and two
+near-duplicate components were consolidated -- all without changing a
+single backend file, without touching `frontend/lib/api.ts`, without
+altering what any section shows by default (every one of the 18 sections
+enumerated across 179B-179E's boundaries still renders, fully expanded,
+in its original order), and without weakening or removing a single safety
+disclaimer. Every trust, validation, provider-coverage, and inventory
+detail a user could see before Section 179 is still visible by default
+after it -- Section 179 changed how it looks and reads, never what it
+claims.

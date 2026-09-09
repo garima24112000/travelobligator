@@ -89,6 +89,13 @@ const DEFAULT_TRIP_REQUEST: TripRequestInput = {
   pace: "balanced",
 };
 
+// Shared keyboard-focus ring for interactive elements (Step 179D) -- a
+// visible focus style purely for keyboard/screen-reader navigation. Appending
+// this to an element's className never changes what the element does, only
+// how it looks when focused.
+const FOCUS_RING_CLASSNAME =
+  "focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/50";
+
 type PlanResult = {
   summary: TripSummary;
   candidatePois: CandidatePoi[];
@@ -434,7 +441,7 @@ function formatMovementSummary(buffer: TravelTimeBuffer): string {
  */
 function MovementRow({ buffer }: { buffer: TravelTimeBuffer }) {
   return (
-    <li className="ml-3 border-l border-white/10 pl-3 text-[11px] text-slate-500">
+    <li className="ml-3 break-words border-l border-white/10 pl-3 text-[11px] text-slate-500">
       {formatMovementSummary(buffer)}
     </li>
   );
@@ -468,6 +475,7 @@ const VALIDATION_CATEGORY_LABELS: Record<string, string> = {
   holidays: "Holidays",
   accommodation_inventory: "Accommodation inventory",
   flight_inventory: "Flight inventory",
+  hotel_ratings: "Hotel ratings",
 };
 
 function validationCategoryLabel(category: string): string {
@@ -528,14 +536,14 @@ function ValidationIssueCard({
       <p className={`text-[11px] uppercase tracking-wide ${tone.badge}`}>
         {issue.severity}
       </p>
-      <p className="mt-1 text-slate-200">{issue.message}</p>
+      <p className="mt-1 break-words text-slate-200">{issue.message}</p>
       {issue.affected_section && (
-        <p className="mt-1 text-xs text-slate-400">
+        <p className="mt-1 break-words text-xs text-slate-400">
           Affects: {issue.affected_section}
         </p>
       )}
       {issue.suggested_fix && (
-        <p className="mt-1 text-xs text-slate-400">
+        <p className="mt-1 break-words text-xs text-slate-400">
           Suggested fix: {issue.suggested_fix}
         </p>
       )}
@@ -558,26 +566,41 @@ function ValidationIssueCard({
 function ValidationIssueList({
   title,
   issues,
+  toneClassName,
 }: {
   title: string;
   issues: ValidationReport["warnings"];
+  toneClassName: string;
 }) {
   if (issues.length === 0) return null;
 
   const groups = groupValidationIssuesByCategory(issues);
 
   return (
-    <div className="mt-3">
-      <p className="text-sm font-semibold text-slate-200">
-        {title} ({issues.length})
-      </p>
-      <div className="mt-2 flex flex-col gap-3">
+    <div className="mt-4 first:mt-0">
+      <div className="flex flex-wrap items-center gap-2">
+        <p className="break-words text-sm font-semibold text-slate-200">{title}</p>
+        <span
+          className={`shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-semibold ${toneClassName}`}
+        >
+          {issues.length}
+        </span>
+      </div>
+      <div className="mt-2 flex flex-col gap-2">
         {groups.map((group) => (
-          <div key={group.category}>
-            <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">
-              {validationCategoryLabel(group.category)}
-            </p>
-            <ul className="mt-1 flex flex-col gap-2">
+          <div
+            key={group.category}
+            className="rounded-xl border border-white/5 bg-white/[0.02] p-3"
+          >
+            <div className="flex flex-wrap items-center gap-2">
+              <p className="break-words text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+                {validationCategoryLabel(group.category)}
+              </p>
+              <span className="shrink-0 rounded-full border border-white/10 bg-slate-900/60 px-1.5 py-0.5 text-[10px] font-semibold text-slate-400">
+                {group.issues.length}
+              </span>
+            </div>
+            <ul className="mt-2 flex flex-col gap-2">
               {group.issues.map((issue, index) => (
                 <ValidationIssueCard key={`${group.category}-${index}`} issue={issue} />
               ))}
@@ -596,7 +619,7 @@ function StayAreaAccommodationCard({
 }) {
   return (
     <li className="rounded-lg border border-white/10 bg-slate-900/60 p-3 text-sm">
-      <p className="font-medium text-slate-100">
+      <p className="break-words font-medium text-slate-100">
         {accommodation.name}
         {accommodation.category && (
           <span className="font-normal text-slate-400">
@@ -606,7 +629,7 @@ function StayAreaAccommodationCard({
         )}
       </p>
       {accommodation.address && (
-        <p className="mt-1 text-xs text-slate-400">{accommodation.address}</p>
+        <p className="mt-1 break-words text-xs text-slate-400">{accommodation.address}</p>
       )}
       <p className="mt-1 text-[11px] uppercase tracking-wide text-slate-500">
         {accommodation.source} · {accommodation.data_status}
@@ -669,13 +692,35 @@ function SummaryList({ title, items }: { title: string; items: string[] }) {
   return (
     <div className="mt-3">
       <p className="text-sm font-semibold text-slate-200">{title}</p>
-      <ul className="mt-2 list-disc pl-5 text-sm text-slate-300">
+      <ul className="mt-2 list-disc break-words pl-5 text-sm text-slate-300">
         {items.map((item, index) => (
           <li key={`${title}-${index}`}>{item}</li>
         ))}
       </ul>
     </div>
   );
+}
+
+/**
+ * Shared styling for a short, fixed scope/safety disclaimer paragraph
+ * (Step 179D) -- a pure style wrapper around the repeated
+ * `text-xs text-amber-300/90` / `text-xs text-slate-500` disclaimer
+ * pattern used across many sections. It decides no wording, condition, or
+ * safety meaning of its own: every call site still supplies its own exact
+ * text and its own condition for whether the note renders at all, so no
+ * disclaimer's meaning changes by being wrapped in this.
+ */
+function DisclaimerNote({
+  tone,
+  spacingClassName = "mt-1",
+  children,
+}: {
+  tone: "amber" | "slate";
+  spacingClassName?: string;
+  children: React.ReactNode;
+}) {
+  const toneClassName = tone === "amber" ? "text-amber-300/90" : "text-slate-500";
+  return <p className={`${spacingClassName} text-xs ${toneClassName}`}>{children}</p>;
 }
 
 function DecisionSummarySection({ summary }: { summary: DecisionSummary }) {
@@ -739,8 +784,8 @@ function ReadinessChecklistSection({
             key={item.label}
             className="rounded-lg border border-white/10 bg-slate-900/60 p-3 text-sm"
           >
-            <p className="flex items-center justify-between gap-2">
-              <span className="font-semibold text-slate-200">{item.label}</span>
+            <p className="flex flex-wrap items-center justify-between gap-2">
+              <span className="min-w-0 break-words font-semibold text-slate-200">{item.label}</span>
               <span className="text-[11px] uppercase tracking-wide text-slate-400">
                 {checklistStatusLabel(item.status)}
               </span>
@@ -880,7 +925,8 @@ function TrustDashboardCategoryCard({
       {category.detailAnchorId && (
         <a
           href={`#${category.detailAnchorId}`}
-          className="mt-3 inline-block text-[11px] text-cyan-200 hover:text-cyan-100"
+          aria-label={`View details: ${category.title}`}
+          className={`mt-3 inline-block text-[11px] text-cyan-200 hover:text-cyan-100 ${FOCUS_RING_CLASSNAME}`}
         >
           View details
         </a>
@@ -976,7 +1022,7 @@ function UserTrustSummarySection({
               No checklist items are fully checked yet.
             </p>
           ) : (
-            <ul className="mt-2 list-disc pl-4 text-xs text-slate-300">
+            <ul className="mt-2 list-disc break-words pl-4 text-xs text-slate-300">
               {reliableNow.map((item, index) => (
                 <li key={`${item.label}-${index}`}>{item.label}</li>
               ))}
@@ -993,7 +1039,7 @@ function UserTrustSummarySection({
               No checklist items are currently marked as needs review.
             </p>
           ) : (
-            <ul className="mt-2 list-disc pl-4 text-xs text-slate-300">
+            <ul className="mt-2 list-disc break-words pl-4 text-xs text-slate-300">
               {needsReview.map((item, index) => (
                 <li key={`${item.label}-${index}`}>{item.label}</li>
               ))}
@@ -1010,7 +1056,7 @@ function UserTrustSummarySection({
               No checklist items are currently missing or not implemented.
             </p>
           ) : (
-            <ul className="mt-2 list-disc pl-4 text-xs text-slate-300">
+            <ul className="mt-2 list-disc break-words pl-4 text-xs text-slate-300">
               {missingOrNotImplemented.map((item, index) => (
                 <li key={`${item.label}-${index}`}>{item.label}</li>
               ))}
@@ -1518,7 +1564,7 @@ function DayMapPreview({
           {legendLabel}
         </p>
       )}
-      <p className="mt-1 text-[11px] text-slate-500">
+      <p className="mt-1 text-xs text-slate-500">
         Numbered markers show this day&apos;s scheduled stop order only --
         they are not route geometry. Solid green segments are a
         provider-backed route path, shown only for a leg where the backend
@@ -1535,7 +1581,13 @@ function DayMapPreview({
  * unavailable message instead of a link when coordinates are missing,
  * rather than falling back to a name-only map search.
  */
-function ExperienceMapLinks({ coordinates }: { coordinates: GeoPoint | null }) {
+function ExperienceMapLinks({
+  coordinates,
+  placeName,
+}: {
+  coordinates: GeoPoint | null;
+  placeName?: string;
+}) {
   if (!coordinates) {
     return (
       <p className="mt-1 text-xs text-slate-500">
@@ -1555,7 +1607,8 @@ function ExperienceMapLinks({ coordinates }: { coordinates: GeoPoint | null }) {
         href={googleMapsUrl}
         target="_blank"
         rel="noopener noreferrer"
-        className="text-cyan-300 underline decoration-cyan-300/40 underline-offset-2 hover:text-cyan-200"
+        aria-label={placeName ? `Open ${placeName} in Google Maps` : undefined}
+        className={`text-cyan-300 underline decoration-cyan-300/40 underline-offset-2 hover:text-cyan-200 ${FOCUS_RING_CLASSNAME}`}
       >
         Open in Google Maps
       </a>
@@ -1563,7 +1616,8 @@ function ExperienceMapLinks({ coordinates }: { coordinates: GeoPoint | null }) {
         href={openStreetMapUrl}
         target="_blank"
         rel="noopener noreferrer"
-        className="text-cyan-300 underline decoration-cyan-300/40 underline-offset-2 hover:text-cyan-200"
+        aria-label={placeName ? `Open ${placeName} in OpenStreetMap` : undefined}
+        className={`text-cyan-300 underline decoration-cyan-300/40 underline-offset-2 hover:text-cyan-200 ${FOCUS_RING_CLASSNAME}`}
       >
         Open in OpenStreetMap
       </a>
@@ -1591,7 +1645,7 @@ function AIPromotedBadge({ experience }: { experience: ExperienceItem }) {
         AI-suggested · Provider-grounded
       </span>
       {(experience.provider_source || experience.original_ai_candidate_id) && (
-        <span className="text-[11px] text-slate-500">
+        <span className="break-all text-[11px] text-slate-500">
           {experience.provider_source ? `Source: ${experience.provider_source}` : ""}
           {experience.provider_source && experience.original_ai_candidate_id
             ? " · "
@@ -1711,7 +1765,7 @@ function ScheduledExperienceCard({
           {orderNumber}
         </span>
         <div className="min-w-0 flex-1">
-          <p className="font-medium text-slate-100">
+          <p className="break-words font-medium text-slate-100">
             {experience.name}{" "}
             <span className="font-normal text-slate-400">
               ({experience.category})
@@ -1732,7 +1786,10 @@ function ScheduledExperienceCard({
             <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
               Open location
             </p>
-            <ExperienceMapLinks coordinates={experience.coordinates} />
+            <ExperienceMapLinks
+              coordinates={experience.coordinates}
+              placeName={experience.name}
+            />
           </div>
 
           <div className="mt-2 flex flex-wrap items-center gap-2">
@@ -1745,7 +1802,8 @@ function ScheduledExperienceCard({
                   type="button"
                   onClick={() => void handleRemoveKeep()}
                   disabled={isSubmittingLock}
-                  className="rounded-full border border-white/10 bg-slate-900 px-3 py-1 text-xs font-semibold text-slate-300 transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+                  aria-label={`Remove keep marker for ${experience.name}`}
+                  className={`rounded-full border border-white/10 bg-slate-900 px-3 py-1 text-xs font-semibold text-slate-300 transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50 ${FOCUS_RING_CLASSNAME}`}
                 >
                   {isSubmittingLock ? "Removing..." : "Remove keep"}
                 </button>
@@ -1755,7 +1813,8 @@ function ScheduledExperienceCard({
                 type="button"
                 onClick={() => void handleKeepThisPlace()}
                 disabled={isSubmittingLock}
-                className="rounded-full border border-cyan-300/40 bg-slate-900 px-3 py-1 text-xs font-semibold text-cyan-200 transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+                aria-label={`Keep ${experience.name} for future regeneration`}
+                className={`rounded-full border border-cyan-300/40 bg-slate-900 px-3 py-1 text-xs font-semibold text-cyan-200 transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50 ${FOCUS_RING_CLASSNAME}`}
               >
                 {isSubmittingLock ? "Saving..." : "Keep this place"}
               </button>
@@ -1763,10 +1822,10 @@ function ScheduledExperienceCard({
           </div>
 
           {lockErrorMessage && (
-            <p className="mt-1 text-xs text-red-300">{lockErrorMessage}</p>
+            <p className="mt-1 break-words text-xs text-red-300">{lockErrorMessage}</p>
           )}
           {lockSuccessMessage && !lockErrorMessage && (
-            <p className="mt-1 text-xs text-emerald-300">
+            <p className="mt-1 break-words text-xs text-emerald-300">
               {lockSuccessMessage}
             </p>
           )}
@@ -1783,7 +1842,7 @@ function RestaurantSuggestionCard({
 }) {
   return (
     <li className="rounded-lg border border-white/10 bg-slate-900/60 p-3 text-sm">
-      <p className="font-medium text-slate-100">
+      <p className="break-words font-medium text-slate-100">
         {restaurant.name}
         {restaurant.category && (
           <span className="font-normal text-slate-400">
@@ -1793,7 +1852,7 @@ function RestaurantSuggestionCard({
         )}
       </p>
       {restaurant.address && (
-        <p className="mt-1 text-xs text-slate-400">{restaurant.address}</p>
+        <p className="mt-1 break-words text-xs text-slate-400">{restaurant.address}</p>
       )}
       <p className="mt-1 text-[11px] uppercase tracking-wide text-slate-500">
         {restaurant.source} · {restaurant.data_status}
@@ -1812,7 +1871,7 @@ function AccommodationSuggestionCard({
 }) {
   return (
     <li className="rounded-lg border border-white/10 bg-slate-900/60 p-3 text-sm">
-      <p className="font-medium text-slate-100">
+      <p className="break-words font-medium text-slate-100">
         {accommodation.name}
         {accommodation.category && (
           <span className="font-normal text-slate-400">
@@ -1822,7 +1881,7 @@ function AccommodationSuggestionCard({
         )}
       </p>
       {accommodation.address && (
-        <p className="mt-1 text-xs text-slate-400">{accommodation.address}</p>
+        <p className="mt-1 break-words text-xs text-slate-400">{accommodation.address}</p>
       )}
       <p className="mt-1 text-[11px] uppercase tracking-wide text-slate-500">
         {accommodation.source} · {accommodation.data_status}
@@ -1857,6 +1916,10 @@ function ValidationSection({ report }: { report: ValidationReport }) {
     report.provider_coverage_notes.length === 0 &&
     report.unavailable_data_notes.length === 0;
 
+  const criticalTone = validationSeverityToneClassName("critical");
+  const warningTone = validationSeverityToneClassName("warning");
+  const suggestionTone = validationSeverityToneClassName("suggestion");
+
   return (
     <div id="validation-report" className="rounded-2xl border border-white/10 bg-white/5 p-5">
       <h2 className="text-lg font-semibold">Validation report</h2>
@@ -1871,16 +1934,28 @@ function ValidationSection({ report }: { report: ValidationReport }) {
         <p className="mt-2 text-sm text-slate-400">No major issues found.</p>
       )}
 
-      <ValidationIssueList title="Critical issues" issues={report.critical_issues} />
-      <ValidationIssueList title="Warnings" issues={actualWarnings} />
-      <ValidationIssueList title="Suggestions" issues={suggestions} />
+      <ValidationIssueList
+        title="Critical issues"
+        issues={report.critical_issues}
+        toneClassName={`${criticalTone.border} ${criticalTone.badge}`}
+      />
+      <ValidationIssueList
+        title="Warnings"
+        issues={actualWarnings}
+        toneClassName={`${warningTone.border} ${warningTone.badge}`}
+      />
+      <ValidationIssueList
+        title="Suggestions"
+        issues={suggestions}
+        toneClassName={`${suggestionTone.border} ${suggestionTone.badge}`}
+      />
 
       {report.provider_coverage_notes.length > 0 && (
         <div className="mt-3">
           <p className="text-sm font-semibold text-slate-200">
             Provider coverage notes
           </p>
-          <ul className="mt-2 list-disc pl-5 text-sm text-slate-300">
+          <ul className="mt-2 list-disc break-words pl-5 text-sm text-slate-300">
             {report.provider_coverage_notes.map((note) => (
               <li key={note}>{note}</li>
             ))}
@@ -1893,7 +1968,7 @@ function ValidationSection({ report }: { report: ValidationReport }) {
           <p className="text-sm font-semibold text-slate-200">
             Unavailable data
           </p>
-          <ul className="mt-2 list-disc pl-5 text-sm text-slate-300">
+          <ul className="mt-2 list-disc break-words pl-5 text-sm text-slate-300">
             {report.unavailable_data_notes.map((note) => (
               <li key={note}>{note}</li>
             ))}
@@ -1909,8 +1984,8 @@ function CandidatePoiCard({ poi }: { poi: CandidatePoi }) {
 
   return (
     <li className="rounded-lg border border-white/10 bg-slate-900/60 p-3 text-sm">
-      <p className="font-medium text-slate-100">{poi.name}</p>
-      <p className="mt-1 text-xs text-slate-400">
+      <p className="break-words font-medium text-slate-100">{poi.name}</p>
+      <p className="mt-1 break-words text-xs text-slate-400">
         {poi.category ?? "Uncategorized"}
         {poi.address ? ` · ${poi.address}` : ""}
       </p>
@@ -1976,7 +2051,7 @@ function AssumptionsList({
       {assumptions.length === 0 ? (
         <p className="mt-2 text-sm text-slate-400">No assumptions returned.</p>
       ) : (
-        <ul className="mt-2 list-disc pl-5 text-sm text-slate-300">
+        <ul className="mt-2 list-disc break-words pl-5 text-sm text-slate-300">
           {assumptions.map((assumption, index) => (
             <li key={`${title}-${index}`}>{assumption}</li>
           ))}
@@ -2314,7 +2389,7 @@ function ProviderCoverageSection({ coverage }: { coverage: ProviderCoverageData 
         <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
           What this means
         </p>
-        <ul className="mt-2 list-disc pl-4 text-xs text-slate-300">
+        <ul className="mt-2 list-disc break-words pl-4 text-xs text-slate-300">
           <li>Provider-backed or open-data-backed fields can be shown.</li>
           <li>Missing fields stay unavailable.</li>
           <li>
@@ -2350,11 +2425,11 @@ function ProviderCoverageSection({ coverage }: { coverage: ProviderCoverageData 
                 <p className="text-[11px] uppercase tracking-wide text-slate-500">
                   Field
                 </p>
-                <p className="text-slate-200">{item.field}</p>
+                <p className="break-words text-slate-200">{item.field}</p>
                 <p className="mt-2 text-[11px] uppercase tracking-wide text-slate-500">
                   Reason
                 </p>
-                <p className="text-xs text-slate-400">{item.reason}</p>
+                <p className="break-words text-xs text-slate-400">{item.reason}</p>
                 <p className="mt-2 text-[11px] uppercase tracking-wide text-slate-500">
                   Status
                 </p>
@@ -2372,7 +2447,7 @@ function ProviderCoverageSection({ coverage }: { coverage: ProviderCoverageData 
           <p className="text-sm font-semibold text-slate-200">
             Data sources used
           </p>
-          <ul className="mt-2 list-disc pl-5 text-sm text-slate-300">
+          <ul className="mt-2 list-disc break-words pl-5 text-sm text-slate-300">
             {coverage.data_sources_used.map((source) => (
               <li key={source}>
                 {providerDisplayName(source)}{" "}
@@ -2417,30 +2492,44 @@ function scrapedConfidenceLabel(confidence: string): string {
 }
 
 /**
- * One scraped offer's provenance badge (Step 168E,
- * docs/16_frontend_architecture.md section 39.7). Renders only fields
- * already present on the backend-returned `ScrapedAccommodationProvenance`
- * -- parser/source metadata is shown only when the backend actually
+ * One scraped offer's provenance badge (Step 168E/169E, merged into one
+ * generic component in Step 179D). `ScrapedAccommodationProvenance` and
+ * `ScrapedFlightProvenance` are structurally identical (see
+ * `frontend/lib/types.ts`); this renders whichever one the caller passes,
+ * with the caller supplying only the one thing that legitimately differs
+ * between an accommodation offer and a flight offer -- the exact list of
+ * fields not yet verified (`notVerifiedFor`), so the accommodation and
+ * flight wording stay distinct, word for word, exactly as before this
+ * merge. Renders parser/source metadata only when the backend actually
  * returned it. This never implies official verification: the badge itself
  * is the opposite claim ("not official-provider data").
  */
-function ScrapedProvenanceBadge({
+function ProvenanceBadge({
   provenance,
+  notVerifiedFor,
 }: {
-  provenance: ScrapedAccommodationProvenance;
+  provenance: ScrapedAccommodationProvenance | ScrapedFlightProvenance;
+  notVerifiedFor: string;
 }) {
   return (
     <div className="mt-2 rounded-md border border-amber-300/30 bg-amber-950/20 p-2 text-[11px] text-amber-200/90">
       <p className="font-semibold uppercase tracking-wide">
         Scraped public page · {scrapedConfidenceLabel(provenance.confidence)}
       </p>
-      <p className="mt-1 text-amber-200/80">
-        This is not official-provider data. It has not been verified for
-        price, availability, rating, or booking-link accuracy.
+      <p className="mt-1 text-xs text-amber-200/80">
+        This is not official-provider data. It has not been verified for{" "}
+        {notVerifiedFor}.
       </p>
-      <p className="mt-1 text-amber-300/70">
+      <p className="mt-1 break-words text-amber-300/70">
         Source: {provenance.source_name}
-        {provenance.source_url ? ` · ${provenance.source_url}` : ""}
+        {provenance.source_url ? (
+          <>
+            {" · "}
+            <span className="break-all">{provenance.source_url}</span>
+          </>
+        ) : (
+          ""
+        )}
       </p>
       {provenance.parser_version && (
         <p className="mt-0.5 font-mono text-amber-300/60">
@@ -2539,11 +2628,11 @@ function AccommodationInventorySection({
       </p>
 
       {!isConnectedWithOffers ? (
-        <p className="mt-2 text-xs text-amber-300/90">
+        <DisclaimerNote tone="amber" spacingClassName="mt-2">
           No official lodging inventory provider is connected yet. Prices,
           ratings, availability, amenities, and booking links are
           unavailable unless returned by an official provider.
-        </p>
+        </DisclaimerNote>
       ) : (
         <ul className="mt-3 flex flex-col gap-2">
           {offers.map((offer, index) => (
@@ -2551,10 +2640,10 @@ function AccommodationInventorySection({
               key={`${offer.provider_property_id}-${index}`}
               className="rounded-lg border border-white/10 bg-slate-900/60 p-3 text-sm"
             >
-              <p className="font-medium text-slate-100">
+              <p className="break-words font-medium text-slate-100">
                 {offer.property_name}
               </p>
-              <p className="mt-0.5 font-mono text-[11px] text-slate-500">
+              <p className="mt-0.5 break-all font-mono text-[11px] text-slate-500">
                 {offer.provider}
                 {offer.source_name ? ` · ${offer.source_name}` : ""}
               </p>
@@ -2580,7 +2669,10 @@ function AccommodationInventorySection({
                 </p>
               )}
               {offer.scraped_provenance && (
-                <ScrapedProvenanceBadge provenance={offer.scraped_provenance} />
+                <ProvenanceBadge
+                  provenance={offer.scraped_provenance}
+                  notVerifiedFor="price, availability, rating, or booking-link accuracy"
+                />
               )}
             </li>
           ))}
@@ -2637,7 +2729,7 @@ function flightInventoryStatusLabel(
  * One real Kiwi MCP flight offer's third-party-provider badge (Step
  * 178D). Kiwi MCP data (Step 178C) is real, live, provider-backed data --
  * not scraped -- so it is deliberately never shown with the
- * `ScrapedFlightProvenanceBadge`'s "not official-provider data" framing.
+ * `ProvenanceBadge`'s "not official-provider data" framing.
  * It still gets its own explicit disclaimer: this is third-party data
  * TravelObligator has not itself reviewed for accuracy, and no strong-
  * assurance language (booking confirmation, official status, or
@@ -2649,49 +2741,11 @@ function KiwiMcpOfferBadge() {
       <p className="font-semibold uppercase tracking-wide">
         Kiwi MCP · Third-party provider data
       </p>
-      <p className="mt-1 text-sky-200/80">
+      <p className="mt-1 text-xs text-sky-200/80">
         This offer was returned by Kiwi via the Model Context Protocol. It
         has not been reviewed by TravelObligator for schedule, price,
         availability, baggage-policy, or booking-link accuracy.
       </p>
-    </div>
-  );
-}
-
-/**
- * One scraped flight offer's provenance badge (Step 169E,
- * docs/16_frontend_architecture.md). Structurally identical to
- * `ScrapedProvenanceBadge` -- kept separate only because it's typed
- * against `ScrapedFlightProvenance` rather than
- * `ScrapedAccommodationProvenance`, mirroring the backend's own separate
- * models. Renders parser/source metadata only when the backend actually
- * returned it. This never implies official verification: the badge
- * itself is the opposite claim ("not official-provider data").
- */
-function ScrapedFlightProvenanceBadge({
-  provenance,
-}: {
-  provenance: ScrapedFlightProvenance;
-}) {
-  return (
-    <div className="mt-2 rounded-md border border-amber-300/30 bg-amber-950/20 p-2 text-[11px] text-amber-200/90">
-      <p className="font-semibold uppercase tracking-wide">
-        Scraped public page · {scrapedConfidenceLabel(provenance.confidence)}
-      </p>
-      <p className="mt-1 text-amber-200/80">
-        This is not official-provider data. It has not been verified for
-        schedule, price, availability, baggage-policy, or booking-link
-        accuracy.
-      </p>
-      <p className="mt-1 text-amber-300/70">
-        Source: {provenance.source_name}
-        {provenance.source_url ? ` · ${provenance.source_url}` : ""}
-      </p>
-      {provenance.parser_version && (
-        <p className="mt-0.5 font-mono text-amber-300/60">
-          Parser: {provenance.parser_version}
-        </p>
-      )}
     </div>
   );
 }
@@ -2776,12 +2830,12 @@ function FlightInventorySection({
       </p>
 
       {!isConnectedWithOffers ? (
-        <p className="mt-2 text-xs text-amber-300/90">
+        <DisclaimerNote tone="amber" spacingClassName="mt-2">
           No official flight inventory provider is connected yet. Airlines,
           flight numbers, schedules, prices, availability, baggage
           policies, and booking links are unavailable unless returned by
           an official provider or a scraped public page.
-        </p>
+        </DisclaimerNote>
       ) : (
         <ul className="mt-3 flex flex-col gap-2">
           {offers.map((offer, index) => (
@@ -2789,7 +2843,7 @@ function FlightInventorySection({
               key={`${offer.offer_id}-${index}`}
               className="rounded-lg border border-white/10 bg-slate-900/60 p-3 text-sm"
             >
-              <p className="font-mono text-[11px] text-slate-500">
+              <p className="break-all font-mono text-[11px] text-slate-500">
                 {offer.offer_id}
                 {offer.source_name ? ` · ${offer.source_name}` : ""}
               </p>
@@ -2832,15 +2886,16 @@ function FlightInventorySection({
               )}
               {offer.booking_url && (
                 <div className="mt-1 text-xs text-cyan-200">
-                  <p className="text-[10px] uppercase tracking-wide text-slate-500">
+                  <p className="text-xs uppercase tracking-wide text-slate-400">
                     Provider-supplied booking link -- not a booking confirmation
                   </p>
                   <p className="break-all">{offer.booking_url}</p>
                 </div>
               )}
               {offer.scraped_provenance && (
-                <ScrapedFlightProvenanceBadge
+                <ProvenanceBadge
                   provenance={offer.scraped_provenance}
+                  notVerifiedFor="schedule, price, availability, baggage-policy, or booking-link accuracy"
                 />
               )}
               {!offer.scraped_provenance && isKiwiMcpFlightOffer(offer) && <KiwiMcpOfferBadge />}
@@ -2881,7 +2936,7 @@ function groundingStatusLabel(groundingStatus: string | null): string {
 function AICandidateReviewCard({ item }: { item: AICandidateReviewItem }) {
   return (
     <li className="rounded-lg border border-white/10 bg-slate-900/60 p-3 text-sm">
-      <p className="font-medium text-slate-100">
+      <p className="break-words font-medium text-slate-100">
         {item.name}
         {item.category && (
           <span className="font-normal text-slate-400"> ({item.category})</span>
@@ -2898,21 +2953,21 @@ function AICandidateReviewCard({ item }: { item: AICandidateReviewItem }) {
         {item.eligible_for_promotion ? "Eligible for scheduling" : "Needs review"}
       </p>
       {item.eligibility_reasons.length > 0 && (
-        <ul className="mt-1 list-disc pl-4 text-xs text-emerald-300/80">
+        <ul className="mt-1 list-disc break-words pl-4 text-xs text-emerald-300/80">
           {item.eligibility_reasons.map((reason, index) => (
             <li key={`${item.candidate_id}-eligible-${index}`}>{reason}</li>
           ))}
         </ul>
       )}
       {item.rejection_reasons.length > 0 && (
-        <ul className="mt-1 list-disc pl-4 text-xs text-amber-300/90">
+        <ul className="mt-1 list-disc break-words pl-4 text-xs text-amber-300/90">
           {item.rejection_reasons.map((reason, index) => (
             <li key={`${item.candidate_id}-rejection-${index}`}>{reason}</li>
           ))}
         </ul>
       )}
       {item.warnings.length > 0 && (
-        <ul className="mt-1 list-disc pl-4 text-xs text-slate-400">
+        <ul className="mt-1 list-disc break-words pl-4 text-xs text-slate-400">
           {item.warnings.map((warning, index) => (
             <li key={`${item.candidate_id}-warning-${index}`}>{warning}</li>
           ))}
@@ -2937,7 +2992,7 @@ function PromotedAICandidateCard({
 }) {
   return (
     <li className="rounded-lg border border-violet-300/30 bg-violet-950/10 p-3 text-sm">
-      <p className="font-medium text-slate-100">
+      <p className="break-words font-medium text-slate-100">
         {candidate.name}
         {candidate.category && (
           <span className="font-normal text-slate-400">
@@ -2955,14 +3010,14 @@ function PromotedAICandidateCard({
         {candidate.provider_source ? ` · Source: ${candidate.provider_source}` : ""}
       </p>
       {candidate.promotion_reasons.length > 0 && (
-        <ul className="mt-1 list-disc pl-4 text-xs text-emerald-300/80">
+        <ul className="mt-1 list-disc break-words pl-4 text-xs text-emerald-300/80">
           {candidate.promotion_reasons.map((reason, index) => (
             <li key={`${candidate.candidate_id}-reason-${index}`}>{reason}</li>
           ))}
         </ul>
       )}
       {candidate.warnings.length > 0 && (
-        <ul className="mt-1 list-disc pl-4 text-xs text-slate-400">
+        <ul className="mt-1 list-disc break-words pl-4 text-xs text-slate-400">
           {candidate.warnings.map((warning, index) => (
             <li key={`${candidate.candidate_id}-warning-${index}`}>{warning}</li>
           ))}
@@ -3030,11 +3085,11 @@ function AICandidateReviewSection({
   return (
     <div id="ai-candidate-review" className="rounded-2xl border border-white/10 bg-white/5 p-5">
       <h2 className="text-lg font-semibold">AI candidate review</h2>
-      <p className="mt-1 text-xs text-amber-300/90">
+      <DisclaimerNote tone="amber">
         AI-suggested candidates are never scheduled directly. Only
         provider-grounded, quality-approved candidates can become eligible
         for scheduling, and scheduling itself stays fully backend-owned.
-      </p>
+      </DisclaimerNote>
 
       {!hasCandidateData ? (
         <p className="mt-3 text-sm text-slate-300">
@@ -3102,12 +3157,12 @@ function AICandidateReviewSection({
               type="button"
               onClick={() => void handleRefreshPromotions()}
               disabled={isRefreshing}
-              className="rounded-full border border-cyan-300/40 bg-slate-900 px-3 py-1 text-xs font-semibold text-cyan-200 transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+              className={`rounded-full border border-cyan-300/40 bg-slate-900 px-3 py-1 text-xs font-semibold text-cyan-200 transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50 ${FOCUS_RING_CLASSNAME}`}
             >
               {isRefreshing ? "Refreshing..." : "Refresh AI promotion report"}
             </button>
             {refreshError && (
-              <p className="text-xs text-red-300">{refreshError}</p>
+              <p className="break-words text-xs text-red-300">{refreshError}</p>
             )}
           </div>
           <p className="mt-2 text-[11px] text-slate-500">
@@ -3187,13 +3242,13 @@ function AICandidateReviewSection({
                 No candidates were skipped.
               </p>
             ) : (
-              <ul className="mt-2 flex flex-col gap-1 text-xs text-slate-400">
+              <ul className="mt-2 flex flex-col gap-1 break-words text-xs text-slate-400">
                 {skippedIds.map((candidateId) => {
                   const matchingItem = items.find(
                     (item) => item.candidate_id === candidateId,
                   );
                   return (
-                    <li key={candidateId}>
+                    <li key={candidateId} className={matchingItem ? "" : "break-all"}>
                       {matchingItem
                         ? `${matchingItem.name}${
                             matchingItem.category
@@ -3271,7 +3326,7 @@ function FeedbackChangePreviewSection({
           <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
             Likely future changes
           </p>
-          <ul className="mt-1 list-disc pl-4 text-xs text-slate-300">
+          <ul className="mt-1 list-disc break-words pl-4 text-xs text-slate-300">
             {changePreview.likely_changes.map((change, index) => (
               <li key={`likely-change-${index}`}>{change}</li>
             ))}
@@ -3284,7 +3339,7 @@ function FeedbackChangePreviewSection({
           <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
             Unchanged sections
           </p>
-          <ul className="mt-1 list-disc pl-4 text-xs text-slate-400">
+          <ul className="mt-1 list-disc break-words pl-4 text-xs text-slate-400">
             {changePreview.unchanged_sections.map((section, index) => (
               <li key={`unchanged-section-${index}`}>{section}</li>
             ))}
@@ -3297,7 +3352,7 @@ function FeedbackChangePreviewSection({
           <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
             Blocked by
           </p>
-          <ul className="mt-1 list-disc pl-4 text-xs text-slate-400">
+          <ul className="mt-1 list-disc break-words pl-4 text-xs text-slate-400">
             {changePreview.blocked_by.map((reason, index) => (
               <li key={`blocked-by-${index}`}>{reason}</li>
             ))}
@@ -3328,17 +3383,17 @@ function PendingRequestedChangesSection({
   return (
     <div className="rounded-2xl border border-white/10 bg-white/5 p-5">
       <h2 className="text-lg font-semibold">Pending requested changes</h2>
-      <p className="mt-1 text-xs text-amber-300/90">
+      <DisclaimerNote tone="amber">
         These requests are summarized from captured feedback. They have not
         been applied to the plan yet.
-      </p>
+      </DisclaimerNote>
 
-      <p className="mt-3 text-xs text-slate-500">
+      <DisclaimerNote tone="slate" spacingClassName="mt-3">
         Feedback-driven regeneration is available once the &ldquo;Regeneration
         readiness&rdquo; section below reports it is ready -- use its
         &ldquo;Regenerate from feedback&rdquo; button. Your feedback is stored
         and summarized here regardless; this section never applies it itself.
-      </p>
+      </DisclaimerNote>
 
       {summary.total_feedback_items === 0 ? (
         <p className="mt-3 text-sm text-slate-400">
@@ -3411,15 +3466,15 @@ function PendingRequestedChangesSection({
                     key={item.feedback_type}
                     className="rounded-lg border border-white/10 bg-slate-900/60 p-3 text-sm"
                   >
-                    <p className="flex items-center justify-between gap-2">
-                      <span className="font-semibold text-slate-200">
+                    <p className="flex flex-wrap items-center justify-between gap-2">
+                      <span className="min-w-0 break-words font-semibold text-slate-200">
                         {item.feedback_type}
                       </span>
                       <span className="text-[11px] uppercase tracking-wide text-slate-400">
                         Count: {item.count}
                       </span>
                     </p>
-                    <p className="mt-1 text-xs text-slate-400">
+                    <p className="mt-1 break-words text-xs text-slate-400">
                       Example: {item.example_feedback}
                     </p>
                     {item.likely_changes.length > 0 && (
@@ -3427,7 +3482,7 @@ function PendingRequestedChangesSection({
                         <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
                           Likely future changes
                         </p>
-                        <ul className="mt-1 list-disc pl-4 text-xs text-slate-300">
+                        <ul className="mt-1 list-disc break-words pl-4 text-xs text-slate-300">
                           {item.likely_changes.map((change, index) => (
                             <li key={`${item.feedback_type}-change-${index}`}>
                               {change}
@@ -3447,7 +3502,7 @@ function PendingRequestedChangesSection({
               <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
                 Blocked by
               </p>
-              <ul className="mt-1 list-disc pl-4 text-xs text-slate-400">
+              <ul className="mt-1 list-disc break-words pl-4 text-xs text-slate-400">
                 {summary.blocked_by.map((reason, index) => (
                   <li key={`blocked-by-${index}`}>{reason}</li>
                 ))}
@@ -3455,7 +3510,7 @@ function PendingRequestedChangesSection({
             </div>
           )}
 
-          <p className="mt-3 text-xs text-slate-400">{summary.note}</p>
+          <p className="mt-3 break-words text-xs text-slate-400">{summary.note}</p>
         </>
       )}
     </div>
@@ -3476,10 +3531,10 @@ function VersionHistorySection({
   return (
     <div id="version-history" className="rounded-2xl border border-white/10 bg-white/5 p-5">
       <h2 className="text-lg font-semibold">Version history</h2>
-      <p className="mt-1 text-xs text-amber-300/90">
+      <DisclaimerNote tone="amber">
         Version history records backend bookkeeping only. It does not add
         travel facts.
-      </p>
+      </DisclaimerNote>
 
       {versionHistory.length === 0 ? (
         <p className="mt-3 text-sm text-slate-400">
@@ -3492,8 +3547,8 @@ function VersionHistorySection({
               key={version.version_id}
               className="rounded-lg border border-white/10 bg-slate-900/60 p-3 text-sm"
             >
-              <p className="flex items-center justify-between gap-2">
-                <span className="font-semibold text-slate-200">
+              <p className="flex flex-wrap items-center justify-between gap-2">
+                <span className="min-w-0 break-words font-semibold text-slate-200">
                   {version.version_label}
                 </span>
                 <span className="text-[11px] uppercase tracking-wide text-slate-400">
@@ -3504,7 +3559,7 @@ function VersionHistorySection({
                 Recorded: {new Date(version.created_at).toLocaleString()}
               </p>
               {version.summary && (
-                <p className="mt-2 text-xs text-slate-300">
+                <p className="mt-2 break-words text-xs text-slate-300">
                   {version.summary}
                 </p>
               )}
@@ -3519,7 +3574,7 @@ function VersionHistorySection({
                 </p>
               )}
               {version.feedback_event_id && (
-                <p className="mt-1 text-xs text-slate-400">
+                <p className="mt-1 break-all text-xs text-slate-400">
                   Triggered by feedback event: {version.feedback_event_id}
                 </p>
               )}
@@ -3548,6 +3603,24 @@ function formatNullableVersionLabel(version: string | null): string {
   return version ?? "None yet";
 }
 
+// Human-readable labels for the backend's regeneration reason/error codes
+// (Step 179D copy polish). Backend: app.core.errors's REGENERATION_*
+// AppError codes plus the frontend's own "UNKNOWN_ERROR" catch-all -- this
+// only relabels a code already shown alongside its own full `message`
+// text below it; it never replaces or summarizes that message, and an
+// unrecognized code still displays as-is rather than being hidden.
+const REGENERATION_REASON_CODE_LABELS: Record<string, string> = {
+  REGENERATION_NOT_AVAILABLE: "Regeneration not available",
+  REGENERATION_BLOCKED_BY_LOCKS: "Blocked by active locks",
+  REGENERATION_NO_PENDING_FEEDBACK: "No pending feedback",
+  REGENERATION_APPLIED: "Regeneration applied",
+  UNKNOWN_ERROR: "Unknown error",
+};
+
+function regenerationReasonCodeLabel(code: string): string {
+  return REGENERATION_REASON_CODE_LABELS[code] ?? code;
+}
+
 /**
  * Plan-level readout of `PlanningState.plan_diff_preview` (Step 133). Purely
  * a restatement of the backend's deterministic, from-scratch-recomputed
@@ -3564,10 +3637,10 @@ function PlanDiffPreviewSection({ preview }: { preview: PlanDiffPreview }) {
   return (
     <div id="plan-diff-preview" className="rounded-2xl border border-white/10 bg-white/5 p-5">
       <h2 className="text-lg font-semibold">Plan diff preview</h2>
-      <p className="mt-1 text-xs text-amber-300/90">
+      <DisclaimerNote tone="amber">
         This is a preview only. No new version or plan diff has been
         generated yet.
-      </p>
+      </DisclaimerNote>
 
       <dl className="mt-3 grid grid-cols-2 gap-3 text-sm sm:grid-cols-4">
         <div className="rounded-lg border border-white/10 bg-slate-900/60 p-3">
@@ -3650,9 +3723,10 @@ function PlanDiffPreviewSection({ preview }: { preview: PlanDiffPreview }) {
             {preview.would_preserve_locked_items.map((item, index) => (
               <li
                 key={`${item.locked_item_type}-${item.locked_item_id}-${index}`}
-                className="rounded-lg border border-white/10 bg-slate-900/60 p-3 text-xs text-slate-300"
+                className="break-words rounded-lg border border-white/10 bg-slate-900/60 p-3 text-xs text-slate-300"
               >
-                Type: {item.locked_item_type} · ID: {item.locked_item_id}
+                Type: {item.locked_item_type} · ID:{" "}
+                <span className="break-all">{item.locked_item_id}</span>
                 {" · "}
                 Reason: {item.reason}
               </li>
@@ -3666,7 +3740,7 @@ function PlanDiffPreviewSection({ preview }: { preview: PlanDiffPreview }) {
           <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
             Triggered by feedback events
           </p>
-          <p className="mt-1 text-xs text-slate-400">
+          <p className="mt-1 break-words text-xs text-slate-400">
             {preview.triggered_by_feedback_event_ids.join(", ")}
           </p>
         </div>
@@ -3677,7 +3751,7 @@ function PlanDiffPreviewSection({ preview }: { preview: PlanDiffPreview }) {
           <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
             Blocked by
           </p>
-          <ul className="mt-1 list-disc pl-4 text-xs text-slate-400">
+          <ul className="mt-1 list-disc break-words pl-4 text-xs text-slate-400">
             {preview.blocked_by.map((reason, index) => (
               <li key={`plan-diff-blocked-by-${index}`}>{reason}</li>
             ))}
@@ -3685,7 +3759,7 @@ function PlanDiffPreviewSection({ preview }: { preview: PlanDiffPreview }) {
         </div>
       )}
 
-      <p className="mt-3 text-xs text-slate-400">{preview.note}</p>
+      <p className="mt-3 break-words text-xs text-slate-400">{preview.note}</p>
     </div>
   );
 }
@@ -3768,11 +3842,11 @@ function RegenerationReadinessSection({
   return (
     <div id="regeneration-readiness" className="rounded-2xl border border-white/10 bg-white/5 p-5">
       <h2 className="text-lg font-semibold">Regeneration readiness</h2>
-      <p className="mt-1 text-xs text-amber-300/90">
+      <DisclaimerNote tone="amber">
         This section explains whether feedback-driven regeneration can run
         right now, and lets you apply it only when the backend says it is
         available.
-      </p>
+      </DisclaimerNote>
 
       <dl className="mt-3 grid grid-cols-2 gap-3 text-sm sm:grid-cols-4">
         <div className="rounded-lg border border-white/10 bg-slate-900/60 p-3">
@@ -3863,7 +3937,7 @@ function RegenerationReadinessSection({
           <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
             Blocked by
           </p>
-          <ul className="mt-1 list-disc pl-4 text-xs text-slate-400">
+          <ul className="mt-1 list-disc break-words pl-4 text-xs text-slate-400">
             {readiness.blocked_by.map((reason, index) => (
               <li key={`regeneration-readiness-blocked-by-${index}`}>
                 {reason}
@@ -3887,7 +3961,7 @@ function RegenerationReadinessSection({
               ? undefined
               : "Regeneration is available only when feedback is pending and no active locks exist."
           }
-          className="rounded-lg border border-white/10 bg-emerald-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-emerald-500 disabled:cursor-not-allowed disabled:border-white/10 disabled:bg-slate-900 disabled:text-slate-500 disabled:opacity-50"
+          className={`rounded-lg border border-white/10 bg-emerald-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-emerald-500 disabled:cursor-not-allowed disabled:border-white/10 disabled:bg-slate-900 disabled:text-slate-500 disabled:opacity-50 ${FOCUS_RING_CLASSNAME}`}
         >
           {isRegenerating ? "Regenerating..." : "Regenerate from feedback"}
         </button>
@@ -3917,7 +3991,7 @@ function RegenerationReadinessSection({
               </p>
             )}
             {regenerateSuccess.applied_feedback_event_ids.length > 0 && (
-              <p className="mt-1 text-xs text-emerald-200">
+              <p className="mt-1 break-words text-xs text-emerald-200">
                 Applied feedback:{" "}
                 {regenerateSuccess.applied_feedback_event_ids.join(", ")}
               </p>
@@ -3927,10 +4001,10 @@ function RegenerationReadinessSection({
 
         {regenerateError && (
           <div className="mt-3 rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-sm">
-            <p className="font-semibold text-red-300">
-              {regenerateError.code}
+            <p className="break-words font-semibold text-red-300">
+              {regenerationReasonCodeLabel(regenerateError.code)}
             </p>
-            <p className="mt-1 text-xs text-red-200">
+            <p className="mt-1 break-words text-xs text-red-200">
               {regenerateError.message}
             </p>
           </div>
@@ -3958,10 +4032,10 @@ function RegenerationAttemptAuditSection({
   return (
     <div className="rounded-2xl border border-white/10 bg-white/5 p-5">
       <h2 className="text-lg font-semibold">Regeneration attempt audit</h2>
-      <p className="mt-1 text-xs text-amber-300/90">
+      <DisclaimerNote tone="amber">
         This is an audit trail of blocked regeneration requests. It does
         not contain itinerary content and does not mean regeneration ran.
-      </p>
+      </DisclaimerNote>
 
       {attempts.length === 0 ? (
         <p className="mt-3 text-sm text-slate-400">
@@ -3974,8 +4048,8 @@ function RegenerationAttemptAuditSection({
               key={attempt.attempt_id}
               className="rounded-lg border border-white/10 bg-slate-900/60 p-3 text-sm"
             >
-              <p className="flex items-center justify-between gap-2">
-                <span className="font-semibold text-slate-200">
+              <p className="flex flex-wrap items-center justify-between gap-2">
+                <span className="min-w-0 break-words font-semibold text-slate-200">
                   {attempt.status}
                 </span>
                 <span className="text-[11px] uppercase tracking-wide text-slate-400">
@@ -3995,9 +4069,9 @@ function RegenerationAttemptAuditSection({
                 Active locks: {attempt.active_lock_count}
               </p>
               <p className="mt-1 text-[11px] uppercase tracking-wide text-slate-500">
-                {attempt.reason_code}
+                {regenerationReasonCodeLabel(attempt.reason_code)}
               </p>
-              <p className="mt-1 text-xs text-slate-300">{attempt.message}</p>
+              <p className="mt-1 break-words text-xs text-slate-300">{attempt.message}</p>
             </li>
           ))}
         </ul>
@@ -4031,7 +4105,7 @@ function FeedbackPanel({
       </p>
 
       <textarea
-        className="mt-3 w-full rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-sm text-slate-100"
+        className={`mt-3 w-full rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-sm text-slate-100 ${FOCUS_RING_CLASSNAME}`}
         rows={3}
         placeholder="e.g. Make this less packed"
         value={feedbackText}
@@ -4042,16 +4116,16 @@ function FeedbackPanel({
         type="button"
         onClick={onSubmit}
         disabled={isSubmitting}
-        className="mt-3 rounded-lg border border-cyan-300/40 bg-slate-900 px-4 py-2 text-sm font-semibold text-cyan-200 transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+        className={`mt-3 rounded-lg border border-cyan-300/40 bg-slate-900 px-4 py-2 text-sm font-semibold text-cyan-200 transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50 ${FOCUS_RING_CLASSNAME}`}
       >
         {isSubmitting ? "Saving feedback..." : "Submit feedback"}
       </button>
 
       {errorMessage && (
-        <p className="mt-3 text-sm text-red-300">{errorMessage}</p>
+        <p className="mt-3 break-words text-sm text-red-300">{errorMessage}</p>
       )}
       {successMessage && !errorMessage && (
-        <p className="mt-3 text-sm text-emerald-300">{successMessage}</p>
+        <p className="mt-3 break-words text-sm text-emerald-300">{successMessage}</p>
       )}
 
       <p className="mt-4 text-xs font-semibold uppercase tracking-wide text-slate-500">
@@ -4072,7 +4146,7 @@ function FeedbackPanel({
               key={event.feedback_event_id}
               className="rounded-lg border border-white/10 bg-slate-900/60 p-3 text-sm"
             >
-              <p className="text-slate-200">{event.feedback_text}</p>
+              <p className="break-words text-slate-200">{event.feedback_text}</p>
               <p className="mt-1 text-[11px] uppercase tracking-wide text-slate-500">
                 {event.handling_status} ·{" "}
                 {new Date(event.created_at).toLocaleString()}
@@ -4097,10 +4171,10 @@ function FeedbackPanel({
                   <p className="text-[11px] uppercase tracking-wide text-slate-500">
                     Preliminary interpretation
                   </p>
-                  <p className="mt-1 text-xs text-slate-300">
+                  <p className="mt-1 break-words text-xs text-slate-300">
                     {event.interpretation.summary}
                   </p>
-                  <p className="mt-1 text-xs text-amber-300/90">
+                  <p className="mt-1 break-words text-xs text-amber-300/90">
                     {event.interpretation.note}
                   </p>
                   {event.interpretation.change_preview && (
@@ -4137,6 +4211,29 @@ function ResultGroupHeader({
   );
 }
 
+/**
+ * A lighter-weight heading than ResultGroupHeader, used to visually split a
+ * single ResultGroupHeader group (e.g. "Plan overview") into scannable
+ * subgroups without hiding, collapsing, reordering, or removing any section
+ * inside it -- purely a heading + spacing treatment (Step 179B).
+ */
+function PlanOverviewSubheading({
+  title,
+  description,
+}: {
+  title: string;
+  description: string;
+}) {
+  return (
+    <div className="mt-2 flex flex-col gap-0.5 border-l-2 border-cyan-300/20 pl-3">
+      <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">
+        {title}
+      </p>
+      <p className="text-xs text-slate-500">{description}</p>
+    </div>
+  );
+}
+
 const RESULT_JUMP_LINKS: { id: string; label: string }[] = [
   { id: "plan-overview", label: "Plan overview" },
   { id: "travel-context", label: "Travel context" },
@@ -4152,20 +4249,25 @@ function ResultJumpLinks() {
       className="rounded-2xl border border-white/10 bg-white/5 p-4"
     >
       <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
-        Jump to
+        Jump to a broad section
       </p>
       <ul className="mt-2 flex flex-wrap gap-2">
         {RESULT_JUMP_LINKS.map((link) => (
           <li key={link.id}>
             <a
               href={`#${link.id}`}
-              className="inline-block rounded-full border border-white/10 bg-slate-900/60 px-3 py-1 text-xs text-cyan-200 hover:border-cyan-300/40 hover:text-cyan-100"
+              className="inline-block rounded-full border border-white/10 bg-slate-900/60 px-3 py-1 text-xs text-cyan-200 hover:border-cyan-300/40 hover:text-cyan-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/50"
             >
               {link.label}
             </a>
           </li>
         ))}
       </ul>
+      <p className="mt-2 text-[11px] text-slate-500">
+        For specific reports (validation, provider coverage, inventories,
+        regeneration), use the trust dashboard&apos;s own &ldquo;View
+        details&rdquo; links below instead.
+      </p>
     </nav>
   );
 }
@@ -4402,15 +4504,15 @@ function LockedItemsSummarySection({
                 key={lock.lock_id}
                 className="rounded-lg border border-white/10 bg-slate-900/60 p-3 text-sm"
               >
-                <p className="font-medium text-slate-100">
+                <p className="break-words font-medium text-slate-100">
                   {matchedExperience
                     ? matchedExperience.name
                     : "Matching scheduled experience not found in the current plan."}
                 </p>
-                <p className="mt-1 text-xs text-slate-400">
+                <p className="mt-1 break-all text-xs text-slate-400">
                   Type: {lock.locked_item_type} · ID: {lock.locked_item_id}
                 </p>
-                <p className="mt-1 text-xs text-slate-400">
+                <p className="mt-1 break-words text-xs text-slate-400">
                   Reason: {lock.reason}
                 </p>
                 <p className="mt-1 text-[11px] uppercase tracking-wide text-emerald-300/90">
@@ -4424,18 +4526,23 @@ function LockedItemsSummarySection({
                   type="button"
                   onClick={() => void handleRemoveKeep(lock.lock_id)}
                   disabled={state?.isSubmitting}
-                  className="mt-2 rounded-full border border-white/10 bg-slate-900 px-3 py-1 text-xs font-semibold text-slate-300 transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+                  aria-label={
+                    matchedExperience
+                      ? `Remove keep marker for ${matchedExperience.name}`
+                      : "Remove keep marker"
+                  }
+                  className={`mt-2 rounded-full border border-white/10 bg-slate-900 px-3 py-1 text-xs font-semibold text-slate-300 transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50 ${FOCUS_RING_CLASSNAME}`}
                 >
                   {state?.isSubmitting ? "Removing..." : "Remove keep"}
                 </button>
 
                 {state?.errorMessage && (
-                  <p className="mt-2 text-xs text-red-300">
+                  <p className="mt-2 break-words text-xs text-red-300">
                     {state.errorMessage}
                   </p>
                 )}
                 {state?.successMessage && !state.errorMessage && (
-                  <p className="mt-2 text-xs text-emerald-300">
+                  <p className="mt-2 break-words text-xs text-emerald-300">
                     {state.successMessage}
                   </p>
                 )}
@@ -4544,7 +4651,7 @@ function TravelGenerationLoading({
         </span>
       </div>
       <p
-        className="mt-4 text-sm text-slate-200"
+        className="mt-4 break-words text-sm text-slate-200"
         role="status"
         aria-live="polite"
       >
@@ -4749,35 +4856,18 @@ export default function Home() {
           Nothing here is invented by the frontend.
         </p>
 
-        <div className="mt-8 rounded-2xl border border-white/10 bg-white/5 p-6">
-          <label className="flex flex-col gap-1 text-sm text-slate-300">
-            Load an existing trip by trip_id
-            <div className="mt-1 flex flex-col gap-2 sm:flex-row">
-              <input
-                className="flex-1 rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-slate-100"
-                placeholder="trip_..."
-                value={existingTripId}
-                onChange={(event) => setExistingTripId(event.target.value)}
-              />
-              <button
-                type="button"
-                onClick={() => void handleLoadExistingTrip()}
-                disabled={isLoading || isLoadingExisting}
-                className="rounded-lg border border-cyan-300/40 bg-slate-900 px-4 py-2 font-semibold text-cyan-200 transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50 sm:shrink-0"
-              >
-                {isLoadingExisting ? "Loading trip..." : "Load existing trip"}
-              </button>
-            </div>
-          </label>
-          <p className="mt-2 text-xs text-slate-500">
-            Reloads a previously generated plan stored on the backend, using
-            its trip_id. Useful after a backend restart, since generated
-            plans are persisted locally.
+        <div className="mt-8">
+          <p className="text-xs font-semibold uppercase tracking-wide text-cyan-300/80">
+            Create a new trip
+          </p>
+          <p className="mt-1 text-xs text-slate-400">
+            The main action on this page — fill in the details below and the
+            backend pipeline will generate a draft plan.
           </p>
         </div>
 
         <form
-          className="mt-8 grid grid-cols-1 gap-4 rounded-2xl border border-white/10 bg-white/5 p-6 sm:grid-cols-2"
+          className="mt-3 grid grid-cols-1 gap-4 rounded-2xl border border-cyan-300/20 bg-white/5 p-6 sm:grid-cols-2"
           onSubmit={(event) => {
             event.preventDefault();
             void handlePlanTrip();
@@ -4786,7 +4876,7 @@ export default function Home() {
           <label className="flex flex-col gap-1 text-sm text-slate-300">
             Destination
             <input
-              className="rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-slate-100"
+              className="rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-slate-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/50"
               value={form.primary_destination}
               onChange={(event) =>
                 setForm({ ...form, primary_destination: event.target.value })
@@ -4797,7 +4887,7 @@ export default function Home() {
           <label className="flex flex-col gap-1 text-sm text-slate-300">
             Origin city
             <input
-              className="rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-slate-100"
+              className="rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-slate-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/50"
               value={form.origin_city}
               onChange={(event) =>
                 setForm({ ...form, origin_city: event.target.value })
@@ -4809,7 +4899,7 @@ export default function Home() {
             Start date
             <input
               type="date"
-              className="rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-slate-100"
+              className="rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-slate-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/50"
               value={form.start_date}
               onChange={(event) =>
                 setForm({ ...form, start_date: event.target.value })
@@ -4821,7 +4911,7 @@ export default function Home() {
             End date
             <input
               type="date"
-              className="rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-slate-100"
+              className="rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-slate-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/50"
               value={form.end_date}
               onChange={(event) =>
                 setForm({ ...form, end_date: event.target.value })
@@ -4835,7 +4925,7 @@ export default function Home() {
               type="number"
               min={1}
               max={20}
-              className="rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-slate-100"
+              className="rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-slate-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/50"
               value={form.travelers_count}
               onChange={(event) =>
                 setForm({
@@ -4849,7 +4939,7 @@ export default function Home() {
           <label className="flex flex-col gap-1 text-sm text-slate-300">
             Pace
             <select
-              className="rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-slate-100"
+              className="rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-slate-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/50"
               value={form.pace}
               onChange={(event) =>
                 setForm({
@@ -4867,7 +4957,7 @@ export default function Home() {
           <label className="flex flex-col gap-1 text-sm text-slate-300">
             Travel group
             <select
-              className="rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-slate-100"
+              className="rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-slate-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/50"
               value={form.travel_group_type}
               onChange={(event) =>
                 setForm({
@@ -4890,7 +4980,7 @@ export default function Home() {
             <input
               type="number"
               min={0}
-              className="rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-slate-100"
+              className="rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-slate-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/50"
               value={form.budget_min ?? ""}
               onChange={(event) =>
                 setForm({
@@ -4909,7 +4999,7 @@ export default function Home() {
             <input
               type="number"
               min={0}
-              className="rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-slate-100"
+              className="rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-slate-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/50"
               value={form.budget_max ?? ""}
               onChange={(event) =>
                 setForm({
@@ -4926,7 +5016,7 @@ export default function Home() {
           <label className="flex flex-col gap-1 text-sm text-slate-300 sm:col-span-2">
             Interests (comma-separated)
             <input
-              className="rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-slate-100"
+              className="rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-slate-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/50"
               placeholder="museums, hiking, local food"
               value={interestsText}
               onChange={(event) => setInterestsText(event.target.value)}
@@ -4936,7 +5026,7 @@ export default function Home() {
           <label className="flex flex-col gap-1 text-sm text-slate-300 sm:col-span-2">
             Must-visit places (comma-separated)
             <input
-              className="rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-slate-100"
+              className="rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-slate-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/50"
               placeholder="Eiffel Tower, Louvre Museum"
               value={mustVisitText}
               onChange={(event) => setMustVisitText(event.target.value)}
@@ -4946,7 +5036,7 @@ export default function Home() {
           <label className="flex flex-col gap-1 text-sm text-slate-300 sm:col-span-2">
             Constraints (comma-separated)
             <input
-              className="rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-slate-100"
+              className="rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-slate-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/50"
               placeholder="no early mornings, wheelchair accessible"
               value={constraintsText}
               onChange={(event) => setConstraintsText(event.target.value)}
@@ -4956,7 +5046,7 @@ export default function Home() {
           <label className="flex flex-col gap-1 text-sm text-slate-300 sm:col-span-2">
             Anything else we should know?
             <textarea
-              className="rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-slate-100"
+              className="rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-slate-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/50"
               rows={3}
               value={form.free_text_preferences ?? ""}
               onChange={(event) =>
@@ -4972,11 +5062,41 @@ export default function Home() {
           <button
             type="submit"
             disabled={isLoading || isLoadingExisting}
-            className="col-span-full mt-2 rounded-lg bg-cyan-400 px-4 py-2 font-semibold text-slate-950 transition disabled:cursor-not-allowed disabled:opacity-50"
+            className="col-span-full mt-2 rounded-lg bg-cyan-400 px-4 py-2 font-semibold text-slate-950 transition focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-200 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950 disabled:cursor-not-allowed disabled:opacity-50"
           >
             {isLoading ? "Planning..." : "Create trip and generate plan"}
           </button>
         </form>
+
+        <div className="mt-6 rounded-2xl border border-white/5 bg-white/[0.02] p-5">
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+            Already have a trip?
+          </p>
+          <label className="mt-2 flex flex-col gap-1 text-sm text-slate-400">
+            Load an existing trip by trip_id
+            <div className="mt-1 flex flex-col gap-2 sm:flex-row">
+              <input
+                className="flex-1 rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-slate-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/50"
+                placeholder="trip_..."
+                value={existingTripId}
+                onChange={(event) => setExistingTripId(event.target.value)}
+              />
+              <button
+                type="button"
+                onClick={() => void handleLoadExistingTrip()}
+                disabled={isLoading || isLoadingExisting}
+                className="rounded-lg border border-white/10 bg-slate-900 px-4 py-2 font-semibold text-slate-300 transition hover:bg-slate-800 hover:text-cyan-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/50 disabled:cursor-not-allowed disabled:opacity-50 sm:shrink-0"
+              >
+                {isLoadingExisting ? "Loading trip..." : "Load existing trip"}
+              </button>
+            </div>
+          </label>
+          <p className="mt-2 text-xs text-slate-500">
+            Reloads a previously generated plan stored on the backend, using
+            its trip_id. Useful after a backend restart, since generated
+            plans are persisted locally.
+          </p>
+        </div>
 
         <TravelGenerationLoading
           key={isLoading ? "loading" : "idle"}
@@ -4990,7 +5110,7 @@ export default function Home() {
         />
 
         {error && (
-          <div className="mt-6 rounded-2xl border border-red-400/30 bg-red-400/10 p-5 text-sm text-red-100">
+          <div className="mt-6 break-words rounded-2xl border border-red-400/30 bg-red-400/10 p-5 text-sm text-red-100">
             {error}
           </div>
         )}
@@ -4998,7 +5118,9 @@ export default function Home() {
         {result && (
           <div className="mt-8 flex flex-col gap-6">
             <div className="rounded-2xl border border-cyan-300/20 bg-cyan-300/10 p-5 text-sm text-cyan-50">
-              <p className="font-semibold">Trip {result.summary.trip_id}</p>
+              <p className="break-all font-semibold">
+                Trip {result.summary.trip_id}
+              </p>
               <p className="mt-2 leading-6">
                 Pipeline status:{" "}
                 <span className="font-semibold">
@@ -5012,7 +5134,7 @@ export default function Home() {
               </p>
               {(result.summary.main_blocking_reason ||
                 result.summary.main_review_reason) && (
-                <p className="mt-2 leading-6 text-cyan-100/90">
+                <p className="mt-2 break-words leading-6 text-cyan-100/90">
                   {result.summary.main_blocking_reason ??
                     result.summary.main_review_reason}
                 </p>
@@ -5057,6 +5179,11 @@ export default function Home() {
               description="Start here. This section explains whether the generated plan is usable as a draft and what still needs review."
             />
 
+            <PlanOverviewSubheading
+              title="Trust & readiness status"
+              description="Where things currently stand — trust signals, validation readiness, and overall plan status."
+            />
+
             <TrustDashboardSection model={buildTrustDashboardModel(result)} />
 
             <UserTrustSummarySection
@@ -5068,6 +5195,11 @@ export default function Home() {
             <PlanStatusSection
               validationStatus={result.summary.validation_status}
               checklist={result.readinessChecklist}
+            />
+
+            <PlanOverviewSubheading
+              title="Feedback & regeneration workflow"
+              description="Requesting changes, and the regeneration readiness, diff preview, version history, and audit trail those changes affect."
             />
 
             <FeedbackPanel
@@ -5140,21 +5272,21 @@ export default function Home() {
 
             <div className="rounded-2xl border border-white/10 bg-white/5 p-5">
               <h2 className="text-lg font-semibold">Day-wise experiences</h2>
-              <p className="mt-1 text-[11px] text-slate-500">
+              <p className="mt-1 text-xs text-slate-500">
                 Map links open the scheduled place coordinates only. They are
                 not route, travel-time, or booking links.
               </p>
-              <p className="mt-1 text-[11px] text-amber-300/90">
+              <p className="mt-1 text-xs text-amber-300/90">
                 Keep markers are stored for future regeneration. They do not
                 change the current plan.
               </p>
-              <p className="mt-1 text-[11px] text-slate-500">
+              <p className="mt-1 text-xs text-slate-500">
                 Route-aware sequencing uses provider-backed movement data
                 when available. If unavailable, the itinerary keeps a
                 fallback order.
               </p>
               {movementDataIsUnavailable(result.routeFeasibilityReport) && (
-                <p className="mt-1 text-[11px] text-amber-300/90">
+                <p className="mt-1 text-xs text-amber-300/90">
                   Movement data unavailable for this trip -- no connected
                   routing provider could supply real distances or travel
                   times between stops.
@@ -5236,7 +5368,7 @@ export default function Home() {
                             );
                           })}
                         </ul>
-                        <p className="mt-2 text-[11px] text-slate-500">
+                        <p className="mt-2 text-xs text-slate-500">
                           Scheduled place cards use backend-returned
                           provider-backed fields only. They do not include
                           ratings, prices, or opening hours yet. Movement
@@ -5302,7 +5434,7 @@ export default function Home() {
                     {day.warnings.map((warning) => (
                       <p
                         key={warning}
-                        className="mt-2 text-xs text-amber-300/90"
+                        className="mt-2 break-words text-xs text-amber-300/90"
                       >
                         {warning}
                       </p>
