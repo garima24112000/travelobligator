@@ -19,6 +19,7 @@ from app.core.errors import (
 )
 from app.core.response import success_response
 from app.models.common import ReadinessStatus
+from app.models.itinerary_narrative import ItineraryNarrativeStatus
 from app.models.planning_state import GenerationProgress, TripRequest
 from app.repositories.planning_state_repository import planning_state_repository
 from app.schemas.ai_candidate_promotion import AICandidatePromotionResponseData
@@ -49,6 +50,7 @@ from app.services.feedback_service import (
     feedback_service,
     pending_feedback_events,
 )
+from app.services.itinerary_narrative_service import itinerary_narrative_service
 from app.services.langgraph_planning_service import LangGraphPlanningService
 from app.services.plan_diff_preview_service import plan_diff_preview_service
 from app.services.planning_orchestrator import planning_orchestrator
@@ -252,6 +254,21 @@ def regenerate_trip_plan(
         raise regeneration_not_available_error()
 
     changed_sections = [stage.value for stage in affected_stages]
+
+    # Step 182F: refresh the optional, read-only LLM narrator after the
+    # real affected-stage rerun above -- ItineraryNarrativeService.generate
+    # never raises, so a disabled or failing narrator never blocks
+    # regeneration. Only reported in changed_sections when it actually
+    # produced a new narrative (status == success); a disabled/
+    # not_connected/failed refresh changes no other field, so it isn't
+    # reported as a changed section either.
+    planning_state = itinerary_narrative_service.generate(planning_state)
+    if (
+        planning_state.itinerary_narrative_report is not None
+        and planning_state.itinerary_narrative_report.status == ItineraryNarrativeStatus.SUCCESS
+    ):
+        changed_sections.append("itinerary_narrative")
+
     # Locks are disallowed entirely for this MVP scope (guarded above), so
     # there is never a locked item for this regeneration to have preserved.
     preserved_sections: list[str] = []

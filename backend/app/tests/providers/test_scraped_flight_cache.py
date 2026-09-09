@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -224,6 +225,93 @@ def test_parsed_offers_have_scraped_public_page_provenance(
     assert offer.scraped_provenance.parser_version == "scraped_flight_provider_v1"
     assert offer.scraped_provenance.source_id == settings.scraped_flight_source_id
     assert offer.scraped_provenance.source_name == settings.scraped_flight_source_name
+
+
+# ---------------------------------------------------------------------------
+# Step 182E: FLIGHT_MANUAL_HTML_SOURCE relabels source_id/source_name for
+# provenance display only -- it never changes any real fact the parser
+# extracted, is completely distinct from the live Kiwi MCP adapter even
+# when the label is "kiwi", and never applies when the operator has
+# already customized the source id/name themselves.
+# ---------------------------------------------------------------------------
+
+
+def test_manual_html_source_label_relabels_source_id_and_name(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    html_path = _write_html(tmp_path, _TEST_HTML_ONE_OFFER)
+    cache_store = ProviderCacheStore(tmp_path / "cache.sqlite3")
+    settings = _enabled_settings(html_path, flight_manual_html_source="skyscanner")
+    monkeypatch.setattr(scraped_adapter_module, "get_settings", lambda: settings)
+
+    result = ScrapedLocalFlightProvider(cache_store=cache_store).search_flights(_request())
+    offer = result.offers[0]
+
+    assert offer.scraped_provenance is not None
+    assert offer.scraped_provenance.official_provider is False
+    assert offer.scraped_provenance.source_id == "manual_local_scraped_flight_skyscanner"
+    assert "Skyscanner" in offer.scraped_provenance.source_name
+    assert "labeled by user" in offer.scraped_provenance.source_name
+    assert "not official Skyscanner data" in offer.scraped_provenance.source_name
+    # Every real fact the parser extracted is unaffected by the label.
+    assert offer.offer_id == "TEST_ONLY_FLIGHT_OFFER_ALPHA"
+    assert offer.total_price_amount == Decimal("452.10")
+
+
+def test_manual_html_source_label_kiwi_is_distinct_from_kiwi_mcp(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The "kiwi" manual-html label is a provenance display string only --
+    the resulting offer's `provider` field still starts with "scraped:",
+    never "kiwi_mcp", so the frontend's `isKiwiMcpFlightOffer` check
+    (which matches on `provider == "kiwi_mcp"` exactly) never mistakes a
+    manually-labeled offer for a real, live Kiwi MCP offer."""
+    html_path = _write_html(tmp_path, _TEST_HTML_ONE_OFFER)
+    cache_store = ProviderCacheStore(tmp_path / "cache.sqlite3")
+    settings = _enabled_settings(html_path, flight_manual_html_source="kiwi")
+    monkeypatch.setattr(scraped_adapter_module, "get_settings", lambda: settings)
+
+    result = ScrapedLocalFlightProvider(cache_store=cache_store).search_flights(_request())
+    offer = result.offers[0]
+
+    assert offer.provider.startswith("scraped:")
+    assert offer.provider != "kiwi_mcp"
+    assert "not official Kiwi data" in offer.scraped_provenance.source_name
+
+
+def test_manual_html_source_label_generic_leaves_defaults_unchanged(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    html_path = _write_html(tmp_path, _TEST_HTML_ONE_OFFER)
+    cache_store = ProviderCacheStore(tmp_path / "cache.sqlite3")
+    settings = _enabled_settings(html_path, flight_manual_html_source="generic")
+    monkeypatch.setattr(scraped_adapter_module, "get_settings", lambda: settings)
+
+    result = ScrapedLocalFlightProvider(cache_store=cache_store).search_flights(_request())
+    offer = result.offers[0]
+
+    assert offer.scraped_provenance.source_id == "manual_local_scraped_flight"
+    assert offer.scraped_provenance.source_name == "Manual local scraped flight source"
+
+
+def test_manual_html_source_label_never_overrides_a_customized_source_name(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    html_path = _write_html(tmp_path, _TEST_HTML_ONE_OFFER)
+    cache_store = ProviderCacheStore(tmp_path / "cache.sqlite3")
+    settings = _enabled_settings(
+        html_path,
+        flight_manual_html_source="skyscanner",
+        scraped_flight_source_id="my_own_flight_source",
+        scraped_flight_source_name="My Own Local Flight Export",
+    )
+    monkeypatch.setattr(scraped_adapter_module, "get_settings", lambda: settings)
+
+    result = ScrapedLocalFlightProvider(cache_store=cache_store).search_flights(_request())
+    offer = result.offers[0]
+
+    assert offer.scraped_provenance.source_id == "my_own_flight_source"
+    assert offer.scraped_provenance.source_name == "My Own Local Flight Export"
 
 
 # ---------------------------------------------------------------------------

@@ -944,18 +944,50 @@ export type AICandidatePromotionData = {
   ai_candidate_promotion_report: AICandidatePromotionReport;
 };
 
+// Optional, additive LLM-narrator output (Step 182F, backend:
+// app.models.itinerary_narrative.ItineraryNarrativeReport). Presentation
+// prose only -- read directly off an already-computed PlanningState by
+// the backend's ItineraryNarrativeRequestBuilder, never a new factual
+// travel claim. `status` follows the same success/not_connected/
+// unavailable/failed vocabulary every other provider report in this app
+// uses. `daily_narratives` items are matched to a real DailyPlan by
+// `day_number`/`date` -- the frontend never invents a day here either.
+// Off (ITINERARY_NARRATOR_ENABLED=false) by default, in which case
+// status is always "not_connected".
+export type ItineraryNarrativeDayOutput = {
+  day_number: number;
+  date: string;
+  title: string;
+  narrative: string;
+  caveats: string[];
+};
+
+export type ItineraryNarrativeReport = {
+  status: "success" | "not_connected" | "unavailable" | "failed";
+  provider: string | null;
+  model: string | null;
+  message: string | null;
+  summary: string | null;
+  daily_narratives: ItineraryNarrativeDayOutput[];
+  warnings: string[];
+  assumptions: string[];
+  source_fields_used: string[];
+  generated_at: string | null;
+};
+
 // Full PlanningState is much larger than this; only feedback_history,
 // pending_feedback_summary, user_locks, version_history, plan_diff_preview,
 // regeneration_readiness, regeneration_attempts,
 // accommodation_inventory_report, flight_inventory_report,
 // ai_candidate_promotion_report, route_aware_sequencing_report (Step
-// 172C), route_feasibility_report (Step 172C), and
-// travel_time_buffer_report (Step 172D) are declared here since that's
-// the only part of it the frontend reads. All three Step 172C/172D
-// fields were already present on every GET /trips/{trip_id} and
-// POST /trips/{trip_id}/generate response before those steps -- the
-// backend serializes the full PlanningState already; each was purely a
-// frontend type addition, not a new backend field.
+// 172C), route_feasibility_report (Step 172C),
+// travel_time_buffer_report (Step 172D), and itinerary_narrative_report
+// (Step 182F) are declared here since that's the only part of it the
+// frontend reads. Every one of these fields was already present on
+// every GET /trips/{trip_id} and POST /trips/{trip_id}/generate response
+// before its own step added it here -- the backend serializes the full
+// PlanningState already; each was purely a frontend type addition, not a
+// new backend field.
 export type TripData = {
   trip_id: string;
   planning_state: {
@@ -972,5 +1004,6 @@ export type TripData = {
     route_aware_sequencing_report: RouteAwareSequencingReport | null;
     route_feasibility_report: RouteFeasibilityReport | null;
     travel_time_buffer_report: TravelTimeBufferReport | null;
+    itinerary_narrative_report: ItineraryNarrativeReport | null;
   };
 };

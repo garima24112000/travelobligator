@@ -4814,3 +4814,168 @@ the former configures an interactive coding-session tool; the latter is
 an independently built, independently tested, config-gated runtime
 integration this application makes on its own, verified live multiple
 times across 178B-178D without ever touching Claude Code's MCP setup.
+
+## 120. Itinerary Narrator: AI Supplies Prose Only, Never a New Fact (Step 182F)
+
+The itinerary narrator is this codebase's second LLM-backed feature,
+alongside (and completely separate from) AI candidate proposal
+(sections 38-41, 108). Where AI candidate proposal supplies *ideas* that
+must be independently grounded before they can be scheduled, the
+narrator supplies *prose* over a plan that is already fully computed and
+already final for this generation/regeneration run -- it runs last,
+after validation/provider coverage/the full plan already exist, and its
+output is never fed back into scheduling, validation, provider coverage,
+or regeneration decision-making at all. This is "provider supplies
+facts, AI supplies reasoning/explanation only" applied to a new part of
+the pipeline: here, the AI's "reasoning" is narrative writing, not
+candidate discovery.
+
+**Separate config surface, on purpose.** `ITINERARY_NARRATOR_ENABLED`/
+`ITINERARY_NARRATOR_PROVIDER`/`ITINERARY_NARRATOR_MODEL`/
+`ITINERARY_NARRATOR_TIMEOUT_SECONDS`/`ITINERARY_NARRATOR_MAX_DAYS`/
+`ITINERARY_NARRATOR_MAX_ITEMS_PER_DAY` (`backend/app/core/config.py`) are
+new fields, never a reuse of `AI_CANDIDATE_DISCOVERY_SHADOW_MODE_ENABLED`/
+`AI_CANDIDATE_PROPOSAL_PROVIDER` -- a test
+(`test_itinerary_narrator_is_a_separate_config_surface_from_ai_candidate_discovery`)
+proves the two can be set independently. Off by default; even enabled,
+the provider still defaults to `not_connected`.
+
+**Separate provider interface, on purpose.** `ItineraryNarratorProvider`
+(`backend/app/providers/itinerary_narrator/base.py`) is its own `ABC`,
+not a subclass or variant of `AICandidateProposalProvider` -- a test
+proves neither is a subclass of the other. `GroqItineraryNarratorProvider`/
+`AnthropicItineraryNarratorProvider` mirror the AI-candidate-proposal
+Groq/Anthropic adapters' structural pattern exactly (same lazy SDK
+import, same no-key-never-crashes contract, same
+`langchain_groq.ChatGroq.with_structured_output`/Anthropic forced
+tool-use mechanism) -- but the schema each must respond through has no
+price, rating, review count, route/travel-time duration, booking link,
+availability flag, opening hour, or flight-schedule field anywhere in
+it. Narrative text and a list of caveat strings are the only content
+fields either schema allows.
+
+**A day's real date always wins over the model's own output.** Both
+adapters build the final `ItineraryNarrativeDayOutput` list by looking
+up each model-returned `day_number` against `request.days`' own real
+`date` values -- never trusting a date the model might state itself. A
+`day_number` that doesn't match a real day in the request is silently
+dropped, never turned into a fabricated extra day
+(`test_drops_a_day_number_not_present_in_the_request`, both adapters).
+
+**The input builder is the actual safety boundary.**
+`ItineraryNarrativeRequestBuilder`
+(`backend/app/services/itinerary_narrative_request_builder.py`) is a
+strict allow-list, not a filter applied after the fact: it only ever
+reads `destination`/dates/traveler fields, scheduled experience
+name/category/`why_included` (never coordinates, provider ids, or
+confidence scores), restaurant/stay-area *names* only, bookable
+accommodation/flight offer *counts* only (never a price, rating, or any
+per-offer field), a plain deterministic weather min/max range string it
+computes itself (mirroring the frontend's own Step 182D
+`summarizeWeatherForTravelerView`, never something the LLM invents or a
+raw provider payload), and validation status/warning counts/unavailable-
+field names. `ItineraryNarrativeRequest` structurally has no field for a
+price, rating, review count, route/travel-time duration, booking link,
+availability flag, or opening hour -- there is nothing for a provider
+adapter to leak even if it wanted to. Tests dump the built request to
+JSON and grep for forbidden substrings (`place_id`, `coordinates`,
+`lat`/`lng`, `api_key`) to prove this structurally, not just by schema
+inspection. Long trips are truncated to
+`itinerary_narrator_max_days`/`itinerary_narrator_max_items_per_day` for
+prompt-size safety, with `ItineraryNarrativeRequest.truncated` honestly
+set `True` whenever that happened.
+
+**`ItineraryNarrativeService.generate` never raises and never touches
+another field.** Gated on `Settings.itinerary_narrator_enabled` first,
+before the provider factory or request builder are even reached when
+disabled -- an instant, zero-risk `not_connected` result. When enabled,
+a request-builder or provider exception is caught and converted to an
+honest `failed` result with a generic message, never the raw exception
+text and never a fabricated narrative. A test
+(`test_generate_never_mutates_any_other_planning_state_field`) dumps the
+whole `PlanningState` before and after a successful `generate` call
+(excluding only `itinerary_narrative_report`/`metadata`) and asserts
+byte-for-byte equality.
+
+**Wired to run last, in both engines, and again on regeneration.**
+`PlanningOrchestrator.generate_full_plan`/`generate_full_plan_via_langgraph`
+both call `itinerary_narrative_service.generate` as the final step of
+their existing "post_processing" block -- after `versioning_service`/
+`plan_diff_preview_service`/`regeneration_readiness_service`, so
+validation/provider coverage/the full plan already exist by the time it
+runs. `POST /trips/{trip_id}/regenerate`
+(`backend/app/api/routes/trips.py`) calls it again after
+`rerun_affected_stages`, and appends `"itinerary_narrative"` to
+`changed_sections` *only* when the refresh actually produced a new
+`success` report -- a disabled/not_connected/failed refresh is never
+reported as a changed section, since nothing else changed either. API
+tests prove generation and regeneration both return `200` whether the
+narrator is disabled, succeeds, or its provider raises.
+
+No API key was added anywhere in this step. No paid/partner provider
+adapter was added -- Groq/Anthropic were already wired providers from
+Sections 161-162. No scraping was added. No hotel, flight, price,
+rating, route, schedule, or booking fact was ever fabricated -- the
+narrator's only possible output is prose over facts the rest of the
+pipeline already computed and already validated independently.
+
+## 121. Real-Key Verification: Groq Succeeded, Failed, and Was Refreshed on Regeneration -- All Handled Honestly (Step 182G)
+
+Section 182F's own manual verification had no real Groq/Anthropic key
+available and said so plainly rather than fabricating a "tested with a
+real key" result. Step 182G had a real, working `GROQ_API_KEY` available
+locally (never committed, never printed -- see
+`docs/16_frontend_architecture.md`'s own 182G note for how it was
+handled) and used it to generate and then regenerate one real trip
+end to end, twice hitting the real Groq API for the narrator.
+
+**Both a real success and a real failure were observed, live, in the
+same session** -- neither is a bug:
+
+- The initial UI-driven generation's narrator call returned
+  `status: failed`, with the honest, unmodified provider message: `Groq
+  API call failed: Error code: 400 - {'error': {'message': 'Failed to
+  parse tool call arguments as JSON', ...}}`. This is Groq's own
+  structured-output layer occasionally failing to produce parseable JSON
+  for a forced tool call (a known characteristic of smaller/open models
+  served via Groq, not something this codebase's adapter can prevent) --
+  `GroqItineraryNarratorProvider._failed_result` caught it exactly as
+  designed, and Traveler view correctly showed no narrative summary at
+  all (status wasn't `success`), while Developer view's diagnostic
+  section showed the real, unmodified failure reason.
+- The very next call -- triggered automatically by
+  `POST /trips/{trip_id}/regenerate`'s narrator refresh, same trip, same
+  API key, no code or config change in between -- returned a real
+  `status: success`, with a five-day narrative that correctly reflected
+  every real gap in the plan already known to the backend ("beach visits
+  are not scheduled," "accommodation and flight details remain pending,"
+  "transit feasibility and weather forecasts are not yet available") and
+  named only real scheduled place names drawn from `destination_context`
+  (e.g. a real Universal Studios day, real OSM-sourced monument/park
+  names on other days, honest "This day is free of scheduled activities"
+  prose plus a preserved "No movement or route data available" caveat
+  for the two days that had none). `changed_sections` on the resulting
+  `VersionHistoryItem` correctly included `"itinerary_narrative"`
+  alongside the real affected stages.
+
+**Conclusion for anyone relying on this narrator with a real key**: a
+single narrator call can fail transiently against a real LLM API for
+reasons entirely outside this codebase's control (malformed structured
+output from the model itself) -- this is expected, already handled by
+returning an honest `failed` status with the real reason, and it never
+blocks generation or regeneration either way (confirmed live, not just
+by the Step 182F automated tests). Retrying (including automatically, on
+the next regeneration) can succeed even with zero code changes.
+
+The one narrative-quality observation worth a future look: the model's
+own prose describing a real, correctly-named Universal Studios visit
+used the word "ticketed" ("a ticketed adventure at Universal Studios")
+-- a mild, generic descriptive word, not one of the explicitly forbidden
+terms (`booked`/`confirmed`/`guaranteed`/`reservation`), and not a
+specific fabricated fact (no price, no confirmation, no ticket type or
+count was stated), but a small step beyond pure inventory-of-what's-
+scheduled prose. Not treated as a defect requiring a code change in this
+step -- the system prompt already explicitly forbids the exact banned
+vocabulary and no instance of that vocabulary appeared in either real
+run -- but noted here for whoever tunes the narrator's system prompt
+further.

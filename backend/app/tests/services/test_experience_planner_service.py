@@ -734,3 +734,58 @@ def test_empty_day_has_no_experiences_to_stamp() -> None:
 
     for day_plan in planning_state.experience_plan.daily_plans:
         assert day_plan.experiences == []
+
+
+# ---------------------------------------------------------------------------
+# 9. Stay-area guidance anchor cap (Step 182D: raised from 3 to 5 so the
+#    frontend's trip-level "Where to stay" section has enough real
+#    candidates to show 4-5 cards without falling back to a shorter list).
+# ---------------------------------------------------------------------------
+
+
+def test_stay_area_guidance_returns_at_most_five_anchors() -> None:
+    attraction = _place("anchor", "Anchor Museum", "museum", lat=0.0, lng=0.0)
+    # 7 coordinate-backed accommodation POI candidates at increasing
+    # distance from the one scheduled attraction -- more than the cap, so
+    # this proves the cap is enforced rather than merely "usually small".
+    accommodations = [
+        _place(f"acc{i}", f"Stay Option {i}", "guest_house", lat=0.0, lng=0.01 * i)
+        for i in range(1, 8)
+    ]
+    planning_state = _planning_state(
+        candidate_pois=[attraction],
+        candidate_accommodation_pois=accommodations,
+    )
+
+    ExperiencePlannerService().run(planning_state)
+
+    guidance = planning_state.experience_plan.stay_area_guidance
+    assert len(guidance.suggested_anchor_accommodation_pois) == 5
+    # The 5 returned are the 5 closest to the anchor -- Stay Option 6 and 7
+    # (the two farthest) must not appear.
+    returned_names = {poi.name for poi in guidance.suggested_anchor_accommodation_pois}
+    assert "Stay Option 6" not in returned_names
+    assert "Stay Option 7" not in returned_names
+    # No fabricated lodging fact ever appears on a stay-area suggestion --
+    # it is a location candidate only.
+    for poi in guidance.suggested_anchor_accommodation_pois:
+        assert not hasattr(poi, "price")
+        assert not hasattr(poi, "rating")
+        assert not hasattr(poi, "booking_url")
+
+
+def test_stay_area_guidance_returns_fewer_than_five_when_fewer_candidates_exist() -> None:
+    attraction = _place("anchor", "Anchor Museum", "museum", lat=0.0, lng=0.0)
+    accommodations = [
+        _place("acc1", "Stay Option 1", "guest_house", lat=0.0, lng=0.01),
+        _place("acc2", "Stay Option 2", "guest_house", lat=0.0, lng=0.02),
+    ]
+    planning_state = _planning_state(
+        candidate_pois=[attraction],
+        candidate_accommodation_pois=accommodations,
+    )
+
+    ExperiencePlannerService().run(planning_state)
+
+    guidance = planning_state.experience_plan.stay_area_guidance
+    assert len(guidance.suggested_anchor_accommodation_pois) == 2

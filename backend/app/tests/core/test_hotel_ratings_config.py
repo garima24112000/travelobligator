@@ -39,3 +39,44 @@ def test_hotel_ratings_provider_env_override(monkeypatch: pytest.MonkeyPatch) ->
     settings = Settings()
 
     assert settings.hotel_ratings_provider == "some_future_provider"
+
+
+# ---------------------------------------------------------------------------
+# Step 182E: Tripadvisor Content API credential placeholders default to
+# None and are not required for default tests. No automated Tripadvisor
+# scraping exists or is implemented anywhere in this codebase; these
+# fields exist only so a real, credentialed Tripadvisor adapter would
+# have a typed place to read a key from, if one is ever implemented.
+# ---------------------------------------------------------------------------
+
+
+def test_tripadvisor_credential_placeholders_default_to_none() -> None:
+    settings = Settings(_env_file=None)
+    assert settings.tripadvisor_api_key is None
+    assert settings.tripadvisor_api_base_url is None
+
+
+def test_settings_constructs_without_any_tripadvisor_credential(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setitem(Settings.model_config, "env_file", None)
+    settings = Settings()
+
+    assert settings.hotel_ratings_provider == "not_connected"
+    assert settings.tripadvisor_api_key is None
+
+
+def test_setting_tripadvisor_credentials_does_not_change_hotel_ratings_provider_selection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Setting a Tripadvisor credential alone must never select a
+    Tripadvisor provider -- no such adapter exists in
+    `app.providers.hotel_ratings.factory._SUPPORTED_PROVIDERS`, so
+    `hotel_ratings_provider` still defaults to (and stays) not_connected
+    unless explicitly changed."""
+    monkeypatch.setitem(Settings.model_config, "env_file", None)
+    monkeypatch.setenv("TRIPADVISOR_API_KEY", "placeholder-only-value")
+
+    settings = Settings()
+
+    assert settings.hotel_ratings_provider == "not_connected"

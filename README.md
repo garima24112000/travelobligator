@@ -154,6 +154,14 @@ Places, weather, holidays, and currency are connected by default and
 should return real data. See "Optional Provider-Backed Demos" below for
 how to see non-empty accommodation/flight inventory locally.
 
+Holiday and currency context are inferred deterministically from the
+destination string — a small, exact-match table of country names plus
+(as of Step 182B) all 50 US states/abbreviations and Washington D.C., so
+a domestic US destination written the ordinary way ("Orlando, FL",
+"Jersey City, NJ") resolves correctly instead of reporting `unavailable`.
+A single ambiguous word (e.g. "Georgia," which is both a US state and a
+country) still stays unresolved on purpose, rather than guessing.
+
 ---
 
 ## Optional Provider-Backed Demos
@@ -234,9 +242,81 @@ AI_CANDIDATE_DISCOVERY_SHADOW_MODE_ENABLED=true \
 python backend/scripts/manual_anthropic_shadow_smoke.py
 ```
 
+### D. OSRM routing demo (no API key)
+
+Route feasibility, movement rows, and map paths default to `not_connected`
+(`ROUTING_PROVIDER=not_connected`). For a local/demo run with real route
+data and **no API key or signup**, point `OSRM_BASE_URL` at the public
+OSRM demo server:
+
+```bash
+ROUTING_PROVIDER=osrm
+OSRM_BASE_URL=https://router.project-osrm.org
+```
+
+That demo server is free and requires no credentials, but it's a shared
+public instance with no uptime or rate-limit guarantee — fine for local
+development/demos, not something to point production traffic at. Leaving
+`OSRM_BASE_URL` unset (the default) keeps routing honestly
+`not_connected` even if `ROUTING_PROVIDER=osrm` is set.
+
+### E. Itinerary narrator demo (Anthropic / Groq, Step 182F)
+
+A completely separate feature from the AI-candidate-proposal demo above
+(C) — don't confuse `ITINERARY_NARRATOR_*` with `AI_CANDIDATE_*`. This
+narrator only ever reads an already-finished `PlanningState` (destination,
+dates, scheduled place names/reasons, a plain weather range, offer
+counts, validation status) and writes polished, traveler-facing prose —
+it can never create a hotel, flight, price, rating, route, or booking,
+and it never changes provider coverage, validation readiness, route
+feasibility, or any other factual field. Off by default
+(`ITINERARY_NARRATOR_ENABLED=false`); generation and regeneration always
+succeed whether it's disabled or its provider call fails.
+
+**Groq:**
+1. Create a key in the [GroqCloud Console](https://console.groq.com).
+2. Put it in `GROQ_API_KEY` in your local `.env`.
+3. Set:
+   ```bash
+   GROQ_API_KEY=...
+   ITINERARY_NARRATOR_PROVIDER=groq
+   ITINERARY_NARRATOR_ENABLED=true
+   ```
+
+**Anthropic:**
+1. Create a key in the Claude/Anthropic Console, under Settings > API keys.
+2. Put it in `ANTHROPIC_API_KEY` in your local `.env`.
+3. Set:
+   ```bash
+   ANTHROPIC_API_KEY=...
+   ITINERARY_NARRATOR_PROVIDER=anthropic
+   ITINERARY_NARRATOR_ENABLED=true
+   ```
+
+Restart the backend, then generate a trip: Traveler view shows a short
+trip summary near the top of the itinerary and a short narrative inside
+each day card; Developer view's "Itinerary narrative (AI)" section shows
+the exact status/provider/model and which `PlanningState` fields were
+used. With no key or `ITINERARY_NARRATOR_ENABLED=false` (the default),
+Traveler view shows nothing extra (no fake summary), and Developer view
+shows a calm `not_connected`/disabled reason — never a fabricated
+narrative either way. Remove the key (or restore your `.env`) after
+testing, same as the other optional demos above.
+
 ---
 
 ## Demo Walkthrough
+
+The result page has a **Traveler view / Developer view** toggle (Traveler
+view is the default). Traveler view prioritizes the actual itinerary —
+a concise trip-context summary, the day-by-day plan, one trip-level
+"Where to stay" section, one trip-level "Flights" section, and
+feedback/regeneration — in that order. Developer view exposes the full
+diagnostic experience described below — Trust Dashboard, full Validation
+Report, Provider Coverage, Regeneration Readiness/Audit, and the raw
+candidate inventories. Nothing is deleted in Traveler view, only hidden;
+switch to Developer view to see it. The steps below describe Developer
+view.
 
 With the backend and frontend both running:
 
@@ -260,6 +340,11 @@ With the backend and frontend both running:
 8. Check **Regeneration Readiness** — it only allows regeneration when
    your feedback maps to a real affected stage and no lock is active;
    otherwise it explains exactly why not.
+9. If the itinerary narrator is enabled (see "Optional Provider-Backed
+   Demos" E above), check the **Itinerary narrative (AI)** section —
+   status/provider/model and which `PlanningState` fields were used.
+   Disabled (the default) shows a calm `not_connected`/disabled reason,
+   never a fabricated narrative.
 
 Real output depends entirely on which providers you've connected — a
 default, unconfigured run will show mostly `not_connected`/`unavailable`
@@ -590,17 +675,238 @@ This is the rule the rest of the product exists to protect:
 | Nager.Date | Public holidays | Implemented, connected by default |
 | Frankfurter | Currency conversion | Implemented, connected by default |
 | OSRM | Route feasibility / route geometry | Implemented adapter. `ROUTING_PROVIDER` defaults to `not_connected`; `osrm` when explicitly configured. No route time or path is ever shown when not connected. |
-| `scraped_local` (accommodation) | Lodging inventory | Local/manual static-HTML file parsing only — never live scraping. Enabled by default; honestly reports data as unavailable with no local file present. Labeled experimental/fragile, never official-provider data. |
-| `scraped_local` (flights) | Flight inventory | Same local/manual static-HTML parsing as above, for flights. Never live scraping. |
-| Kiwi (via MCP) | Live flight inventory | Real, live, third-party data. Explicit opt-in only — both `FLIGHT_PROVIDER=kiwi_mcp` and `KIWI_MCP_ENABLED=true` required. Off by default. Labeled distinctly from `scraped_local` everywhere it appears; a booking link is always labeled provider-supplied, not a booking confirmation. |
+| `scraped_local` / `manual_html` (accommodation) | Lodging inventory | Local/manual static-HTML file parsing only — never live scraping. Enabled by default; honestly reports data as unavailable with no local file present. Labeled experimental/fragile, never official-provider data. `manual_html` (Step 182E) is a non-breaking alias for `scraped_local` — same adapter. Optional `ACCOMMODATION_MANUAL_HTML_SOURCE` cosmetic label (e.g. `booking`/`expedia`) relabels displayed provenance only. |
+| `scraped_local` / `manual_html` (flights) | Flight inventory | Same local/manual static-HTML parsing as above, for flights. Never live scraping. Optional `FLIGHT_MANUAL_HTML_SOURCE` cosmetic label (e.g. `skyscanner`) relabels displayed provenance only — never confused with Kiwi MCP below. |
+| Kiwi (via MCP) | Live flight inventory | Real, live, third-party data. Explicit opt-in only — both `FLIGHT_PROVIDER=kiwi_mcp` and `KIWI_MCP_ENABLED=true` required. Off by default. Labeled distinctly from `scraped_local`/`manual_html` everywhere it appears; a booking link is always labeled provider-supplied, not a booking confirmation. |
 | Hotel-ratings provider layer | Lodging rating enrichment | Provider-backed rating snapshot when a real ratings provider is configured. No live rating provider connected today (`HOTEL_RATINGS_PROVIDER` defaults to `not_connected`). Never a quality guarantee even when connected. |
 | Anthropic (primary) / Groq (dev-only) | AI-suggested candidate proposals, reasoning/explanation | Proposal and reasoning only — never a source of factual travel data. A suggestion must be independently grounded against real provider/open data before it can be anything more than a rejected/unpromoted candidate. |
+| Anthropic / Groq (itinerary narrator, Step 182F) | Read-only, presentation-prose summary of an already-finished plan | Completely separate feature/config surface from the AI-candidate-proposal row above (`ITINERARY_NARRATOR_*`, never `AI_CANDIDATE_*`). Off by default. Reads `PlanningState` only — never creates a hotel, flight, price, rating, route, or booking, and never changes provider coverage, validation readiness, or route feasibility. Generation/regeneration always succeed whether it's disabled or fails. |
+| Booking.com Demand API, Expedia Rapid API, Hotelbeds, Hostelworld, Vrbo, Airbnb, Skyscanner Travel API, Tripadvisor Content API | Future lodging/flight/rating coverage | Not connected — partner/paid-access options, credential placeholders declared but not wired into any adapter. See "Provider Activation" below for access steps and manual-fallback guidance for each. |
 | Amadeus, Google Places/Routes, Mapbox | Future accommodation/flight/routing coverage | Not connected — approved-access options for later, not implemented today |
 | OpenTripPlanner + GTFS | Transit-specific routing | Planned/deferred — not implemented today |
 
 Restricted providers — Airbnb, Booking.com, Expedia, Vrbo, Tripadvisor,
 and Google Flights — are never scraped and never treated as connected.
 They appear in this document only as a policy note, not as data sources.
+
+---
+
+## Provider Activation: APIs and Manual Fallback
+
+For every real or aspirational data source this app can use, this section
+states: what it's for, its current MVP status, whether it needs a key,
+how to get access at a high level, which env variable(s) it reads, its
+fallback path when access is paid/partner-blocked/unavailable, and what
+the app shows when it's missing. This app never fabricates data — a
+missing key or file always produces an honest `not_connected`/
+`unavailable` result, never a fake one.
+
+**Kiwi MCP** (flights, real/live)
+- Status: implemented, off by default.
+- Key needed: no normal API key in this implementation — it talks to
+  Kiwi's hosted MCP server directly.
+- Access: none to arrange; it's a public MCP endpoint.
+- Env: `FLIGHT_PROVIDER=kiwi_mcp` and `KIWI_MCP_ENABLED=true` (both
+  required — either alone does nothing live). Endpoint defaults to
+  `KIWI_MCP_ENDPOINT=https://mcp.kiwi.com`.
+- Fallback: the manual/local HTML flight fallback below.
+- Missing: `flight_inventory_report.status` stays `not_connected` and
+  `FLIGHT_PROVIDER` stays at its default (`scraped_local`).
+
+**Groq** (AI candidate proposal/reasoning only — never a factual data
+source)
+- Status: implemented, off by default.
+- Key needed: yes.
+- Access: get a key from the GroqCloud console.
+- Env: `GROQ_API_KEY=<your key>`, `AI_CANDIDATE_PROPOSAL_PROVIDER=groq`,
+  and `AI_CANDIDATE_DISCOVERY_SHADOW_MODE_ENABLED=true` to actually run
+  it during generation.
+- Fallback: none needed — this is a proposal/reasoning aid, not a
+  required data source; the app works fully without it.
+- Missing: `AnthropicAICandidateProposalProvider`/
+  `GroqAICandidateProposalProvider.propose` return an honest
+  `not_connected` result; no candidate is proposed, and nothing in the
+  itinerary changes.
+
+**Anthropic** (AI candidate proposal/reasoning only — same rule as Groq;
+this is the primary wired base)
+- Status: implemented, off by default.
+- Key needed: yes.
+- Access: create a key in the Claude/Anthropic Console, under API keys.
+- Env: `ANTHROPIC_API_KEY=<your key>`,
+  `AI_CANDIDATE_PROPOSAL_PROVIDER=anthropic`, and
+  `AI_CANDIDATE_DISCOVERY_SHADOW_MODE_ENABLED=true`.
+- Fallback: none needed, same reasoning as Groq.
+- Missing: same honest `not_connected` behavior as Groq.
+
+**Booking.com Demand API** (lodging)
+- Status: not implemented — no adapter exists.
+- Key needed: yes, if ever implemented — a managed affiliate/Demand API
+  partner relationship with Booking.com, not a self-serve signup.
+- Access: apply through Booking.com's partner/affiliate program; a real
+  adapter would only be added once real credentials and a documented
+  request/response schema exist.
+- Env: `BOOKING_DEMAND_API_KEY`/`BOOKING_DEMAND_API_BASE_URL` are
+  declared as placeholders only — not read by any adapter today.
+- Fallback: the manual/local HTML accommodation fallback below (label it
+  `ACCOMMODATION_MANUAL_HTML_SOURCE=booking` for clearer provenance —
+  still never official Booking.com data).
+- Missing (always, today): `accommodation_provider` never resolves to a
+  Booking adapter — selecting `"booking"` explicitly falls back to
+  `not_connected` (see `get_accommodation_provider`'s "unsupported name"
+  behavior).
+
+**Expedia Rapid API** (lodging)
+- Status: not implemented.
+- Key needed: yes, if ever implemented — Rapid API / partner access via
+  Expedia Partner Solutions, not self-serve.
+- Access: apply through Expedia Partner Solutions.
+- Env: `EXPEDIA_RAPID_API_KEY`/`EXPEDIA_RAPID_API_SECRET`/
+  `EXPEDIA_RAPID_API_BASE_URL` — placeholders only.
+- Fallback: manual/local HTML accommodation fallback
+  (`ACCOMMODATION_MANUAL_HTML_SOURCE=expedia`).
+- Missing (always, today): same `not_connected` fallback as Booking.com.
+
+**Hotelbeds API** (lodging)
+- Status: not implemented.
+- Key needed: yes, if ever implemented — an API key and secret issued
+  after registering as a Hotelbeds API partner.
+- Access: register at the Hotelbeds APIs developer portal.
+- Env: `HOTELBEDS_API_KEY`/`HOTELBEDS_SECRET`/`HOTELBEDS_API_BASE_URL` —
+  placeholders only.
+- Fallback: manual/local HTML accommodation fallback
+  (`ACCOMMODATION_MANUAL_HTML_SOURCE=hotelbeds`).
+- Missing (always, today): same `not_connected` fallback.
+
+**Hostelworld Partner/Affiliate API** (lodging)
+- Status: not implemented.
+- Key needed: yes, if ever implemented — partner/affiliate API access.
+- Access: apply through Hostelworld's partner program.
+- Env: `HOSTELWORLD_API_KEY`/`HOSTELWORLD_API_BASE_URL` — placeholders
+  only.
+- Fallback: manual/local HTML accommodation fallback
+  (`ACCOMMODATION_MANUAL_HTML_SOURCE=hostelworld`).
+- Missing (always, today): same `not_connected` fallback.
+
+**Vrbo** (vacation rentals — partner/connectivity, effectively an Expedia
+Group path)
+- Status: not implemented.
+- Key needed: yes, if ever implemented — partner/connectivity access,
+  routed through the same Expedia Group partner program as Expedia Rapid
+  API above.
+- Access: apply through Expedia Group's partner/connectivity program.
+- Env: `VRBO_PARTNER_API_KEY`/`VRBO_PARTNER_API_BASE_URL` — placeholders
+  only.
+- Fallback: the generic accommodation parser's manual/local HTML file
+  handles vacation-rental-style listings the same as hotel listings (it
+  has no lodging-type distinction) — label it
+  `ACCOMMODATION_MANUAL_HTML_SOURCE=vrbo`. If you'd rather not label it
+  at all, it's just `not_connected`/manual review.
+- Missing (always, today): same `not_connected` fallback.
+
+**Airbnb** (lodging — partner/API program only; a restricted provider,
+never scraped)
+- Status: not implemented, and not scraped under any circumstance —
+  Airbnb is on this app's restricted-provider list.
+- Key needed: yes, if ever implemented — Airbnb's official partner/API
+  program, which is invite/approval-based, not self-serve.
+- Access: apply through Airbnb's partner program (no guarantee of
+  acceptance).
+- Env: `AIRBNB_PARTNER_API_KEY`/`AIRBNB_PARTNER_API_BASE_URL` —
+  placeholders only, useful only if a real partnership is ever arranged.
+- Fallback: manual/local HTML accommodation file only
+  (`ACCOMMODATION_MANUAL_HTML_SOURCE=airbnb`) — and the label always
+  reads "not official Airbnb data"; this app never implies an official
+  Airbnb connection under any configuration.
+- Missing (always, today): same `not_connected` fallback.
+
+**Skyscanner Travel API** (flights)
+- Status: not implemented.
+- Key needed: yes, if ever implemented — Travel API access is
+  approval/commercial, not self-serve signup.
+- Access: apply through Skyscanner's Travel API partner program.
+- Env: `SKYSCANNER_API_KEY`/`SKYSCANNER_API_BASE_URL` — placeholders
+  only.
+- Fallback: manual/local HTML flight fallback
+  (`FLIGHT_MANUAL_HTML_SOURCE=skyscanner`).
+- Missing (always, today): `flight_provider` never resolves to a
+  Skyscanner adapter — selecting `"skyscanner"` explicitly falls back to
+  `not_connected`.
+
+**Tripadvisor Content API** (hotel ratings/reviews)
+- Status: not implemented — `hotel_ratings_provider` only supports
+  `not_connected` today; no automated Tripadvisor scraping is implemented
+  or planned anywhere in this codebase.
+- Key needed: yes, if ever implemented — a Content API key issued through
+  Tripadvisor's developer/API access path.
+- Access: apply through the Tripadvisor Content API developer portal.
+- Env: `TRIPADVISOR_API_KEY`/`TRIPADVISOR_API_BASE_URL` — placeholders
+  only.
+- Fallback: none implemented in this step. A manual/local
+  review-fallback file is not currently modeled — rather than force one
+  in, hotel ratings simply stay `not_connected` until a real,
+  credentialed adapter (or a deliberately-designed manual fallback) is
+  built with its own tests.
+- Missing (always, today): `provider_coverage.hotel_ratings` stays
+  `None` (enrichment was never attempted) whenever no accommodation
+  offers exist to enrich, or reports `not_connected` otherwise — never a
+  fabricated rating.
+
+**Manual/local HTML accommodation fallback**
+- Used for: lodging inventory when no official API is connected — the
+  default path today.
+- Status: implemented (`ScrapedAccommodationProvider`).
+- Key needed: no.
+- Access: none — you supply a local HTML file yourself (e.g. saved from
+  a browser you're legally permitted to view), at the path
+  `SCRAPED_ACCOMMODATION_HTML_PATH` (default
+  `.data/manual_scrapes/accommodations.html`). This app never fetches
+  that page itself.
+- Env: `ACCOMMODATION_PROVIDER=scraped_local` (or the `manual_html`
+  alias, Step 182E — same adapter either name), plus
+  `SCRAPED_ACCOMMODATION_HTML_PATH`/`SCRAPED_ACCOMMODATION_SOURCE_ID`/
+  `SCRAPED_ACCOMMODATION_SOURCE_NAME`/`ACCOMMODATION_MANUAL_HTML_SOURCE`.
+- Fallback: this *is* the fallback for every partner-blocked lodging
+  source above.
+- Missing: with no file at the configured path, `accommodation_inventory_report.status`
+  is honestly `unavailable`, `offers` stays empty — never a fabricated
+  offer.
+
+**Manual/local HTML flight fallback**
+- Used for: flight inventory when no official/live API is connected —
+  the default path today (Kiwi MCP is the one real, live exception, and
+  is off by default).
+- Status: implemented (`ScrapedLocalFlightProvider`).
+- Key needed: no.
+- Access: same as the accommodation fallback — you supply the local file
+  yourself, at `SCRAPED_FLIGHT_HTML_PATH` (default
+  `.data/manual_scrapes/flights.html`).
+- Env: `FLIGHT_PROVIDER=scraped_local` (or the `manual_html` alias, Step
+  182E), plus `SCRAPED_FLIGHT_HTML_PATH`/`SCRAPED_FLIGHT_SOURCE_ID`/
+  `SCRAPED_FLIGHT_SOURCE_NAME`/`FLIGHT_MANUAL_HTML_SOURCE`.
+- Fallback: this *is* the fallback for Skyscanner above (and for Kiwi
+  when Kiwi MCP is disabled).
+- Missing: with no file at the configured path,
+  `flight_inventory_report.status` is honestly `unavailable` — never a
+  fabricated offer, flight number, airline, or schedule.
+
+**Manual/local review/rating fallback**
+- Not implemented in this step. `hotel_ratings_provider` only supports
+  `not_connected` — there is no manual/local HTML parser for ratings or
+  reviews today, and Step 182E deliberately does not force one into
+  product behavior. If one is built later, it will follow the exact same
+  pattern as the accommodation/flight fallbacks above: a local file the
+  user supplies, parsed by a static parser, never a live fetch.
+
+For every manual/local HTML fallback above: a `*_MANUAL_HTML_SOURCE`
+label (e.g. `booking`, `skyscanner`) only changes the *displayed*
+`source_id`/`source_name` on parsed offers — never a claim that the named
+provider's real API was used. The generated label always reads "labeled
+by user" / "not official `<Name>` data." Setting a
+`*_MANUAL_HTML_SOURCE` value never enables scraping, never bypasses a
+login/paywall/CAPTCHA/bot-protection/rate-limit, and never calls the
+named provider's website in any way — it only relabels a file you
+already supplied yourself.
 
 ---
 
@@ -722,14 +1028,22 @@ real provider integrations, and a real (if MVP-scoped — see "Current
 Regeneration Status" above) feedback-driven regeneration workflow. This is
 well past an "implementation begins with shared types" stage.
 
-The backend has an automated test suite currently at 2296 passing tests
-(`pytest`, run locally — see `.github/workflows/ci.yml` for what actually
-runs in CI). The Kiwi MCP integration and the Section 179 frontend polish
-pass were additionally checked with manual, dev-only smoke scripts and
-manual browser verification (`backend/scripts/manual_kiwi_mcp_*.py`,
+The backend has an automated test suite currently at 2436 passing tests
+(`pytest`, run locally, confirmed to run completely hermetically with no
+`.env` file present — see `.github/workflows/ci.yml` for what actually
+runs in CI). The Kiwi MCP integration, the itinerary narrator, and the
+Section 179/182 frontend polish passes were additionally checked with
+manual, dev-only smoke scripts and manual browser verification
+(`backend/scripts/manual_kiwi_mcp_*.py`,
 `backend/scripts/manual_anthropic_shadow_smoke.py`) — these are one-time,
 local verification runs, not a permanent, CI-enforced guarantee that stays
-true after every future change.
+true after every future change. Section 182's own final verification
+(Step 182G) additionally ran one real generated trip with every optional
+no-key/real-key provider active at once (OSRM, Kiwi MCP, manual/local
+HTML lodging, and the Groq itinerary narrator with a real, never-committed
+key) — see `docs/CODEBASE_OVERVIEW.md`'s Step 182G entry for the full
+account, including one small real Traveler-view copy bug it found and
+fixed.
 
 Deferred / not yet implemented (production-hardening work, tracked
 separately from MVP feature work):

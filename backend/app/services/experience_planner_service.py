@@ -89,7 +89,7 @@ _NO_COORDINATE_BACKED_ACCOMMODATIONS_WARNING = (
     "nearby accommodation suggestions could not be computed for this day."
 )
 
-_MAX_STAY_GUIDANCE_ANCHORS = 3
+_MAX_STAY_GUIDANCE_ANCHORS = 5
 _STAY_GUIDANCE_SUGGESTION_WHY = (
     "Selected from provider-backed accommodation POI candidates in "
     "destination_context.candidate_accommodation_pois, ranked by average "

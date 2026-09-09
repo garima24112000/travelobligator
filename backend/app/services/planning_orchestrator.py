@@ -40,6 +40,7 @@ from app.services.destination_context_service import DestinationContextService
 from app.services.experience_planner_service import ExperiencePlannerService
 from app.services.feedback_service import FeedbackService
 from app.services.flight_inventory_service import FlightInventoryService
+from app.services.itinerary_narrative_service import ItineraryNarrativeService
 from app.services.langgraph_planning_service import LangGraphPlanningService
 from app.services.plan_diff_preview_service import PlanDiffPreviewService
 from app.services.plan_validator_service import PlanValidatorService
@@ -307,6 +308,7 @@ class PlanningOrchestrator:
         regeneration_readiness_service: RegenerationReadinessService | None = None,
         ai_candidate_discovery_service: AICandidateDiscoveryService | None = None,
         ai_candidate_promotion_service: AICandidatePromotionService | None = None,
+        itinerary_narrative_service: ItineraryNarrativeService | None = None,
         langgraph_planning_service: LangGraphPlanningService | None = None,
         planning_state_repo: PlanningStateRepository | None = None,
         trip_repo: TripRepository | None = None,
@@ -344,6 +346,9 @@ class PlanningOrchestrator:
         )
         self.ai_candidate_promotion_service = (
             ai_candidate_promotion_service or AICandidatePromotionService()
+        )
+        self.itinerary_narrative_service = (
+            itinerary_narrative_service or ItineraryNarrativeService()
         )
         # Step 171D: only ever invoked by generate_full_plan_via_langgraph
         # below -- generate_full_plan (the default/legacy path) never
@@ -863,6 +868,14 @@ class PlanningOrchestrator:
             # Recomputed from scratch every time (Step 135) so it always
             # reflects the just-recorded version_history.
             planning_state = self.regeneration_readiness_service.recompute(planning_state)
+            # Step 182F: optional, read-only LLM narrator, run last -- after
+            # validation/provider coverage/the full plan already exist.
+            # Off by default (ITINERARY_NARRATOR_ENABLED=false); never
+            # raises, so generation always succeeds whether the narrator is
+            # disabled or its provider call fails. See
+            # ItineraryNarrativeService's own docstring for the full
+            # "never mutates any other field" contract.
+            planning_state = self.itinerary_narrative_service.generate(planning_state)
             planning_state = self._mark_stage_finished(planning_state, "post_processing")
             planning_state = self._finish_generation_progress(planning_state)
             self.planning_state_repository.save(planning_state)
@@ -942,6 +955,9 @@ class PlanningOrchestrator:
             new_state = self.versioning_service.create_initial_version(new_state)
             new_state = self.plan_diff_preview_service.recompute(new_state)
             new_state = self.regeneration_readiness_service.recompute(new_state)
+            # Step 182F: same optional, read-only LLM narrator
+            # generate_full_plan runs -- see that call site's comment.
+            new_state = self.itinerary_narrative_service.generate(new_state)
             new_state = self._mark_stage_finished(new_state, "post_processing")
             new_state = self._finish_generation_progress(new_state)
             self.planning_state_repository.save(new_state)

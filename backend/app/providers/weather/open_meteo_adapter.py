@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from datetime import date as date_cls
 from typing import Any
 
@@ -27,6 +28,17 @@ _DAILY_FIELDS = (
     "precipitation_sum",
     "weather_code",
 )
+# Step 182B: a transient network hiccup against the free, rate-limited
+# Open-Meteo public API shouldn't immediately report a trip's weather as
+# `failed` when one quick retry could well succeed. `_MAX_ATTEMPTS = 2`
+# means "the original request plus exactly one retry" -- never more, so
+# this stays bounded and fast. The short sleep between attempts is a
+# courtesy backoff, not a real rate-limit negotiation; `time.sleep` is
+# resolved as a module attribute (`time.sleep(...)`, not a bare imported
+# name) specifically so tests can monkeypatch it to a no-op and stay fast
+# and deterministic.
+_MAX_ATTEMPTS = 2
+_RETRY_BACKOFF_SECONDS = 0.5
 
 
 class OpenMeteoWeatherAdapter(WeatherProvider):
@@ -52,11 +64,19 @@ class OpenMeteoWeatherAdapter(WeatherProvider):
     response has no text description field), and no humidity, UV, alert, or
     severe-weather value is ever fabricated.
 
-    If the request itself fails (network error, timeout, non-2xx status),
-    this reports `failed`. If the request succeeds but Open-Meteo reports an
-    error for the requested range (e.g. a date range outside what the
-    forecast endpoint supports) or returns no usable daily data, this
-    reports `unavailable` instead -- both are honest; neither invents data.
+    If the request fails (network error, timeout, non-2xx status), Step
+    182B retries exactly once (a short fixed backoff, `_MAX_ATTEMPTS = 2`
+    total attempts) before reporting `failed` -- a single transient hiccup
+    against this free, rate-limited public API no longer immediately
+    surfaces as a trip-level failure. This is a fixed, deterministic retry
+    count, never a retry loop, and it never changes the `unavailable` path:
+    missing coordinates or missing dates still return `unavailable`
+    immediately, with no HTTP call and no retry, since no request was ever
+    possible in the first place. If the request succeeds but Open-Meteo
+    reports an error for the requested range (e.g. a date range outside
+    what the forecast endpoint supports) or returns no usable daily data,
+    this reports `unavailable` instead -- both are honest; neither invents
+    data.
 
     Cache (Step 164B, docs/12_provider_architecture.md "Provider Cache
     Foundation" section): a successful, usable forecast is cached in
@@ -146,30 +166,55 @@ class OpenMeteoWeatherAdapter(WeatherProvider):
                     ),
                 )
 
-        try:
-            with httpx.Client(
-                timeout=_REQUEST_TIMEOUT_SECONDS, headers={"User-Agent": _USER_AGENT}
-            ) as client:
-                response = client.get(
-                    f"{self._base_url}/v1/forecast",
-                    params={
-                        "latitude": coordinates.lat,
-                        "longitude": coordinates.lng,
-                        "start_date": start_date,
-                        "end_date": end_date,
-                        "daily": ",".join(_DAILY_FIELDS),
-                        "timezone": "auto",
-                    },
-                )
-                response.raise_for_status()
-                payload = response.json()
-        except (httpx.HTTPError, ValueError) as exc:
-            logger.warning("Open-Meteo request failed for %s: %s", destination, exc)
+        payload: Any = None
+        request_error: Exception | None = None
+        with httpx.Client(
+            timeout=_REQUEST_TIMEOUT_SECONDS, headers={"User-Agent": _USER_AGENT}
+        ) as client:
+            for attempt in range(1, _MAX_ATTEMPTS + 1):
+                try:
+                    response = client.get(
+                        f"{self._base_url}/v1/forecast",
+                        params={
+                            "latitude": coordinates.lat,
+                            "longitude": coordinates.lng,
+                            "start_date": start_date,
+                            "end_date": end_date,
+                            "daily": ",".join(_DAILY_FIELDS),
+                            "timezone": "auto",
+                        },
+                    )
+                    response.raise_for_status()
+                    payload = response.json()
+                    request_error = None
+                    break
+                except (httpx.HTTPError, ValueError) as exc:
+                    request_error = exc
+                    if attempt < _MAX_ATTEMPTS:
+                        logger.warning(
+                            "Open-Meteo request failed for %s (attempt %s/%s); "
+                            "retrying once: %s",
+                            destination,
+                            attempt,
+                            _MAX_ATTEMPTS,
+                            exc,
+                        )
+                        time.sleep(_RETRY_BACKOFF_SECONDS)
+
+        if request_error is not None:
+            logger.warning(
+                "Open-Meteo request failed for %s after %s attempt(s): %s",
+                destination,
+                _MAX_ATTEMPTS,
+                request_error,
+            )
             return failed_response(
                 self.provider_name,
                 self.provider_type,
                 unavailable_fields=[field_name],
-                message=f"Open-Meteo request failed for '{destination}'.",
+                message=(
+                    f"Open-Meteo request failed for '{destination}' after retrying once."
+                ),
             )
 
         if payload.get("error"):

@@ -128,3 +128,62 @@ def test_resolved_scraped_flight_html_path_matches_accommodation_resolution_styl
     assert flight_resolved is not None
     assert accommodation_resolved is not None
     assert flight_resolved.parent == accommodation_resolved.parent
+
+
+# ---------------------------------------------------------------------------
+# Step 182E: FLIGHT_MANUAL_HTML_SOURCE is a cosmetic provenance label
+# only -- it never selects a provider, is completely distinct from the
+# real kiwi_mcp adapter, and always normalizes to a safe, known value.
+# ---------------------------------------------------------------------------
+
+
+def test_flight_manual_html_source_default_is_generic() -> None:
+    field_info = Settings.model_fields["flight_manual_html_source"]
+    assert field_info.default == "generic"
+    assert field_info.alias == "FLIGHT_MANUAL_HTML_SOURCE"
+
+
+@pytest.mark.parametrize("value", ["generic", "skyscanner", "google_flights", "kiwi", "other"])
+def test_flight_manual_html_source_accepts_every_documented_value(value: str) -> None:
+    settings = Settings(_env_file=None, flight_manual_html_source=value)
+    assert settings.flight_manual_html_source == value
+
+
+@pytest.mark.parametrize("value", ["made_up", "SKYSCANNER", "", "kiwi_mcp"])
+def test_flight_manual_html_source_falls_back_to_generic_for_unrecognized_values(
+    value: str,
+) -> None:
+    settings = Settings(_env_file=None, flight_manual_html_source=value)
+    assert settings.flight_manual_html_source == "generic"
+
+
+def test_flight_manual_html_source_kiwi_label_is_independent_of_kiwi_mcp_flag() -> None:
+    """Setting the manual/local HTML source label to "kiwi" must never
+    itself enable, resemble, or be confused with the real, live
+    flight_provider="kiwi_mcp"/kiwi_mcp_enabled adapter -- these are two
+    completely independent config surfaces."""
+    settings = Settings(_env_file=None, flight_manual_html_source="kiwi")
+    assert settings.flight_provider == "scraped_local"
+    assert settings.kiwi_mcp_enabled is False
+
+
+# ---------------------------------------------------------------------------
+# Step 182E: partner/paid-access flight provider credential placeholders
+# default to None and are not required for default tests.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("field_name", ["skyscanner_api_key", "skyscanner_api_base_url"])
+def test_partner_flight_credential_placeholders_default_to_none(field_name: str) -> None:
+    settings = Settings(_env_file=None)
+    assert getattr(settings, field_name) is None
+
+
+def test_settings_constructs_without_any_partner_flight_credential(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setitem(Settings.model_config, "env_file", None)
+    settings = Settings()
+
+    assert settings.flight_provider == "scraped_local"
+    assert settings.skyscanner_api_key is None

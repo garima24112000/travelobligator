@@ -15,6 +15,7 @@ from app.storage.provider_cache_store import (
     get_provider_cache_store,
     make_query_hash,
 )
+from app.utils.destination_inference import infer_us_country_code_from_state_segment
 
 logger = logging.getLogger(__name__)
 
@@ -44,12 +45,22 @@ _CURRENCY_BY_COUNTRY_NAME: dict[str, str] = {
 
 def infer_destination_currency(destination: str) -> str | None:
     """Conservatively infer an ISO 4217 currency code for `destination`,
-    using only a small deterministic mapping of common country names
-    (docs/12_provider_architecture.md section 17). No LLM, no fuzzy
-    matching, no substring guessing: only an exact match against the last
-    comma-separated segment (the conventional "City, Country" format) or
-    the whole destination when there's no comma. Returns None (never a
-    guessed currency) when it can't be determined this way.
+    using only a small deterministic mapping of common country names, plus
+    (Step 182B) US state names/abbreviations and Washington D.C., which
+    all map to `"USD"` (docs/12_provider_architecture.md section 17). No
+    LLM, no fuzzy matching, no substring guessing, and no geocoding/
+    network call: only an exact match against the last comma-separated
+    segment (the conventional "City, Country"/"City, State" format) or the
+    whole destination when there's no comma. Returns None (never a guessed
+    currency) when it can't be determined this way.
+
+    The full-country-name table is always checked first. A US state/
+    abbreviation match is only ever trusted when the destination has more
+    than one comma-segment (i.e. was actually written "City, State") --
+    never from a single bare word -- mirroring
+    `app.providers.holidays.nager_date_adapter.infer_country_code`'s exact
+    same safety gate, for the exact same reason (a bare "Georgia" must stay
+    unresolved; "Atlanta, Georgia"/"Orlando, FL" resolve to `"USD"`).
     """
     normalized = destination.strip().lower()
     if not normalized:
@@ -57,7 +68,15 @@ def infer_destination_currency(destination: str) -> str | None:
 
     segments = [part.strip() for part in normalized.split(",") if part.strip()]
     candidate = segments[-1] if segments else normalized
-    return _CURRENCY_BY_COUNTRY_NAME.get(candidate)
+
+    direct_match = _CURRENCY_BY_COUNTRY_NAME.get(candidate)
+    if direct_match is not None:
+        return direct_match
+
+    us_country_code = infer_us_country_code_from_state_segment(
+        candidate, has_multiple_segments=len(segments) > 1
+    )
+    return "USD" if us_country_code == "US" else None
 
 
 class FrankfurterCurrencyAdapter(CurrencyProvider):

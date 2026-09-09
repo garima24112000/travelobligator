@@ -65,6 +65,53 @@ logger = logging.getLogger(__name__)
 _PARSER_VERSION = "scraped_accommodation_provider_v1"
 _CACHE_SOURCE = "scraped_accommodation"
 
+# Step 182E: optional provenance "source label" display names, keyed by
+# `Settings.accommodation_manual_html_source`. Purely cosmetic text for
+# `source_id`/`source_name` (and therefore `scraped_provenance.source_id`/
+# `source_name`, and the frontend's existing verbatim `source_name`
+# display) -- never a claim that a real Booking/Expedia/Hotelbeds/
+# Hostelworld/Vrbo/Airbnb API was called. `"generic"` has no entry here
+# and is handled as "no relabeling" by `_effective_source_identity` below.
+_MANUAL_HTML_SOURCE_DISPLAY_NAMES: dict[str, str] = {
+    "booking": "Booking.com",
+    "expedia": "Expedia",
+    "hotelbeds": "Hotelbeds",
+    "hostelworld": "Hostelworld",
+    "vrbo": "Vrbo",
+    "airbnb": "Airbnb",
+}
+
+_DEFAULT_SOURCE_ID = Settings.model_fields["scraped_accommodation_source_id"].default
+_DEFAULT_SOURCE_NAME = Settings.model_fields["scraped_accommodation_source_name"].default
+
+
+def _effective_source_identity(settings: Settings) -> tuple[str, str]:
+    """Derives the `source_id`/`source_name` this provider labels its
+    parsed offers with, applying `Settings.accommodation_manual_html_source`
+    (Step 182E) only when the operator has not already customized
+    `scraped_accommodation_source_id`/`scraped_accommodation_source_name`
+    away from their built-in defaults -- so anyone who already set their
+    own naming is never overridden. A `"generic"` (default) or
+    unrecognized label leaves both fields completely unchanged. The
+    generated name always says "labeled by user"/"not official ... data"
+    -- this is provenance display text only, never a claim of a real
+    provider connection.
+    """
+    display = _MANUAL_HTML_SOURCE_DISPLAY_NAMES.get(settings.accommodation_manual_html_source)
+    if display is None:
+        return settings.scraped_accommodation_source_id, settings.scraped_accommodation_source_name
+
+    if (
+        settings.scraped_accommodation_source_id != _DEFAULT_SOURCE_ID
+        or settings.scraped_accommodation_source_name != _DEFAULT_SOURCE_NAME
+    ):
+        return settings.scraped_accommodation_source_id, settings.scraped_accommodation_source_name
+
+    return (
+        f"manual_local_scraped_accommodation_{settings.accommodation_manual_html_source}",
+        f"Manual/local HTML (labeled by user as {display}-derived; not official {display} data)",
+    )
+
 
 class ScrapedAccommodationProvider(AccommodationInventoryProvider):
     """`AccommodationInventoryProvider` backed by the Step 168B static HTML
@@ -129,9 +176,11 @@ class ScrapedAccommodationProvider(AccommodationInventoryProvider):
                 message=f"Configured scraped-accommodation HTML path does not exist: {path}",
             )
 
+        effective_source_id, effective_source_name = _effective_source_identity(settings)
+
         query_hash = make_query_hash(
             {
-                "source_id": settings.scraped_accommodation_source_id,
+                "source_id": effective_source_id,
                 "base_url": settings.scraped_accommodation_base_url,
                 "destination": request.destination,
                 "check_in_date": request.check_in_date.isoformat(),
@@ -156,8 +205,8 @@ class ScrapedAccommodationProvider(AccommodationInventoryProvider):
         try:
             html = path.read_text(encoding="utf-8")
             source_policy = ScrapingSourcePolicy(
-                source_id=settings.scraped_accommodation_source_id,
-                source_name=settings.scraped_accommodation_source_name,
+                source_id=effective_source_id,
+                source_name=effective_source_name,
                 base_url=settings.scraped_accommodation_base_url
                 or "file://local-scraped-accommodation",
                 source_type=ScrapingSourceType.SCRAPED_PUBLIC_PAGE,

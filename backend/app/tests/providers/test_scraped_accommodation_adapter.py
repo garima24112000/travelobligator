@@ -280,6 +280,95 @@ def test_scraped_provider_offer_has_provenance_with_official_provider_false(
 
 
 # ---------------------------------------------------------------------------
+# Step 182E: ACCOMMODATION_MANUAL_HTML_SOURCE relabels source_id/
+# source_name for provenance display only -- it never changes any real
+# fact the parser extracted, and it never applies when the operator has
+# already customized the source id/name themselves.
+# ---------------------------------------------------------------------------
+
+
+def test_manual_html_source_label_relabels_source_id_and_name(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    html_path = _write_html(tmp_path, _TEST_HTML_ONE_PROPERTY)
+    settings = _enabled_settings(html_path, accommodation_manual_html_source="booking")
+    monkeypatch.setattr(scraped_adapter_module, "get_settings", lambda: settings)
+
+    result = ScrapedAccommodationProvider().search_accommodations(_request())
+    offer = result.offers[0]
+
+    assert offer.scraped_provenance is not None
+    assert offer.scraped_provenance.official_provider is False
+    assert offer.scraped_provenance.source_id == "manual_local_scraped_accommodation_booking"
+    assert "Booking.com" in offer.scraped_provenance.source_name
+    assert "labeled by user" in offer.scraped_provenance.source_name
+    assert "not official Booking.com data" in offer.scraped_provenance.source_name
+    # Every real fact the parser extracted is unaffected by the label.
+    assert offer.property_name == "TEST_ONLY_SCRAPED_PROPERTY_ALPHA"
+    assert offer.nightly_price_amount == 120.50
+
+
+def test_manual_html_source_label_generic_leaves_defaults_unchanged(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    html_path = _write_html(tmp_path, _TEST_HTML_ONE_PROPERTY)
+    settings = _enabled_settings(html_path, accommodation_manual_html_source="generic")
+    monkeypatch.setattr(scraped_adapter_module, "get_settings", lambda: settings)
+
+    result = ScrapedAccommodationProvider().search_accommodations(_request())
+    offer = result.offers[0]
+
+    assert offer.scraped_provenance.source_id == "manual_local_scraped_accommodation"
+    assert offer.scraped_provenance.source_name == "Manual local scraped accommodation source"
+
+
+def test_manual_html_source_label_never_overrides_a_customized_source_name(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """An operator who already set their own source_id/source_name keeps
+    it exactly -- the label is only ever a default-naming convenience, not
+    something imposed on an already-customized identity."""
+    html_path = _write_html(tmp_path, _TEST_HTML_ONE_PROPERTY)
+    settings = _enabled_settings(
+        html_path,
+        accommodation_manual_html_source="booking",
+        scraped_accommodation_source_id="my_own_source",
+        scraped_accommodation_source_name="My Own Local Export",
+    )
+    monkeypatch.setattr(scraped_adapter_module, "get_settings", lambda: settings)
+
+    result = ScrapedAccommodationProvider().search_accommodations(_request())
+    offer = result.offers[0]
+
+    assert offer.scraped_provenance.source_id == "my_own_source"
+    assert offer.scraped_provenance.source_name == "My Own Local Export"
+
+
+def test_manual_html_source_label_change_busts_the_cache(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The cache key includes the manual-html source label, so switching
+    labels never serves a stale, differently-labeled cached result."""
+    html_path = _write_html(tmp_path, _TEST_HTML_ONE_PROPERTY)
+    generic_settings = _enabled_settings(html_path, accommodation_manual_html_source="generic")
+    monkeypatch.setattr(scraped_adapter_module, "get_settings", lambda: generic_settings)
+    provider = ScrapedAccommodationProvider()
+
+    generic_result = provider.search_accommodations(_request())
+    assert generic_result.offers[0].scraped_provenance.source_id == (
+        "manual_local_scraped_accommodation"
+    )
+
+    booking_settings = _enabled_settings(html_path, accommodation_manual_html_source="booking")
+    monkeypatch.setattr(scraped_adapter_module, "get_settings", lambda: booking_settings)
+
+    booking_result = provider.search_accommodations(_request())
+    assert booking_result.offers[0].scraped_provenance.source_id == (
+        "manual_local_scraped_accommodation_booking"
+    )
+
+
+# ---------------------------------------------------------------------------
 # 10. Missing price/rating/availability/booking_url remains missing/
 # unknown.
 # ---------------------------------------------------------------------------

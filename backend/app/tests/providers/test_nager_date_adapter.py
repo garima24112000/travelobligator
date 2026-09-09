@@ -132,6 +132,43 @@ def test_infer_country_code_matches_examples() -> None:
     assert infer_country_code("") is None
 
 
+def test_infer_country_code_us_city_state_examples() -> None:
+    """Step 182B: "City, State" is how most US travelers actually write a
+    domestic destination -- full state name or two-letter abbreviation,
+    both must resolve to "US" without any LLM/fuzzy/geocoding involved."""
+    assert infer_country_code("Orlando, FL") == "US"
+    assert infer_country_code("Orlando, Florida") == "US"
+    assert infer_country_code("Jersey City, NJ") == "US"
+    assert infer_country_code("Boston, MA") == "US"
+    assert infer_country_code("New York, NY") == "US"
+    assert infer_country_code("San Francisco, CA") == "US"
+    assert infer_country_code("Washington, DC") == "US"
+    assert infer_country_code("Washington, District of Columbia") == "US"
+
+
+def test_infer_country_code_non_us_city_state_examples() -> None:
+    """Step 182B also closed a small pre-existing gap noticed while
+    verifying the full expected-output list: "Mumbai, India"/
+    "Toronto, Canada" already inferred a currency (INR/CAD, via the
+    separate table in `frankfurter_adapter`) but not a country code here,
+    since "india"/"canada" were missing from this module's own country
+    table. Added them for parity -- the US-state fallback added in this
+    same step must never interfere with real country-name matches."""
+    assert infer_country_code("Mumbai, India") == "IN"
+    assert infer_country_code("Toronto, Canada") == "CA"
+
+
+def test_infer_country_code_ambiguous_single_word_stays_unresolved() -> None:
+    """Safety case: a single bare word that happens to also be a US state
+    name must never resolve on its own -- "Georgia" is both a US state and
+    a sovereign country, so guessing here would be an unsafe false
+    positive. Only "City, State" form (a real signal, not a guess) should
+    ever trigger the state fallback."""
+    assert infer_country_code("Georgia") is None
+    assert infer_country_code("Orlando") is None
+    assert infer_country_code("Florida") is None
+
+
 def test_success_with_holidays_inside_date_range(monkeypatch: pytest.MonkeyPatch) -> None:
     payload = [
         _holiday_entry("2026-01-01", "Ano Novo", "New Year's Day"),
@@ -160,6 +197,26 @@ def test_success_with_holidays_inside_date_range(monkeypatch: pytest.MonkeyPatch
 
     assert fake_client.get_call_count == 1
     assert fake_client.requested_urls[0].endswith("/api/v3/PublicHolidays/2026/PT")
+
+
+def test_us_city_state_destination_requests_us_country_code(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Step 182B end-to-end: a domestic US trip written as "City, State"
+    (not "City, USA") must actually reach Nager.Date with `country_code=US`
+    -- confirming the new state inference is wired all the way through to
+    the real request, not just the pure `infer_country_code` function."""
+    payload = [_holiday_entry("2026-08-11", "Test Holiday", "Test Holiday", country_code="US")]
+    fake_client = _install_fake_client(monkeypatch, [_FakeResponse(json_data=payload)])
+
+    adapter = NagerDateHolidaysAdapter()
+    response = adapter.get_public_holidays("Orlando, FL", _DATES)
+
+    assert response.status == ProviderStatus.SUCCESS
+    assert fake_client.get_call_count == 1
+    assert fake_client.requested_urls[0].endswith("/api/v3/PublicHolidays/2026/US")
+    assert len(response.data) == 1
+    assert response.data[0].country_code == "US"
 
 
 def test_success_with_no_holidays_inside_date_range(monkeypatch: pytest.MonkeyPatch) -> None:

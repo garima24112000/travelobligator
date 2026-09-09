@@ -13,6 +13,7 @@ from app.models.ai_candidate_proposal import AICandidateProposalBatch
 from app.models.candidate_grounding import CandidateGroundingBatch
 from app.models.candidate_quality import CandidateQualityReport
 from app.models.flight import FlightSearchResult
+from app.models.itinerary_narrative import ItineraryNarrativeReport
 from app.models.common import (
     AccommodationType,
     ChecklistItemStatus,
@@ -1273,6 +1274,18 @@ class PlanningState(BaseModel):
     provider_coverage: ProviderCoverage = Field(default_factory=ProviderCoverage)
     unavailable_data: list[UnavailableDataItem] = Field(default_factory=list)
     data_sources_used: list[str] = Field(default_factory=list)
+
+    # Optional, additive LLM-narrator output (Step 182F,
+    # docs/13_llm_reasoning_pipeline.md, docs/14_backend_architecture.md).
+    # Computed by `ItineraryNarrativeService` after validation/provider
+    # coverage/the full plan already exist -- read-only presentation prose
+    # over already-computed `PlanningState` fields, never a new factual
+    # travel claim. Stays `None` until a generation (or regeneration) run
+    # has attempted it at least once; with the default
+    # `itinerary_narrator_enabled=False`, every generated trip's
+    # `itinerary_narrative_report.status` is `not_connected` and no
+    # provider/network call is ever made.
+    itinerary_narrative_report: ItineraryNarrativeReport | None = None
 
     metadata: PlanningMetadata = Field(default_factory=PlanningMetadata)
 

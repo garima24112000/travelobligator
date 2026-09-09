@@ -28,9 +28,17 @@ from app.providers.accommodation.scraped_adapter import ScrapedAccommodationProv
 # Not wired into `ProviderGateway` or `PlanningOrchestrator` yet -- nothing
 # in the app calls this factory outside its own tests.
 
+# "manual_html" (Step 182E) is a non-breaking alias for "scraped_local" --
+# same adapter class, same local-file-only behavior, same honest
+# `unavailable` result with no file present. It exists only so
+# ACCOMMODATION_PROVIDER=manual_html reads more clearly for someone
+# following this codebase's "manual/local HTML fallback" documentation
+# without having grown up with the internal `scraped_local` name.
+# "scraped_local" itself is never removed or deprecated.
 _SUPPORTED_PROVIDERS: dict[str, type[AccommodationInventoryProvider]] = {
     "not_connected": NotConnectedAccommodationProvider,
     "scraped_local": ScrapedAccommodationProvider,
+    "manual_html": ScrapedAccommodationProvider,
 }
 
 

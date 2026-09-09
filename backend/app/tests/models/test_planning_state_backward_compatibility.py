@@ -244,3 +244,21 @@ def test_planning_state_with_step_172_report_missing_step_173a_geometry_key() ->
     assert planning_state.route_feasibility_report.legs[0].route_geometry is None
     # Confirmed independently against the standalone model too.
     assert RouteFeasibilityReport.model_validate(old_report_record).legs[0].route_geometry is None
+
+
+def test_planning_state_without_step_182f_narrative_report_defaults_to_none() -> None:
+    """Simulates a `PlanningState` persisted before Step 182F -- no
+    `itinerary_narrative_report` key at all, not even `null`. Must load
+    without raising, with the new field honestly `None` rather than
+    fabricated -- exactly what `PlanningStateRepository.__init__`'s
+    `PlanningState.model_validate(record)` call must tolerate for every
+    trip generated before this step."""
+    trip_request = _trip_request()
+    old_record = {
+        "trip_id": "trip_old_182f",
+        "trip_request": trip_request.model_dump(mode="json"),
+    }
+
+    planning_state = PlanningState.model_validate(old_record)
+
+    assert planning_state.itinerary_narrative_report is None

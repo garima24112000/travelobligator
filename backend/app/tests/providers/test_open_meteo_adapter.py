@@ -105,6 +105,40 @@ def _install_fake_client(
     return fake_client
 
 
+class _SequentialFakeClient:
+    """Stands in for `httpx.Client`, returning a different response for
+    each successive `.get()` call, in order -- used only by the Step 182B
+    retry tests below, which need attempt 1 and attempt 2 to behave
+    differently."""
+
+    def __init__(self, responses: list[_FakeResponse]) -> None:
+        self._responses = responses
+        self.get_call_count = 0
+
+    def __enter__(self) -> "_SequentialFakeClient":
+        return self
+
+    def __exit__(self, *exc_info: object) -> bool:
+        return False
+
+    def get(self, url: str, params: dict[str, Any] | None = None) -> _FakeResponse:
+        response = self._responses[self.get_call_count]
+        self.get_call_count += 1
+        return response
+
+
+def _install_sequential_fake_client(
+    monkeypatch: pytest.MonkeyPatch, responses: list[_FakeResponse]
+) -> _SequentialFakeClient:
+    fake_client = _SequentialFakeClient(responses)
+    monkeypatch.setattr(open_meteo_adapter.httpx, "Client", lambda **kwargs: fake_client)
+    # Never actually sleep in tests -- the retry backoff is a courtesy
+    # delay for real traffic, not something a deterministic test suite
+    # should wait on.
+    monkeypatch.setattr(open_meteo_adapter.time, "sleep", lambda seconds: None)
+    return fake_client
+
+
 def _daily_payload(
     dates: list[str],
     temps_max: list[float],
@@ -256,6 +290,52 @@ def test_request_failure_returns_failed(monkeypatch: pytest.MonkeyPatch) -> None
     adapter = OpenMeteoWeatherAdapter()
     response = adapter.get_weather_forecast("Los Angeles", _DATES, coordinates=_COORDS)
 
+    assert response.status == ProviderStatus.FAILED
+    assert response.data_status == DataStatus.FAILED
+    assert response.data is None
+    assert "weather_forecast" in response.unavailable_fields
+
+
+def test_retry_once_succeeds_on_second_attempt(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Step 182B: a transient first-attempt failure must not immediately
+    surface as `failed` when a second attempt succeeds."""
+    payload = _daily_payload(
+        dates=["2026-08-10"],
+        temps_max=[28.5],
+        temps_min=[18.2],
+        precip_prob_max=[10],
+        precip_sum=[0.0],
+        weather_codes=[1],
+    )
+    fake_client = _install_sequential_fake_client(
+        monkeypatch,
+        [_FakeResponse(should_fail=True), _FakeResponse(json_data=payload)],
+    )
+
+    adapter = OpenMeteoWeatherAdapter()
+    response = adapter.get_weather_forecast("Los Angeles", _DATES, coordinates=_COORDS)
+
+    assert fake_client.get_call_count == 2
+    assert response.status == ProviderStatus.SUCCESS
+    assert response.data_status == DataStatus.LIVE
+    assert response.data[0].temperature_max_c == 28.5
+
+
+def test_retry_once_still_fails_after_second_attempt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Step 182B: exactly one retry, never more -- if the second attempt
+    also fails, this must still honestly report `failed`, not silently
+    keep retrying and not fabricate a result."""
+    fake_client = _install_sequential_fake_client(
+        monkeypatch,
+        [_FakeResponse(should_fail=True), _FakeResponse(should_fail=True)],
+    )
+
+    adapter = OpenMeteoWeatherAdapter()
+    response = adapter.get_weather_forecast("Los Angeles", _DATES, coordinates=_COORDS)
+
+    assert fake_client.get_call_count == 2
     assert response.status == ProviderStatus.FAILED
     assert response.data_status == DataStatus.FAILED
     assert response.data is None

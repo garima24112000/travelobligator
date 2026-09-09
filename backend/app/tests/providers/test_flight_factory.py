@@ -119,15 +119,47 @@ def test_factory_default_is_not_kiwi_mcp(monkeypatch: pytest.MonkeyPatch) -> Non
 
 
 # ---------------------------------------------------------------------------
+# Step 182E: "manual_html" is a non-breaking alias for "scraped_local" --
+# same adapter class, same local-file-only/no-live-fetch behavior, and
+# completely distinct from "kiwi_mcp".
+# ---------------------------------------------------------------------------
+
+
+def test_factory_returns_scraped_local_provider_for_manual_html_alias() -> None:
+    provider = get_flight_provider("manual_html")
+    assert isinstance(provider, ScrapedLocalFlightProvider)
+    assert not isinstance(provider, KiwiMcpFlightProvider)
+
+
+def test_manual_html_alias_does_not_remove_scraped_local() -> None:
+    assert isinstance(get_flight_provider("scraped_local"), ScrapedLocalFlightProvider)
+    assert isinstance(get_flight_provider("manual_html"), ScrapedLocalFlightProvider)
+    assert type(get_flight_provider("scraped_local")) is type(get_flight_provider("manual_html"))
+
+
+# ---------------------------------------------------------------------------
 # 15. Factory unknown provider falls back safely to
 #     NotConnectedFlightProvider. "kiwi_mcp" itself is now a *supported*
-#     name (Step 178B) so it is deliberately not included below.
+#     name (Step 178B) so it is deliberately not included below. Also
+#     includes the partner-only provider names documented in README.md's
+#     "Provider activation" section (Step 182E) -- selecting one without a
+#     real adapter/credentials must always fall back to not_connected,
+#     never fabricate flight inventory.
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
     "unsupported_name",
-    ["amadeus", "duffel", "kiwi", "made_up_provider", "", "NOT_CONNECTED", "KIWI_MCP"],
+    [
+        "amadeus",
+        "duffel",
+        "kiwi",
+        "skyscanner",
+        "made_up_provider",
+        "",
+        "NOT_CONNECTED",
+        "KIWI_MCP",
+    ],
 )
 def test_factory_falls_back_to_not_connected_for_unsupported_names(
     unsupported_name: str,

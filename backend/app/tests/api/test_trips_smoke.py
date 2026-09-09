@@ -3677,6 +3677,11 @@ class _StayAreaGuidanceTestPlacesProvider(PlacesProvider):
             _geo_place("test/stay/accommodation/mid", "Mid Hotel", "hotel", 0.5),
             _geo_place("test/stay/accommodation/far", "Far Hotel", "hotel", 5.0),
             _geo_place("test/stay/accommodation/veryfar", "Very Far Hotel", "hotel", 10.0),
+            # Step 182D: two more candidates than the 5-anchor cap, so the
+            # cap-enforcement/exclusion behavior these tests check for is
+            # still exercised now that the cap was raised from 3 to 5.
+            _geo_place("test/stay/accommodation/extremelyfar", "Extremely Far Hotel", "hotel", 20.0),
+            _geo_place("test/stay/accommodation/farthest", "Farthest Hotel", "hotel", 30.0),
         ]
         return ProviderResponse[list[NormalizedPlace]](
             provider_name=self.provider_name,
@@ -3728,10 +3733,16 @@ def test_stay_area_guidance_selects_lowest_average_distance_accommodation_pois(
     suggested_names = [
         poi["name"] for poi in stay_area_guidance["suggested_anchor_accommodation_pois"]
     ]
-    # The 3 lowest-average-distance candidates are chosen, in ascending
-    # distance order; "Very Far Hotel" (the highest average distance) is
+    # The 5 lowest-average-distance candidates are chosen, in ascending
+    # distance order; "Farthest Hotel" (the highest average distance) is
     # excluded.
-    assert suggested_names == ["Near Hotel", "Mid Hotel", "Far Hotel"]
+    assert suggested_names == [
+        "Near Hotel",
+        "Mid Hotel",
+        "Far Hotel",
+        "Very Far Hotel",
+        "Extremely Far Hotel",
+    ]
     assert stay_area_guidance["warnings"] == []
     assert stay_area_guidance["summary"] != ""
 
@@ -3746,10 +3757,17 @@ def test_stay_area_guidance_uses_only_candidate_accommodation_pois(
     # Every suggested anchor is a real candidate returned by
     # search_accommodation_pois -- nothing outside that set (e.g. an
     # attraction name, or an invented hotel) is ever suggested.
-    known_accommodation_names = {"Near Hotel", "Mid Hotel", "Far Hotel", "Very Far Hotel"}
+    known_accommodation_names = {
+        "Near Hotel",
+        "Mid Hotel",
+        "Far Hotel",
+        "Very Far Hotel",
+        "Extremely Far Hotel",
+        "Farthest Hotel",
+    }
     for poi in stay_area_guidance["suggested_anchor_accommodation_pois"]:
         assert poi["name"] in known_accommodation_names
-    assert len(stay_area_guidance["suggested_anchor_accommodation_pois"]) <= 3
+    assert len(stay_area_guidance["suggested_anchor_accommodation_pois"]) <= 5
 
 
 class _StayAreaGuidanceNoAccommodationTestPlacesProvider(PlacesProvider):
@@ -3873,7 +3891,7 @@ def test_stay_area_guidance_creates_no_fake_fields(
         "assumptions",
         "warnings",
     }
-    assert len(stay_area_guidance["suggested_anchor_accommodation_pois"]) == 3
+    assert len(stay_area_guidance["suggested_anchor_accommodation_pois"]) == 5
 
     for poi in stay_area_guidance["suggested_anchor_accommodation_pois"]:
         assert set(poi.keys()) == {

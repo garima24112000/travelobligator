@@ -4377,3 +4377,268 @@ is now complete: TravelObligator's first live, real, third-party flight
 data integration, safely gated off by default and requiring explicit
 operator opt-in, with zero fabricated flight data anywhere in the
 pipeline.
+
+## 97. US Destination Normalization and Open-Meteo Retry-Once (Step 182B)
+
+Following Section 182A's real Jersey City -> Orlando frontend test, this
+step touched three backend files plus one new shared utility -- no
+`DestinationContextService` line changed, since the fix belongs entirely
+inside the two provider adapters it already calls:
+
+- **New**: `backend/app/utils/destination_inference.py` -- a pure,
+  provider-agnostic US state/territory name-and-abbreviation ->
+  `"US"` table plus `infer_us_country_code_from_state_segment`, gated so
+  it only ever fires for a "City, State" (multi-segment) destination,
+  never a single bare word.
+- **`backend/app/providers/holidays/nager_date_adapter.py`**:
+  `infer_country_code` now falls back to that shared table after its
+  existing full-country-name table misses.
+- **`backend/app/providers/currency/frankfurter_adapter.py`**:
+  `infer_destination_currency` does the same, mapping a US-state match to
+  `"USD"`.
+- **`backend/app/providers/weather/open_meteo_adapter.py`**:
+  `get_weather_forecast` now retries its live HTTP call once
+  (`_MAX_ATTEMPTS = 2`) before reporting `failed`, with the retry backoff
+  resolved as a module attribute (`time.sleep(...)`) specifically so it
+  stays mockable/deterministic in tests.
+
+See `docs/12_provider_architecture.md` section 62 for the full rationale,
+the exact ambiguity this design deliberately avoids (a bare `"Georgia"`
+must never resolve to the US state -- only `"Atlanta, Georgia"`/
+`"Orlando, FL"` count as a real "City, State" signal), and confirmation
+that `provider_coverage`/`validation_report`/the trust dashboard all pick
+up the corrected result through the exact same
+`ProviderCoverageService.record_provider_result` path that already
+existed -- no new plumbing was added. `.env.example` also gained
+expanded, explicit comments on activating the public, no-API-key OSRM
+demo server (`ROUTING_PROVIDER=osrm` + `OSRM_BASE_URL=https://router.project-osrm.org`)
+for local routing demos; the safe `ROUTING_PROVIDER=not_connected` default
+itself is unchanged. No API key, paid/partner provider, or scraping of
+any kind was added in this step.
+
+## 98. Stay-Area Guidance Anchor Cap Raised 3 -> 5 (Step 182D)
+
+The only backend change in Step 182D (a frontend-first Traveler-view
+layout cleanup -- see `docs/16_frontend_architecture.md` "Section 182D"
+for the full writeup): `_MAX_STAY_GUIDANCE_ANCHORS` in
+`backend/app/services/experience_planner_service.py` changed from `3` to
+`5`. This is the only place that constant is used --
+`_build_stay_area_guidance`'s existing average-straight-line-distance
+ranking, quality-tier exclusion, and honest-empty-on-no-candidates
+behavior are all otherwise unchanged; only how many of the
+already-ranked candidates get sliced off the top changed. Driven by the
+frontend's new trip-level "Where to stay" section needing enough real
+stay-area candidates to show 4-5 cards when no bookable inventory
+provider is connected (the common default-config case).
+
+Two new focused tests in
+`backend/app/tests/services/test_experience_planner_service.py` cover
+this directly: `test_stay_area_guidance_returns_at_most_five_anchors`
+(7 coordinate-backed candidates in, exactly the 5 closest come out, the 2
+farthest are excluded, and no suggestion ever carries a `price`/`rating`/
+`booking_url` attribute) and
+`test_stay_area_guidance_returns_fewer_than_five_when_fewer_candidates_exist`
+(2 candidates in, 2 out -- the cap never pads a short list). Three
+existing integration tests in `backend/app/tests/api/test_trips_smoke.py`
+that had pinned the old cap of 3 (`test_stay_area_guidance_selects_lowest_average_distance_accommodation_pois`,
+`test_stay_area_guidance_uses_only_candidate_accommodation_pois`,
+`test_stay_area_guidance_creates_no_fake_fields`) were updated in place:
+their fixture provider now returns 6 accommodation candidates (2 more
+than before) instead of 4, so the cap-enforcement/exclusion behavior
+those tests exist to check is still meaningfully exercised at the new
+cap of 5, rather than the fix accidentally making every fixture
+candidate always fit and the exclusion path go untested. Full suite: 2313
+passed (up from 2311 before this step).
+
+## 99. Provider Activation Config Surface: Partner Placeholders, Manual-HTML Aliases, and Source Labels (Step 182E)
+
+Backend-config-focused companion to `docs/12_provider_architecture.md`
+section 63, which has the full product-facing rationale.
+
+`backend/app/core/config.py` gained, in order: (1) 18 new `str | None =
+None` credential/base-URL fields for 8 partner-only providers (Booking
+Demand API, Expedia Rapid API, Hotelbeds, Hostelworld, Vrbo, Airbnb,
+Skyscanner, Tripadvisor) -- declared, tested, and referenced by exactly
+zero factories or adapters, identical in spirit to the pre-existing
+`google_places_api_key`/`amadeus_client_id` fields; (2)
+`accommodation_manual_html_source`/`flight_manual_html_source` (default
+`"generic"` for both), each backed by a `@field_validator(mode="after")`
+that clamps any value outside its small allowed frozenset
+(`_ALLOWED_ACCOMMODATION_MANUAL_HTML_SOURCES`/
+`_ALLOWED_FLIGHT_MANUAL_HTML_SOURCES`, both module-level constants right
+above the `Settings` class) back to `"generic"` -- so an invalid env
+value can never reach an adapter, matching the existing
+`accommodation_provider`/`flight_provider`/`hotel_ratings_provider`
+"unsupported input -> safe default" convention exactly, just enforced at
+the config layer instead of a factory's lookup-with-fallback.
+
+`backend/app/providers/accommodation/factory.py` and
+`backend/app/providers/flights/factory.py` each gained one line:
+`"manual_html": ScrapedAccommodationProvider`/`ScrapedLocalFlightProvider`
+in their `_SUPPORTED_PROVIDERS` dict, alongside the pre-existing
+`"scraped_local"` entry (never removed) pointing at the identical class.
+`get_accommodation_provider("manual_html")`/`get_flight_provider(
+"manual_html")` return the exact same adapter instance type as
+`"scraped_local"` -- confirmed by
+`test_manual_html_alias_does_not_remove_scraped_local` in both
+`test_accommodation_factory.py`/`test_flight_factory.py`, which asserts
+`type(...)` equality across both provider-name strings.
+
+`backend/app/providers/accommodation/scraped_adapter.py` and
+`backend/app/providers/flights/scraped_adapter.py` each gained a private
+`_MANUAL_HTML_SOURCE_DISPLAY_NAMES` dict and an `_effective_source_identity(settings)`
+helper, called once near the top of `search_accommodations`/
+`search_flights` (right before the existing `query_hash`/
+`source_policy` construction, both of which now use its return value
+instead of reading `settings.scraped_*_source_id`/`_source_name`
+directly). The helper reads the two built-in defaults via
+`Settings.model_fields["scraped_accommodation_source_id"].default`-style
+introspection (not a hardcoded duplicate string) specifically so it stays
+correct if those defaults ever change, and only overrides the id/name
+when both are still exactly at those defaults -- an operator's own custom
+naming is never touched. Every new/changed line was covered by tests
+before being considered done: 4 new tests in
+`test_scraped_accommodation_adapter.py` (relabel, generic-no-op,
+respects-a-customization, cache-key-changes-with-label) and 4 mirrored
+ones in `test_scraped_flight_cache.py` (the same four, plus
+`test_manual_html_source_label_kiwi_is_distinct_from_kiwi_mcp` proving
+the flight `"kiwi"` label never produces a `provider="kiwi_mcp"` offer).
+
+No provider adapter, `ProviderGateway` method, orchestrator stage, or
+Pydantic model shape changed in this step -- every change is either a new
+declared-but-unused config field, a factory dict alias, or provenance
+display text computed from fields (`source_id`/`source_name`) that
+already existed.
+
+## 100. Itinerary Narrator: New Model, Provider Boundary, Service, and Orchestrator Wiring (Step 182F)
+
+Backend-architecture-focused companion to
+`docs/13_llm_reasoning_pipeline.md` section 120, which has the full
+product/safety rationale. This is the largest single-step addition to
+the provider/service layer since Section 178 (Kiwi MCP): one new model
+module, one new provider package (mirroring
+`app.providers.ai_candidate_proposal`'s own four-file shape), one new
+request-builder service, one new orchestration service, and small,
+additive wiring into `PlanningOrchestrator` and the regenerate route --
+nothing existing was restructured.
+
+**New model module**: `backend/app/models/itinerary_narrative.py` --
+`ItineraryNarrativeStatus` (`success`/`not_connected`/`unavailable`/
+`failed`, matching `AccommodationSearchStatus`/`FlightSearchStatus`/
+`HotelRatingsStatus`'s own four-value convention exactly),
+`ItineraryNarrativeExperienceInput`/`ItineraryNarrativeDayInput`/
+`ItineraryNarrativeRequest` (the strict input allow-list), and
+`ItineraryNarrativeDayOutput`/`ItineraryNarrativeReport` (the output).
+Added to `PlanningState` as one new optional field,
+`itinerary_narrative_report: ItineraryNarrativeReport | None = None`,
+placed alongside `provider_status`/`provider_coverage`/`unavailable_data`/
+`data_sources_used` right before `metadata` -- last in the field order,
+matching it being the last thing computed. A backward-compatibility test
+(`test_planning_state_without_step_182f_narrative_report_defaults_to_none`)
+confirms `PlanningState.model_validate(...)` on a record with no
+`itinerary_narrative_report` key at all still loads cleanly, honestly
+`None` -- exactly what `PlanningStateRepository`'s own
+`model_validate(record)` load path needs for every trip persisted before
+this step.
+
+**New provider package**: `backend/app/providers/itinerary_narrator/`
+(`base.py`/`not_connected_adapter.py`/`groq_adapter.py`/
+`anthropic_adapter.py`/`factory.py`), structurally identical in shape to
+`app.providers.ai_candidate_proposal` but registered under its own
+`ItineraryNarratorProvider` `ABC` -- never mixed into
+`AICandidateProposalProvider`. `get_itinerary_narrator_provider`
+(`factory.py`) resolves `"not_connected"`/`"anthropic"`/`"groq"` from
+`Settings.itinerary_narrator_provider`, falling back to
+`NotConnectedItineraryNarratorProvider` for anything else, exactly like
+every other provider factory in this codebase.
+
+**New services**:
+`backend/app/services/itinerary_narrative_request_builder.py`
+(`ItineraryNarrativeRequestBuilder`, a pure read over `PlanningState`,
+see docs/13 section 120 for its full allow-list) and
+`backend/app/services/itinerary_narrative_service.py`
+(`ItineraryNarrativeService`, the only writer of
+`PlanningState.itinerary_narrative_report`). Both follow this
+codebase's established singleton-plus-constructor-injection pattern
+(`itinerary_narrative_request_builder`/`itinerary_narrative_service`
+module-level instances; tests inject a fake request builder/provider via
+the constructor, never monkeypatching a real network client).
+
+**Orchestrator wiring**: `PlanningOrchestrator.__init__` gained one new
+constructor parameter/attribute,
+`itinerary_narrative_service: ItineraryNarrativeService | None = None`,
+defaulting to a fresh `ItineraryNarrativeService()` like every other
+stage service already does. Both `generate_full_plan` and
+`generate_full_plan_via_langgraph` call
+`self.itinerary_narrative_service.generate(...)` as the literal last line
+of their existing "post_processing" block, after
+`regeneration_readiness_service.recompute` and before
+`_mark_stage_finished(..., "post_processing")` -- so both engines attach
+the exact same narrator behavior in the exact same relative position,
+matching how every other post-172E dual-engine feature in this codebase
+stays engine-parity by construction rather than by a shared helper
+function.
+
+**Regeneration wiring**: `POST /trips/{trip_id}/regenerate`
+(`backend/app/api/routes/trips.py`) imports the module-level
+`itinerary_narrative_service` singleton directly (matching how
+`plan_diff_preview_service`/`regeneration_readiness_service` are already
+imported there) and calls `.generate(planning_state)` right after
+`rerun_affected_stages` succeeds, before `changed_sections` is finalized
+-- so a successful refresh's `"itinerary_narrative"` entry is included in
+both the `VersionHistoryItem.changed_sections` this regeneration records
+and the `RegenerateResponseData.changed_sections` the caller sees, not
+just one or the other.
+
+**Test coverage**: 63 new backend tests across one new model
+backward-compatibility test, one new config test file, three new
+provider test files (factory + both adapters), two new service test
+files (request builder + service), and one new API test file
+(`test_itinerary_narrative_generation.py`, 7 end-to-end tests covering
+disabled/enabled-success/enabled-failure for both generation and
+regeneration, using the real FastAPI `TestClient` and the real
+orchestrator/route code paths with only the provider faked). Full suite:
+2436 passed (up from 2373 before this step). No API key was added. No
+paid/partner provider adapter was added -- Groq/Anthropic were already
+wired providers from Sections 161-162, reused here through a completely
+separate provider interface and config surface. No provider adapter,
+`ProviderGateway` method, or existing service's behavior changed.
+
+## 101. Section 182 Final Real-World Demo Verification (Step 182G)
+
+One real trip (Jersey City, NJ -> Orlando, FL, 2026-11-21 to
+2026-11-25, 2 travelers, interests parks/museums/beaches, must-visit
+Universal Studios, constraints no-early-mornings/wheelchair-accessible)
+was generated end to end with every no-key/optional provider this
+section's stack can activate turned on at once, in a real local `.env`
+(never committed, restored/removed after use): `ROUTING_PROVIDER=osrm`
++ the public OSRM demo server (182B/165A), `FLIGHT_PROVIDER=kiwi_mcp` +
+`KIWI_MCP_ENABLED=true` (178B-178E), `ACCOMMODATION_PROVIDER=manual_html`
+against a temporary, gitignored local fixture (182E), and
+`ITINERARY_NARRATOR_ENABLED=true` + `ITINERARY_NARRATOR_PROVIDER=groq`
+with a real `GROQ_API_KEY` (182F). Every one of those real integrations
+responded honestly and as designed: OSRM returned real route
+feasibility (`routes: success`), Kiwi MCP made a real network call and
+honestly reported `unavailable` with the message "Kiwi MCP returned no
+flight offers for this search" (a real zero-result search, not an
+error, not a fabricated offer), the manual/local accommodation fixture
+produced two real source-labeled offers, and the narrator both failed
+and later succeeded against the real Groq API across the same session
+(see `docs/13_llm_reasoning_pipeline.md` section 121 for the full
+narrator-specific account). `provider_coverage.weather` reported
+`failed` for this run (a real, transient Open-Meteo issue for a
+several-months-out date range, not a regression -- 182B's retry-once
+logic already ran and still failed honestly rather than masking it).
+The full automated suite (2436 tests) was re-confirmed to run
+completely hermetically with no `.env` file present (13.4s, zero
+network calls) -- the real `.env` used for this manual demo was moved
+aside for that run and restored immediately after, precisely so this
+step's "real provider" testing never contaminates the suite every other
+contributor (and CI) runs without any such file.
+
+One small, real frontend bug was found and fixed during this live
+run -- see `docs/16_frontend_architecture.md`'s 182G note for
+`UserModeFlightSummary`'s corrected not-found-vs-not-connected wording;
+no backend field, model, or provider adapter needed to change for it,
+since the underlying `FlightSearchStatus` values were already correct
+and honest -- only the frontend's message selection was imprecise.

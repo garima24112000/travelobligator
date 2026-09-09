@@ -1,8 +1,27 @@
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Step 182E: allowed values for the optional manual/local HTML
+# "source label" config (see `accommodation_manual_html_source`/
+# `flight_manual_html_source` below). An unrecognized value never
+# reaches an adapter -- the field validators below clamp it to
+# `"generic"` instead, matching every other "unsupported value falls
+# back safely" convention in this file (see e.g.
+# `accommodation_provider`/`flight_provider`/`hotel_ratings_provider`
+# and their factories). This label only ever changes provenance
+# display text (source_id/source_name on a manually-supplied local
+# HTML file's parsed offers) -- it never selects a different provider,
+# never enables a live API call, and never implies the labeled site's
+# official API was actually used.
+_ALLOWED_ACCOMMODATION_MANUAL_HTML_SOURCES = frozenset(
+    {"generic", "booking", "expedia", "hotelbeds", "hostelworld", "vrbo", "airbnb"}
+)
+_ALLOWED_FLIGHT_MANUAL_HTML_SOURCES = frozenset(
+    {"generic", "skyscanner", "google_flights", "kiwi", "other"}
+)
 
 # backend/app/core/config.py -> parents[2] is the backend/ project root, so
 # a relative local_storage_path resolves the same way whether the app is
@@ -74,6 +93,52 @@ class Settings(BaseSettings):
 
     amadeus_client_id: str | None = Field(default=None, alias="AMADEUS_CLIENT_ID")
     amadeus_client_secret: str | None = Field(default=None, alias="AMADEUS_CLIENT_SECRET")
+
+    # Step 182E: partner/paid-access provider credential placeholders,
+    # documented in README.md's "Provider activation" section. None of
+    # these are read by any provider adapter or factory today -- declared
+    # here only so `.env.example`/a real `.env` have a typed, tested place
+    # to put a real credential *if and when* a real adapter for that
+    # provider is implemented (with its own request/response schema and
+    # tests, per this repo's no-fabrication policy). Setting any of these
+    # today has zero effect on `accommodation_provider`/`flight_provider`/
+    # `hotel_ratings_provider` provider selection -- those still only
+    # recognize the provider names their own factories already support
+    # (see `backend/app/providers/accommodation/factory.py`,
+    # `backend/app/providers/flights/factory.py`,
+    # `backend/app/providers/hotel_ratings/factory.py`), and an
+    # unsupported/unrecognized provider name always falls back to
+    # `not_connected` rather than fabricating data. Every field defaults
+    # to `None` -- never a real key -- and `.env.example` only ever ships
+    # empty placeholders.
+    booking_demand_api_key: str | None = Field(default=None, alias="BOOKING_DEMAND_API_KEY")
+    booking_demand_api_base_url: str | None = Field(
+        default=None, alias="BOOKING_DEMAND_API_BASE_URL"
+    )
+    expedia_rapid_api_key: str | None = Field(default=None, alias="EXPEDIA_RAPID_API_KEY")
+    expedia_rapid_api_secret: str | None = Field(default=None, alias="EXPEDIA_RAPID_API_SECRET")
+    expedia_rapid_api_base_url: str | None = Field(
+        default=None, alias="EXPEDIA_RAPID_API_BASE_URL"
+    )
+    hotelbeds_api_key: str | None = Field(default=None, alias="HOTELBEDS_API_KEY")
+    hotelbeds_secret: str | None = Field(default=None, alias="HOTELBEDS_SECRET")
+    hotelbeds_api_base_url: str | None = Field(default=None, alias="HOTELBEDS_API_BASE_URL")
+    hostelworld_api_key: str | None = Field(default=None, alias="HOSTELWORLD_API_KEY")
+    hostelworld_api_base_url: str | None = Field(default=None, alias="HOSTELWORLD_API_BASE_URL")
+    vrbo_partner_api_key: str | None = Field(default=None, alias="VRBO_PARTNER_API_KEY")
+    vrbo_partner_api_base_url: str | None = Field(
+        default=None, alias="VRBO_PARTNER_API_BASE_URL"
+    )
+    airbnb_partner_api_key: str | None = Field(default=None, alias="AIRBNB_PARTNER_API_KEY")
+    airbnb_partner_api_base_url: str | None = Field(
+        default=None, alias="AIRBNB_PARTNER_API_BASE_URL"
+    )
+    skyscanner_api_key: str | None = Field(default=None, alias="SKYSCANNER_API_KEY")
+    skyscanner_api_base_url: str | None = Field(default=None, alias="SKYSCANNER_API_BASE_URL")
+    tripadvisor_api_key: str | None = Field(default=None, alias="TRIPADVISOR_API_KEY")
+    tripadvisor_api_base_url: str | None = Field(
+        default=None, alias="TRIPADVISOR_API_BASE_URL"
+    )
 
     overpass_api_url: str = Field(
         default="https://overpass-api.de/api/interpreter",
@@ -354,6 +419,23 @@ class Settings(BaseSettings):
         default=3600, alias="SCRAPED_ACCOMMODATION_CACHE_TTL_SECONDS", ge=0
     )
 
+    # Optional provenance "source label" for the manual/local scraped
+    # accommodation file (Step 182E, docs/12_provider_architecture.md).
+    # Purely cosmetic: it only changes the displayed `source_id`/
+    # `source_name` on offers parsed from `scraped_accommodation_html_path`
+    # (see `ScrapedAccommodationProvider`) -- and only when the operator
+    # has not already customized `scraped_accommodation_source_id`/
+    # `scraped_accommodation_source_name` themselves. `"generic"`
+    # (default) leaves both fields completely unchanged. Setting this to
+    # e.g. `"booking"` never means real Booking.com API data -- it means
+    # "this manually-saved local HTML file is labeled by the user as
+    # Booking.com-derived," and the generated source_name always says so
+    # explicitly ("not official Booking.com data"). An unrecognized value
+    # falls back to `"generic"` rather than raising.
+    accommodation_manual_html_source: str = Field(
+        default="generic", alias="ACCOMMODATION_MANUAL_HTML_SOURCE"
+    )
+
     # Config gate for get_flight_provider (Step 169B,
     # docs/12_provider_architecture.md, docs/14_backend_architecture.md).
     # "not_connected" and "scraped_local" (default) are the only supported
@@ -426,6 +508,18 @@ class Settings(BaseSettings):
         default=3600, alias="SCRAPED_FLIGHT_CACHE_TTL_SECONDS", ge=0
     )
 
+    # Optional provenance "source label" for the manual/local scraped
+    # flight file (Step 182E), mirroring
+    # `accommodation_manual_html_source` above. `"kiwi"` here means "this
+    # manually-saved local HTML file is labeled by the user as
+    # Kiwi-derived" -- it is a completely separate config surface from
+    # `flight_provider="kiwi_mcp"`/`kiwi_mcp_enabled` (the real, live Kiwi
+    # MCP integration below) and never causes a network call or implies
+    # live Kiwi MCP data. An unrecognized value falls back to `"generic"`.
+    flight_manual_html_source: str = Field(
+        default="generic", alias="FLIGHT_MANUAL_HTML_SOURCE"
+    )
+
     # Kiwi MCP flight provider foundation (Step 178B,
     # docs/12_provider_architecture.md, docs/13_llm_reasoning_pipeline.md,
     # docs/14_backend_architecture.md,
@@ -487,6 +581,52 @@ class Settings(BaseSettings):
     # original hand-written orchestrator loop.
     planning_engine_mode: str = Field(default="langgraph", alias="PLANNING_ENGINE_MODE")
 
+    # Itinerary narrator (Step 182F, docs/13_llm_reasoning_pipeline.md,
+    # docs/14_backend_architecture.md). A separate, optional, read-only
+    # LLM feature -- deliberately its own config surface, never reusing
+    # `ai_candidate_discovery_shadow_mode_enabled`/
+    # `ai_candidate_proposal_provider` (those gate the unrelated AI
+    # candidate-proposal/grounding pipeline). Off by default
+    # (`itinerary_narrator_enabled=False`); even when enabled,
+    # `itinerary_narrator_provider` still defaults to `"not_connected"`,
+    # matching every other provider-selection field's safe-default
+    # convention in this file. The narrator only ever reads an
+    # already-computed `PlanningState` (see
+    # `ItineraryNarrativeRequestBuilder`) and writes prose to
+    # `PlanningState.itinerary_narrative_report` -- it never mutates
+    # `experience_plan`, `validation_report`, `provider_coverage`,
+    # `regeneration_readiness`, or any other factual field, and
+    # generation/regeneration must succeed whether or not it is enabled
+    # or fails.
+    itinerary_narrator_enabled: bool = Field(
+        default=False, alias="ITINERARY_NARRATOR_ENABLED"
+    )
+    itinerary_narrator_provider: str = Field(
+        default="not_connected", alias="ITINERARY_NARRATOR_PROVIDER"
+    )
+    # `None` (default) means "use that provider's own default model" --
+    # `anthropic_model`/`groq_model` above -- exactly like
+    # `AnthropicAICandidateProposalProvider`/`GroqAICandidateProposalProvider`
+    # already do for the unrelated AI candidate-proposal feature.
+    itinerary_narrator_model: str | None = Field(
+        default=None, alias="ITINERARY_NARRATOR_MODEL"
+    )
+    itinerary_narrator_timeout_seconds: float = Field(
+        default=20.0, alias="ITINERARY_NARRATOR_TIMEOUT_SECONDS", gt=0.0
+    )
+    # Prompt-size safety caps (never a factual limit -- a trip longer than
+    # this still generates completely normally; only the narrator's own
+    # input/output gets capped). The request builder truncates `days` to
+    # this count and each day's `experiences`/`restaurant_names` to
+    # `itinerary_narrator_max_items_per_day`, honestly marking
+    # `ItineraryNarrativeRequest.truncated=True` when it does.
+    itinerary_narrator_max_days: int = Field(
+        default=10, alias="ITINERARY_NARRATOR_MAX_DAYS", ge=1
+    )
+    itinerary_narrator_max_items_per_day: int = Field(
+        default=6, alias="ITINERARY_NARRATOR_MAX_ITEMS_PER_DAY", ge=1
+    )
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
@@ -499,6 +639,16 @@ class Settings(BaseSettings):
         # docs/13_llm_reasoning_pipeline.md section 41).
         populate_by_name=True,
     )
+
+    @field_validator("accommodation_manual_html_source", mode="after")
+    @classmethod
+    def _normalize_accommodation_manual_html_source(cls, value: str) -> str:
+        return value if value in _ALLOWED_ACCOMMODATION_MANUAL_HTML_SOURCES else "generic"
+
+    @field_validator("flight_manual_html_source", mode="after")
+    @classmethod
+    def _normalize_flight_manual_html_source(cls, value: str) -> str:
+        return value if value in _ALLOWED_FLIGHT_MANUAL_HTML_SOURCES else "generic"
 
     def resolved_local_storage_path(self) -> Path:
         """Local development storage path, not a production database.

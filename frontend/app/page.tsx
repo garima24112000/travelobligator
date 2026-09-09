@@ -51,6 +51,8 @@ import type {
   GeoPoint,
   HolidayContext,
   ImplementationGaps,
+  ItineraryNarrativeDayOutput,
+  ItineraryNarrativeReport,
   PendingFeedbackSummary,
   PlanDiffPreview,
   ProviderCoverageData,
@@ -130,6 +132,7 @@ type PlanResult = {
   routeAwareSequencingReport: RouteAwareSequencingReport | null;
   routeFeasibilityReport: RouteFeasibilityReport | null;
   travelTimeBufferReport: TravelTimeBufferReport | null;
+  itineraryNarrativeReport: ItineraryNarrativeReport | null;
 };
 
 function parseCommaList(value: string): string[] {
@@ -1330,6 +1333,108 @@ function CurrencyContextSection({ currency }: { currency: CurrencyContext | null
   );
 }
 
+/**
+ * One-line, honest weather summary for Traveler view (Step 182D). Only
+ * ever aggregates real `temperature_max_c`/`temperature_min_c` values the
+ * backend already returned (a plain min/max over whatever numeric values
+ * are present) -- never a forecast, invented figure, or value for a day
+ * the backend left null. Falls back to a short, honest message when no
+ * usable daily forecast exists at all, rather than omitting the row or
+ * showing raw provider status internals.
+ */
+function summarizeWeatherForTravelerView(weather: WeatherContext | null): string {
+  if (!weather || weather.daily_weather.length === 0) {
+    return "Weather forecast is not available for these dates.";
+  }
+  const temperatures = weather.daily_weather
+    .flatMap((day) => [day.temperature_max_c, day.temperature_min_c])
+    .filter((value): value is number => value !== null);
+  if (temperatures.length === 0) {
+    return `Weather forecast covers ${weather.daily_weather.length} day(s), but temperature figures weren't returned.`;
+  }
+  const low = Math.round(Math.min(...temperatures));
+  const high = Math.round(Math.max(...temperatures));
+  const dayCount = weather.daily_weather.length;
+  return `Around ${low}–${high}°C over ${dayCount} day${dayCount === 1 ? "" : "s"}${weather.source ? ` (via ${weather.source})` : ""}.`;
+}
+
+/**
+ * Calm, honest one-line currency summary for Traveler view (Step 182D).
+ * Same-currency trips (the common case the task specifically calls out)
+ * get "No currency conversion needed" rather than looking like a failure
+ * -- `CurrencyContext` already guarantees `exchange_rate=1.0` whenever
+ * `destination_currency === base_currency` (see the model docstring), so
+ * this never needs to guess currency identity itself. A genuinely missing
+ * rate still gets one short, calm fallback line, never raw provider
+ * status internals.
+ */
+function summarizeCurrencyForTravelerView(currency: CurrencyContext | null): string {
+  if (!currency || currency.destination_currency === null || currency.exchange_rate === null) {
+    return "Currency exchange rate is not available for this destination.";
+  }
+  if (currency.destination_currency === currency.base_currency) {
+    return `No currency conversion needed — both in ${currency.base_currency}.`;
+  }
+  return `1 ${currency.base_currency} = ${currency.exchange_rate.toFixed(4)} ${currency.destination_currency}${currency.rate_date ? ` (rate as of ${currency.rate_date})` : ""}.`;
+}
+
+// Step 182D: Traveler view's single, concise travel-context summary --
+// replaces the three full WeatherContextSection/HolidayContextSection/
+// CurrencyContextSection reports (kept exactly as-is in Developer view)
+// with one short line each. Holidays are shown only when at least one
+// real, provider-backed holiday actually falls in the trip's date range
+// -- there is nothing relevant to summarize otherwise, so the row is
+// omitted rather than padded with a "no holidays" line.
+function TravelerContextSummarySection({
+  weather,
+  holiday,
+  currency,
+}: {
+  weather: WeatherContext | null;
+  holiday: HolidayContext | null;
+  currency: CurrencyContext | null;
+}) {
+  const relevantHolidays = holiday?.holidays ?? [];
+
+  return (
+    <div className="rounded-2xl border border-white/10 bg-white/5 p-5">
+      <h2 className="text-lg font-semibold">Travel context</h2>
+      <dl className="mt-3 flex flex-col gap-3 text-sm">
+        <div>
+          <dt className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+            Weather
+          </dt>
+          <dd className="mt-1 text-slate-300">{summarizeWeatherForTravelerView(weather)}</dd>
+        </div>
+        {relevantHolidays.length > 0 && (
+          <div>
+            <dt className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+              Holidays
+            </dt>
+            <dd className="mt-1 flex flex-col gap-0.5 text-slate-300">
+              {relevantHolidays.map((day, index) => (
+                <span key={`${day.date}-${index}`} className="break-words">
+                  {day.date} — {day.local_name}
+                </span>
+              ))}
+            </dd>
+          </div>
+        )}
+        <div>
+          <dt className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+            Currency
+          </dt>
+          <dd className="mt-1 text-slate-300">{summarizeCurrencyForTravelerView(currency)}</dd>
+        </div>
+      </dl>
+      <p className="mt-3 text-[11px] text-slate-500">
+        Switch to Developer view for the full weather, holiday, and
+        currency reports.
+      </p>
+    </div>
+  );
+}
+
 function RouteFeasibilitySection({
   routeFeasibility,
 }: {
@@ -1553,7 +1658,15 @@ function DayMapPreview({
     <div className="mt-3">
       <div
         ref={containerRef}
-        className="h-[260px] w-full overflow-hidden rounded-lg border border-white/10"
+        // Step 182D: `relative` gives this container its own CSS
+        // positioning context, so Leaflet's internal absolutely-positioned
+        // panes/proxy elements are clipped by this div's own
+        // `overflow-hidden` instead of potentially positioning (and
+        // overflowing) relative to a further-up, non-clipping ancestor --
+        // the likely cause of the ~10px mobile page overflow 182C found.
+        // Container-level CSS only; no Leaflet route/marker/path logic
+        // touched.
+        className="relative h-[260px] w-full max-w-full overflow-hidden rounded-lg border border-white/10"
       />
       {legendLabel && (
         <p
@@ -2514,7 +2627,7 @@ function ProvenanceBadge({
   return (
     <div className="mt-2 rounded-md border border-amber-300/30 bg-amber-950/20 p-2 text-[11px] text-amber-200/90">
       <p className="font-semibold uppercase tracking-wide">
-        Scraped public page · {scrapedConfidenceLabel(provenance.confidence)}
+        Manual/local HTML · {scrapedConfidenceLabel(provenance.confidence)}
       </p>
       <p className="mt-1 text-xs text-amber-200/80">
         This is not official-provider data. It has not been verified for{" "}
@@ -2607,10 +2720,55 @@ function AccommodationRatingDetailsCard({
  * POI never appears here, and a real bookable offer here is never merged
  * into those location-candidate lists. When an offer carries
  * `scraped_provenance` (Step 168C's disabled-by-default local/manual
- * scraped provider), it is visibly labeled "Scraped public page" with its
+ * scraped provider), it is visibly labeled "Manual/local HTML" with its
  * experimental/fragile confidence -- never presented as if it were
  * official, verified provider data.
  */
+// Extracted from AccommodationInventorySection (Step 182D) so the same
+// honest, fields-actually-returned-only offer card can be reused by the
+// new Traveler-view trip-level "Where to stay" section without
+// duplicating its markup -- behavior-equivalent, not a new component.
+function AccommodationOfferCard({ offer }: { offer: AccommodationOffer }) {
+  return (
+    <li className="rounded-lg border border-white/10 bg-slate-900/60 p-3 text-sm">
+      <p className="break-words font-medium text-slate-100">
+        {offer.property_name}
+      </p>
+      <p className="mt-0.5 break-all font-mono text-[11px] text-slate-500">
+        {offer.provider}
+        {offer.source_name ? ` · ${offer.source_name}` : ""}
+      </p>
+      {offer.nightly_price_amount !== null && offer.currency && (
+        <p className="mt-1 text-xs text-slate-300">
+          {offer.nightly_price_amount} {offer.currency} / night
+        </p>
+      )}
+      {offer.rating !== null && (
+        <p className="mt-1 text-xs text-slate-300">
+          {legacyOfferRatingLabel(offer)}: {offer.rating}
+        </p>
+      )}
+      {offer.rating_details && (
+        <AccommodationRatingDetailsCard ratingDetails={offer.rating_details} />
+      )}
+      <p className="mt-1 text-xs text-slate-400">
+        Availability: {offer.availability_status}
+      </p>
+      {offer.booking_url && (
+        <p className="mt-1 break-all text-xs text-cyan-200">
+          {offer.booking_url}
+        </p>
+      )}
+      {offer.scraped_provenance && (
+        <ProvenanceBadge
+          provenance={offer.scraped_provenance}
+          notVerifiedFor="price, availability, rating, or booking-link accuracy"
+        />
+      )}
+    </li>
+  );
+}
+
 function AccommodationInventorySection({
   report,
 }: {
@@ -2636,45 +2794,7 @@ function AccommodationInventorySection({
       ) : (
         <ul className="mt-3 flex flex-col gap-2">
           {offers.map((offer, index) => (
-            <li
-              key={`${offer.provider_property_id}-${index}`}
-              className="rounded-lg border border-white/10 bg-slate-900/60 p-3 text-sm"
-            >
-              <p className="break-words font-medium text-slate-100">
-                {offer.property_name}
-              </p>
-              <p className="mt-0.5 break-all font-mono text-[11px] text-slate-500">
-                {offer.provider}
-                {offer.source_name ? ` · ${offer.source_name}` : ""}
-              </p>
-              {offer.nightly_price_amount !== null && offer.currency && (
-                <p className="mt-1 text-xs text-slate-300">
-                  {offer.nightly_price_amount} {offer.currency} / night
-                </p>
-              )}
-              {offer.rating !== null && (
-                <p className="mt-1 text-xs text-slate-300">
-                  {legacyOfferRatingLabel(offer)}: {offer.rating}
-                </p>
-              )}
-              {offer.rating_details && (
-                <AccommodationRatingDetailsCard ratingDetails={offer.rating_details} />
-              )}
-              <p className="mt-1 text-xs text-slate-400">
-                Availability: {offer.availability_status}
-              </p>
-              {offer.booking_url && (
-                <p className="mt-1 break-all text-xs text-cyan-200">
-                  {offer.booking_url}
-                </p>
-              )}
-              {offer.scraped_provenance && (
-                <ProvenanceBadge
-                  provenance={offer.scraped_provenance}
-                  notVerifiedFor="price, availability, rating, or booking-link accuracy"
-                />
-              )}
-            </li>
+            <AccommodationOfferCard key={`${offer.provider_property_id}-${index}`} offer={offer} />
           ))}
         </ul>
       )}
@@ -2684,6 +2804,78 @@ function AccommodationInventorySection({
         not bookable hotel inventory -- see the destination candidate
         accommodation POIs below.
       </p>
+    </div>
+  );
+}
+
+// Step 182D: Traveler view's single, trip-level "Where to stay" section.
+// Source priority, per spec: (A) real bookable inventory offers if any
+// exist, (B) else stay-area open-data candidates if any exist, (C) else
+// one honest unavailable note. Capped at 5 cards either way -- this only
+// ever slices an already-backend-ranked/ordered list, never re-ranks or
+// invents one. Reuses the exact same card components Developer view's
+// full AccommodationInventorySection/StayAreaGuidanceSection already use,
+// so every field/wording guarantee those carry (fields-actually-returned-
+// only, no price/rating/availability/booking claim beyond what a real
+// provider or open-data candidate returned) applies here unchanged.
+const TRAVELER_WHERE_TO_STAY_MAX_CARDS = 5;
+
+function TravelerWhereToStaySection({
+  accommodationInventoryReport,
+  stayAreaGuidance,
+}: {
+  accommodationInventoryReport: AccommodationInventoryReport | null;
+  stayAreaGuidance: StayAreaGuidance;
+}) {
+  const offers = accommodationInventoryReport?.offers ?? [];
+  const hasBookableOffers =
+    accommodationInventoryReport?.status === "success" && offers.length > 0;
+  const stayAreaCandidates = stayAreaGuidance.suggested_anchor_accommodation_pois;
+  const hasStayAreaCandidates = stayAreaCandidates.length > 0;
+
+  return (
+    <div className="rounded-2xl border border-white/10 bg-white/5 p-5">
+      <h2 className="text-lg font-semibold">Where to stay</h2>
+
+      {hasBookableOffers ? (
+        <>
+          <DisclaimerNote tone="amber" spacingClassName="mt-2">
+            Bookable lodging inventory from a connected provider,
+            source-limited to the fields it actually returned -- not a
+            confirmed booking or a &ldquo;best&rdquo; ranking.
+          </DisclaimerNote>
+          <ul className="mt-3 flex flex-col gap-2">
+            {offers
+              .slice(0, TRAVELER_WHERE_TO_STAY_MAX_CARDS)
+              .map((offer, index) => (
+                <AccommodationOfferCard key={`${offer.provider_property_id}-${index}`} offer={offer} />
+              ))}
+          </ul>
+        </>
+      ) : hasStayAreaCandidates ? (
+        <>
+          <DisclaimerNote tone="amber" spacingClassName="mt-2">
+            Stay-area ideas from open map data (OpenStreetMap), not
+            bookable hotels -- no price, availability, rating, or booking
+            claim.
+          </DisclaimerNote>
+          <p className="mt-2 text-sm text-slate-300">{stayAreaGuidance.summary}</p>
+          <ul className="mt-3 flex flex-col gap-2">
+            {stayAreaCandidates
+              .slice(0, TRAVELER_WHERE_TO_STAY_MAX_CARDS)
+              .map((accommodation, index) => (
+                <AccommodationSuggestionCard
+                  key={`${accommodation.name}-${index}`}
+                  accommodation={accommodation}
+                />
+              ))}
+          </ul>
+        </>
+      ) : (
+        <DisclaimerNote tone="slate" spacingClassName="mt-2">
+          No lodging information is available for this trip yet.
+        </DisclaimerNote>
+      )}
     </div>
   );
 }
@@ -2713,7 +2905,7 @@ function flightInventoryStatusLabel(
     case "success":
       if (hasKiwiMcpOffers) return "Available via Kiwi MCP";
       return hasScrapedOffers
-        ? "Available from scraped public page"
+        ? "Available from manual/local HTML"
         : "Connected";
     case "unavailable":
       return "Unavailable";
@@ -2803,7 +2995,7 @@ function FlightSegmentSummary({ segment }: { segment: FlightSegment }) {
  * into daily itinerary experiences -- this panel is inventory reporting
  * only. Three source trust tiers are labeled distinctly and never
  * conflated: an offer carrying `scraped_provenance` (the `scraped_local`
- * provider, Step 169D) is labeled "Scraped public page" with its
+ * provider, Step 169D) is labeled "Manual/local HTML" with its
  * experimental/fragile confidence; a real Kiwi MCP offer (`provider ===
  * "kiwi_mcp"`, Step 178C) is labeled "Third-party provider data" via
  * `KiwiMcpOfferBadge`; neither is ever presented with any strong-
@@ -2834,7 +3026,7 @@ function FlightInventorySection({
           No official flight inventory provider is connected yet. Airlines,
           flight numbers, schedules, prices, availability, baggage
           policies, and booking links are unavailable unless returned by
-          an official provider or a scraped public page.
+          an official provider or a manual/local HTML file.
         </DisclaimerNote>
       ) : (
         <ul className="mt-3 flex flex-col gap-2">
@@ -3791,11 +3983,22 @@ function RegenerationReadinessSection({
   readiness,
   onRegenerationAttemptsChange,
   onRegenerateSuccess,
+  compact = false,
 }: {
   tripId: string;
   readiness: RegenerationReadiness;
   onRegenerationAttemptsChange: (attempts: RegenerationAttempt[]) => void;
   onRegenerateSuccess: () => Promise<void>;
+  // Step 182C: `compact` renders the same readiness state and the exact
+  // same regenerate button/handler/success/error UI, but hides the
+  // dl-grid diagnostic breakdown, required/available/missing-input lists,
+  // and blocked-by list -- for User Mode's "concise" regeneration
+  // requirement. It never changes what `handleRegenerate` does, and it
+  // is never rendered at the same time as the full (non-compact) version
+  // -- exactly one of the two is mounted at once, gated by the page's
+  // mode toggle, so there is never a risk of two independent regenerate
+  // requests racing each other.
+  compact?: boolean;
 }) {
   const [isRegenerating, setIsRegenerating] = useState(false);
   const [regenerateError, setRegenerateError] = useState<{
@@ -3848,108 +4051,120 @@ function RegenerationReadinessSection({
         available.
       </DisclaimerNote>
 
-      <dl className="mt-3 grid grid-cols-2 gap-3 text-sm sm:grid-cols-4">
-        <div className="rounded-lg border border-white/10 bg-slate-900/60 p-3">
-          <dt className="text-[11px] uppercase tracking-wide text-slate-500">
-            Status
-          </dt>
-          <dd className="mt-1 font-semibold text-slate-100">
-            {readiness.status}
-          </dd>
-        </div>
-        <div className="rounded-lg border border-white/10 bg-slate-900/60 p-3">
-          <dt className="text-[11px] uppercase tracking-wide text-slate-500">
-            Can regenerate
-          </dt>
-          <dd className="mt-1 font-semibold text-slate-100">
-            {readiness.can_regenerate ? "Yes" : "No"}
-          </dd>
-        </div>
-        <div className="rounded-lg border border-white/10 bg-slate-900/60 p-3">
-          <dt className="text-[11px] uppercase tracking-wide text-slate-500">
-            Current version
-          </dt>
-          <dd className="mt-1 font-semibold text-slate-100">
-            {formatNullableVersionLabel(readiness.current_version)}
-          </dd>
-        </div>
-        <div className="rounded-lg border border-white/10 bg-slate-900/60 p-3">
-          <dt className="text-[11px] uppercase tracking-wide text-slate-500">
-            Would create version
-          </dt>
-          <dd className="mt-1 font-semibold text-slate-100">
-            {formatNullableVersionLabel(readiness.would_create_version)}
-          </dd>
-        </div>
-        <div className="rounded-lg border border-white/10 bg-slate-900/60 p-3">
-          <dt className="text-[11px] uppercase tracking-wide text-slate-500">
-            Pending feedback count
-          </dt>
-          <dd className="mt-1 font-semibold text-slate-100">
-            {readiness.pending_feedback_count}
-          </dd>
-        </div>
-        <div className="rounded-lg border border-white/10 bg-slate-900/60 p-3">
-          <dt className="text-[11px] uppercase tracking-wide text-slate-500">
-            Active lock count
-          </dt>
-          <dd className="mt-1 font-semibold text-slate-100">
-            {readiness.active_lock_count}
-          </dd>
-        </div>
-      </dl>
+      {compact ? (
+        <p className="mt-3 text-sm text-slate-300">
+          Status: <span className="font-semibold">{readiness.status}</span>
+          {" · "}
+          Pending feedback: {readiness.pending_feedback_count}
+          {" · "}
+          Active locks: {readiness.active_lock_count}
+        </p>
+      ) : (
+        <>
+          <dl className="mt-3 grid grid-cols-2 gap-3 text-sm sm:grid-cols-4">
+            <div className="rounded-lg border border-white/10 bg-slate-900/60 p-3">
+              <dt className="text-[11px] uppercase tracking-wide text-slate-500">
+                Status
+              </dt>
+              <dd className="mt-1 font-semibold text-slate-100">
+                {readiness.status}
+              </dd>
+            </div>
+            <div className="rounded-lg border border-white/10 bg-slate-900/60 p-3">
+              <dt className="text-[11px] uppercase tracking-wide text-slate-500">
+                Can regenerate
+              </dt>
+              <dd className="mt-1 font-semibold text-slate-100">
+                {readiness.can_regenerate ? "Yes" : "No"}
+              </dd>
+            </div>
+            <div className="rounded-lg border border-white/10 bg-slate-900/60 p-3">
+              <dt className="text-[11px] uppercase tracking-wide text-slate-500">
+                Current version
+              </dt>
+              <dd className="mt-1 font-semibold text-slate-100">
+                {formatNullableVersionLabel(readiness.current_version)}
+              </dd>
+            </div>
+            <div className="rounded-lg border border-white/10 bg-slate-900/60 p-3">
+              <dt className="text-[11px] uppercase tracking-wide text-slate-500">
+                Would create version
+              </dt>
+              <dd className="mt-1 font-semibold text-slate-100">
+                {formatNullableVersionLabel(readiness.would_create_version)}
+              </dd>
+            </div>
+            <div className="rounded-lg border border-white/10 bg-slate-900/60 p-3">
+              <dt className="text-[11px] uppercase tracking-wide text-slate-500">
+                Pending feedback count
+              </dt>
+              <dd className="mt-1 font-semibold text-slate-100">
+                {readiness.pending_feedback_count}
+              </dd>
+            </div>
+            <div className="rounded-lg border border-white/10 bg-slate-900/60 p-3">
+              <dt className="text-[11px] uppercase tracking-wide text-slate-500">
+                Active lock count
+              </dt>
+              <dd className="mt-1 font-semibold text-slate-100">
+                {readiness.active_lock_count}
+              </dd>
+            </div>
+          </dl>
 
-      {readiness.required_inputs.length > 0 && (
-        <div className="mt-3">
-          <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
-            Required inputs
+          {readiness.required_inputs.length > 0 && (
+            <div className="mt-3">
+              <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                Required inputs
+              </p>
+              <p className="mt-1 text-sm text-slate-300">
+                {readiness.required_inputs.join(", ")}
+              </p>
+            </div>
+          )}
+
+          {readiness.available_inputs.length > 0 && (
+            <div className="mt-3">
+              <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                Available inputs
+              </p>
+              <p className="mt-1 text-sm text-slate-300">
+                {readiness.available_inputs.join(", ")}
+              </p>
+            </div>
+          )}
+
+          {readiness.missing_capabilities.length > 0 && (
+            <div className="mt-3">
+              <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                Missing capabilities
+              </p>
+              <p className="mt-1 text-sm text-slate-300">
+                {readiness.missing_capabilities.join(", ")}
+              </p>
+            </div>
+          )}
+
+          {readiness.blocked_by.length > 0 && (
+            <div className="mt-3">
+              <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                Blocked by
+              </p>
+              <ul className="mt-1 list-disc break-words pl-4 text-xs text-slate-400">
+                {readiness.blocked_by.map((reason, index) => (
+                  <li key={`regeneration-readiness-blocked-by-${index}`}>
+                    {reason}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          <p className="mt-3 text-xs text-slate-400">
+            Next step: {readiness.next_step}
           </p>
-          <p className="mt-1 text-sm text-slate-300">
-            {readiness.required_inputs.join(", ")}
-          </p>
-        </div>
+        </>
       )}
-
-      {readiness.available_inputs.length > 0 && (
-        <div className="mt-3">
-          <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
-            Available inputs
-          </p>
-          <p className="mt-1 text-sm text-slate-300">
-            {readiness.available_inputs.join(", ")}
-          </p>
-        </div>
-      )}
-
-      {readiness.missing_capabilities.length > 0 && (
-        <div className="mt-3">
-          <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
-            Missing capabilities
-          </p>
-          <p className="mt-1 text-sm text-slate-300">
-            {readiness.missing_capabilities.join(", ")}
-          </p>
-        </div>
-      )}
-
-      {readiness.blocked_by.length > 0 && (
-        <div className="mt-3">
-          <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
-            Blocked by
-          </p>
-          <ul className="mt-1 list-disc break-words pl-4 text-xs text-slate-400">
-            {readiness.blocked_by.map((reason, index) => (
-              <li key={`regeneration-readiness-blocked-by-${index}`}>
-                {reason}
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-
-      <p className="mt-3 text-xs text-slate-400">
-        Next step: {readiness.next_step}
-      </p>
 
       <div className="mt-4 border-t border-white/10 pt-4">
         <button
@@ -3963,11 +4178,16 @@ function RegenerationReadinessSection({
           }
           className={`rounded-lg border border-white/10 bg-emerald-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-emerald-500 disabled:cursor-not-allowed disabled:border-white/10 disabled:bg-slate-900 disabled:text-slate-500 disabled:opacity-50 ${FOCUS_RING_CLASSNAME}`}
         >
-          {isRegenerating ? "Regenerating..." : "Regenerate from feedback"}
+          {isRegenerating
+            ? "Regenerating..."
+            : compact
+              ? "Regenerate when allowed"
+              : "Regenerate from feedback"}
         </button>
         <p className="mt-2 text-xs text-slate-500">
-          Regeneration is available only when feedback is pending and no
-          active locks exist.
+          {compact
+            ? "Regeneration is blocked until feedback exists and no active locks are present."
+            : "Regeneration is available only when feedback is pending and no active locks exist."}
         </p>
 
         {regenerateSuccess && (
@@ -4234,15 +4454,40 @@ function PlanOverviewSubheading({
   );
 }
 
-const RESULT_JUMP_LINKS: { id: string; label: string }[] = [
+// Step 182C: User Mode's jump links only ever point at ids that actually
+// render while User Mode is active (see the "summary"/"where-to-stay"/
+// "flights"/"feedback" wrapper ids added around existing components, plus
+// the always-rendered "travel-context"/"draft-itinerary" group headers).
+const USER_MODE_JUMP_LINKS: { id: string; label: string }[] = [
+  { id: "summary", label: "Summary" },
+  { id: "travel-context", label: "Context" },
+  { id: "draft-itinerary", label: "Itinerary" },
+  { id: "where-to-stay", label: "Where to stay" },
+  { id: "flights", label: "Flights" },
+  { id: "feedback", label: "Feedback" },
+];
+
+// Developer Mode keeps every id the original jump-link list already used,
+// plus anchors onto the validation/provider-coverage/inventories/
+// regeneration reports that Developer Mode's own "View details" links
+// used to be the only way to reach.
+const DEVELOPER_MODE_JUMP_LINKS: { id: string; label: string }[] = [
   { id: "plan-overview", label: "Plan overview" },
   { id: "travel-context", label: "Travel context" },
   { id: "draft-itinerary", label: "Draft itinerary" },
   { id: "review-required", label: "Review required" },
   { id: "data-sources", label: "Data sources" },
+  { id: "validation", label: "Validation" },
+  { id: "provider-coverage", label: "Provider coverage" },
+  { id: "inventories", label: "Inventories" },
+  { id: "itinerary-narrative", label: "Narrative (AI)" },
+  { id: "regeneration-readiness", label: "Regeneration" },
 ];
 
-function ResultJumpLinks() {
+function ResultJumpLinks({ mode }: { mode: "user" | "developer" }) {
+  const links =
+    mode === "developer" ? DEVELOPER_MODE_JUMP_LINKS : USER_MODE_JUMP_LINKS;
+
   return (
     <nav
       aria-label="Jump to result section"
@@ -4252,7 +4497,7 @@ function ResultJumpLinks() {
         Jump to a broad section
       </p>
       <ul className="mt-2 flex flex-wrap gap-2">
-        {RESULT_JUMP_LINKS.map((link) => (
+        {links.map((link) => (
           <li key={link.id}>
             <a
               href={`#${link.id}`}
@@ -4264,11 +4509,302 @@ function ResultJumpLinks() {
         ))}
       </ul>
       <p className="mt-2 text-[11px] text-slate-500">
-        For specific reports (validation, provider coverage, inventories,
-        regeneration), use the trust dashboard&apos;s own &ldquo;View
-        details&rdquo; links below instead.
+        {mode === "developer"
+          ? "This view exposes backend PlanningState diagnostics, provider coverage, validation, regeneration, and source details."
+          : "Switch to Developer view above for full validation, provider-coverage, and regeneration diagnostics."}
       </p>
     </nav>
+  );
+}
+
+// Step 182C: visible near the top of a generated result. Two plain
+// buttons, no auth/role gating -- this only ever changes which already-
+// fetched `PlanningState` sections are shown, never what data exists.
+function ModeToggle({
+  mode,
+  onModeChange,
+}: {
+  mode: "user" | "developer";
+  onModeChange: (mode: "user" | "developer") => void;
+}) {
+  const baseClassName =
+    "rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors " +
+    FOCUS_RING_CLASSNAME;
+  const activeClassName = "border-cyan-300/60 bg-cyan-300/20 text-cyan-50";
+  const inactiveClassName =
+    "border-white/10 bg-slate-900/60 text-slate-300 hover:border-cyan-300/30 hover:text-cyan-100";
+
+  return (
+    <div
+      role="group"
+      aria-label="Result view mode"
+      className="flex flex-wrap items-center gap-2"
+    >
+      <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+        View
+      </span>
+      <button
+        type="button"
+        aria-pressed={mode === "user"}
+        onClick={() => onModeChange("user")}
+        className={`${baseClassName} ${mode === "user" ? activeClassName : inactiveClassName}`}
+      >
+        Traveler view
+      </button>
+      <button
+        type="button"
+        aria-pressed={mode === "developer"}
+        onClick={() => onModeChange("developer")}
+        className={`${baseClassName} ${mode === "developer" ? activeClassName : inactiveClassName}`}
+      >
+        Developer view
+      </button>
+    </div>
+  );
+}
+
+// Step 182C: User Mode's single, short readiness banner. It only ever
+// restates `validation_status` (a real backend field) in plain language
+// and points to Developer Mode for detail -- it never claims the plan is
+// booking-ready, final, complete, guaranteed, verified, or "ready for
+// real-world use without further review."
+function UserModeReadinessBanner({
+  validationStatus,
+}: {
+  validationStatus: string | null;
+}) {
+  const status = validationStatus ?? "unknown";
+  const toneClassName =
+    status === "ready"
+      ? "border-emerald-300/30 bg-emerald-400/10 text-emerald-100"
+      : status === "blocked"
+        ? "border-red-400/30 bg-red-400/10 text-red-100"
+        : "border-amber-300/30 bg-amber-400/10 text-amber-100";
+  const message =
+    status === "ready"
+      ? "This draft passed automated validation checks — still review it yourself before relying on it."
+      : status === "blocked"
+        ? "This draft is blocked on required checks and needs review before it's usable."
+        : "Use as a planning draft — some checks still need review.";
+
+  return (
+    <div className={`rounded-2xl border p-4 text-sm ${toneClassName}`}>
+      <p className="leading-6">{message}</p>
+      <p className="mt-1 text-[11px] opacity-80">
+        Switch to Developer view above for the full validation report and
+        provider details.
+      </p>
+    </div>
+  );
+}
+
+// Step 182C: concise, User-Mode-only flight summary. Reads the same
+// already-fetched `FlightInventoryReport` as the full `FlightInventorySection`
+// (Developer Mode only) -- no new API call -- but shows only a status line
+// and offer count, never re-deriving or inventing offer details, prices,
+// or booking links.
+// Step 182D: concise, one-line-per-fact flight offer card for Traveler
+// view's trip-level Flights section -- shows only the first outbound
+// segment, total price, and the same booking-link/provenance badges the
+// full FlightInventorySection (Developer view) uses; never the return
+// segments, baggage policy, or cancellation policy detail that section
+// shows. No field here is invented -- every value is read straight off
+// the same already-fetched `FlightOffer` Developer view renders in full.
+function TravelerFlightOfferCard({ offer }: { offer: FlightOffer }) {
+  const firstOutboundSegment = offer.outbound_segments[0];
+  return (
+    <li className="rounded-lg border border-white/10 bg-slate-900/60 p-3 text-sm">
+      {firstOutboundSegment && <FlightSegmentSummary segment={firstOutboundSegment} />}
+      {offer.total_price_amount !== null && offer.currency && (
+        <p className="mt-1 text-xs text-slate-300">
+          {offer.total_price_amount} {offer.currency}
+        </p>
+      )}
+      {offer.booking_url && (
+        <p className="mt-1 text-[11px] uppercase tracking-wide text-slate-500">
+          Provider-supplied booking link -- not a booking confirmation
+        </p>
+      )}
+      {offer.scraped_provenance && (
+        <ProvenanceBadge
+          provenance={offer.scraped_provenance}
+          notVerifiedFor="schedule, price, availability, baggage-policy, or booking-link accuracy"
+        />
+      )}
+      {!offer.scraped_provenance && isKiwiMcpFlightOffer(offer) && <KiwiMcpOfferBadge />}
+    </li>
+  );
+}
+
+// Step 182F: optional, read-only LLM itinerary narrator. This section
+// (and `DailyNarrativeNote` below) render backend-generated presentation
+// prose ONLY when `itineraryNarrativeReport.status === "success"` --
+// disabled (the default), not_connected, unavailable, or failed all
+// render nothing here, in either mode, so Traveler view is never
+// cluttered with a "not enabled" message and never shows a scary error.
+// A failed/not_connected reason is only ever surfaced in Developer view,
+// via `ItineraryNarrativeDiagnosticSection` below. The narrative text
+// itself is never treated as a new travel fact -- it is prose over
+// fields the rest of the page already renders from PlanningState
+// directly.
+function ItineraryNarrativeSummarySection({
+  report,
+}: {
+  report: ItineraryNarrativeReport | null;
+}) {
+  if (!report || report.status !== "success" || !report.summary) {
+    return null;
+  }
+
+  return (
+    <div className="rounded-2xl border border-cyan-300/20 bg-cyan-300/10 p-5">
+      <p className="text-[11px] font-semibold uppercase tracking-wide text-cyan-200">
+        Trip summary
+      </p>
+      <p className="mt-2 break-words text-sm leading-6 text-cyan-50">{report.summary}</p>
+      <p className="mt-2 text-[11px] text-cyan-100/70">
+        AI-written summary of the plan below -- not a new fact, and not a
+        claim that anything is booked or finalized.
+      </p>
+    </div>
+  );
+}
+
+function _findDailyNarrative(
+  report: ItineraryNarrativeReport | null,
+  dayNumber: number,
+): ItineraryNarrativeDayOutput | null {
+  if (!report || report.status !== "success") return null;
+  return report.daily_narratives.find((day) => day.day_number === dayNumber) ?? null;
+}
+
+// Renders one day's narrator prose inside its day card, if present --
+// `null` (renders nothing) whenever the narrator is disabled/not
+// connected/failed, or simply didn't return a narrative for this
+// specific day (e.g. it was outside the truncated window). Caveats are
+// preserved and shown alongside the prose, never dropped silently.
+function DailyNarrativeNote({
+  report,
+  dayNumber,
+}: {
+  report: ItineraryNarrativeReport | null;
+  dayNumber: number;
+}) {
+  const daily = _findDailyNarrative(report, dayNumber);
+  if (!daily) return null;
+
+  return (
+    <div className="mt-2 rounded-lg border border-cyan-300/20 bg-cyan-300/5 p-3">
+      <p className="text-xs font-semibold text-cyan-100">{daily.title}</p>
+      <p className="mt-1 break-words text-sm leading-6 text-cyan-50/90">{daily.narrative}</p>
+      {daily.caveats.length > 0 && (
+        <ul className="mt-2 flex flex-col gap-1">
+          {daily.caveats.map((caveat, index) => (
+            <li key={index} className="break-words text-[11px] text-amber-300/90">
+              {caveat}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+// Step 182F: Developer-view-only diagnostic section. Makes explicit that
+// this is presentation prose only, never provider data -- shows the
+// exact status/provider/model/reason and which allow-listed
+// PlanningState fields were used, mirroring how every other
+// Developer-view report in this app discloses its own status/source.
+function ItineraryNarrativeDiagnosticSection({
+  report,
+}: {
+  report: ItineraryNarrativeReport | null;
+}) {
+  const status = report?.status ?? "not_connected";
+
+  return (
+    <div id="itinerary-narrative" className="rounded-2xl border border-white/10 bg-white/5 p-5">
+      <h2 className="text-lg font-semibold">Itinerary narrative (AI)</h2>
+      <DisclaimerNote tone="amber" spacingClassName="mt-2">
+        Presentation prose only, generated from this plan&apos;s own
+        already-computed data. It is never treated as provider data and
+        never affects validation, provider coverage, or regeneration.
+      </DisclaimerNote>
+      <p className="mt-3 text-sm text-slate-200">
+        Status: <span className="font-semibold">{status}</span>
+        {report?.provider ? ` · Provider: ${report.provider}` : ""}
+        {report?.model ? ` · Model: ${report.model}` : ""}
+      </p>
+      {report?.message && (
+        <p className="mt-1 text-xs text-slate-400">{report.message}</p>
+      )}
+      {report?.source_fields_used && report.source_fields_used.length > 0 && (
+        <div className="mt-3">
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+            PlanningState fields used
+          </p>
+          <p className="mt-1 break-words text-xs text-slate-400">
+            {report.source_fields_used.join(", ")}
+          </p>
+        </div>
+      )}
+      <SummaryList title="Assumptions" items={report?.assumptions ?? []} />
+      <SummaryList title="Warnings" items={report?.warnings ?? []} />
+      {report?.status === "success" && report.daily_narratives.length > 0 && (
+        <p className="mt-3 text-xs text-slate-500">
+          {report.daily_narratives.length} day narrative(s) generated -- shown inline in the
+          day-wise itinerary above in both views.
+        </p>
+      )}
+    </div>
+  );
+}
+
+const TRAVELER_FLIGHTS_MAX_CARDS = 5;
+
+function UserModeFlightSummary({
+  report,
+}: {
+  report: FlightInventoryReport | null;
+}) {
+  const status = report?.status ?? "not_connected";
+  const offers = report?.offers ?? [];
+  const hasOffers = status === "success" && offers.length > 0;
+  // Step 182G: a real, connected/enabled flight provider that genuinely
+  // found nothing (or errored) for this route/date is a different, more
+  // accurate message than "not connected at all" -- confirmed live
+  // against a real Kiwi MCP call that returned zero offers for a real
+  // search, where the old copy read as if no provider were configured.
+  const noOfferMessage =
+    status === "unavailable"
+      ? "No flight offers were found for this trip's route and dates."
+      : status === "failed"
+        ? "Flight search is temporarily unavailable -- see Developer view for details."
+        : "Connect or enable a flight provider to show flight options for this trip.";
+
+  return (
+    <div className="rounded-2xl border border-white/10 bg-white/5 p-5">
+      <h2 className="text-lg font-semibold">Flights</h2>
+      {hasOffers ? (
+        <>
+          <DisclaimerNote tone="amber" spacingClassName="mt-2">
+            Concise flight offer summary -- not a booking. See Developer
+            view for full schedule, baggage, and cancellation details.
+          </DisclaimerNote>
+          <ul className="mt-3 flex flex-col gap-2">
+            {offers
+              .slice(0, TRAVELER_FLIGHTS_MAX_CARDS)
+              .map((offer, index) => (
+                <TravelerFlightOfferCard key={`${offer.offer_id}-${index}`} offer={offer} />
+              ))}
+          </ul>
+        </>
+      ) : (
+        <DisclaimerNote tone="slate" spacingClassName="mt-2">
+          {noOfferMessage}
+        </DisclaimerNote>
+      )}
+    </div>
   );
 }
 
@@ -4354,6 +4890,7 @@ async function loadPlanResult(tripId: string): Promise<PlanResult> {
       trip.planning_state.route_aware_sequencing_report,
     routeFeasibilityReport: trip.planning_state.route_feasibility_report,
     travelTimeBufferReport: trip.planning_state.travel_time_buffer_report,
+    itineraryNarrativeReport: trip.planning_state.itinerary_narrative_report,
   };
 }
 
@@ -4563,6 +5100,26 @@ const TRAVEL_LOADING_STAGES = [
   "Almost there",
 ];
 
+// Step 182C: friendlier, traveler-facing copy for the loading animation,
+// keyed strictly off the real backend stage keys the orchestrator reports
+// (see `_GENERATION_STAGE_LABELS` in
+// backend/app/services/planning_orchestrator.py). This is purely a nicer
+// re-wording of a real, already-reported stage -- it never invents a
+// stage the backend didn't actually report, and several backend stages
+// intentionally share one friendly phrase rather than being split into
+// unbacked sub-steps.
+const FRIENDLY_STAGE_LABEL_BY_BACKEND_KEY: Record<string, string> = {
+  traveler_profile: "Preparing your trip",
+  destination_context: "Finding places",
+  candidate_quality: "Checking providers",
+  ai_candidate_shadow: "Checking providers",
+  trip_strategy: "Building daily plan",
+  stay_transport: "Checking movement",
+  experience_plan: "Building daily plan",
+  validation: "Validating draft",
+  post_processing: "Finalizing itinerary view",
+};
+
 /**
  * Decorative loading animation shown while a new trip is being created and
  * generated (Step 163A, wired to real backend pipeline progress in Step
@@ -4584,17 +5141,24 @@ function TravelGenerationLoading({
   destination,
   isLoading,
   progressPercent,
+  stageKey,
   stageLabel,
   progressMessage,
   isRealBackendStageProgress,
+  isCompleted,
 }: {
   originCity?: string;
   destination?: string;
   isLoading: boolean;
   progressPercent?: number;
+  stageKey?: string | null;
   stageLabel?: string;
   progressMessage?: string;
   isRealBackendStageProgress?: boolean;
+  // Step 182C: true only once the backend itself reports
+  // `GenerationProgress.status === "completed"` -- never inferred locally
+  // -- so the landing visual is a reaction to a real event, not a guess.
+  isCompleted?: boolean;
 }) {
   const [localProgress, setLocalProgress] = useState(0);
   const [stageIndex, setStageIndex] = useState(0);
@@ -4625,12 +5189,29 @@ function TravelGenerationLoading({
   const showBackendNote = hasBackendProgress && isRealBackendStageProgress === true;
   const origin = originCity?.trim() || "Origin";
   const dest = destination?.trim() || "Destination";
-  const displayProgress = hasBackendProgress ? progressPercent : localProgress;
-  const displayMessage =
-    stageLabel || progressMessage || TRAVEL_LOADING_STAGES[stageIndex];
+  const displayProgress = isCompleted
+    ? 100
+    : hasBackendProgress
+      ? progressPercent
+      : localProgress;
+  const friendlyStageLabel = stageKey
+    ? FRIENDLY_STAGE_LABEL_BY_BACKEND_KEY[stageKey]
+    : undefined;
+  const displayMessage = isCompleted
+    ? "Trip generated — preparing your itinerary view"
+    : friendlyStageLabel ||
+      stageLabel ||
+      progressMessage ||
+      TRAVEL_LOADING_STAGES[stageIndex];
 
   return (
-    <div className="mt-8 rounded-2xl border border-white/10 bg-white/5 p-6">
+    <div
+      className={`mt-8 rounded-2xl border p-6 transition-colors duration-500 ${
+        isCompleted
+          ? "border-emerald-300/30 bg-emerald-400/5"
+          : "border-white/10 bg-white/5"
+      }`}
+    >
       <div className="flex items-center justify-between text-sm font-medium text-slate-300">
         <span>{origin}</span>
         <span>{dest}</span>
@@ -4640,14 +5221,18 @@ function TravelGenerationLoading({
         aria-hidden="true"
       >
         <div
-          className="h-1.5 rounded-full bg-cyan-400/70 transition-[width] duration-500 motion-reduce:transition-none"
+          className={`h-1.5 rounded-full transition-[width] duration-500 motion-reduce:transition-none ${
+            isCompleted ? "bg-emerald-400/80" : "bg-cyan-400/70"
+          }`}
           style={{ width: `${displayProgress}%` }}
         />
         <span
-          className="absolute -top-2.5 -translate-x-1/2 text-base transition-[left] duration-500 motion-reduce:transition-none"
+          className={`absolute -top-3 -translate-x-1/2 text-base transition-all duration-500 motion-reduce:transition-none ${
+            isCompleted ? "scale-110" : ""
+          }`}
           style={{ left: `${displayProgress}%` }}
         >
-          ✈️
+          {isCompleted ? "🛬" : "✈️"}
         </span>
       </div>
       <p
@@ -4660,7 +5245,7 @@ function TravelGenerationLoading({
       <p className="mt-2 text-[11px] text-slate-500">
         Loading animation only — not live flight tracking.
       </p>
-      {showBackendNote && (
+      {showBackendNote && !isCompleted && (
         <p className="mt-1 text-[11px] text-emerald-300/80">
           Using backend stage progress
         </p>
@@ -4668,6 +5253,9 @@ function TravelGenerationLoading({
     </div>
   );
 }
+
+// Step 182C: User Mode / Developer Mode toggle persistence key.
+const VIEW_MODE_STORAGE_KEY = "travelobligator.viewMode";
 
 export default function Home() {
   const [form, setForm] = useState<TripRequestInput>(DEFAULT_TRIP_REQUEST);
@@ -4690,6 +5278,44 @@ export default function Home() {
   const [feedbackErrorMessage, setFeedbackErrorMessage] = useState<
     string | null
   >(null);
+
+  // Step 182C: User Mode / Developer Mode split. The initial value on
+  // both the server render and the client's first render is always
+  // "user" -- matching exactly -- so there is no hydration mismatch; the
+  // real localStorage read happens only inside the effect below, which
+  // runs after hydration. If localStorage is unavailable or throws, the
+  // catch leaves `mode` at its "user" default, per spec.
+  const [mode, setMode] = useState<"user" | "developer">("user");
+  const [hasReadStoredMode, setHasReadStoredMode] = useState(false);
+
+  useEffect(() => {
+    try {
+      const stored = window.localStorage.getItem(VIEW_MODE_STORAGE_KEY);
+      if (stored === "user" || stored === "developer") {
+        // This is the one deliberate post-hydration sync read from an
+        // external system (localStorage) that this state is allowed to
+        // diverge from its server-matching "user" default for -- not a
+        // React-state-derived update, so the cascading-render concern the
+        // set-state-in-effect rule normally warns about doesn't apply.
+        // eslint-disable-next-line react-hooks/set-state-in-effect
+        setMode(stored);
+      }
+    } catch {
+      // localStorage unavailable -- keep the "user" default.
+    } finally {
+      setHasReadStoredMode(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!hasReadStoredMode) return;
+    try {
+      window.localStorage.setItem(VIEW_MODE_STORAGE_KEY, mode);
+    } catch {
+      // localStorage unavailable -- mode still works for this page load,
+      // it just won't persist across reloads.
+    }
+  }, [mode, hasReadStoredMode]);
 
   function resetFeedbackPanelState() {
     setFeedbackText("");
@@ -4841,6 +5467,238 @@ export default function Home() {
       setIsLoadingExisting(false);
     }
   }
+
+  // Step 182D: the day-wise itinerary card list, shared between Developer
+  // view (unchanged from before 182D) and Traveler view (cleaned up per
+  // spec: no per-day accommodation POIs, no repeated per-leg "movement
+  // unavailable" rows, lighter restaurant framing, a clearer empty-day
+  // message, and the more technical route-aware-order label/disclaimer
+  // hidden). Computed once here (rather than duplicated per mode branch
+  // below) so both branches render the exact same day-card logic; `mode`
+  // only ever changes what's shown, never the underlying data read.
+  const dayWiseItinerarySection = result ? (
+    <div className="rounded-2xl border border-white/10 bg-white/5 p-5">
+      <h2 className="text-lg font-semibold">Day-wise experiences</h2>
+      <p className="mt-1 text-xs text-slate-500">
+        Map links open the scheduled place coordinates only. They are
+        not route, travel-time, or booking links.
+      </p>
+      <p className="mt-1 text-xs text-amber-300/90">
+        Keep markers are stored for future regeneration. They do not
+        change the current plan.
+      </p>
+      {mode === "developer" && (
+        <p className="mt-1 text-xs text-slate-500">
+          Route-aware sequencing uses provider-backed movement data
+          when available. If unavailable, the itinerary keeps a
+          fallback order.
+        </p>
+      )}
+      {movementDataIsUnavailable(result.routeFeasibilityReport) && (
+        <p className="mt-1 text-xs text-amber-300/90">
+          Movement data unavailable for this trip -- no connected
+          routing provider could supply real distances or travel
+          times between stops.
+        </p>
+      )}
+      {result.dailyPlans.length === 0 && (
+        <p className="mt-2 text-sm text-slate-400">
+          No daily plans returned yet.
+        </p>
+      )}
+      <div className="mt-3 flex flex-col gap-4">
+        {result.dailyPlans.map((day) => (
+          <div
+            key={day.day_plan_id}
+            className="rounded-xl border border-white/10 bg-slate-900/60 p-4"
+          >
+            <p className="font-semibold">
+              Day {day.day_number} · {day.date}
+            </p>
+            <DailyNarrativeNote
+              report={result.itineraryNarrativeReport}
+              dayNumber={day.day_number}
+            />
+            {day.experiences.length === 0 ? (
+              mode === "developer" ? (
+                <p className="mt-1 text-sm text-slate-400">
+                  No experiences scheduled for this day.
+                </p>
+              ) : (
+                <>
+                  <p className="mt-1 text-sm text-slate-400">
+                    No strong provider-backed places were scheduled for
+                    this day.
+                  </p>
+                  {day.warnings.map((warning) => (
+                    <p
+                      key={warning}
+                      className="mt-2 break-words text-xs text-amber-300/90"
+                    >
+                      {warning}
+                    </p>
+                  ))}
+                </>
+              )
+            ) : (
+              <>
+                {mode === "developer" && (
+                  <p className="mt-1 text-[11px] uppercase tracking-wide text-slate-500">
+                    {routeAwareDayStatusLabel(
+                      day,
+                      result.routeAwareSequencingReport,
+                    )}
+                  </p>
+                )}
+                <ul className="mt-2 flex flex-col gap-2">
+                  {/* Step 172E: the last stop in a day (or the
+                      only stop in a single-stop day) has no
+                      `nextExperience`, so `movement` stays `null`
+                      and no row is rendered after it -- a
+                      single-stop day never shows a movement row
+                      at all. */}
+                  {day.experiences.map((experience, index) => {
+                    const nextExperience = day.experiences[index + 1];
+                    const movement = nextExperience
+                      ? findMovementBetweenStops(
+                          experience.experience_id,
+                          nextExperience.experience_id,
+                          result.travelTimeBufferReport,
+                        )
+                      : null;
+                    // Step 182D: Traveler view only ever shows a movement
+                    // row when it carries a real, successful duration --
+                    // never the repeated "Movement data unavailable"/"No
+                    // movement details returned"/"Route details need
+                    // review" rows Developer view still shows per leg.
+                    // The trip-level note above already covers the
+                    // "unavailable for this trip" case once, concisely.
+                    const showMovementRow =
+                      mode === "developer"
+                        ? shouldRenderMovementRow(movement)
+                        : movement !== null && movement.status === "success";
+                    return (
+                      <Fragment key={experience.experience_id}>
+                        <ScheduledExperienceCard
+                          experience={experience}
+                          orderNumber={experience.stop_order ?? index + 1}
+                          tripId={result.summary.trip_id}
+                          activeLock={findActiveLockForExperience(
+                            result.userLocks,
+                            experience.experience_id,
+                          )}
+                          onLockChange={(
+                            userLocks,
+                            planDiffPreview,
+                            regenerationReadiness,
+                          ) =>
+                            setResult((previous) =>
+                              previous
+                                ? {
+                                    ...previous,
+                                    userLocks,
+                                    planDiffPreview,
+                                    regenerationReadiness,
+                                  }
+                                : previous,
+                            )
+                          }
+                        />
+                        {showMovementRow && movement && (
+                          <MovementRow buffer={movement} />
+                        )}
+                      </Fragment>
+                    );
+                  })}
+                </ul>
+                {mode === "developer" && (
+                  <p className="mt-2 text-xs text-slate-500">
+                    Scheduled place cards use backend-returned
+                    provider-backed fields only. They do not include
+                    ratings, prices, or opening hours yet. Movement
+                    rows between stops only ever show provider-backed
+                    duration/distance when the backend already has
+                    it -- never an invented or frontend-computed
+                    figure. Stop numbers reflect the backend&apos;s
+                    current schedule order only -- not a claim about
+                    route certainty, safety, or speed.
+                  </p>
+                )}
+              </>
+            )}
+            <DayMapPreview
+              experiences={day.experiences}
+              travelTimeBufferReport={result.travelTimeBufferReport}
+            />
+            {day.restaurant_suggestions.length > 0 && (
+              <div className="mt-3">
+                <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">
+                  {mode === "developer"
+                    ? "Nearby restaurant suggestions"
+                    : "Nearby food ideas"}
+                </p>
+                {mode === "developer" ? (
+                  <p className="mt-1 text-xs text-amber-300/90">
+                    Restaurant suggestions are provider-backed location
+                    candidates only. They are not reservations,
+                    ratings, prices, opening-hours checks, or route
+                    recommendations.
+                  </p>
+                ) : (
+                  <p className="mt-1 text-xs text-amber-300/90">
+                    Nearby food ideas only -- not reservations, ratings,
+                    or recommendations.
+                  </p>
+                )}
+                <ul className="mt-2 flex flex-col gap-2">
+                  {day.restaurant_suggestions.map((restaurant, index) => (
+                    <RestaurantSuggestionCard
+                      key={`${restaurant.name}-${index}`}
+                      restaurant={restaurant}
+                    />
+                  ))}
+                </ul>
+              </div>
+            )}
+            {mode === "developer" && day.accommodation_suggestions.length > 0 && (
+              <div className="mt-3">
+                <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">
+                  Nearby accommodation POI suggestions
+                </p>
+                <p className="mt-1 text-xs text-amber-300/90">
+                  Open-data location candidates only, not bookable
+                  inventory.
+                </p>
+                <p className="mt-1 text-xs text-amber-300/90">
+                  Accommodation POI suggestions are open-data
+                  location candidates only. They are not hotel
+                  prices, availability, ratings, booking links, or
+                  final stay recommendations.
+                </p>
+                <ul className="mt-2 flex flex-col gap-2">
+                  {day.accommodation_suggestions.map((accommodation, index) => (
+                    <AccommodationSuggestionCard
+                      key={`${accommodation.name}-${index}`}
+                      accommodation={accommodation}
+                    />
+                  ))}
+                </ul>
+              </div>
+            )}
+            {mode === "developer" &&
+              day.warnings.map((warning) => (
+                <p
+                  key={warning}
+                  className="mt-2 break-words text-xs text-amber-300/90"
+                >
+                  {warning}
+                </p>
+              ))}
+          </div>
+        ))}
+      </div>
+    </div>
+  ) : null;
 
   return (
     <main className="min-h-screen bg-slate-950 px-6 py-12 text-slate-100">
@@ -5104,9 +5962,11 @@ export default function Home() {
           destination={form.primary_destination}
           isLoading={isLoading}
           progressPercent={backendProgress?.progress_percent}
+          stageKey={backendProgress?.current_stage}
           stageLabel={backendProgress?.current_stage_label ?? undefined}
           progressMessage={backendProgress?.message}
           isRealBackendStageProgress={backendProgress?.is_real_backend_stage_progress}
+          isCompleted={backendProgress?.status === "completed"}
         />
 
         {error && (
@@ -5117,410 +5977,342 @@ export default function Home() {
 
         {result && (
           <div className="mt-8 flex flex-col gap-6">
-            <div className="rounded-2xl border border-cyan-300/20 bg-cyan-300/10 p-5 text-sm text-cyan-50">
-              <p className="break-all font-semibold">
-                Trip {result.summary.trip_id}
-              </p>
-              <p className="mt-2 leading-6">
-                Pipeline status:{" "}
-                <span className="font-semibold">
-                  {result.summary.pipeline_status}
-                </span>
-                {" · "}
-                Validation:{" "}
-                <span className="font-semibold">
-                  {readinessLabel(result.summary.validation_status)}
-                </span>
-              </p>
-              {(result.summary.main_blocking_reason ||
-                result.summary.main_review_reason) && (
-                <p className="mt-2 break-words leading-6 text-cyan-100/90">
-                  {result.summary.main_blocking_reason ??
-                    result.summary.main_review_reason}
+            <div id="summary" className="flex flex-col gap-6">
+              <div className="rounded-2xl border border-cyan-300/20 bg-cyan-300/10 p-5 text-sm text-cyan-50">
+                <p className="break-all font-semibold">
+                  Trip {result.summary.trip_id}
                 </p>
-              )}
-              <dl className="mt-4 grid grid-cols-2 gap-3 text-xs text-cyan-100/80 sm:grid-cols-4">
-                <div>
-                  <dt className="uppercase tracking-wide">Attractions</dt>
-                  <dd className="text-base font-semibold text-cyan-50">
-                    {result.summary.candidate_pois_count}
-                  </dd>
-                </div>
-                <div>
-                  <dt className="uppercase tracking-wide">Restaurants</dt>
-                  <dd className="text-base font-semibold text-cyan-50">
-                    {result.summary.candidate_restaurants_count}
-                  </dd>
-                </div>
-                <div>
-                  <dt className="uppercase tracking-wide">
-                    Accommodation POIs
-                  </dt>
-                  <dd className="text-base font-semibold text-cyan-50">
-                    {result.summary.candidate_accommodation_pois_count}
-                  </dd>
-                </div>
-                <div>
-                  <dt className="uppercase tracking-wide">
-                    Scheduled experiences
-                  </dt>
-                  <dd className="text-base font-semibold text-cyan-50">
-                    {result.summary.scheduled_experiences_count}
-                  </dd>
-                </div>
-              </dl>
-            </div>
-
-            <ResultJumpLinks />
-
-            <ResultGroupHeader
-              id="plan-overview"
-              title="Plan overview"
-              description="Start here. This section explains whether the generated plan is usable as a draft and what still needs review."
-            />
-
-            <PlanOverviewSubheading
-              title="Trust & readiness status"
-              description="Where things currently stand — trust signals, validation readiness, and overall plan status."
-            />
-
-            <TrustDashboardSection model={buildTrustDashboardModel(result)} />
-
-            <UserTrustSummarySection
-              validationStatus={result.summary.validation_status}
-              checklist={result.readinessChecklist}
-              validationReport={result.validationReport}
-            />
-
-            <PlanStatusSection
-              validationStatus={result.summary.validation_status}
-              checklist={result.readinessChecklist}
-            />
-
-            <PlanOverviewSubheading
-              title="Feedback & regeneration workflow"
-              description="Requesting changes, and the regeneration readiness, diff preview, version history, and audit trail those changes affect."
-            />
-
-            <FeedbackPanel
-              feedbackText={feedbackText}
-              onFeedbackTextChange={setFeedbackText}
-              onSubmit={() => void handleSubmitFeedback()}
-              isSubmitting={isSubmittingFeedback}
-              successMessage={feedbackSuccessMessage}
-              errorMessage={feedbackErrorMessage}
-              feedbackHistory={result.feedbackHistory}
-            />
-
-            <PendingRequestedChangesSection
-              summary={result.pendingFeedbackSummary}
-            />
-
-            <VersionHistorySection versionHistory={result.versionHistory} />
-
-            <PlanDiffPreviewSection preview={result.planDiffPreview} />
-
-            <RegenerationReadinessSection
-              tripId={result.summary.trip_id}
-              readiness={result.regenerationReadiness}
-              onRegenerationAttemptsChange={(regenerationAttempts) =>
-                setResult((previous) =>
-                  previous ? { ...previous, regenerationAttempts } : previous,
-                )
-              }
-              onRegenerateSuccess={async () => {
-                setResult(await loadPlanResult(result.summary.trip_id));
-              }}
-            />
-
-            <RegenerationAttemptAuditSection
-              attempts={result.regenerationAttempts}
-            />
-
-            <ResultGroupHeader
-              id="travel-context"
-              title="Travel context"
-              description="Provider-backed context that may affect planning, but does not automatically make the itinerary final."
-            />
-
-            <WeatherContextSection weather={result.weatherContext} />
-
-            <HolidayContextSection holiday={result.holidayContext} />
-
-            <CurrencyContextSection currency={result.currencyContext} />
-
-            <RouteFeasibilitySection routeFeasibility={result.routeFeasibilityContext} />
-
-            <ResultGroupHeader
-              id="draft-itinerary"
-              title="Draft itinerary"
-              description="Scheduled places, map previews, and nearby open-data suggestions generated from backend-returned data."
-            />
-
-            <LockedItemsSummarySection
-              tripId={result.summary.trip_id}
-              userLocks={result.userLocks}
-              dailyPlans={result.dailyPlans}
-              onLockChange={(userLocks, planDiffPreview, regenerationReadiness) =>
-                setResult((previous) =>
-                  previous
-                    ? { ...previous, userLocks, planDiffPreview, regenerationReadiness }
-                    : previous,
-                )
-              }
-            />
-
-            <div className="rounded-2xl border border-white/10 bg-white/5 p-5">
-              <h2 className="text-lg font-semibold">Day-wise experiences</h2>
-              <p className="mt-1 text-xs text-slate-500">
-                Map links open the scheduled place coordinates only. They are
-                not route, travel-time, or booking links.
-              </p>
-              <p className="mt-1 text-xs text-amber-300/90">
-                Keep markers are stored for future regeneration. They do not
-                change the current plan.
-              </p>
-              <p className="mt-1 text-xs text-slate-500">
-                Route-aware sequencing uses provider-backed movement data
-                when available. If unavailable, the itinerary keeps a
-                fallback order.
-              </p>
-              {movementDataIsUnavailable(result.routeFeasibilityReport) && (
-                <p className="mt-1 text-xs text-amber-300/90">
-                  Movement data unavailable for this trip -- no connected
-                  routing provider could supply real distances or travel
-                  times between stops.
+                <p className="mt-2 leading-6">
+                  Pipeline status:{" "}
+                  <span className="font-semibold">
+                    {result.summary.pipeline_status}
+                  </span>
+                  {" · "}
+                  Validation:{" "}
+                  <span className="font-semibold">
+                    {readinessLabel(result.summary.validation_status)}
+                  </span>
                 </p>
-              )}
-              {result.dailyPlans.length === 0 && (
-                <p className="mt-2 text-sm text-slate-400">
-                  No daily plans returned yet.
-                </p>
-              )}
-              <div className="mt-3 flex flex-col gap-4">
-                {result.dailyPlans.map((day) => (
-                  <div
-                    key={day.day_plan_id}
-                    className="rounded-xl border border-white/10 bg-slate-900/60 p-4"
-                  >
-                    <p className="font-semibold">
-                      Day {day.day_number} · {day.date}
-                    </p>
-                    {day.experiences.length === 0 ? (
-                      <p className="mt-1 text-sm text-slate-400">
-                        No experiences scheduled for this day.
-                      </p>
-                    ) : (
-                      <>
-                        <p className="mt-1 text-[11px] uppercase tracking-wide text-slate-500">
-                          {routeAwareDayStatusLabel(
-                            day,
-                            result.routeAwareSequencingReport,
-                          )}
-                        </p>
-                        <ul className="mt-2 flex flex-col gap-2">
-                          {/* Step 172E: the last stop in a day (or the
-                              only stop in a single-stop day) has no
-                              `nextExperience`, so `movement` stays `null`
-                              and no row is rendered after it -- a
-                              single-stop day never shows a movement row
-                              at all. */}
-                          {day.experiences.map((experience, index) => {
-                            const nextExperience = day.experiences[index + 1];
-                            const movement = nextExperience
-                              ? findMovementBetweenStops(
-                                  experience.experience_id,
-                                  nextExperience.experience_id,
-                                  result.travelTimeBufferReport,
-                                )
-                              : null;
-                            return (
-                              <Fragment key={experience.experience_id}>
-                                <ScheduledExperienceCard
-                                  experience={experience}
-                                  orderNumber={experience.stop_order ?? index + 1}
-                                  tripId={result.summary.trip_id}
-                                  activeLock={findActiveLockForExperience(
-                                    result.userLocks,
-                                    experience.experience_id,
-                                  )}
-                                  onLockChange={(
-                                    userLocks,
-                                    planDiffPreview,
-                                    regenerationReadiness,
-                                  ) =>
-                                    setResult((previous) =>
-                                      previous
-                                        ? {
-                                            ...previous,
-                                            userLocks,
-                                            planDiffPreview,
-                                            regenerationReadiness,
-                                          }
-                                        : previous,
-                                    )
-                                  }
-                                />
-                                {shouldRenderMovementRow(movement) && (
-                                  <MovementRow buffer={movement} />
-                                )}
-                              </Fragment>
-                            );
-                          })}
-                        </ul>
-                        <p className="mt-2 text-xs text-slate-500">
-                          Scheduled place cards use backend-returned
-                          provider-backed fields only. They do not include
-                          ratings, prices, or opening hours yet. Movement
-                          rows between stops only ever show provider-backed
-                          duration/distance when the backend already has
-                          it -- never an invented or frontend-computed
-                          figure. Stop numbers reflect the backend&apos;s
-                          current schedule order only -- not a claim about
-                          route certainty, safety, or speed.
-                        </p>
-                      </>
-                    )}
-                    <DayMapPreview
-                      experiences={day.experiences}
-                      travelTimeBufferReport={result.travelTimeBufferReport}
-                    />
-                    {day.restaurant_suggestions.length > 0 && (
-                      <div className="mt-3">
-                        <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">
-                          Nearby restaurant suggestions
-                        </p>
-                        <p className="mt-1 text-xs text-amber-300/90">
-                          Restaurant suggestions are provider-backed location
-                          candidates only. They are not reservations,
-                          ratings, prices, opening-hours checks, or route
-                          recommendations.
-                        </p>
-                        <ul className="mt-2 flex flex-col gap-2">
-                          {day.restaurant_suggestions.map((restaurant, index) => (
-                            <RestaurantSuggestionCard
-                              key={`${restaurant.name}-${index}`}
-                              restaurant={restaurant}
-                            />
-                          ))}
-                        </ul>
-                      </div>
-                    )}
-                    {day.accommodation_suggestions.length > 0 && (
-                      <div className="mt-3">
-                        <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">
-                          Nearby accommodation POI suggestions
-                        </p>
-                        <p className="mt-1 text-xs text-amber-300/90">
-                          Open-data location candidates only, not bookable
-                          inventory.
-                        </p>
-                        <p className="mt-1 text-xs text-amber-300/90">
-                          Accommodation POI suggestions are open-data
-                          location candidates only. They are not hotel
-                          prices, availability, ratings, booking links, or
-                          final stay recommendations.
-                        </p>
-                        <ul className="mt-2 flex flex-col gap-2">
-                          {day.accommodation_suggestions.map((accommodation, index) => (
-                            <AccommodationSuggestionCard
-                              key={`${accommodation.name}-${index}`}
-                              accommodation={accommodation}
-                            />
-                          ))}
-                        </ul>
-                      </div>
-                    )}
-                    {day.warnings.map((warning) => (
-                      <p
-                        key={warning}
-                        className="mt-2 break-words text-xs text-amber-300/90"
-                      >
-                        {warning}
-                      </p>
-                    ))}
+                {(result.summary.main_blocking_reason ||
+                  result.summary.main_review_reason) && (
+                  <p className="mt-2 break-words leading-6 text-cyan-100/90">
+                    {result.summary.main_blocking_reason ??
+                      result.summary.main_review_reason}
+                  </p>
+                )}
+                <dl className="mt-4 grid grid-cols-2 gap-3 text-xs text-cyan-100/80 sm:grid-cols-4">
+                  <div>
+                    <dt className="uppercase tracking-wide">Attractions</dt>
+                    <dd className="text-base font-semibold text-cyan-50">
+                      {result.summary.candidate_pois_count}
+                    </dd>
                   </div>
-                ))}
+                  <div>
+                    <dt className="uppercase tracking-wide">Restaurants</dt>
+                    <dd className="text-base font-semibold text-cyan-50">
+                      {result.summary.candidate_restaurants_count}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt className="uppercase tracking-wide">
+                      Accommodation POIs
+                    </dt>
+                    <dd className="text-base font-semibold text-cyan-50">
+                      {result.summary.candidate_accommodation_pois_count}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt className="uppercase tracking-wide">
+                      Scheduled experiences
+                    </dt>
+                    <dd className="text-base font-semibold text-cyan-50">
+                      {result.summary.scheduled_experiences_count}
+                    </dd>
+                  </div>
+                </dl>
               </div>
+
+              <ModeToggle mode={mode} onModeChange={setMode} />
+
+              {mode === "user" && (
+                <UserModeReadinessBanner
+                  validationStatus={result.summary.validation_status}
+                />
+              )}
             </div>
 
-            <StayAreaGuidanceSection guidance={result.stayAreaGuidance} />
+            <ResultJumpLinks mode={mode} />
 
-            <ResultGroupHeader
-              id="review-required"
-              title="Why this needs review"
-              description="Decision explanations, implementation gaps, readiness checklist, validation report, and assumptions."
-            />
+            {mode === "developer" ? (
+              <>
+                {/* ---- Developer view: full diagnostic stack, order
+                    unchanged since before Step 182D. ---- */}
+                <ResultGroupHeader
+                  id="plan-overview"
+                  title="Plan overview"
+                  description="Start here. This section explains whether the generated plan is usable as a draft and what still needs review."
+                />
 
-            <DecisionSummarySection summary={result.decisionSummary} />
+                <PlanOverviewSubheading
+                  title="Trust & readiness status"
+                  description="Where things currently stand — trust signals, validation readiness, and overall plan status."
+                />
 
-            <ImplementationGapsSection gaps={result.implementationGaps} />
+                <TrustDashboardSection model={buildTrustDashboardModel(result)} />
 
-            <ReadinessChecklistSection checklist={result.readinessChecklist} />
+                <UserTrustSummarySection
+                  validationStatus={result.summary.validation_status}
+                  checklist={result.readinessChecklist}
+                  validationReport={result.validationReport}
+                />
 
-            <ValidationSection report={result.validationReport} />
+                <PlanStatusSection
+                  validationStatus={result.summary.validation_status}
+                  checklist={result.readinessChecklist}
+                />
 
-            <PlanningAssumptionsSection
-              destinationAssumptions={result.destinationAssumptions}
-              destinationConfidence={result.destinationConfidence}
-              experienceAssumptions={result.experienceAssumptions}
-              experienceConfidence={result.experienceConfidence}
-            />
+                <PlanOverviewSubheading
+                  title="Feedback & regeneration workflow"
+                  description="Requesting changes, and the regeneration readiness, diff preview, version history, and audit trail those changes affect."
+                />
 
-            <ResultGroupHeader
-              id="data-sources"
-              title="Data sources and candidates"
-              description="Provider coverage and raw candidate places used to build the draft plan."
-            />
+                <div id="feedback">
+                  <FeedbackPanel
+                    feedbackText={feedbackText}
+                    onFeedbackTextChange={setFeedbackText}
+                    onSubmit={() => void handleSubmitFeedback()}
+                    isSubmitting={isSubmittingFeedback}
+                    successMessage={feedbackSuccessMessage}
+                    errorMessage={feedbackErrorMessage}
+                    feedbackHistory={result.feedbackHistory}
+                  />
+                </div>
 
-            <ProviderCoverageSection coverage={result.providerCoverage} />
+                <PendingRequestedChangesSection
+                  summary={result.pendingFeedbackSummary}
+                />
 
-            <AccommodationInventorySection
-              report={result.accommodationInventoryReport}
-            />
+                <VersionHistorySection versionHistory={result.versionHistory} />
 
-            <FlightInventorySection report={result.flightInventoryReport} />
+                <PlanDiffPreviewSection preview={result.planDiffPreview} />
 
-            <AICandidateReviewSection
-              tripId={result.summary.trip_id}
-              reviewReport={result.aiCandidateReviewReport}
-              promotionReport={result.aiCandidatePromotionReport}
-              onPromotionReportChange={(report) =>
-                setResult((previous) =>
-                  previous
-                    ? { ...previous, aiCandidatePromotionReport: report }
-                    : previous,
-                )
-              }
-            />
+                <RegenerationReadinessSection
+                  tripId={result.summary.trip_id}
+                  readiness={result.regenerationReadiness}
+                  compact={false}
+                  onRegenerationAttemptsChange={(regenerationAttempts) =>
+                    setResult((previous) =>
+                      previous ? { ...previous, regenerationAttempts } : previous,
+                    )
+                  }
+                  onRegenerateSuccess={async () => {
+                    setResult(await loadPlanResult(result.summary.trip_id));
+                  }}
+                />
 
-            <CandidatePoiSection
-              title="Destination candidate attractions"
-              notes={[
-                "Attraction candidates are provider-backed place candidates only. They are not checked for opening hours, tickets, visit duration, or route feasibility yet.",
-              ]}
-              pois={result.candidatePois}
-              emptyMessage="No attraction candidates returned."
-            />
+                <RegenerationAttemptAuditSection
+                  attempts={result.regenerationAttempts}
+                />
 
-            <CandidatePoiSection
-              title="Destination candidate restaurants"
-              notes={[
-                "Restaurant candidates are provider-backed location candidates only. They are not ratings, prices, reservations, opening-hours checks, or final restaurant recommendations.",
-              ]}
-              pois={result.candidateRestaurants}
-              emptyMessage="No restaurant candidates returned."
-            />
+                <ResultGroupHeader
+                  id="travel-context"
+                  title="Travel context"
+                  description="Provider-backed context that may affect planning, but does not automatically make the itinerary final."
+                />
 
-            <CandidatePoiSection
-              title="Destination candidate accommodation POIs"
-              notes={[
-                "Open-data location candidates only, not bookable inventory.",
-                "Accommodation POI candidates are open-data location candidates only. They are not hotel prices, availability, ratings, booking links, or final stay recommendations.",
-              ]}
-              pois={result.candidateAccommodationPois}
-              emptyMessage="No accommodation POI candidates returned."
-            />
+                <WeatherContextSection weather={result.weatherContext} />
+
+                <HolidayContextSection holiday={result.holidayContext} />
+
+                <CurrencyContextSection currency={result.currencyContext} />
+
+                <RouteFeasibilitySection routeFeasibility={result.routeFeasibilityContext} />
+
+                <ResultGroupHeader
+                  id="draft-itinerary"
+                  title="Draft itinerary"
+                  description="Scheduled places, map previews, and nearby open-data suggestions generated from backend-returned data."
+                />
+
+                <LockedItemsSummarySection
+                  tripId={result.summary.trip_id}
+                  userLocks={result.userLocks}
+                  dailyPlans={result.dailyPlans}
+                  onLockChange={(userLocks, planDiffPreview, regenerationReadiness) =>
+                    setResult((previous) =>
+                      previous
+                        ? { ...previous, userLocks, planDiffPreview, regenerationReadiness }
+                        : previous,
+                    )
+                  }
+                />
+
+                <ItineraryNarrativeSummarySection report={result.itineraryNarrativeReport} />
+
+                {dayWiseItinerarySection}
+
+                <div id="where-to-stay">
+                  <StayAreaGuidanceSection guidance={result.stayAreaGuidance} />
+                </div>
+
+                <ResultGroupHeader
+                  id="review-required"
+                  title="Why this needs review"
+                  description="Decision explanations, implementation gaps, readiness checklist, validation report, and assumptions."
+                />
+
+                <DecisionSummarySection summary={result.decisionSummary} />
+
+                <ImplementationGapsSection gaps={result.implementationGaps} />
+
+                <ReadinessChecklistSection checklist={result.readinessChecklist} />
+
+                <div id="validation">
+                  <ValidationSection report={result.validationReport} />
+                </div>
+
+                <PlanningAssumptionsSection
+                  destinationAssumptions={result.destinationAssumptions}
+                  destinationConfidence={result.destinationConfidence}
+                  experienceAssumptions={result.experienceAssumptions}
+                  experienceConfidence={result.experienceConfidence}
+                />
+
+                <ResultGroupHeader
+                  id="data-sources"
+                  title="Data sources and candidates"
+                  description="Provider coverage and raw candidate places used to build the draft plan."
+                />
+
+                <ProviderCoverageSection coverage={result.providerCoverage} />
+
+                <div id="inventories" className="flex flex-col gap-6">
+                  <AccommodationInventorySection
+                    report={result.accommodationInventoryReport}
+                  />
+
+                  <FlightInventorySection report={result.flightInventoryReport} />
+                </div>
+
+                <ItineraryNarrativeDiagnosticSection
+                  report={result.itineraryNarrativeReport}
+                />
+
+                <AICandidateReviewSection
+                  tripId={result.summary.trip_id}
+                  reviewReport={result.aiCandidateReviewReport}
+                  promotionReport={result.aiCandidatePromotionReport}
+                  onPromotionReportChange={(report) =>
+                    setResult((previous) =>
+                      previous
+                        ? { ...previous, aiCandidatePromotionReport: report }
+                        : previous,
+                    )
+                  }
+                />
+
+                <CandidatePoiSection
+                  title="Destination candidate attractions"
+                  notes={[
+                    "Attraction candidates are provider-backed place candidates only. They are not checked for opening hours, tickets, visit duration, or route feasibility yet.",
+                  ]}
+                  pois={result.candidatePois}
+                  emptyMessage="No attraction candidates returned."
+                />
+
+                <CandidatePoiSection
+                  title="Destination candidate restaurants"
+                  notes={[
+                    "Restaurant candidates are provider-backed location candidates only. They are not ratings, prices, reservations, opening-hours checks, or final restaurant recommendations.",
+                  ]}
+                  pois={result.candidateRestaurants}
+                  emptyMessage="No restaurant candidates returned."
+                />
+
+                <CandidatePoiSection
+                  title="Destination candidate accommodation POIs"
+                  notes={[
+                    "Open-data location candidates only, not bookable inventory.",
+                    "Accommodation POI candidates are open-data location candidates only. They are not hotel prices, availability, ratings, booking links, or final stay recommendations.",
+                  ]}
+                  pois={result.candidateAccommodationPois}
+                  emptyMessage="No accommodation POI candidates returned."
+                />
+              </>
+            ) : (
+              <>
+                {/* ---- Traveler view (Step 182D): Summary (already
+                    rendered above) -> Context -> Itinerary -> Where to
+                    stay -> Flights -> Feedback/regenerate. Every
+                    component here is the exact same one Developer view
+                    uses elsewhere (or an additive concise wrapper around
+                    the same underlying data) -- nothing is deleted,
+                    only reordered/hidden. ---- */}
+                <div id="travel-context">
+                  <TravelerContextSummarySection
+                    weather={result.weatherContext}
+                    holiday={result.holidayContext}
+                    currency={result.currencyContext}
+                  />
+                </div>
+
+                <div id="draft-itinerary" className="flex flex-col gap-6">
+                  <LockedItemsSummarySection
+                    tripId={result.summary.trip_id}
+                    userLocks={result.userLocks}
+                    dailyPlans={result.dailyPlans}
+                    onLockChange={(userLocks, planDiffPreview, regenerationReadiness) =>
+                      setResult((previous) =>
+                        previous
+                          ? { ...previous, userLocks, planDiffPreview, regenerationReadiness }
+                          : previous,
+                      )
+                    }
+                  />
+
+                  <ItineraryNarrativeSummarySection report={result.itineraryNarrativeReport} />
+
+                  {dayWiseItinerarySection}
+                </div>
+
+                <div id="where-to-stay">
+                  <TravelerWhereToStaySection
+                    accommodationInventoryReport={result.accommodationInventoryReport}
+                    stayAreaGuidance={result.stayAreaGuidance}
+                  />
+                </div>
+
+                <div id="flights">
+                  <UserModeFlightSummary report={result.flightInventoryReport} />
+                </div>
+
+                <div id="feedback" className="flex flex-col gap-6">
+                  <FeedbackPanel
+                    feedbackText={feedbackText}
+                    onFeedbackTextChange={setFeedbackText}
+                    onSubmit={() => void handleSubmitFeedback()}
+                    isSubmitting={isSubmittingFeedback}
+                    successMessage={feedbackSuccessMessage}
+                    errorMessage={feedbackErrorMessage}
+                    feedbackHistory={result.feedbackHistory}
+                  />
+
+                  <RegenerationReadinessSection
+                    tripId={result.summary.trip_id}
+                    readiness={result.regenerationReadiness}
+                    compact={true}
+                    onRegenerationAttemptsChange={(regenerationAttempts) =>
+                      setResult((previous) =>
+                        previous ? { ...previous, regenerationAttempts } : previous,
+                      )
+                    }
+                    onRegenerateSuccess={async () => {
+                      setResult(await loadPlanResult(result.summary.trip_id));
+                    }}
+                  />
+                </div>
+              </>
+            )}
           </div>
         )}
       </section>

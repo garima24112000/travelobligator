@@ -3647,3 +3647,503 @@ disclaimer. Every trust, validation, provider-coverage, and inventory
 detail a user could see before Section 179 is still visible by default
 after it -- Section 179 changed how it looks and reads, never what it
 claims.
+
+## Section 182C: User Mode / Developer Mode Split and Loading Animation Polish
+
+Triggered by a real manual test (Section 182A): a Jersey City -> Orlando
+trip's result page showed every diagnostic section (Trust Dashboard,
+full Validation Report, Provider Coverage, Regeneration Readiness's full
+diagnostic breakdown, AI Candidate Review, raw candidate lists, etc.)
+expanded by default alongside the actual itinerary -- correct and honest,
+but overwhelming for a non-developer user. 182C adds a `mode: "user" |
+"developer"` split in `Home()` (`frontend/app/page.tsx`) that changes
+only which already-fetched `PlanningState` sections are shown; it never
+changes what data exists, fetches anything new, or touches
+`frontend/lib/api.ts`.
+
+**Mode state and persistence.** `mode` defaults to `"user"` on both the
+server render and the client's first render (`useState<"user" |
+"developer">("user")`), so there is no hydration mismatch. The real
+`localStorage.getItem("travelobligator.viewMode")` read happens inside a
+`useEffect` that runs only after mount; a `try`/`catch` around it means an
+unavailable or throwing `localStorage` silently leaves `mode` at its
+`"user"` default, per spec. A second effect (gated on a
+`hasReadStoredMode` flag so it never fires before the first effect has had
+a chance to run) writes `mode` back to `localStorage` on every change,
+also `try`/`catch`-wrapped. A `ModeToggle` component (two buttons,
+"Traveler view" / "Developer view", `aria-pressed`, using the shared
+`FOCUS_RING_CLASSNAME`) renders directly under the trip title/stats
+banner, inside a new `id="summary"` wrapper.
+
+**User Mode (default) keeps:** the trip title/status/stats banner, a new
+one-line `UserModeReadinessBanner` (restates `validation_status` in plain
+language -- "This draft passed automated validation checks -- still
+review it yourself before relying on it" / "This draft is blocked on
+required checks and needs review before it's usable" / "Use as a
+planning draft -- some checks still need review" -- and always points to
+Developer view for detail; never claims booking-ready, final, complete,
+guaranteed, or verified), `WeatherContextSection` /
+`HolidayContextSection` / `CurrencyContextSection`, the full day-wise
+itinerary loop unchanged (numbered stops, movement rows, `DayMapPreview`,
+restaurant/accommodation suggestions -- the per-day accommodation-POI
+repetition cleanup stays deliberately out of scope, deferred to 182D as
+originally planned), `LockedItemsSummarySection`, `StayAreaGuidanceSection`
+(now wrapped `id="where-to-stay"`), a new concise `UserModeFlightSummary`
+(`id="flights"`; reads the same already-fetched `FlightInventoryReport`
+as the full `FlightInventorySection` but shows only a status line and
+offer count, never offer/price/booking-link detail), `FeedbackPanel`
+(wrapped `id="feedback"`), and `RegenerationReadinessSection` rendered
+with a new `compact` prop.
+
+**User Mode hides** (moved to Developer Mode only, never deleted):
+`TrustDashboardSection`, `UserTrustSummarySection`, `PlanStatusSection`,
+`PendingRequestedChangesSection`, `VersionHistorySection`,
+`PlanDiffPreviewSection`, `RegenerationAttemptAuditSection`, the legacy
+`RouteFeasibilitySection`, `DecisionSummarySection`,
+`ImplementationGapsSection`, `ReadinessChecklistSection`, the full
+`ValidationSection` (now wrapped `id="validation"`),
+`PlanningAssumptionsSection`, `ProviderCoverageSection`,
+`AccommodationInventorySection`/`FlightInventorySection` (now both
+wrapped together in one `id="inventories"` div), `AICandidateReviewSection`,
+and all three `CandidatePoiSection` raw-candidate lists -- along with the
+`plan-overview`/`review-required`/`data-sources` `ResultGroupHeader`s and
+both `PlanOverviewSubheading`s. Every one of these components is
+conditionally rendered (`{mode === "developer" && (...)}`); none of their
+own internal JSX or logic changed.
+
+**`RegenerationReadinessSection`'s new `compact` prop** (default `false`)
+hides the `dl` diagnostic grid, required/available-input lists,
+missing-capabilities list, and blocked-by list, replacing them with one
+plain-text line ("Status: ... - Pending feedback: N - Active locks: M").
+The regenerate button, its `disabled`/`title` logic, `handleRegenerate`,
+and the success/error result blocks are completely unchanged and rendered
+in both modes -- there is exactly one mounted instance of this component
+at a time (the page never renders both a compact and full copy
+simultaneously), so there is no risk of two independent regenerate
+requests racing each other.
+
+**Developer Mode** renders the full, unchanged diagnostic experience plus
+one new intro line under the jump-links nav: "This view exposes backend
+PlanningState diagnostics, provider coverage, validation, regeneration,
+and source details."
+
+**Jump links are mode-aware.** `ResultJumpLinks` now takes a `mode` prop
+and picks between two link lists: User Mode --
+Summary/`#summary`, Travel context/`#travel-context`,
+Itinerary/`#draft-itinerary`, Where to stay/`#where-to-stay`,
+Flights/`#flights`, Feedback/`#feedback`; Developer Mode -- the original
+five (`#plan-overview`, `#travel-context`, `#draft-itinerary`,
+`#review-required`, `#data-sources`) plus four new anchors reaching
+reports that previously required scrolling or a trust-dashboard "View
+details" link: `#validation`, `#provider-coverage` (pre-existing id,
+unchanged), `#inventories`, `#regeneration-readiness` (pre-existing id,
+unchanged). Every id in both lists was live-verified (via a real
+Playwright run against a real generated trip) to resolve to a visible
+element in its corresponding mode.
+
+**Loading animation polish** (`TravelGenerationLoading`). The existing
+backend-progress-driven logic is unchanged: it still prefers a real
+`GenerationProgress` poll result over the local timer fallback, the local
+fallback still caps below 100%, and the "Loading animation only -- not
+live flight tracking" disclaimer still always renders. Three additions,
+all purely visual/copy, none inventing an unbacked progress state:
+
+1. A `FRIENDLY_STAGE_LABEL_BY_BACKEND_KEY` map translates the real
+   backend `current_stage` key (from
+   `_GENERATION_STAGE_LABELS` in
+   `backend/app/services/planning_orchestrator.py`: `traveler_profile`,
+   `destination_context`, `candidate_quality`, `ai_candidate_shadow`,
+   `trip_strategy`, `stay_transport`, `experience_plan`, `validation`,
+   `post_processing`) into friendlier copy ("Preparing your trip",
+   "Finding places", "Checking providers", "Building daily plan",
+   "Checking movement", "Validating draft", "Finalizing itinerary view").
+   Several backend stages intentionally share one friendly phrase; the
+   map is keyed strictly off real backend keys, so it can never display a
+   stage the backend didn't actually report, and falls back to the
+   backend's own `current_stage_label` (and beyond that, the pre-existing
+   local cycling copy) whenever a key isn't recognized.
+2. A new `isCompleted` prop, passed as `backendProgress?.status ===
+   "completed"` -- true only once the backend itself reports completion,
+   never inferred locally -- switches the plane icon to a landing icon
+   (🛬), the progress bar/border to a green/emerald tone, and the message
+   to "Trip generated -- preparing your itinerary view" during the
+   pre-existing brief window (`handleSubmit` already paused ~500ms on the
+   completed backend state before switching to the rendered result; that
+   pause is unchanged, only its visual is now distinct).
+3. Purely cosmetic transition/scale polish on the plane marker.
+
+**Manual verification** (real backend + frontend + a temporary local
+Playwright install, removed afterward -- `node_modules/` is gitignored so
+none of this touched tracked files): generated a real trip end-to-end.
+Confirmed: User Mode is the default (`aria-pressed="true"` on "Traveler
+view"), Trust Dashboard and all other hidden sections are absent from the
+DOM in User Mode (`count() === 0`) and present in Developer Mode
+(`count() === 1`), all 6 User Mode jump-link ids and all 9 Developer Mode
+jump-link ids resolve to a real element, the Developer Mode intro line
+renders, mode persists across a full page reload in both directions
+(verified by reloading and re-loading the same `trip_id` via "Load
+existing trip", since `result` itself is in-memory-only and is not
+expected to survive a reload -- only the `mode` choice, which lives in
+`localStorage`, is), the loading animation showed the landed 🛬 icon and
+"Trip generated -- preparing your itinerary view" message only after the
+backend actually completed, and zero console/page errors were logged
+across the entire run. A pre-existing, unrelated Leaflet map tile overflow
+(~10px) was also found and confirmed, via a direct before/after
+comparison against the unmodified `page.tsx`, to already exist
+identically before this step -- not a regression introduced here, and out
+of scope for a User/Developer Mode split.
+
+No backend file, `frontend/lib/api.ts` fetch, provider/validation
+behavior, or section internals changed. Nothing was deleted -- every
+Developer-Mode-only section still renders exactly as before, fully
+expanded, the moment Developer view is selected.
+
+## Section 182D: Traveler-View Itinerary Layout Cleanup
+
+182C split User Mode ("Traveler view") from Developer view but reused
+Developer view's own section order and full-diagnostic components inside
+it, so Traveler view still read like a filtered debug page rather than a
+useful itinerary. 182D reorders and lightens Traveler view's content
+without touching Developer view's order, components, or wording at all
+(Developer view's own branch in `Home()`'s render tree is byte-for-byte
+the same content as before 182D, just now inside an explicit
+`mode === "developer" ? (...) : (...)` ternary instead of a series of
+`{mode === "developer" && (...)}` guards interleaved with always-rendered
+content).
+
+**Traveler view order** is now exactly: Trip header/stats + compact
+readiness banner (`id="summary"`, unchanged from 182C) -> a new concise
+`TravelerContextSummarySection` (`id="travel-context"`) -> the day-wise
+itinerary (`id="draft-itinerary"`) -> a new trip-level
+`TravelerWhereToStaySection` (`id="where-to-stay"`) -> the existing,
+182C-built `UserModeFlightSummary`, now upgraded with real offer cards
+(`id="flights"`) -> `FeedbackPanel` + a compact `RegenerationReadinessSection`
+(`id="feedback"`). Developer view's own order (Plan overview -> Feedback &
+regeneration workflow -> Travel context -> Draft itinerary -> Why this
+needs review -> Data sources and candidates) is unchanged.
+
+**Travel context summary** (`TravelerContextSummarySection`, new). Three
+one-line facts replace the three full context reports in Traveler view
+only (Developer view keeps `WeatherContextSection`/`HolidayContextSection`/
+`CurrencyContextSection`/`RouteFeasibilitySection` completely unchanged):
+- Weather: `summarizeWeatherForTravelerView` computes a plain min/max
+  across whatever real `temperature_max_c`/`temperature_min_c` values the
+  backend returned across all days -- e.g. "Around 18-27°C over 5 days
+  (via open-meteo)." -- or an honest one-line fallback when no usable
+  daily data exists. Never a forecast, never an invented figure.
+- Holidays: shown only when `holiday.holidays` is non-empty (one line per
+  real, provider-backed holiday, date + local name) -- omitted entirely
+  otherwise, since there is nothing relevant to summarize.
+- Currency: `summarizeCurrencyForTravelerView` returns "No currency
+  conversion needed -- both in `<currency>`." whenever
+  `destination_currency === base_currency` (which `CurrencyContext`
+  already guarantees comes with a real `exchange_rate=1.0`, per that
+  model's own docstring -- see `docs/12_provider_architecture.md`), the
+  compact `1 X = Y Z` rate line otherwise, or one calm fallback line when
+  the rate genuinely isn't available -- never the previous behavior of a
+  same-currency trip being indistinguishable from a real failure.
+
+**Day-wise itinerary cleanup.** The day-card JSX is computed once as a
+`dayWiseItinerarySection` local variable inside `Home()` (built from
+`mode` and `result`, which are both already in scope) and rendered from
+both the Developer and Traveler branches, so there is exactly one
+implementation of the day-card logic, not two forks that could drift:
+- Per-day accommodation POI suggestions ("Nearby accommodation POI
+  suggestions") are now gated `{mode === "developer" && ...}` -- hidden
+  in Traveler view, unchanged (still rendered whenever they exist) in
+  Developer view.
+- Restaurant suggestions stay visible in both modes, but Traveler view
+  shows a lighter heading ("Nearby food ideas" instead of "Nearby
+  restaurant suggestions") and a single short disclaimer line instead of
+  Developer view's two ("Nearby food ideas only -- not reservations,
+  ratings, or recommendations."); the actual `RestaurantSuggestionCard`
+  list underneath is identical in both modes.
+- Movement rows: Developer view is unchanged (`shouldRenderMovementRow`
+  still renders a row for any `TravelTimeBuffer` entry, whatever its
+  status, including a repeated "Movement data unavailable" line per leg
+  when the backend has an entry but no usable route). Traveler view now
+  additionally requires `movement.status === "success"` before showing a
+  per-leg row -- a leg with a non-success buffer entry shows nothing
+  per-leg in Traveler view. The already-existing, already-concise
+  trip-level "Movement data unavailable for this trip..." note (built
+  from `movementDataIsUnavailable(result.routeFeasibilityReport)`, added
+  well before 182D) already covers the "one concise note instead of
+  repetition" requirement, so no new day-level note was needed.
+- The technical `routeAwareDayStatusLabel` line ("Provider-grounded route
+  order" / "Route order needs review" / "Suggested stop order") and the
+  long "Scheduled place cards use backend-returned..." disclaimer
+  paragraph are now Developer-view-only; Traveler view omits both.
+- Empty days: Developer view keeps the original "No experiences scheduled
+  for this day." Traveler view now shows "No strong provider-backed
+  places were scheduled for this day." followed immediately by that
+  day's real `day.warnings` (e.g. "No remaining candidate attractions
+  were available for this day.") -- the exact same backend-provided
+  strings, just introduced better and positioned where a reader will
+  actually see the explanation, instead of a bare "no experiences" line
+  with no reason. For non-empty days, `day.warnings` is now
+  Developer-view-only (it carries the same generic geographic-grouping/
+  low-priority-exclusion disclaimers the hidden route-status label and
+  paragraph carry) -- Traveler view shows nothing extra there since the
+  day is not empty and needs no explanation.
+
+**Where to stay** (`TravelerWhereToStaySection`, new, `id="where-to-stay"`
+in Traveler view). Trip-level, singular -- replaces per-day accommodation
+POI clutter and the old always-shown `StayAreaGuidanceSection` in
+Traveler view with one section that picks, in order: (A) real bookable
+`accommodation_inventory_report` offers if `status === "success"` and
+`offers.length > 0` (up to 5, via a new shared `AccommodationOfferCard`
+extracted from `AccommodationInventorySection`'s existing offer markup --
+same component, same fields-actually-returned-only guarantee, same
+`ProvenanceBadge`/rating-details rendering, not a new visual design); (B)
+else `stay_area_guidance.suggested_anchor_accommodation_pois` if non-empty
+(up to 5, via the existing `AccommodationSuggestionCard`, labeled "Stay-
+area ideas from open map data (OpenStreetMap), not bookable hotels"); (C)
+else one calm "No lodging information is available for this trip yet."
+line. Developer view is unaffected -- it still shows the full, unmodified
+`AccommodationInventorySection` (in the data-sources/inventories block)
+and the full, unmodified `StayAreaGuidanceSection` (in the draft-itinerary
+block) exactly as before, so both raw sources remain independently
+inspectable there. Backend change: `_MAX_STAY_GUIDANCE_ANCHORS` in
+`backend/app/services/experience_planner_service.py` raised from 3 to 5
+so `stay_area_guidance` itself can supply enough candidates for path (B)'s
+"4-5 cards" -- see `docs/14_backend_architecture.md` for the backend-side
+writeup and test coverage.
+
+**Flights** (`UserModeFlightSummary`, upgraded from 182C's status-line-
+only version). Now shows up to 5 concise `TravelerFlightOfferCard`s (first
+outbound segment via the existing `FlightSegmentSummary`, total price,
+the same "Provider-supplied booking link -- not a booking confirmation"
+label, and the same `ProvenanceBadge`/`KiwiMcpOfferBadge` Developer view
+uses) when `flight_inventory_report.status === "success"` with offers;
+otherwise a single "Connect or enable a flight provider to show flight
+options for this trip." line. Never a giant diagnostic block, never a
+flight scheduled inside a day card. Developer view's full
+`FlightInventorySection` (return segments, baggage/cancellation policy,
+every offer) is completely unchanged.
+
+**Feedback/regeneration** in Traveler view keeps exactly the same
+`FeedbackPanel` (heading already read "Request changes" before 182D, no
+change needed) and the same `RegenerationReadinessSection`/
+`handleRegenerate` Developer view uses -- only `compact={true}` differs,
+which 182C already built to reuse the identical button/handler/success/
+error logic. 182D adds `compact`-specific button/caption copy: "Regenerate
+when allowed" (button) and "Regeneration is blocked until feedback exists
+and no active locks are present." (caption) -- Developer view
+(`compact={false}`) keeps its original "Regenerate from feedback" /
+"Regeneration is available only when feedback is pending and no active
+locks exist." wording unchanged. Neither wording claims regeneration
+improves the plan or that a lock is preserved by working around it.
+
+**Jump links.** Traveler view's `USER_MODE_JUMP_LINKS` label for
+`#travel-context` changed from "Travel context" to "Context" to match the
+task's Summary/Context/Itinerary/Where to stay/Flights/Feedback list
+exactly; the id itself, and every other label, are unchanged from 182C.
+Developer view's jump links are completely unchanged.
+
+**Leaflet mobile overflow** (the ~10px issue 182C found and confirmed
+pre-existing) -- **partially fixed; the remainder is deferred to 182G**.
+Tried a container-level CSS change first, on the hypothesis that
+`DayMapPreview`'s map container div had no explicit `position`, so
+Leaflet's internal absolutely-positioned panes/zoom-animation-proxy
+elements could in principle position relative to a further-up ancestor
+instead of being clipped by the container's own `overflow-hidden`: added
+`relative` and `max-w-full` to that container `div`'s existing
+`h-[260px] w-full overflow-hidden rounded-lg border border-white/10`
+className -- no Leaflet marker/route/path/lifecycle logic touched.
+
+Live-verified at 390px on a real generated trip with real day maps
+rendered: **Traveler view now measures
+`document.documentElement.scrollWidth === clientWidth` (390 === 390) --
+overflow-free** for the default view every user actually sees. Developer
+view, however, still measures `scrollWidth = 400` (`clientWidth = 390`)
+after the same change, identical to before it -- so the container-CSS fix
+did not touch the true cause there. Bisecting confirmed the actual
+overflowing content is **not** any top-level section container (every
+`id`'d section div's own `getBoundingClientRect().right` measures 333px,
+well inside 390px) and not simply an unclipped descendant (a full-DOM
+scan for elements whose right edge exceeds 390px, checked against every
+ancestor's `overflow-x`, found none that escape their nearest
+`hidden`/`scroll`/`auto` ancestor) -- meaning the 10px is coming from
+something more subtle (most likely a native-rendered form control or an
+unbreakable inline string somewhere in a Developer-view-only diagnostic
+section) that a `document.elementFromPoint`/bounding-box sweep alone
+couldn't conclusively isolate within the time this step budgeted for it,
+per this step's own instruction not to chase a map-lifecycle refactor.
+**Net result this step: the default Traveler view a normal user sees is
+now overflow-free; Developer view's small residual overflow is deferred
+to 182G**, flagged here with what has already been ruled out (the map
+container, and every top-level section box) so 182G's investigation
+starts narrower than 182C's did.
+
+No provider, API route, or scraping behavior changed anywhere in 182D;
+`frontend/lib/api.ts` was not touched. The only backend change is the
+stay-area-guidance anchor cap (3 -> 5), covered by two new focused tests.
+
+## Section 182E: Provider Activation Docs and Source-Labeled Manual/Local HTML Fallback -- One Frontend Label Change
+
+182E is a backend + docs step (see `docs/12_provider_architecture.md`
+section 63 and `docs/14_backend_architecture.md` section 99 for the full
+writeup); the frontend needed exactly one change. `ProvenanceBadge`'s
+heading text (`frontend/app/page.tsx`) changed from "Scraped public page"
+to "Manual/local HTML," matching this step's docs/UI vocabulary
+instruction -- the backend's `DataStatus.SCRAPED_PUBLIC_PAGE` enum value,
+`scraped_local` provider name, and every other internal name are
+completely unchanged; this is display text only.
+
+No other frontend change was needed because the new "source label"
+feature (`ACCOMMODATION_MANUAL_HTML_SOURCE`/`FLIGHT_MANUAL_HTML_SOURCE`)
+reuses the exact same `scraped_provenance.source_name`/`offer.source_name`
+fields the frontend already renders verbatim: `AccommodationOfferCard`
+already shows `{offer.source_name}` next to the provider id, the flight
+offer cards already show the same for `FlightOffer.source_name`, and
+`ProvenanceBadge` already shows `Source: {provenance.source_name}`. A
+backend-labeled offer (e.g. `"Manual/local HTML (labeled by user as
+Booking.com-derived; not official Booking.com data)"`) therefore appears
+correctly in both Traveler view's concise cards (182D's
+`AccommodationOfferCard`/`TravelerFlightOfferCard`) and Developer view's
+full `AccommodationInventorySection`/`FlightInventorySection` with zero
+additional frontend code -- live-verified with a real local HTML fixture
+labeled `ACCOMMODATION_MANUAL_HTML_SOURCE=booking` during this step's
+manual verification pass.
+
+Traveler view/Developer view's split itself (182C/182D) is unaffected:
+Traveler view still shows only the concise, source-labeled offer cards
+when real/manual-parsed offers exist, and a short "Connect or enable a
+flight provider..."/no-lodging-info line otherwise; Developer view still
+shows the full diagnostic detail, including every provenance badge, for
+every offer regardless of its source label.
+
+## Section 182F: Itinerary Narrator Rendering -- Presentation Prose, Never a New Fact
+
+`frontend/lib/types.ts` gained `ItineraryNarrativeReport`/
+`ItineraryNarrativeDayOutput` (mirroring
+`app.models.itinerary_narrative`'s backend shape exactly) and one new
+field on `TripData.planning_state`,
+`itinerary_narrative_report: ItineraryNarrativeReport | null` -- already
+present on every `GET /trips/{trip_id}` response before this step (the
+backend serializes the full `PlanningState`), so this was purely a
+frontend type addition, not a new backend field or a new API call.
+`PlanResult` gained the matching `itineraryNarrativeReport` field, wired
+in `loadPlanResult` from `trip.planning_state.itinerary_narrative_report`
+-- the same already-fetched `getTrip(tripId)` call every other
+`PlanningState`-mirrored field already reads from.
+
+**Three new components, all pure presentation over an already-fetched
+report:**
+
+- `ItineraryNarrativeSummarySection` -- renders `report.summary` in a
+  short card near the top of the itinerary (right after
+  `LockedItemsSummarySection`, right before the day-wise loop), in
+  **both** Traveler and Developer view. Renders nothing at all --
+  `null` -- unless `report.status === "success"` and a `summary` string
+  actually exists, so a disabled/not_connected/failed narrator never
+  clutters Traveler view with a "not enabled" message or a scary error;
+  the honest reason for those is Developer-view-only (see below). Always
+  carries a fixed line making clear this is "not a new fact, and not a
+  claim that anything is booked or finalized."
+- `DailyNarrativeNote` -- looked up by `day_number` against
+  `report.daily_narratives` and rendered inside `dayWiseItinerarySection`
+  (the same shared day-card JSX both view modes already use, Step 182D)
+  right under each day's "Day N · date" header, in both modes. Renders
+  `null` when there's no matching entry for that day (disabled/failed
+  narrator, or a day outside the truncated window) -- never a
+  placeholder. Preserves `caveats` as a visible list, never dropping them
+  silently, matching the backend's own promise to preserve caveats when
+  data is unavailable.
+- `ItineraryNarrativeDiagnosticSection` (`id="itinerary-narrative"`,
+  Developer view only, placed in the data-sources block right after the
+  accommodation/flight inventories and right before
+  `AICandidateReviewSection`, and added to
+  `DEVELOPER_MODE_JUMP_LINKS` as "Narrative (AI)") -- shows the exact
+  `status`/`provider`/`model`/`message` (the honest not_connected/failed
+  reason), `source_fields_used`, and `assumptions`/`warnings` via the
+  existing shared `SummaryList` component. Its own `DisclaimerNote`
+  states explicitly that this is "presentation prose only... never
+  treated as provider data and never affects validation, provider
+  coverage, or regeneration."
+
+No existing section was removed, hidden behind a new flag, or had its
+own logic changed -- the day-wise loop, `LockedItemsSummarySection`,
+every Developer-view diagnostic section, and the User/Developer Mode
+split itself (182C/182D) are all unaffected structurally; the narrator
+only ever adds new, independently-`null`-able JSX.
+
+**Live-verified** with a real backend + frontend run (a temporary local
+Playwright install, removed after) in two configurations: (1) narrator
+disabled (the real default) -- Traveler view showed no "Trip summary"
+block at all, Developer view's diagnostic section showed
+`status: not_connected` with the exact disabled-reason message, zero
+console errors; (2) narrator enabled with a fake-but-realistic provider
+injected server-side (no real Groq/Anthropic API key was available in
+this environment, so this stood in for "with a real key" -- see
+`docs/14_backend_architecture.md` section 100 for the equivalent
+automated-test version of the same fake-provider technique) -- Traveler
+view showed a real trip summary and a real per-day narrative correctly
+naming only the actual scheduled experiences for that day (with a real
+"movement data wasn't available" caveat preserved for a day that had
+none), Developer view's diagnostic section showed the fake provider/model
+name and assumptions, and mobile width (390px) showed zero new
+horizontal overflow in Traveler view.
+
+## Section 182G: Final Real-Demo Frontend Verification, a Small Copy Fix, and the Leaflet Overflow Finally Fixed
+
+**A real `GROQ_API_KEY` was available this step** (never committed,
+never printed -- see `docs/14_backend_architecture.md` section 101 and
+`docs/13_llm_reasoning_pipeline.md` section 121 for the full account).
+Live-verified in the real browser, at 390px, against the real Jersey
+City -> Orlando trip: Traveler view's order was confirmed exactly
+Summary -> Context -> Itinerary -> Where to stay -> Flights -> Feedback
+by measuring each section's real pixel position top-to-bottom; the
+loading plane's landed state was only ever observed after `#summary`
+actually rendered (never before); mode persisted `"user"` correctly
+across a full page reload + re-load-existing-trip cycle; Developer view
+exposed every diagnostic section this step's checklist named (Trust
+Dashboard, full Validation Report, Provider Coverage, Accommodation/
+Flight Inventory, AI Candidate Review, the new Itinerary Narrative
+diagnostic, Version History, Plan Diff Preview, Regeneration Readiness);
+feedback submission -> compact "Regenerate when allowed" -> a real
+regeneration all worked end to end, with the feedback history entry
+visibly flipping from `CAPTURED` to `APPLIED` and a real `v2`
+`VersionHistoryItem` recorded; zero console errors were logged across
+the entire run.
+
+**One small, real bug found and fixed**: `UserModeFlightSummary`
+(Traveler view's trip-level Flights section, Step 182D) showed "Connect
+or enable a flight provider to show flight options for this trip." even
+when a real, connected, enabled flight provider (Kiwi MCP, live this
+step) had genuinely searched and found zero offers -- accurate in the
+sense that no offers exist, but misleadingly worded as if no provider
+were configured at all. Fixed by branching the no-offer message on the
+report's real `status`: `"unavailable"` (a connected provider searched
+and found nothing) now reads "No flight offers were found for this
+trip's route and dates."; `"failed"` reads "Flight search is temporarily
+unavailable -- see Developer view for details."; only a genuine
+`"not_connected"` still shows the original "Connect or enable..." copy.
+No backend field changed -- `FlightSearchStatus` already correctly
+distinguished these cases; only the frontend's message selection was
+imprecise. Live-reverified against the real Kiwi MCP `unavailable`
+result before and after the fix.
+
+**The Leaflet mobile overflow 182C found, 182D partially fixed (Traveler
+view only), and left deferred for Developer view is now fixed in both
+modes.** Root-caused further this step: `.leaflet-container`'s own
+internal `scrollWidth` genuinely is far wider than its visible box (407-
+418px measured live, vs. a 198px visible `clientWidth`) by Leaflet's own
+design (it keeps off-screen tiles rendered for smooth panning) -- but
+182D's ancestor-chain analysis had already proven no single element's
+own box escapes its container's `overflow-hidden` boundary, meaning the
+~10px page-level scroll capability (confirmed live via
+`window.scrollTo(9999, 0)` actually moving `scrollX` to `10`, not just a
+`scrollWidth` measurement artifact) doesn't reduce to one specific
+"culprit" element in the way 182D's investigation was looking for. Fixed
+with two small, purely additive rules in `frontend/app/globals.css` --
+`html, body { overflow-x: hidden; }` (the standard, safe backstop for
+exactly this class of third-party-widget overflow; every table/diagram/
+code-block that genuinely needs horizontal scroll already scrolls inside
+its own nested `overflow-x: auto` container per CLAUDE.md, never the
+page) and an explicit `.leaflet-container { overflow: hidden; }`
+reinforcement -- no Leaflet marker/route/path/lifecycle logic touched.
+Live-reverified in both Traveler and Developer view against the real
+generated trip: `window.scrollTo(9999, 0)` now leaves `scrollX` at `0`
+in both modes, and `document.documentElement.scrollWidth ===
+clientWidth` (390 === 390). **Fixed, not deferred.**

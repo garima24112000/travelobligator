@@ -40,13 +40,46 @@ def test_factory_returns_not_connected_provider_for_explicit_name() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Factory behavior for unsupported provider names is safe.
+# Step 182E: "manual_html" is a non-breaking alias for "scraped_local" --
+# same adapter class, same local-file-only/no-live-fetch behavior.
+# ---------------------------------------------------------------------------
+
+
+def test_factory_returns_scraped_local_provider_for_manual_html_alias() -> None:
+    provider = get_accommodation_provider("manual_html")
+    assert isinstance(provider, ScrapedAccommodationProvider)
+
+
+def test_manual_html_alias_does_not_remove_scraped_local() -> None:
+    assert isinstance(get_accommodation_provider("scraped_local"), ScrapedAccommodationProvider)
+    assert isinstance(get_accommodation_provider("manual_html"), ScrapedAccommodationProvider)
+    assert type(get_accommodation_provider("scraped_local")) is type(
+        get_accommodation_provider("manual_html")
+    )
+
+
+# ---------------------------------------------------------------------------
+# Factory behavior for unsupported provider names is safe. Includes every
+# partner-only provider name documented in README.md's "Provider
+# activation" section (Step 182E) -- selecting a partner-only provider
+# without a real adapter/credentials must always fall back to
+# not_connected, never fabricate lodging inventory.
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
     "unsupported_name",
-    ["booking", "expedia", "airbnb", "made_up_provider", "", "NOT_CONNECTED"],
+    [
+        "booking",
+        "expedia",
+        "hotelbeds",
+        "hostelworld",
+        "vrbo",
+        "airbnb",
+        "made_up_provider",
+        "",
+        "NOT_CONNECTED",
+    ],
 )
 def test_factory_falls_back_to_not_connected_for_unsupported_names(
     unsupported_name: str,

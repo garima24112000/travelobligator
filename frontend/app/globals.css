@@ -19,3 +19,25 @@ body {
   font-family: var(--font-geist-sans), Arial, Helvetica, sans-serif;
   min-height: 100vh;
 }
+
+/* Step 182G: final targeted fix attempt for the ~10px mobile horizontal
+   overflow 182C/182D/182G's own investigation traced to Leaflet's map
+   panes/tiles, without ever finding one specific element whose own box
+   escapes its container's `overflow-hidden` (every ancestor-chain check
+   came back clean). `.leaflet-container`'s own internal `scrollWidth`
+   measures far wider than its visible box by design (Leaflet keeps
+   off-screen tiles ready for panning) -- this rule makes sure that
+   internal width can never leak out as a page-level horizontal scroll,
+   without touching any Leaflet marker/route/path/lifecycle logic at all.
+   `html`/`body` overflow-x: hidden is the standard, safe backstop for
+   this exact class of third-party-widget overflow: any content that
+   genuinely needs horizontal scroll (per CLAUDE.md) already scrolls
+   inside its own nested `overflow-x: auto` container, never the page. */
+html,
+body {
+  overflow-x: hidden;
+}
+
+.leaflet-container {
+  overflow: hidden;
+}

@@ -3478,3 +3478,219 @@ booking link was ever fabricated anywhere across Section 178 -- every
 concrete value in every example and every test in this section's five
 steps traces to either a real, live Kiwi MCP response captured during
 implementation, or an explicit, clearly-labeled fake test double.
+
+## 62. US State/Territory Country and Currency Inference, Open-Meteo Retry-Once (Step 182B)
+
+A real manual frontend test (a Jersey City -> Orlando trip, Section 182A)
+found that Nager.Date holidays and Frankfurter currency both reported
+`unavailable` for an entirely ordinary domestic US trip. Reading
+`infer_country_code`/`infer_destination_currency` directly showed why:
+both only ever matched a destination's trailing comma-segment against a
+small table of full **country** names (`"united states"`, `"usa"`, etc.)
+-- a US state, which is how almost every American actually writes a
+domestic destination ("Orlando, FL", "Boston, MA"), never matched
+anything, and the honest, correct-at-the-time response was `unavailable`
+for a country that genuinely couldn't be inferred.
+
+**New shared module**: `backend/app/utils/destination_inference.py` adds
+`US_STATE_OR_TERRITORY_TO_COUNTRY_CODE` -- all 50 US state full names, all
+50 two-letter USPS abbreviations, and three Washington D.C. spellings
+(`"district of columbia"`, `"dc"`, `"washington dc"`), every value the
+literal string `"US"` -- plus `infer_us_country_code_from_state_segment`,
+a pure function with one deliberate safety gate: **it only ever returns a
+match when the destination was written in "City, State" form (more than
+one comma-segment)**, never from a single bare word. This is what keeps a
+genuinely ambiguous destination like `"Georgia"` (the US state or the
+sovereign country) safely unresolved -- exactly as before this step --
+while `"Atlanta, Georgia"`/`"Orlando, FL"`/`"Jersey City, NJ"` now
+correctly resolve. No LLM, no fuzzy/substring matching, no geocoding or
+network call of any kind is involved; this is a bigger version of the
+exact same deterministic, exact-match design `infer_country_code`/
+`infer_destination_currency` already used.
+
+`infer_country_code` (`app.providers.holidays.nager_date_adapter`) and
+`infer_destination_currency` (`app.providers.currency.frankfurter_adapter`)
+both now check their existing full-country-name table first, and only
+fall back to the new US-state table when that first check misses.
+`infer_destination_currency` maps any US-state match straight to `"USD"`.
+Neither function's public signature changed. Verifying this step's full
+expected-output list against the live code also surfaced one small,
+pre-existing (not new) gap worth closing at the same time:
+`infer_country_code`'s own country table was missing `"india"`/`"canada"`
+even though `infer_destination_currency`'s separate table already mapped
+them to `INR`/`CAD` -- `"Mumbai, India"` and `"Toronto, Canada"` already
+correctly inferred a currency but not a country code, so Nager.Date
+holidays were skipped for two countries this app already recognized
+elsewhere. Both are now added to `infer_country_code`'s table too, for
+parity. The pre-existing same-currency identity path in
+`FrankfurterCurrencyAdapter.get_exchange_rate` (`exchange_rate=1.0`, no
+HTTP call, `status=success`) was not touched -- it already reported a
+same-currency US trip as a calm success rather than a failure; the fix
+here is that a "City, State" destination now actually *reaches* that
+path instead of being turned away earlier at the currency-inference step.
+
+**Open-Meteo retry-once** (`app.providers.weather.open_meteo_adapter`):
+coordinates for weather are resolved via the exact same cached
+Nominatim geocoding the places search already uses (unchanged, and
+still never a raw city-string call to Open-Meteo) -- a `failed` weather
+result (as opposed to `unavailable`) therefore always meant coordinates
+were obtained but the live Open-Meteo HTTP call itself errored, which is
+exactly the shape of a transient network hiccup against a free,
+rate-limited public API. `get_weather_forecast` now retries exactly once
+(`_MAX_ATTEMPTS = 2` total attempts, a short fixed backoff between them)
+before reporting `failed`. This is a bounded, deterministic retry count,
+never a loop: two failures still honestly report `failed`, and missing
+coordinates/dates still report `unavailable` immediately with no HTTP
+call and no retry, exactly as before.
+
+**OSRM no-key MVP activation** (`.env.example`, `ROUTING_PROVIDER`/
+`OSRM_BASE_URL`): the safe `ROUTING_PROVIDER=not_connected` default from
+Step 165A is unchanged -- this step does not flip it. `.env.example`'s
+comments now spell out, explicitly, that uncommenting
+`OSRM_BASE_URL=https://router.project-osrm.org` (the public OSRM demo
+server named in `Settings.osrm_base_url`'s own docstring since Step 165A)
+requires no API key or signup and is safe for local/demo use, while
+being clear that it is a shared public instance with no uptime or
+rate-limit guarantee -- not something to point production traffic at.
+Leaving it unset (the default) keeps routing honestly `not_connected`.
+
+**Flow confirmation**: none of the above changes how a result flows once
+computed. `DestinationContextService` still calls
+`ProviderCoverageService.record_provider_result` for weather/holiday/
+currency exactly as before (Step 182B touched no line of
+`destination_context_service.py`), so `provider_coverage`,
+`unavailable_data`, the trust dashboard's category summaries, and
+`validation_report` all pick up a real `success`/`USD`/`1.0` result the
+same way they already picked up an `unavailable` one -- through the
+provider-coverage recording path that was already there, not a new one.
+`RouteFeasibilityService`/`RouteAwareSequencingService`/
+`TravelTimeBufferService` are unaffected by this step entirely (no OSRM
+code changed); they continue to honestly reflect whatever
+`ROUTING_PROVIDER`/`OSRM_BASE_URL` are actually set to.
+
+No API key was added anywhere in this step. No paid or partner provider
+adapter was added. No scraping (live or local-file) was added or changed.
+No hotel, flight, rating, price, route, or booking link was fabricated --
+this step only widens which real, existing, free, no-key providers a
+destination string is allowed to actually reach.
+
+## 63. Provider Activation Documentation and Source-Labeled Manual/Local HTML Fallback (Step 182E)
+
+The user asked for two things going forward: (1) if a provider needs an
+API key, document exactly how to get one and where it goes; (2) if
+access is paid/partner-blocked, provide a scraping/manual/local fallback.
+Step 182E delivers both without adding a single new live integration,
+fake adapter, or fabricated fact.
+
+**README.md gained a new "Provider Activation: APIs and Manual Fallback"
+section** covering, for every source with any access requirement
+(Kiwi MCP, Groq, Anthropic, Booking.com Demand API, Expedia Rapid API,
+Hotelbeds, Hostelworld, Vrbo, Airbnb, Skyscanner Travel API, Tripadvisor
+Content API, plus both manual/local HTML fallbacks and the not-yet-
+modeled manual ratings fallback): what it's for, current MVP status,
+whether a key is needed, how to get access at a high level, the exact env
+variable(s), its fallback path, and what the app shows when it's missing.
+For every partner-blocked lodging/flight source (all eight of them today)
+the documented fallback is the same one: the existing manual/local HTML
+parser, optionally labeled with the new cosmetic source-label config
+below. Airbnb and the other restricted providers (per the existing
+"Restricted providers ... are never scraped" policy note) get no
+exception here -- their fallback is still only ever a file the user
+supplies themselves, never an automated fetch of their site.
+
+**`.env.example` gained real, empty placeholders** for every partner
+credential the README section above documents
+(`BOOKING_DEMAND_API_KEY`, `EXPEDIA_RAPID_API_KEY`/`_SECRET`,
+`HOTELBEDS_API_KEY`/`_SECRET`, `HOSTELWORLD_API_KEY`,
+`VRBO_PARTNER_API_KEY`, `AIRBNB_PARTNER_API_KEY`, `SKYSCANNER_API_KEY`,
+`TRIPADVISOR_API_KEY`, each with a matching `*_BASE_URL`), all declared
+in `backend/app/core/config.py` as typed `str | None = None` fields
+mirroring the pre-existing `google_places_api_key`/`amadeus_client_id`
+treatment exactly -- none read by any factory or adapter. A dedicated
+test in each of `test_accommodation_config.py`/`test_flight_config.py`/
+`test_hotel_ratings_config.py` confirms setting any of them has zero
+effect on which provider a factory actually selects (still only
+`not_connected` for every provider name that isn't a real, implemented
+adapter) -- selecting `"booking"`/`"skyscanner"`/`"tripadvisor"` etc.
+explicitly was already covered by the existing "unsupported name falls
+back to not_connected" tests; this step extended those parametrized
+lists to name the new partner providers explicitly, and added targeted
+credential-placeholder tests alongside them.
+
+**Source-labeled manual/local HTML fallback** (`ACCOMMODATION_PROVIDER=
+manual_html`/`FLIGHT_PROVIDER=manual_html`, new non-breaking aliases for
+`scraped_local` in both factories -- `scraped_local` itself is never
+removed, and both names resolve to the exact same adapter class). Two
+new optional config fields, `ACCOMMODATION_MANUAL_HTML_SOURCE`
+(`generic`/`booking`/`expedia`/`hotelbeds`/`hostelworld`/`vrbo`/`airbnb`)
+and `FLIGHT_MANUAL_HTML_SOURCE`
+(`generic`/`skyscanner`/`google_flights`/`kiwi`/`other`), each validated
+by a `field_validator` that clamps any unrecognized value to `"generic"`
+rather than raising -- mirroring every other "unsupported value falls
+back safely" convention in `config.py`. A new
+`_effective_source_identity` helper in each of
+`app.providers.accommodation.scraped_adapter`/
+`app.providers.flights.scraped_adapter` computes the offer's displayed
+`source_id`/`source_name` from this label, but **only** when the
+operator has not already customized `scraped_accommodation_source_id`/
+`_source_name` (or the flight equivalents) away from their built-in
+defaults -- so anyone with their own naming convention is never
+overridden. A `"generic"` label (the default) leaves both fields
+completely unchanged, matching pre-182E behavior exactly. A non-generic
+label produces text like `"Manual/local HTML (labeled by user as
+Booking.com-derived; not official Booking.com data)"` -- reusing the
+exact same `ScrapedDataProvenance.source_id`/`source_name` fields the
+parser already populated (Step 168B/169C), never a parallel model, and
+the frontend's existing `ProvenanceBadge`/offer-card rendering (which
+already displays `source_name` verbatim) surfaces the label with zero
+frontend code change. The cache key (`make_query_hash`) now includes the
+*effective* source id, so switching labels never serves a stale,
+differently-labeled cached result. The `"kiwi"` flight label is a
+deliberately separate, cosmetic-only setting from the real, live
+`flight_provider="kiwi_mcp"`/`kiwi_mcp_enabled` adapter -- a manually-
+labeled offer's `provider` field always still starts with `"scraped:"`,
+never `"kiwi_mcp"`, so the frontend's exact-match `isKiwiMcpFlightOffer`
+check can never confuse the two; a dedicated test
+(`test_manual_html_source_label_kiwi_is_distinct_from_kiwi_mcp`) proves
+this directly.
+
+**Frontend**: one label-only change, no logic change. `ProvenanceBadge`'s
+heading text changed from "Scraped public page" to "Manual/local HTML" --
+the backend's `DataStatus.SCRAPED_PUBLIC_PAGE` enum value and every
+internal `scraped_local`/`scraped_provenance` name are completely
+unchanged; this is display vocabulary only, matching the "call it
+manual/local HTML in docs/UI" instruction for this step. See
+`docs/16_frontend_architecture.md` for confirmation this is the only
+frontend change 182E needed.
+
+**Hotel ratings/reviews**: `hotel_ratings_provider` still only supports
+`not_connected` -- no Tripadvisor (or any other) adapter was implemented,
+and no automated Tripadvisor scraping exists or is planned anywhere in
+this codebase. Only `TRIPADVISOR_API_KEY`/`TRIPADVISOR_API_BASE_URL`
+placeholders and README access-step documentation were added. No manual/
+local ratings-HTML fallback was added either -- the task explicitly
+called for not forcing one into product behavior in this step if it
+isn't already modeled, and it isn't.
+
+**Provider coverage**: no model change was needed.
+`ProviderCoverage.accommodations` (open-data POI coverage) and
+`ProviderCoverage.hotel_prices` (bookable inventory coverage, manual or
+official) were already structurally distinct fields before this step
+(see `planning_orchestrator.py`'s own long-standing comment on why
+`hotel_prices` is deliberately never conflated with `accommodations`),
+and the manual-vs-official distinction within `hotel_prices` was already
+surfaced at the *offer* level via presence/absence of
+`scraped_provenance` -- exactly the mechanism this step's source-label
+feature builds on, not a new one.
+
+60 new/updated backend tests across
+`backend/app/tests/core/{test_accommodation_config,test_flight_config,
+test_hotel_ratings_config}.py` and
+`backend/app/tests/providers/{test_accommodation_factory,
+test_flight_factory,test_scraped_accommodation_adapter,
+test_scraped_flight_cache}.py` (2373 passed total, up from 2313). No API
+key was added anywhere in this step. No paid/partner provider adapter
+was implemented. No scraping (live or local-file) was added or changed --
+the manual/local HTML parsers still only ever read a file the user
+already supplied. No hotel, flight, rating, price, route, schedule, or
+booking link was fabricated.

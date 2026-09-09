@@ -15,6 +15,7 @@ from app.storage.provider_cache_store import (
     get_provider_cache_store,
     make_query_hash,
 )
+from app.utils.destination_inference import infer_us_country_code_from_state_segment
 
 logger = logging.getLogger(__name__)
 
@@ -37,17 +38,34 @@ _COUNTRY_CODE_BY_NAME: dict[str, str] = {
     "italy": "IT",
     "united kingdom": "GB",
     "uk": "GB",
+    # Step 182B: added to match the currency table's existing coverage in
+    # `app.providers.currency.frankfurter_adapter._CURRENCY_BY_COUNTRY_NAME`
+    # -- "Mumbai, India"/"Toronto, Canada" already inferred a currency
+    # (INR/CAD) but not a country code, so Nager.Date holidays were
+    # skipped for a country this app already recognized elsewhere.
+    "india": "IN",
+    "canada": "CA",
 }
 
 
 def infer_country_code(destination: str) -> str | None:
     """Conservatively infer an ISO 3166-1 alpha-2 country code from
     `destination`, using only a small deterministic mapping of common
-    country names (docs/12_provider_architecture.md section 16). No LLM, no
-    fuzzy matching, no substring guessing: only an exact match against the
-    last comma-separated segment (the conventional "City, Country" format)
-    or the whole destination when there's no comma. Returns None (never a
-    guessed code) when the country can't be determined this way.
+    country names, plus (Step 182B) US state names/abbreviations, plus
+    Washington D.C. (docs/12_provider_architecture.md section 16). No LLM,
+    no fuzzy matching, no substring guessing, and no geocoding/network
+    call: only an exact match against the last comma-separated segment
+    (the conventional "City, Country"/"City, State" format) or the whole
+    destination when there's no comma. Returns None (never a guessed code)
+    when the country can't be determined this way.
+
+    The full-country-name table is always checked first. A US state/
+    abbreviation match is only ever trusted when the destination has more
+    than one comma-segment (i.e. was actually written "City, State") --
+    never from a single bare word. This is what keeps a genuinely
+    ambiguous one-word destination like "Georgia" (the US state or the
+    country) safely unresolved, while still correctly resolving
+    "Atlanta, Georgia"/"Orlando, FL"/"Jersey City, NJ" to `"US"`.
     """
     normalized = destination.strip().lower()
     if not normalized:
@@ -55,7 +73,14 @@ def infer_country_code(destination: str) -> str | None:
 
     segments = [part.strip() for part in normalized.split(",") if part.strip()]
     candidate = segments[-1] if segments else normalized
-    return _COUNTRY_CODE_BY_NAME.get(candidate)
+
+    direct_match = _COUNTRY_CODE_BY_NAME.get(candidate)
+    if direct_match is not None:
+        return direct_match
+
+    return infer_us_country_code_from_state_segment(
+        candidate, has_multiple_segments=len(segments) > 1
+    )
 
 
 class NagerDateHolidaysAdapter(HolidayProvider):

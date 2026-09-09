@@ -116,6 +116,29 @@ def test_infer_destination_currency_matches_examples() -> None:
     assert infer_destination_currency("") is None
 
 
+def test_infer_destination_currency_us_city_state_examples() -> None:
+    """Step 182B: "City, State" is how most US travelers actually write a
+    domestic destination -- full state name or two-letter abbreviation,
+    both must resolve to "USD" without any LLM/fuzzy/geocoding involved."""
+    assert infer_destination_currency("Orlando, FL") == "USD"
+    assert infer_destination_currency("Orlando, Florida") == "USD"
+    assert infer_destination_currency("Jersey City, NJ") == "USD"
+    assert infer_destination_currency("Boston, MA") == "USD"
+    assert infer_destination_currency("New York, NY") == "USD"
+    assert infer_destination_currency("San Francisco, CA") == "USD"
+    assert infer_destination_currency("Washington, DC") == "USD"
+
+
+def test_infer_destination_currency_ambiguous_single_word_stays_unresolved() -> None:
+    """Safety case: a single bare word that happens to also be a US state
+    name must never resolve on its own -- see the identical safety gate
+    (and rationale) in `test_nager_date_adapter.
+    test_infer_country_code_ambiguous_single_word_stays_unresolved`."""
+    assert infer_destination_currency("Georgia") is None
+    assert infer_destination_currency("Orlando") is None
+    assert infer_destination_currency("Florida") is None
+
+
 def test_success_usd_to_eur(monkeypatch: pytest.MonkeyPatch) -> None:
     payload = {"amount": 1.0, "base": "USD", "date": "2026-08-10", "rates": {"EUR": 0.92}}
     fake_client = _install_fake_client(monkeypatch, _FakeResponse(json_data=payload))
@@ -156,6 +179,32 @@ def test_same_currency_returns_one_without_http_call(
     assert rate.exchange_rate == 1.0
 
     # No network call was needed for a same-currency identity result.
+    assert fake_client.get_call_count == 0
+
+
+def test_us_state_destination_same_currency_identity_is_calm_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Step 182B end-to-end: a domestic US trip written as "City, State"
+    (not "City, USA") must still resolve its destination currency via the
+    new state inference and land on the exact same calm, honest
+    same-currency identity path as before -- `status=success`,
+    `exchange_rate=1.0`, zero network calls -- never a scary failure just
+    because origin and destination share a currency."""
+    fake_client = _install_fake_client(monkeypatch, _FakeResponse(json_data={}))
+
+    adapter = FrankfurterCurrencyAdapter()
+    response = adapter.get_exchange_rate("USD", "Orlando, FL")
+
+    assert response.status == ProviderStatus.SUCCESS
+    assert response.data_status == DataStatus.LIVE
+
+    rate = response.data
+    assert rate.base_currency == "USD"
+    assert rate.destination_currency == "USD"
+    assert rate.exchange_rate == 1.0
+    assert "no conversion is needed" in (response.message or "")
+
     assert fake_client.get_call_count == 0
 
 
