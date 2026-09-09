@@ -279,11 +279,16 @@ Produces:
 
 The Feedback Pipeline should update only affected sections whenever possible.
 
-Current implementation status: regeneration is not implemented yet.
-Feedback capture, the pending feedback summary, the plan diff preview, and
-the regeneration readiness gate exist. `POST /trips/{trip_id}/regenerate`
-is a hard-refusal endpoint that records a blocked attempt and makes no
-plan changes. See `docs/14_backend_architecture.md` section 34
+Current implementation status: regeneration is implemented, but only for
+a narrow, MVP-scoped case (Section 174). `POST /trips/{trip_id}/regenerate`
+reruns exactly the affected stage(s) and creates a new plan version only
+when the request confirms intent, at least one feedback event is pending,
+zero locks are active, and a real affected stage can be derived from that
+feedback. An active lock blocks regeneration entirely rather than being
+worked around or preserved by exclusion. Every other case is a distinct,
+named refusal recorded in an audit trail, with no plan change. A
+successful regeneration is never a claim that the plan improved or that it
+is now ready for real-world use without further review. See `docs/14_backend_architecture.md` section 34
 ("Regeneration Safety Lifecycle") for the exact state-mutation contract.
 
 ---
@@ -359,13 +364,16 @@ The MVP may use:
 
 - OpenStreetMap / Overpass for POIs
 - Nominatim or GeoNames for location resolution
-- OpenTripPlanner + GTFS + OpenStreetMap for routing and transit feasibility
+- OSRM for route feasibility, when explicitly configured (`ROUTING_PROVIDER=osrm`) — defaults to not connected. OpenTripPlanner + GTFS remains a planned/deferred option for future transit-specific routing, not implemented today.
 - Open-Meteo for weather
 - Nager.Date for public holidays
 - Frankfurter for currency conversion
+- A local/manual static-HTML parser (`scraped_local`) for accommodation and flight inventory, reading a developer-supplied local file only
+- Kiwi via the Model Context Protocol (MCP) as a real, live, third-party flight source — explicit two-flag opt-in, off by default
+- A hotel-ratings provider slot (no live rating source connected yet)
 - Amadeus APIs where production access is available
 - Google Places, Google Routes, Mapbox, or other approved providers where available
-- OpenAI Structured Outputs for reasoning and explanation only
+- Anthropic (primary) or Groq (cheaper/dev-only) as the LLM base for AI-suggested candidate proposals and reasoning/explanation only — never a factual data source
 
 Restricted providers such as Airbnb, Booking.com, Expedia, Vrbo, Tripadvisor, and Google Flights should not be scraped or implied as searched unless approved access exists.
 
@@ -403,6 +411,14 @@ AI must not invent:
 - safety ratings
 
 All AI outputs should be structured and schema-validated.
+
+Current implementation status: the wired AI-candidate-proposal bases are
+Anthropic (primary) and Groq (cheaper/dev-only), both behind a forced
+tool-use schema that structurally forbids factual fields like
+price/rating/coordinates, both gated by `AI_CANDIDATE_DISCOVERY_SHADOW_MODE_ENABLED`
+(default off). Neither is wired into the live scheduling/validation path
+by default — a proposal only reaches the itinerary after independent
+provider-grounding and explicit promotion.
 
 ---
 

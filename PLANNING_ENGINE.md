@@ -570,12 +570,19 @@ Use it only when:
 - core traveler profile changes
 - previous state is no longer valid
 
-Current implementation status: regeneration is not implemented yet. Only
-`explanation_only` classification exists today (deterministic, rule-based
-feedback capture). `POST /trips/{trip_id}/regenerate` is a hard-refusal
-endpoint: it always responds `409 REGENERATION_NOT_AVAILABLE`, records one
-blocked attempt in `regeneration_attempts`, and creates no new plan
-version.
+Current implementation status: regeneration is implemented, but only for
+a narrow, deterministic MVP case — not the full strategy-selection design
+above. Feedback classification is still `explanation_only`/rule-based
+(no AI). `POST /trips/{trip_id}/regenerate` reruns exactly the affected
+stage(s) and creates a new plan version only when the request confirms
+intent, at least one feedback event is pending, zero locks are active,
+and a real affected stage is derivable from that feedback — this is
+closest to `section_level_update` in the strategy list above, applied
+deterministically rather than chosen by the system. Every other case
+(including any active lock, which blocks regeneration entirely rather
+than being worked around) is a distinct, named refusal recorded in
+`regeneration_attempts`, with no new plan version. `day_level_update`,
+`pipeline_level_update`, and `full_regeneration` are not implemented.
 
 ---
 

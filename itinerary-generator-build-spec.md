@@ -1,5 +1,14 @@
 # AI Itinerary Generator — End-to-End Build Specification
 
+> **Historical build specification (marked Step 181B).** This is an early,
+> pre-implementation concept doc and does not describe current behavior —
+> for example, its regeneration section describes preserving locked items
+> while regenerating around them, but the actual implemented behavior
+> blocks regeneration entirely whenever any lock is active. Current
+> behavior is documented in `README.md`, `ARCHITECTURE.md`,
+> `PLANNING_ENGINE.md`, `TASKS.md`, and `docs/`. Where this file
+> disagrees with those, they are authoritative, not this file.
+
 This document is the working spec for the pipeline: what each stage does, what
 it receives, what it must output, and how it should fail. It's meant to be
 handed to whoever (or whatever) is helping build this, as the source of truth

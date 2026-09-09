@@ -2,34 +2,56 @@
 
 This file tracks implementation tasks for TravelObligator.
 
-Architecture V1 is finalized.  
-The next phase is implementation.
+**Status note (added Step 181B):** This file began as an early,
+pre-implementation checklist, written before any backend or frontend code
+existed. Everything below Section 3 is that original checklist, preserved
+as historical record — its `- [ ]` boxes were never updated as work was
+done, so an unchecked box below does **not** mean the task is outstanding;
+it means the checklist itself predates the implementation. Do not treat
+any specific unchecked line below as a live task without first checking
+whether it was actually completed (`docs/CODEBASE_OVERVIEW.md`'s Section
+170-179 running log and the numbered `docs/` files are the current source
+of truth for what's actually built). See Section 1 below for an accurate,
+current summary.
 
 ---
 
 ## 1. Current Status
 
-Completed:
+Architecture V1 is finalized, and the MVP it describes is implemented:
+shared/backend models, the API foundation, in-memory/local-JSON
+repositories, the full `PlanningOrchestrator` stage pipeline, provider
+interfaces (with several real adapters wired in — OpenStreetMap/Overpass,
+Nominatim, Open-Meteo, Nager.Date, Frankfurter, OSRM, a local/manual
+scraped-HTML provider for accommodation and flights, and a real live
+Kiwi-via-MCP flight integration behind explicit opt-in), the AI reasoning
+layer (Anthropic primary, Groq dev-only, both candidate-proposal-only —
+never a factual data source), stage implementations, feedback capture,
+and an MVP-scoped feedback-driven regeneration workflow (Section 174 —
+see `README.md`'s "Current Regeneration Status" for the exact contract).
+The frontend renders the full `PlanningState` dashboard, including a
+trust dashboard, provider-coverage/validation views, route-aware
+day-by-day scheduling with a map view, and inventory/candidate-review
+panels.
 
-- Product vision finalized
-- MVP scope finalized
-- Planning pipeline finalized
-- Production data policy finalized
-- PlanningState architecture finalized
-- Data model documented
-- API contracts documented
-- Provider architecture documented
-- LLM reasoning policy documented
-- Backend architecture documented
-- Database schema documented
-- Frontend architecture documented
-- Root project docs updated
+Sections 170-179 (tracked in `docs/CODEBASE_OVERVIEW.md`) added the AI
+candidate-promotion pipeline, LangGraph orchestration alongside the
+original synchronous pipeline, route-aware scheduling, the hotel-ratings
+provider layer, the Kiwi MCP flight integration, and a frontend
+visual/accessibility polish pass. A full feature-level rewrite of this
+file is a separate, upcoming pass — this note only corrects the status
+claim, not the detailed checklists below.
 
-Next focus:
+Deferred / not yet implemented (production-hardening work):
 
-```text
-Implement the backend foundation first.
-```
+- async/background job processing for plan generation
+- PostgreSQL persistence (today: a local, gitignored JSON file)
+- authentication and per-user trip isolation
+- Docker/deployment hardening
+- observability / structured logging
+
+This is a working MVP with real integrations, not a finished production
+system.
 
 ---
 
@@ -539,13 +561,16 @@ Do not implement yet:
 - SIM card recommendations
 - emergency healthcare logic
 - full multi-city optimization
-- an actual feedback-driven regeneration engine (readiness gate, hard
-  refusal endpoint, and attempt audit trail exist; regeneration itself
-  does not run yet)
+- full-scope feedback-driven regeneration (`day_level_update`,
+  `pipeline_level_update`, `full_regeneration` strategies) — an
+  MVP-scoped `section_level_update`-equivalent regeneration is
+  implemented (Section 174): it reruns only a derivable affected stage,
+  requires zero active locks, and refuses by name in every other case
 
 Manual QA: before working on regeneration, run through
-`docs/17_regeneration_manual_qa.md` to verify the current hard-refusal
-safety contract still holds.
+`docs/17_regeneration_manual_qa.md` to verify the current
+refusal-by-default safety contract still holds for every case regeneration
+does not (yet) handle.
 
 ---
 
