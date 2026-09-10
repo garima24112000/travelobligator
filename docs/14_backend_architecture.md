@@ -4642,3 +4642,615 @@ run -- see `docs/16_frontend_architecture.md`'s 182G note for
 no backend field, model, or provider adapter needed to change for it,
 since the underlying `FlightSearchStatus` values were already correct
 and honest -- only the frontend's message selection was imprecise.
+
+## 102. PostgreSQL Dependency and Connection Foundation, Not Wired In (Step 183B)
+
+A Step 183A read-only audit first confirmed the actual persistence call
+graph: every stage service (`VersioningService`,
+`RegenerationAttemptService`, `RegenerationReadinessService`,
+`ItineraryNarrativeService`, `FeedbackService`, `UserLockService`, etc.)
+is a pure in-memory `PlanningState -> PlanningState` transformer with no
+repository calls of its own -- only `app/api/routes/trips.py` and
+`PlanningOrchestrator` ever call `planning_state_repository.save(...)`.
+That means a future storage-backend swap only has to change two
+repository classes (`TripRepository`, `PlanningStateRepository`), not any
+service code, as long as their public interface is preserved.
+
+Step 183B adds the dependency and connection *foundation* for that future
+swap. As of this step, persistence behavior is **completely unchanged**:
+`LocalJsonStore` (section 19-21 above) remains the only storage actually
+read/written by any route, service, or repository, regardless of any new
+config below.
+
+- **Dependencies**: `SQLAlchemy==2.0.52` and `alembic==1.19.2` added to
+  `backend/requirements.txt`. `psycopg[binary]==3.2.3` (already a
+  dependency, previously unused by application code) is the driver --
+  `asyncpg` was deliberately not added, and this step introduces no async
+  SQLAlchemy usage.
+- **Config gate**: `Settings.persistence_backend` (`PERSISTENCE_BACKEND`
+  env var, default `"local_json"`) follows the same
+  `@field_validator(mode="after")` clamp-to-safe-default convention as
+  `accommodation_manual_html_source`/every provider-selection field --
+  an unrecognized value normalizes to `"local_json"` rather than raising.
+  `"postgres"` is accepted as an opt-in value but today changes nothing:
+  no route/service/repository branches on it. Setting `DATABASE_URL`
+  alone never switches persistence -- only an explicit
+  `PERSISTENCE_BACKEND=postgres` does, and even that remains inert until
+  a Postgres-backed repository exists (future work, Step 183D).
+- **`backend/app/db/` package** (new, not imported by any route/service/
+  repository yet):
+  - `session.py` -- a sync SQLAlchemy engine/session foundation.
+    `build_engine()`/`get_engine()`/`get_session_factory()` are all lazy:
+    no engine or session is constructed at import time, and
+    `create_engine(...)` itself never opens a connection eagerly (only on
+    first actual use). `normalize_database_url()` rewrites a bare
+    `postgres://`/`postgresql://` URL to `postgresql+psycopg://` via
+    plain string-prefix matching (not `urllib.parse`, which was found to
+    corrupt unrelated schemes like `sqlite:///:memory:` on round-trip);
+    any URL that already names a driver, or uses a non-Postgres scheme,
+    passes through unchanged.
+  - `base.py` -- an empty `DeclarativeBase` subclass (`Base`), with no
+    ORM models registered against it yet. Exists only so
+    `alembic/env.py`'s `target_metadata` has something real to import;
+    schema authoring is Step 183C's job.
+- **Alembic scaffold**: `backend/alembic.ini` + `backend/alembic/`
+  (`env.py`, `script.py.mako`, `versions/`) were scaffolded via
+  `alembic init`, since doing so requires no live database and adds no
+  production schema migration -- `versions/` is empty. `env.py` imports
+  `app.core.config.get_settings` and `app.db.session.normalize_database_url`
+  to set `sqlalchemy.url` at the moment an `alembic` command actually
+  runs; importing `env.py` itself never connects, only invoking a real
+  `alembic` command (e.g. `alembic current`) does, which was manually
+  verified to fail with a clear connection error against the
+  non-resolvable `postgres` host in `.env.example`'s default
+  `DATABASE_URL` -- exactly the expected behavior with no real Postgres
+  running. Nothing under `app/` imports `alembic`.
+- **Provider cache docstring fix**: `provider_cache_store.py`'s module
+  docstring incorrectly claimed it was "not imported by any provider
+  adapter" -- corrected to name the eight real adapters that use it via
+  `get_provider_cache_store`. Docstring-only change; no cache behavior,
+  schema, or migration touched. The provider cache remains a separate
+  SQLite store, independent of both `LocalJsonStore` and this new `app/db/`
+  foundation -- migrating it to Postgres, if ever done, is optional future
+  work (Step 183E).
+- **Tests**: `backend/app/tests/core/test_persistence_backend_config.py`
+  and `backend/app/tests/db/test_session.py` -- default/opt-in/invalid-value
+  config behavior, `DATABASE_URL` alone not changing
+  `persistence_backend`, URL normalization, engine/session construction,
+  and import-time non-connection (verified by pointing `DATABASE_URL` at
+  an unreachable host/port before a fresh import and confirming it still
+  succeeds instantly). None require a running Postgres. The full suite
+  (2453 tests, up from 2436) was re-confirmed to pass with no real `.env`
+  present, matching Step 182G's hermeticity baseline.
+
+Planned follow-on work (not part of this step): 183C (Postgres schema +
+first Alembic migration, run against a real local Postgres for
+verification only), 183D (repository factory pattern + Postgres-backed
+repository implementations passing the existing
+`test_persistence.py` contract), 183E (optional provider-cache Postgres
+parity), 183F (docs finalization, docker-compose health-check hardening,
+and the first point at which this Section 183 stack is committed).
+
+## 103. `pytest` Hermetic Test Settings, Independent of a Developer's Local `.env` (Step 183B-FIX)
+
+A full `pytest` run with a real local `.env` present (live
+`FLIGHT_PROVIDER=kiwi_mcp`, `KIWI_MCP_ENABLED=true`,
+`ROUTING_PROVIDER=osrm`, `OSRM_BASE_URL`, `ITINERARY_NARRATOR_ENABLED=true`,
+`ITINERARY_NARRATOR_PROVIDER=groq`, a real `GROQ_API_KEY`) surfaced 32
+failures. Root cause: `app/providers/gateway.py`'s module-level
+`provider_gateway` singleton resolves its routing/flight providers via
+`get_settings()` **at import time** -- the moment `conftest.py`'s own
+`from app.providers.gateway import provider_gateway` line runs, at
+collection time, before any per-test fixture exists to intervene. With a
+live `.env` present, that first `get_settings()` call baked a real
+`KiwiMcpFlightProvider`/`OSRMRoutingAdapter` into the singleton for the
+entire test session -- no later `monkeypatch.setenv(...)` or
+`get_settings.cache_clear()` could undo it, since the wrong adapter
+instance was already constructed and stored. A second, narrower instance
+of the same root cause: several factory tests constructed
+`Settings(field="value")` directly (bypassing `get_settings()` and
+`_env_file=None`) to test fallback/opt-out behavior -- pydantic-settings'
+dotenv source, keyed by alias, silently outranked the by-field-name init
+kwarg for those specific fields, so the real `.env`'s value won anyway
+(the same by-name-vs-alias precedence quirk documented in Step 163B's
+`_isolate_ai_candidate_proposal_env` fixture, here affecting fields that
+fixture never covered).
+
+Fix, in two parts:
+- **`get_settings()` test-mode branch** (`app/core/config.py`): when the
+  `TRAVELOB_TEST_MODE` environment variable is `"1"`, `get_settings()`
+  constructs `Settings(_env_file=None)` instead of `Settings()` --
+  skipping the dotenv *file* source entirely, while real OS environment
+  variables (exactly what `monkeypatch.setenv(...)` sets) still apply, so
+  a test can still explicitly opt into a value. `backend/app/tests/
+  conftest.py` sets `os.environ.setdefault("TRAVELOB_TEST_MODE", "1")` as
+  literally its first line, before any other import -- including its own
+  `from app.core.config import ...` -- so this is already true by the
+  time `provider_gateway` (or anything else) is first imported anywhere
+  in the test session. Normal app/dev-server runtime never sets this
+  variable, so `.env` is read exactly as before for real usage; nothing
+  about production default behavior changed.
+- **Seven affected factory tests** (`test_accommodation_factory.py`,
+  `test_flight_factory.py`, `test_itinerary_narrator_factory.py`,
+  `test_routing_factory.py`) added `_env_file=None` to the specific
+  `Settings(field="value")` calls that were bypassing `get_settings()`
+  entirely -- test-only hygiene fixes, matching the pattern already used
+  correctly by sibling tests in the same files. No production code path
+  changed for this half of the fix.
+
+New regression coverage:
+`backend/app/tests/core/test_pytest_hermetic_env_isolation.py` --
+confirms `TRAVELOB_TEST_MODE` is set during pytest; reproduces the
+original bug directly (a throwaway `.env` under `tmp_path` with live
+kiwi_mcp/osrm/narrator settings, proven not to leak into
+`get_settings()`); a control test proving raw `Settings(_env_file=<path>)`
+still honors a real dotenv file (real app runtime is unaffected); a test
+proving `monkeypatch.setenv(...)` opt-in still works after
+`get_settings.cache_clear()`; a test asserting the real, module-level
+`provider_gateway` singleton's defaults are safe (`ScrapedLocalFlightProvider`/
+`NotConnectedRoutingProvider`, never `KiwiMcpFlightProvider`/
+`OSRMRoutingAdapter`); and a test constructing `ItineraryNarrativeService()`
+with its real default (no injected fake) to prove the disabled
+short-circuit is reached without ever touching a real provider.
+
+The full suite (2459 tests, up from 2453) was re-run **with the
+developer's real local `.env` left in place, untouched** (not moved
+aside, unlike the one-off verification technique used in Steps 182G and
+183B) -- 2459 passed in ~14s with zero network calls. This is now the
+durable, default guarantee rather than a manual step to repeat: any
+contributor's real `.env`, whatever it contains, no longer affects
+`pytest` results.
+
+## 104. Initial Postgres Schema Migration, Still Not Wired to Any Repository (Step 183C)
+
+The first real Alembic migration --
+`backend/alembic/versions/2fe86f95d81e_create_trips_and_planning_states.py`,
+`down_revision=None` (the root revision) -- creates exactly two tables for
+the opt-in Postgres persistence backend
+(`Settings.persistence_backend`, still `"local_json"` by default; see
+section 102). This is schema-only: **no route, service, or repository
+reads or writes either table** -- applying this migration to a real
+Postgres database has zero effect on current app behavior. That wiring is
+Step 183D's job.
+
+- **`trips`**: `trip_id TEXT PRIMARY KEY`, `status TEXT NOT NULL DEFAULT
+  'draft'`, `created_at`/`updated_at TIMESTAMPTZ NOT NULL`, plus indexes
+  on `status` and `updated_at`. Mirrors
+  `app.repositories.trip_repository.TripRecord` exactly.
+- **`planning_states`**: `trip_id TEXT PRIMARY KEY REFERENCES
+  trips(trip_id) ON DELETE CASCADE`, `planning_state_id`/`current_version`/
+  `pipeline_status TEXT NOT NULL`, `state JSONB NOT NULL`,
+  `created_at`/`updated_at TIMESTAMPTZ NOT NULL`, plus indexes on
+  `current_version` and `pipeline_status`. Mirrors
+  `PlanningStateRepository` exactly: the entire `PlanningState` is stored
+  as one JSONB document per `trip_id` (`state`), matching the whole-
+  document-per-trip design `PlanningStateRepository.save` already uses
+  against `LocalJsonStore` today. `planning_state_id`/`current_version`/
+  `pipeline_status` are lifted out of `state` into their own indexed
+  columns purely as a future queryability optimization (the same
+  hybrid relational-columns-plus-JSONB design `ARCHITECTURE.md` section 11
+  originally sketched, and Step 183A's audit recommended) -- `state`
+  remains the single source of truth for the full plan.
+- **Deliberately excluded** (matching this step's explicit scope): no
+  `provider_cache` table (stays SQLite, see
+  `app/storage/provider_cache_store.py`, completely independent of this
+  migration); no normalized `feedback_events`/`version_history`/
+  `user_locks`/`regeneration_attempts` tables (the current contract is
+  the whole `PlanningState` JSONB blob, same as `LocalJsonStore` today);
+  no `user_id`/`owner_id`/auth column anywhere (auth/user isolation is
+  unimplemented today, out of scope for this step).
+
+**`backend/app/db/models.py`** (new) adds minimal SQLAlchemy ORM class
+metadata -- `TripRow`/`PlanningStateRow`, defined against `app/db/base.py`'s
+`Base` -- mirroring the migration's columns (hand-written independently,
+not code-shared with the migration, so the migration stays historically
+accurate even if this file changes later). Like every other `app/db/`
+module, it is **not imported by any route/service/repository** -- it
+exists only so a future Step 183D repository implementation, and
+Alembic's `--autogenerate`, have real ORM metadata to work against.
+Importing it registers tables on `Base.metadata` but never creates a
+table or opens a connection (nothing in this codebase calls
+`Base.metadata.create_all(...)`; the schema is created via the Alembic
+migration above). `backend/alembic/env.py` now imports `app.db.models` so
+`Base.metadata` is actually populated for future autogenerate diffs --
+this import alone still never connects to anything, verified by running
+`alembic history`/`alembic revision` (which never open a connection) and
+by `alembic current` (which does, and was manually confirmed to fail only
+at the connection step -- an unresolvable `postgres` hostname outside a
+Docker network -- never at any Python import).
+
+**Tests** (`backend/app/tests/db/test_migration_schema.py`,
+`test_db_models.py`, `test_alembic_env.py`, 20 tests total, none
+requiring Postgres/Docker): the migration file exists and is the root
+revision; `upgrade()` creates exactly `trips`/`planning_states` (no
+`provider_cache`, no user/owner/auth column); the `state` column is
+`postgresql.JSONB`; the `trips`/`planning_states` foreign key is
+`ON DELETE CASCADE`; `downgrade()` drops both tables; the SQLAlchemy
+metadata's table/column names match; `app.db.models` itself never calls
+`create_all`/opens a connection; `alembic history` succeeds and
+`alembic current` fails with a connection error (`OperationalError`),
+never an import error, proving the whole `env.py` wiring is sound without
+needing a real database. The migration file's own tests use static AST
+parsing rather than executing `upgrade()`/`downgrade()` against a
+hermetic database, since the Postgres-only `JSONB` column type can't
+compile against a SQLite stand-in.
+
+**Optional live verification**: Docker was available in this environment
+(`docker compose up -d postgres`), but the host's port 5432 was already
+bound by something else, so `docker compose up` failed with "address
+already in use." The container/network compose had already created were
+cleaned up (`docker compose down`) without forcing anything else off that
+port. Live `alembic upgrade head`/`alembic current`/`alembic downgrade
+base` against a real Postgres were not run this step -- the static/
+subprocess-based tests above are the only automated coverage, exactly as
+the "do not require this for automated tests" instruction allows.
+
+The full suite (2479 tests, up from 2459) still passes with the
+developer's real local `.env` left in place, untouched (~15s, zero
+network calls). `Settings.persistence_backend` still defaults to
+`"local_json"`; nothing about trip creation, plan generation,
+regeneration/version/feedback/lock/narrator persistence, or provider
+cache behavior changed.
+
+## 105. Repository Factory and Opt-In Postgres Repositories (Step 183D)
+
+The Step 183C schema now has real repository implementations behind it,
+selected by `Settings.persistence_backend` -- still `"local_json"` by
+default. **API response contracts, `PlanningState` semantics, and
+default (`local_json`) behavior are all unchanged** -- this step only
+adds a second, opt-in implementation of the exact same two-repository
+contract Step 183A already documented.
+
+**`app/repositories/protocols.py`** (new) -- `TripRepositoryProtocol`/
+`PlanningStateRepositoryProtocol`, `typing.Protocol` contracts describing
+the exact public surface both backends satisfy (`create`/`get`/
+`update_status`; `save`/`get_by_trip_id`). No behavior, purely a
+type-checkable description; the existing local repositories already
+satisfy these structurally with no changes.
+
+**`app/repositories/factory.py`** (new) -- `get_trip_repository()`/
+`get_planning_state_repository()` are now the only way production code
+resolves a repository. Each call reads `Settings.persistence_backend`
+fresh (never cached at import time -- see below for why that matters):
+`"local_json"` (default) returns the *exact same* module-level singleton
+objects that existed before this step (`trip_repository`,
+`planning_state_repository`), not a fresh instance per call, so
+performance, in-memory caching, and every test that monkeypatches those
+singletons' `_store`/`_trips`/`_states` attributes directly (`conftest.py`'s
+`_reset_in_memory_repositories` fixture) all keep working unchanged.
+`"postgres"` lazily constructs and caches (`functools.lru_cache`,
+matching `app/db/session.py`'s `get_engine()` pattern) one
+`PostgresTripRepository`/`PostgresPlanningStateRepository` -- constructed,
+and so first able to connect, only on the first call made while
+`persistence_backend == "postgres"`. Setting `DATABASE_URL` alone still
+never selects Postgres (unchanged from Step 183B); only an explicit
+`PERSISTENCE_BACKEND=postgres` does.
+
+**`app/repositories/postgres_trip_repository.py`** /
+**`postgres_planning_state_repository.py`** (new) -- sync SQLAlchemy +
+psycopg implementations matching the local repositories' exact behavior:
+- `PostgresTripRepository.create()` upserts (`INSERT ... ON CONFLICT
+  (trip_id) DO UPDATE`), matching `TripRepository.create()`'s own
+  "always replace with a brand-new record" behavior on a duplicate
+  `trip_id` (fresh `created_at`, not just `updated_at`) -- confirmed by
+  inspecting the local repository's source before implementing this, per
+  this step's explicit instruction. `get()`/`update_status()` match
+  `TripRepository`'s exact None-on-missing-row semantics.
+- `PostgresPlanningStateRepository.save()` upserts the entire
+  `planning_state.model_dump(mode="json")` into `planning_states.state`
+  (JSONB), lifting `planning_state_id`/`metadata.current_version`/
+  `metadata.pipeline_status.value` into their own columns, and always
+  refreshing `updated_at` while preserving the original `created_at`
+  across updates. It never mutates the `PlanningState` object passed in,
+  and returns that same object unchanged -- matching
+  `PlanningStateRepository.save()` exactly. Because
+  `planning_states.trip_id` has a real foreign key to `trips.trip_id`
+  (Step 183C) but the two *local* repositories are completely
+  independent of each other (no such coupling), `save()` first upserts a
+  minimal `trips` row via `ON CONFLICT DO NOTHING` -- documented and
+  tested (`test_planning_state_repository_ensures_trip_row_exists_...`)
+  rather than left as an undocumented FK-violation trap for a caller who
+  never called the trip repository's `create()` first.
+- `get_by_trip_id()` always re-validates the stored JSONB through
+  `PlanningState.model_validate(...)` -- never manually reconstructs
+  fields -- so it inherits the exact same backward-compatibility handling
+  the local repository already has, and a corrupt/invalid stored payload
+  raises a real `pydantic.ValidationError` rather than being silently
+  discarded or fabricated into a default state.
+
+**Production wiring**: `app/api/routes/trips.py` now imports
+`get_planning_state_repository` from the factory instead of the raw
+`planning_state_repository` singleton, calling it fresh at each of its
+~25 call sites (mechanical, behavior-preserving for `local_json` -- the
+factory returns the identical singleton object every time).
+`PlanningOrchestrator.planning_state_repository`/`.trip_repository`
+became `@property`s that resolve via the factory on every access
+(falling back to an injected override, e.g. for tests, if one was passed
+to `__init__`) instead of being eagerly bound once inside `__init__`.
+This distinction matters because `planning_orchestrator` is itself a
+module-level singleton constructed once at import time
+(`services/planning_orchestrator.py`'s last line) -- eagerly resolving a
+repository inside `__init__` would repeat the exact import-time-
+singleton-contamination mistake Step 183B-FIX found and fixed for
+`provider_gateway` (a live setting baked in before any per-test isolation
+exists). Properties instead mean `Settings.persistence_backend` is read
+fresh every time the orchestrator touches a repository, so it always
+reflects the current config, never a stale import-time snapshot -- and
+since the factory's `local_json` branch is just an attribute lookup (no
+I/O), this costs nothing in the default case.
+
+**Tests** (48 new across
+`backend/app/tests/repositories/test_repository_factory.py` (7),
+`test_postgres_trip_repository.py` (5),
+`test_postgres_planning_state_repository.py` (6), plus 5 skipped-by-
+default integration tests in `test_postgres_repositories_integration.py`
+-- see below): factory default/opt-in selection, `DATABASE_URL` alone
+not selecting Postgres, a reproduction of the exact 183B-FIX scenario
+(a throwaway `.env` selecting Postgres, proven not to leak into the
+factory during pytest), Postgres repository unit tests against a fake
+`Session` (upsert statement shape via `.compile()`, no live connection
+needed -- `TripRow`/`PlanningStateRow` can be constructed directly in
+memory without touching a database), missing-row-returns-None, and
+invalid stored JSON surfacing a real `ValidationError`. None of the
+mandatory suite requires Postgres.
+
+**Optional live-Postgres integration tests**
+(`test_postgres_repositories_integration.py`) are gated by
+`TRAVELOB_RUN_POSTGRES_TESTS=1` (skipped otherwise -- confirmed via a
+direct run showing "5 skipped") and additionally need
+`PERSISTENCE_BACKEND=postgres` + a real `DATABASE_URL` against a database
+that already has `alembic upgrade head` applied. They round-trip both
+repositories against a real Postgres, including one full API-level test
+(`TestClient` hitting `POST /trips`/`GET /trips/{id}`) proving the
+`trips.py`/`PlanningOrchestrator` wiring genuinely reaches Postgres end
+to end when opted in, not just that the repository classes work in
+isolation.
+
+**Live verification attempted, not completed**: Docker was available
+again this step, but host port 5432 was still bound by something outside
+this project (same as Step 183C) -- `docker compose up -d postgres`
+failed with "address already in use" a second time. Cleanly aborted
+(`docker compose down`) without touching whatever holds that port,
+exactly as this step's explicit instructions require.
+
+The full suite (2497 passed, 5 skipped, up from 2479 passed) still runs
+with the developer's real local `.env` left in place, untouched (~16s,
+zero network calls). Provider cache is untouched (still SQLite,
+independent); no auth/user column exists anywhere; no frontend file
+changed.
+
+## 106. Docker Compose Port Hardening and Completed Live Postgres Verification (Step 183E)
+
+Steps 183C and 183D both attempted live Postgres verification and both
+had to abort: the host's port 5432 was already bound by something
+outside this project (never identified, never touched -- this project
+must never assume it owns port 5432 on a developer's machine). This step
+fixes that generally, then completes the verification those steps could
+only attempt.
+
+**`docker-compose.yml`**: the `postgres` service's port mapping is now
+`"${POSTGRES_HOST_PORT:-5432}:5432"` -- unset, this is byte-for-byte the
+same behavior as before (`5432:5432`); set (e.g.
+`POSTGRES_HOST_PORT=15432`), only the HOST side changes. The container's
+own internal port, and therefore how every OTHER container in this
+compose file reaches it, stays `postgres:5432` regardless -- `backend`
+never needed to change and didn't. A `pg_isready`-based healthcheck was
+also added (`interval: 5s`, `timeout: 5s`, `retries: 5`, using
+`${POSTGRES_USER}`/`${POSTGRES_DB}`) -- purely informational (nothing's
+`depends_on` was changed to require it), but it let this step's live
+verification poll for real readiness instead of guessing a sleep
+duration, and it's confirmed to report `healthy` in practice (`docker
+inspect`).
+
+**`.env.example`** documents both host-vs-compose-network addressing
+(the same Postgres, reached two different ways depending on where the
+connecting process runs) and the new `POSTGRES_HOST_PORT` variable:
+- Backend running *inside* `docker compose` reaches Postgres at
+  `postgres:5432` (the compose-internal network) -- always, regardless
+  of `POSTGRES_HOST_PORT`.
+- Alembic, `pytest`, or the backend run directly on the *host* machine
+  against a `docker compose up -d postgres` container must use
+  `localhost:<POSTGRES_HOST_PORT>` (`localhost:5432` if left at the
+  default, `localhost:15432` if changed).
+`PERSISTENCE_BACKEND=local_json` remains the documented default; setting
+`DATABASE_URL` alone still never switches persistence -- both statements
+are unchanged from Step 183B/183D and re-confirmed by this step's own
+tests.
+
+**Live verification, completed this time**: with Docker available and
+port 5432 still occupied by something outside this project (confirmed by
+re-attempting `docker compose up -d postgres` with the *default* port
+mapping and getting the same "address already in use" as Steps 183C/183D
+-- reported honestly, not forced), `POSTGRES_HOST_PORT=15432 docker
+compose up -d postgres` was used instead. Real steps run, in order, all
+succeeding:
+1. `docker compose up -d postgres` on port 15432 -- started, and the new
+   healthcheck reported `healthy` on the very first poll.
+2. `DATABASE_URL=postgresql://travelobligator_user:change_me@localhost:15432/travelobligator alembic upgrade head`
+   -- applied the Step 183C migration to a real, empty Postgres database
+   for the first time ever in this project's history. Output: `Running
+   upgrade  -> 2fe86f95d81e, create_trips_and_planning_states`.
+3. `alembic current` against the same URL -- confirmed `2fe86f95d81e
+   (head)`.
+4. `TRAVELOB_RUN_POSTGRES_TESTS=1 PERSISTENCE_BACKEND=postgres DATABASE_URL=...
+   python -m pytest app/tests/repositories/test_postgres_repositories_integration.py`
+   -- **all 5 tests passed against a real Postgres** for the first time
+   (previously only ever proven against fake sessions). A direct `psql`
+   query afterward independently confirmed real rows in both `trips` (4)
+   and `planning_states` (3).
+5. The new opt-in API smoke test (below) also passed against the same
+   real database.
+6. `alembic downgrade base` -- reverted cleanly, dropping both tables.
+7. `docker compose down` -- removed the container/network (the named
+   volume, now empty, was left in place; nothing forced).
+
+No real secret was printed in any of the above -- one earlier, unrelated
+`docker compose config` invocation during this step *did* print resolved
+container environment variables including a real API key from the local
+`.env` (a general property of that Compose subcommand, not something
+`docker-compose.yml` itself controls) -- caught immediately, never
+repeated, and that value is not written anywhere in this repository or
+in this documentation.
+
+**New opt-in API smoke test**
+(`backend/app/tests/api/test_postgres_api_smoke.py`, skipped unless both
+`TRAVELOB_RUN_POSTGRES_TESTS=1` and a real `DATABASE_URL` are set) walks
+create -> generate -> get -> feedback -> regenerate (accepting either a
+real `200` new version or a named `409` refusal -- Section 174's
+regeneration contract is refusal-first either way) -> a final read
+through a *fresh* `PostgresPlanningStateRepository` instance (its own new
+`Session`, nothing cached from the request handlers) to prove the whole
+API-level flow, not just the repository classes in isolation, genuinely
+persists to and reads back from Postgres when opted in.
+
+**Provider cache decision (explicit, not deferred by accident)**: this
+step deliberately does **not** add a `PostgresProviderCacheStore`.
+`ProviderCacheStore` stays SQLite, completely independent of both
+`LocalJsonStore` and the new Postgres repositories. Reasoning: the
+provider cache is decoupled from trip/plan persistence by design (losing
+it just means the next provider call re-fetches instead of hitting a
+cached response -- never a correctness or data-loss risk), whereas trip
+and plan data loss is real and irreversible; migrating the cache to
+Postgres is not required for real MVP production persistence (the actual
+goal of Section 183) and would add scope with no corresponding safety or
+product benefit. This may be revisited later as genuinely optional future
+work, not as unfinished business from this section.
+
+**Tests** (`backend/app/tests/repositories/test_postgres_opt_in_gating.py`,
+7 new, plus the 1 new API smoke test above -- none requiring Docker/live
+Postgres to run as part of the default suite): `docker-compose.yml`'s
+`postgres` service has the configurable `POSTGRES_HOST_PORT` mapping with
+its backwards-compatible `5432` default, and a `pg_isready` healthcheck;
+`backend`'s compose block still never hardcodes a conflicting
+`DATABASE_URL`; `.env.example` documents `POSTGRES_HOST_PORT` and both
+addressing modes; `PERSISTENCE_BACKEND=local_json` is still the
+documented default; and -- the most direct regression guard for this
+step's whole premise -- both gated Postgres test files are run as real
+subprocesses with a clean environment (no
+`TRAVELOB_RUN_POSTGRES_TESTS`/`DATABASE_URL`/`PERSISTENCE_BACKEND`) and
+asserted to report "skipped", never "passed" or an error/hang.
+
+The full suite (2504 passed, 6 skipped, up from 2497 passed/5 skipped)
+still runs with the developer's real local `.env` left in place,
+untouched (~17s, zero network calls). `persistence_backend` still
+defaults to `local_json`; `DATABASE_URL` alone still never selects
+Postgres; no auth/user column, provider_cache change, or frontend file
+exists anywhere in this step's diff.
+
+## 107. Section 183 Final Review, Docs Cleanup, and Commit Readiness (Step 183F, final Section 183 step)
+
+Final pass over the whole 183A-183E stack: re-read every persistence-
+related file fresh (not just re-cited from earlier steps' own claims),
+re-ran every check, and closed one stale doc line. No product behavior
+changed.
+
+**What Section 183 is, in one place**: an opt-in PostgreSQL persistence
+*foundation* -- `local_json` (the pre-existing `LocalJsonStore`-backed
+`TripRepository`/`PlanningStateRepository`) remains the zero-setup
+default with zero behavior change from before Section 183 started.
+Postgres only activates when `PERSISTENCE_BACKEND=postgres` is explicitly
+set; `DATABASE_URL` alone never does this. The schema is exactly two
+tables (`trips`, `planning_states`), with `PlanningState` stored as one
+whole JSONB document per trip -- no normalized feedback/version/lock/
+regeneration/narrative tables, no `provider_cache` table, no
+`user_id`/`owner_id`/auth column anywhere. `provider_cache` stays SQLite,
+independent, by an explicit, documented decision (section 106) -- not
+deferred by accident. Auth/user isolation and async/background job
+processing remain explicitly out of scope (README.md's deferred-work
+list, unchanged in scope by this section). Automated `pytest` is hermetic
+against a developer's real `.env` (section 103) and never requires a live
+database (the 6 Postgres-only tests skip unless both
+`TRAVELOB_RUN_POSTGRES_TESTS=1` and a real `DATABASE_URL` are set).
+
+**Fresh re-confirmation this step actually performed** (not just
+citation of 183A-183E's own claims):
+- `grep -rn "import.*postgres_trip_repository\|import.*postgres_planning_state_repository"`
+  across `app/` (excluding tests) matches only
+  `app/repositories/factory.py` -- no route or service imports a Postgres
+  repository module directly.
+- Re-read `PlanningOrchestrator.__init__`/`.planning_state_repository`/
+  `.trip_repository`: confirmed the two repository attributes are
+  `@property`s resolving through the factory on every access, with the
+  override captured in `__init__` only as a plain attribute -- never
+  eagerly bound to a singleton at construction time (the orchestrator
+  itself is a module-level singleton, constructed at import time).
+- Re-read the Step 183C migration's `upgrade()`/`downgrade()` side by
+  side: `downgrade()` drops exactly the two indexes and one table
+  `upgrade()` created, for both `trips` and `planning_states` -- fully
+  symmetric.
+- Re-read both Postgres repository implementations side by side with
+  their local-JSON equivalents: `create()`'s upsert-on-duplicate matches
+  `TripRepository.create()`'s "always a brand-new record" behavior;
+  `save()` upserts JSONB, lifts `planning_state_id`/`current_version`/
+  `pipeline_status` into columns, omits `created_at` from its `ON
+  CONFLICT ... DO UPDATE SET` clause (preserved) while always setting
+  `updated_at`, never mutates the `PlanningState` argument (only reads
+  from it, returns the same object), and `get_by_trip_id` always goes
+  through `PlanningState.model_validate(row.state)` -- a corrupt/invalid
+  stored payload surfaces a real `pydantic.ValidationError`.
+- Re-read `docker-compose.yml`: `POSTGRES_HOST_PORT` mapping and
+  `pg_isready` healthcheck both present and unchanged from Step 183E;
+  `backend`'s own block still has no compose-level `DATABASE_URL`
+  override (it only ever comes from `.env` via `env_file`).
+
+**Secret safety audit** (this step ran no command that could print
+`.env`'s contents -- no `cat .env`, `grep .env`, `docker compose config`,
+`printenv`, or `env`):
+- `git check-ignore -v` confirmed `.env`, `backend/.data/
+  travelobligator_state.json`, `backend/.data/provider_cache.sqlite3`,
+  and both `.data/manual_scrapes/*.html` paths are all still correctly
+  gitignored.
+- A grep for real-looking key shapes (`sk-`, `gsk_`, and every
+  `*_API_KEY=<value>` pattern) across `.env.example`, `README.md`,
+  `docs/`, `backend/app`, `backend/alembic`, and `docker-compose.yml`
+  found zero real keys -- every hit is either a `.env.example`/README
+  placeholder (blank or literal `...`), or an explicit, obviously-fake
+  test value (e.g. `"fake-not-a-real-key"`,
+  `"dummy-test-key-should-never-be-printed"`).
+- `.env.example` was re-read directly: every credential field
+  (`ANTHROPIC_API_KEY=`, `GROQ_API_KEY=`, every partner-provider key) is
+  blank.
+- One transparency note carried forward from Step 183E: an unrelated
+  `docker compose config` invocation during that step printed resolved
+  container environment variables, including a real key from the local
+  `.env` -- a general property of that Compose subcommand, not something
+  `docker-compose.yml` itself controls. It was caught immediately, never
+  repeated, and that value was never written to any file. This step's own
+  live-Postgres re-verification (below) deliberately used only `docker
+  compose up -d`/`down`, `alembic`, and `pytest` -- never `docker compose
+  config`.
+
+**Overclaim/safety copy review**: none of this step's own doc edits (or
+any prior 183A-183E doc edit) introduces language implying the app is
+production-ready, that validation means ready for real-world use without
+review, that anything is booked/confirmed, that manual/local data is
+official, or that regeneration improves a plan -- confirmed via the
+project's standard banned-phrase grep across `README.md`, `docs/`, and
+`backend/app`; every hit is either a pre-existing negation ("not a
+confirmed booking") or an LLM-prompt instruction telling a model never to
+make such a claim.
+
+**One stale doc line fixed**: README.md's deferred-work list previously
+said "the compose `postgres`/`redis` services exist but nothing in the
+app talks to them yet" -- true when written (Step 181D), false after
+183D/183E. Reworded to say `redis` is still fully untouched while
+`postgres` is now real and opt-in (cross-referencing the point above it),
+without overclaiming it as the default.
+
+**Live Postgres re-verification, one more time**: with port 5432 still
+occupied by something outside this project, `POSTGRES_HOST_PORT=15432
+docker compose up -d postgres` started cleanly and reported `healthy`
+immediately via the Step 183E healthcheck. `alembic upgrade head` /
+`alembic current` both succeeded against the fresh database. All 6 gated
+Postgres tests (`test_postgres_repositories_integration.py`'s 5 +
+`test_postgres_api_smoke.py`'s 1) passed together in one run against the
+real database. `alembic downgrade base` and `docker compose down` cleaned
+up fully afterward -- confirmed via `docker compose ps -a` showing no
+containers.
+
+The full suite (2504 passed, 6 skipped -- unchanged from Step 183E, since
+this step added no new tests, only doc/review work) was re-run one final
+time with the real `.env` left in place throughout (~17s, zero network
+calls). `tsc`/`lint`/`build` all clean; zero frontend files touched
+anywhere across the whole of Section 183. **Section 183 (183A-183F) is
+ready to commit** as one stack, pending the user's own review.

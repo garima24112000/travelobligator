@@ -1,5 +1,25 @@
 from __future__ import annotations
 
+import os
+
+# Step 183B-FIX: this MUST be the first thing this module does, before any
+# `app.*` import below (including this file's own `from app.core.config
+# import ...`) -- `app.providers.gateway` constructs its module-level
+# `provider_gateway` singleton at import time, resolving the routing/
+# flight-inventory providers from `get_settings()` right then. If that
+# first `get_settings()` call ever reads a developer's real local `.env`
+# (e.g. `FLIGHT_PROVIDER=kiwi_mcp`, `ROUTING_PROVIDER=osrm`,
+# `ITINERARY_NARRATOR_ENABLED=true`), the singleton bakes in a live
+# provider for the rest of the whole pytest process -- no per-test
+# `monkeypatch.setenv(...)` or `get_settings.cache_clear()` afterwards can
+# undo that, because the wrong adapter instance is already constructed
+# and stored on the singleton. Setting this flag here, before that first
+# import happens, is what makes `get_settings()` (see its docstring in
+# `app/core/config.py`) skip the dotenv file entirely for the whole test
+# session by default. `setdefault` (not `[...] =`) so a caller who
+# explicitly unsets/overrides it before invoking pytest still wins.
+os.environ.setdefault("TRAVELOB_TEST_MODE", "1")
+
 from pathlib import Path
 from typing import Any
 

@@ -106,7 +106,9 @@ def test_factory_uses_settings_when_no_provider_name_given(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        factory_module, "get_settings", lambda: Settings(accommodation_provider="not_connected")
+        factory_module,
+        "get_settings",
+        lambda: Settings(_env_file=None, accommodation_provider="not_connected"),
     )
     provider = get_accommodation_provider()
     assert isinstance(provider, NotConnectedAccommodationProvider)
@@ -116,7 +118,9 @@ def test_factory_falls_back_when_settings_hold_unsupported_value(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        factory_module, "get_settings", lambda: Settings(accommodation_provider="booking")
+        factory_module,
+        "get_settings",
+        lambda: Settings(_env_file=None, accommodation_provider="booking"),
     )
     provider = get_accommodation_provider()
     assert isinstance(provider, NotConnectedAccommodationProvider)

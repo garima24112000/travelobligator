@@ -11,12 +11,16 @@ from typing import Any, Mapping
 
 # Provider cache foundation (Step 164A, docs/12_provider_architecture.md
 # "Provider Cache Foundation" section, docs/14_backend_architecture.md
-# storage/repository layer). This module is intentionally not imported by
-# any provider adapter, `ProviderGateway`, or `PlanningOrchestrator` yet --
-# it exists so a later step can wire OSM/Open-Meteo/Nager/Frankfurter (and
-# future providers) to cache their responses without first having to build
-# this layer under time pressure. Nothing in this module changes any
-# current provider result or planning behavior.
+# storage/repository layer). As of Step 164B+, this module IS imported and
+# used by real provider adapters (OpenStreetMap places/geocoding,
+# Open-Meteo weather, Nager.Date holidays, Frankfurter currency, OSRM
+# routing, and the scraped/manual-HTML accommodation and flight adapters)
+# via `get_provider_cache_store` -- it is not wired into `ProviderGateway`
+# or `PlanningOrchestrator` directly, only into individual adapters. It
+# remains a separate SQLite store, independent of `LocalJsonStore` and of
+# the Step 183B PostgreSQL foundation (`app/db/`) -- migrating this cache
+# to Postgres is optional future work (Step 183E), not part of 183B/183C/
+# 183D.
 
 
 class ProviderCacheValueError(ValueError):

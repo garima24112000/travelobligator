@@ -21,7 +21,7 @@ from app.core.response import success_response
 from app.models.common import ReadinessStatus
 from app.models.itinerary_narrative import ItineraryNarrativeStatus
 from app.models.planning_state import GenerationProgress, TripRequest
-from app.repositories.planning_state_repository import planning_state_repository
+from app.repositories.factory import get_planning_state_repository
 from app.schemas.ai_candidate_promotion import AICandidatePromotionResponseData
 from app.schemas.ai_candidate_review import AICandidateReviewResponseData
 from app.schemas.api_responses import ApiResponse
@@ -80,7 +80,7 @@ def create_trip(trip_request: TripRequest) -> ApiResponse[TripResponseData]:
     response_model=ApiResponse[TripResponseData],
 )
 def get_trip(trip_id: str) -> ApiResponse[TripResponseData]:
-    planning_state = planning_state_repository.get_by_trip_id(trip_id)
+    planning_state = get_planning_state_repository().get_by_trip_id(trip_id)
     if planning_state is None:
         raise trip_not_found_error(trip_id)
 
@@ -188,7 +188,7 @@ def regenerate_trip_plan(
     correctly hits outcome 3 rather than creating another version from
     the same feedback.
     """
-    planning_state = planning_state_repository.get_by_trip_id(trip_id)
+    planning_state = get_planning_state_repository().get_by_trip_id(trip_id)
     if planning_state is None:
         raise trip_not_found_error(trip_id)
 
@@ -196,7 +196,7 @@ def regenerate_trip_plan(
 
     if not request.confirm:
         planning_state = regeneration_attempt_service.record_blocked_attempt(planning_state)
-        planning_state_repository.save(planning_state)
+        get_planning_state_repository().save(planning_state)
         raise regeneration_not_available_error()
 
     active_lock_count = sum(1 for lock in planning_state.user_locks if lock.is_active)
@@ -206,7 +206,7 @@ def regenerate_trip_plan(
             reason_code=ErrorCode.REGENERATION_BLOCKED_BY_LOCKS.value,
             message=REGENERATION_BLOCKED_BY_LOCKS_MESSAGE,
         )
-        planning_state_repository.save(planning_state)
+        get_planning_state_repository().save(planning_state)
         raise regeneration_blocked_by_locks_error()
 
     pending_events = pending_feedback_events(planning_state.feedback_history)
@@ -216,7 +216,7 @@ def regenerate_trip_plan(
             reason_code=ErrorCode.REGENERATION_NO_PENDING_FEEDBACK.value,
             message=REGENERATION_NO_PENDING_FEEDBACK_MESSAGE,
         )
-        planning_state_repository.save(planning_state)
+        get_planning_state_repository().save(planning_state)
         raise regeneration_no_pending_feedback_error()
 
     # confirm=true, pending feedback exists, zero active locks: Section
@@ -227,7 +227,7 @@ def regenerate_trip_plan(
     affected_stages = derive_pending_affected_stages(planning_state.feedback_history)
     if not affected_stages or planning_state.experience_plan is None:
         planning_state = regeneration_attempt_service.record_blocked_attempt(planning_state)
-        planning_state_repository.save(planning_state)
+        get_planning_state_repository().save(planning_state)
         raise regeneration_not_available_error()
 
     previous_version = planning_state.metadata.current_version
@@ -250,7 +250,7 @@ def regenerate_trip_plan(
             message=REGENERATION_NOT_AVAILABLE_MESSAGE,
             status="failed",
         )
-        planning_state_repository.save(planning_state)
+        get_planning_state_repository().save(planning_state)
         raise regeneration_not_available_error()
 
     changed_sections = [stage.value for stage in affected_stages]
@@ -315,7 +315,7 @@ def regenerate_trip_plan(
     planning_state = plan_diff_preview_service.recompute(planning_state)
     planning_state = regeneration_readiness_service.recompute(planning_state)
     planning_state = regeneration_attempt_service.record_applied_attempt(planning_state)
-    planning_state_repository.save(planning_state)
+    get_planning_state_repository().save(planning_state)
 
     data = RegenerateResponseData(
         trip_id=trip_id,
@@ -340,7 +340,7 @@ def regenerate_trip_plan(
     status_code=status.HTTP_201_CREATED,
 )
 def create_trip_lock(trip_id: str, lock_request: LockRequest) -> ApiResponse[TripResponseData]:
-    planning_state = planning_state_repository.get_by_trip_id(trip_id)
+    planning_state = get_planning_state_repository().get_by_trip_id(trip_id)
     if planning_state is None:
         raise trip_not_found_error(trip_id)
 
@@ -356,7 +356,7 @@ def create_trip_lock(trip_id: str, lock_request: LockRequest) -> ApiResponse[Tri
     # Recomputed from scratch every time (Step 135) so it always reflects
     # the just-added lock.
     planning_state = regeneration_readiness_service.recompute(planning_state)
-    planning_state_repository.save(planning_state)
+    get_planning_state_repository().save(planning_state)
 
     data = TripResponseData(trip_id=trip_id, planning_state=planning_state)
     return success_response(data)
@@ -367,7 +367,7 @@ def create_trip_lock(trip_id: str, lock_request: LockRequest) -> ApiResponse[Tri
     response_model=ApiResponse[TripResponseData],
 )
 def delete_trip_lock(trip_id: str, lock_id: str) -> ApiResponse[TripResponseData]:
-    planning_state = planning_state_repository.get_by_trip_id(trip_id)
+    planning_state = get_planning_state_repository().get_by_trip_id(trip_id)
     if planning_state is None:
         raise trip_not_found_error(trip_id)
 
@@ -381,7 +381,7 @@ def delete_trip_lock(trip_id: str, lock_id: str) -> ApiResponse[TripResponseData
     # Recomputed from scratch every time (Step 135) so it always reflects
     # the just-removed lock.
     planning_state = regeneration_readiness_service.recompute(planning_state)
-    planning_state_repository.save(planning_state)
+    get_planning_state_repository().save(planning_state)
 
     data = TripResponseData(trip_id=trip_id, planning_state=planning_state)
     return success_response(data)
@@ -392,7 +392,7 @@ def delete_trip_lock(trip_id: str, lock_id: str) -> ApiResponse[TripResponseData
     response_model=ApiResponse[DestinationContextResponseData],
 )
 def get_destination_context(trip_id: str) -> ApiResponse[DestinationContextResponseData]:
-    planning_state = planning_state_repository.get_by_trip_id(trip_id)
+    planning_state = get_planning_state_repository().get_by_trip_id(trip_id)
     if planning_state is None:
         raise trip_not_found_error(trip_id)
 
@@ -432,7 +432,7 @@ def get_candidate_quality(trip_id: str) -> ApiResponse[CandidateQualityResponseD
     destination context has not been generated yet, `candidate_quality_report`
     is honestly `null` rather than fabricated.
     """
-    planning_state = planning_state_repository.get_by_trip_id(trip_id)
+    planning_state = get_planning_state_repository().get_by_trip_id(trip_id)
     if planning_state is None:
         raise trip_not_found_error(trip_id)
 
@@ -448,7 +448,7 @@ def get_candidate_quality(trip_id: str) -> ApiResponse[CandidateQualityResponseD
     response_model=ApiResponse[ExperiencePlanResponseData],
 )
 def get_experience_plan(trip_id: str) -> ApiResponse[ExperiencePlanResponseData]:
-    planning_state = planning_state_repository.get_by_trip_id(trip_id)
+    planning_state = get_planning_state_repository().get_by_trip_id(trip_id)
     if planning_state is None:
         raise trip_not_found_error(trip_id)
 
@@ -479,7 +479,7 @@ def get_experience_plan(trip_id: str) -> ApiResponse[ExperiencePlanResponseData]
     response_model=ApiResponse[ValidationReportResponseData],
 )
 def get_validation_report(trip_id: str) -> ApiResponse[ValidationReportResponseData]:
-    planning_state = planning_state_repository.get_by_trip_id(trip_id)
+    planning_state = get_planning_state_repository().get_by_trip_id(trip_id)
     if planning_state is None:
         raise trip_not_found_error(trip_id)
 
@@ -509,7 +509,7 @@ def get_validation_report(trip_id: str) -> ApiResponse[ValidationReportResponseD
     response_model=ApiResponse[TripSummaryResponseData],
 )
 def get_trip_summary(trip_id: str) -> ApiResponse[TripSummaryResponseData]:
-    planning_state = planning_state_repository.get_by_trip_id(trip_id)
+    planning_state = get_planning_state_repository().get_by_trip_id(trip_id)
     if planning_state is None:
         raise trip_not_found_error(trip_id)
 
@@ -574,7 +574,7 @@ def get_trip_summary(trip_id: str) -> ApiResponse[TripSummaryResponseData]:
     response_model=ApiResponse[ProviderCoverageResponseData],
 )
 def get_provider_coverage(trip_id: str) -> ApiResponse[ProviderCoverageResponseData]:
-    planning_state = planning_state_repository.get_by_trip_id(trip_id)
+    planning_state = get_planning_state_repository().get_by_trip_id(trip_id)
     if planning_state is None:
         raise trip_not_found_error(trip_id)
 
@@ -599,7 +599,7 @@ def get_regeneration_readiness(trip_id: str) -> ApiResponse[RegenerationReadines
     -- this endpoint never recomputes, mutates, or regenerates anything
     itself.
     """
-    planning_state = planning_state_repository.get_by_trip_id(trip_id)
+    planning_state = get_planning_state_repository().get_by_trip_id(trip_id)
     if planning_state is None:
         raise trip_not_found_error(trip_id)
 
@@ -620,7 +620,7 @@ def get_regeneration_attempts(trip_id: str) -> ApiResponse[RegenerationAttemptsR
     stored order -- this endpoint never recomputes, mutates, or
     regenerates anything itself.
     """
-    planning_state = planning_state_repository.get_by_trip_id(trip_id)
+    planning_state = get_planning_state_repository().get_by_trip_id(trip_id)
     if planning_state is None:
         raise trip_not_found_error(trip_id)
 
@@ -647,7 +647,7 @@ def get_generation_progress(trip_id: str) -> ApiResponse[GenerationProgressRespo
     Step 163A decorative frontend loading animation is not wired to this
     endpoint yet.
     """
-    planning_state = planning_state_repository.get_by_trip_id(trip_id)
+    planning_state = get_planning_state_repository().get_by_trip_id(trip_id)
     if planning_state is None:
         raise trip_not_found_error(trip_id)
 
@@ -680,7 +680,7 @@ def get_ai_candidate_review(trip_id: str) -> ApiResponse[AICandidateReviewRespon
     `planning_state.ai_candidate_promotion_report`. Only
     `POST /trips/{trip_id}/ai-candidate-promotions` does that.
     """
-    planning_state = planning_state_repository.get_by_trip_id(trip_id)
+    planning_state = get_planning_state_repository().get_by_trip_id(trip_id)
     if planning_state is None:
         raise trip_not_found_error(trip_id)
 
@@ -713,12 +713,12 @@ def promote_ai_candidates(trip_id: str) -> ApiResponse[AICandidatePromotionRespo
     recomputes and replaces the report rather than appending to it, so
     repeated calls never duplicate a promoted candidate.
     """
-    planning_state = planning_state_repository.get_by_trip_id(trip_id)
+    planning_state = get_planning_state_repository().get_by_trip_id(trip_id)
     if planning_state is None:
         raise trip_not_found_error(trip_id)
 
     planning_state = ai_candidate_promotion_service.apply_promotion(planning_state)
-    planning_state_repository.save(planning_state)
+    get_planning_state_repository().save(planning_state)
 
     assert planning_state.ai_candidate_promotion_report is not None
     data = AICandidatePromotionResponseData(
@@ -743,10 +743,10 @@ def run_langgraph_shadow(trip_id: str) -> ApiResponse[LangGraphShadowRunResponse
     (`PlanningOrchestrator.generate_full_plan`) remains that -- and the
     result is never persisted:
 
-    - `planning_state_repository.save` is never called.
+    - `get_planning_state_repository().save` is never called.
     - The trip's cached `PlanningState` object is never mutated -- a
       `model_copy(deep=True)` is passed into the graph, never the same
-      instance `planning_state_repository.get_by_trip_id` returned.
+      instance `get_planning_state_repository().get_by_trip_id` returned.
     - No version history, regeneration attempt, lock, or generation-progress
       bookkeeping is touched.
     - `persisted` is always `False` in the response (structurally
@@ -759,7 +759,7 @@ def run_langgraph_shadow(trip_id: str) -> ApiResponse[LangGraphShadowRunResponse
     Groq/Anthropic/OpenAI, an AI candidate proposal provider, or any other
     LLM, and it never calls `POST /generate` internally.
     """
-    planning_state = planning_state_repository.get_by_trip_id(trip_id)
+    planning_state = get_planning_state_repository().get_by_trip_id(trip_id)
     if planning_state is None:
         raise trip_not_found_error(trip_id)
 

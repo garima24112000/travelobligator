@@ -46,6 +46,14 @@ pydantic_core==2.46.3
 pydantic-settings==2.7.1
 python-dotenv==1.2.2
 psycopg[binary]==3.2.3
+# SQLAlchemy + Alembic (Step 183B) -- foundation only: a sync engine/
+# session factory (backend/app/db/session.py) and a migrations
+# scaffold, neither wired into any route/service/repository yet. Still
+# uses psycopg (already pinned above) as the driver; no asyncpg, no
+# async SQLAlchemy. Mirrors the existing "dependency declared before
+# it's wired in" pattern already used by psycopg/redis in this file.
+SQLAlchemy==2.0.52
+alembic==1.19.2
 redis==5.2.1
 starlette==1.0.0
 typing-inspection==0.4.2

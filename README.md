@@ -116,6 +116,12 @@ Run the backend test suite (from the repo root, virtualenv active):
 pytest
 ```
 
+`pytest` uses hermetic test defaults regardless of your local `.env` —
+it never requires, reads, or consumes a real API key, and never makes a
+live Kiwi MCP/OSRM/narrator network call, even if your `.env` has those
+enabled for manual demo use (see `docs/14_backend_architecture.md`
+section 103).
+
 ### Running with Docker Compose instead
 
 `docker compose up` (from the repo root) starts a `backend` container
@@ -126,6 +132,52 @@ Postgres or Redis** — they exist in `docker-compose.yml` for future use,
 not because the app needs them today (see "Current Status" below). This
 is a convenience for running both services together locally, not a
 production deployment path.
+
+A `SQLAlchemy`/`psycopg`-based connection foundation (`backend/app/db/`)
+and an Alembic migrations setup (`backend/alembic/`) now exist — but no
+route or service talks to Postgres unless you explicitly opt in, and
+setting `DATABASE_URL` alone does not do that; see `PERSISTENCE_BACKEND`
+in `.env.example` and `docs/14_backend_architecture.md` section 102.
+
+`backend/alembic/versions/` has one real migration creating `trips` and
+`planning_states` (the latter storing the whole `PlanningState` as JSONB).
+`backend/app/repositories/factory.py` now has a real, working
+Postgres-backed repository implementation behind that schema
+(`PostgresTripRepository`/`PostgresPlanningStateRepository`) — but it's
+still opt-in: `app/api/routes/trips.py` and `PlanningOrchestrator` keep
+using the local JSON repositories by default, and only switch to Postgres
+when `PERSISTENCE_BACKEND=postgres` is explicitly set. This has been
+live-verified end to end against a real Postgres (migration, repository
+round-trip, and a full create → generate → get → feedback → regenerate
+API flow) — see `docs/14_backend_architecture.md` section 106.
+
+If your machine already has something on port 5432 (a local Postgres
+install, another project's compose stack), `docker compose up -d
+postgres` will fail with "address already in use". Set
+`POSTGRES_HOST_PORT=15432` (or any free port) instead of stopping
+whatever else is using 5432 — see `.env.example`. To try the whole opt-in
+path against a real local Postgres:
+
+```bash
+POSTGRES_HOST_PORT=15432 docker compose up -d postgres
+cd backend
+DATABASE_URL=postgresql://travelobligator_user:change_me@localhost:15432/travelobligator alembic upgrade head
+```
+
+Then set `PERSISTENCE_BACKEND=postgres` (and the matching `DATABASE_URL`)
+in `.env` to have the real app use it, or run the opt-in test suites
+directly (`TRAVELOB_RUN_POSTGRES_TESTS=1 PERSISTENCE_BACKEND=postgres
+DATABASE_URL=... python -m pytest app/tests/repositories/
+test_postgres_repositories_integration.py app/tests/api/
+test_postgres_api_smoke.py`, from `backend/`) — both are skipped by
+default and never required for normal `pytest` or `local_json`
+development; see `docs/14_backend_architecture.md` sections 104-106.
+
+`provider_cache` (the local SQLite cache for real provider responses)
+stays SQLite regardless of `PERSISTENCE_BACKEND` — it's deliberately
+decoupled from trip/plan persistence (losing it is always safe, just a
+re-fetch) and migrating it isn't required for real MVP persistence; see
+`docs/14_backend_architecture.md` section 106.
 
 ---
 
@@ -1050,13 +1102,19 @@ separately from MVP feature work):
 
 - async/background job processing for plan generation (today: a single
   synchronous request per generation call)
-- PostgreSQL persistence (today: a local, gitignored JSON file — see
-  `ARCHITECTURE.md` section 12a)
+- PostgreSQL persistence as the *default* (today: a local, gitignored
+  JSON file remains default — see `ARCHITECTURE.md` section 12a; a
+  dependency/connection foundation (Step 183B), schema migration (Step
+  183C), a working opt-in Postgres repository implementation (Step 183D),
+  and Docker Compose port hardening plus a completed live verification
+  (Step 183E) all exist, but nothing switches to Postgres unless
+  `PERSISTENCE_BACKEND=postgres` is explicitly set)
 - authentication and per-user trip isolation (today: any caller who knows
   a `trip_id` can read or modify it)
 - Docker/deployment hardening (the committed frontend Dockerfile runs
-  `npm run dev`, not a production build; the compose `postgres`/`redis`
-  services exist but nothing in the app talks to them yet)
+  `npm run dev`, not a production build; the compose `redis` service
+  exists but nothing in the app talks to it; `postgres` is now real and
+  opt-in per the point above, but still not the default deployment path)
 - observability / structured logging
 
 This is a working MVP with real integrations, not a finished production

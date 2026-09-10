@@ -121,7 +121,9 @@ def test_settings_reads_routing_provider_from_env(monkeypatch: pytest.MonkeyPatc
 
 def test_factory_uses_settings_when_no_provider_name_given(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
-        factory_module, "get_settings", lambda: Settings(routing_provider="not_connected")
+        factory_module,
+        "get_settings",
+        lambda: Settings(_env_file=None, routing_provider="not_connected"),
     )
     provider = get_routing_provider()
     assert isinstance(provider, NotConnectedRoutingProvider)
@@ -131,7 +133,9 @@ def test_factory_falls_back_when_settings_hold_unsupported_value(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        factory_module, "get_settings", lambda: Settings(routing_provider="google_routes")
+        factory_module,
+        "get_settings",
+        lambda: Settings(_env_file=None, routing_provider="google_routes"),
     )
     provider = get_routing_provider()
     assert isinstance(provider, NotConnectedRoutingProvider)

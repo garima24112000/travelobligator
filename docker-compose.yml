@@ -42,9 +42,21 @@ services:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     ports:
-      - "5432:5432"
+      # Step 183E: configurable host port -- a developer's own local
+      # Postgres (or any other project's compose stack) commonly already
+      # occupies 5432. Set POSTGRES_HOST_PORT (e.g. 15432) to avoid that
+      # conflict without touching whatever else is already using 5432.
+      # The container's own internal port stays 5432 either way -- other
+      # containers in this compose file (e.g. `backend`) keep reaching it
+      # at `postgres:5432` regardless of this mapping.
+      - "${POSTGRES_HOST_PORT:-5432}:5432"
     volumes:
       - travelobligator_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
 
   redis:
     image: redis:7

@@ -27,11 +27,9 @@ from app.models.routing import (
     TravelTimeBufferReport,
 )
 from app.providers.gateway import provider_gateway
-from app.repositories.planning_state_repository import (
-    PlanningStateRepository,
-    planning_state_repository,
-)
-from app.repositories.trip_repository import TripRepository, trip_repository
+from app.repositories.factory import get_planning_state_repository, get_trip_repository
+from app.repositories.planning_state_repository import PlanningStateRepository
+from app.repositories.trip_repository import TripRepository
 from app.services.accommodation_inventory_service import AccommodationInventoryService
 from app.services.ai_candidate_discovery_service import AICandidateDiscoveryService
 from app.services.ai_candidate_promotion_service import AICandidatePromotionService
@@ -378,8 +376,29 @@ class PlanningOrchestrator:
             travel_time_buffer_service=self.travel_time_buffer_service,
             plan_validator_service=self.plan_validator_service,
         )
-        self.planning_state_repository = planning_state_repo or planning_state_repository
-        self.trip_repository = trip_repo or trip_repository
+        # Step 183D: stored as overrides, resolved lazily through the
+        # properties below -- never eagerly bound to a singleton here.
+        # This orchestrator is itself constructed once, as a module-level
+        # singleton, at import time (see `planning_orchestrator` at the
+        # bottom of this file); eagerly resolving a repository here would
+        # repeat the exact import-time-singleton-contamination mistake
+        # Step 183B-FIX found and fixed for `provider_gateway` --
+        # `Settings.persistence_backend` must be read fresh on every
+        # access, not baked in once at import time.
+        self._planning_state_repo_override = planning_state_repo
+        self._trip_repo_override = trip_repo
+
+    @property
+    def planning_state_repository(self) -> PlanningStateRepository:
+        if self._planning_state_repo_override is not None:
+            return self._planning_state_repo_override
+        return get_planning_state_repository()
+
+    @property
+    def trip_repository(self) -> TripRepository:
+        if self._trip_repo_override is not None:
+            return self._trip_repo_override
+        return get_trip_repository()
 
     def create_trip(self, trip_request: TripRequest) -> PlanningState:
         planning_state = PlanningState(trip_request=trip_request)

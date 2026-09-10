@@ -71,7 +71,9 @@ def test_factory_falls_back_when_settings_hold_unsupported_value(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        factory_module, "get_settings", lambda: Settings(itinerary_narrator_provider="openai")
+        factory_module,
+        "get_settings",
+        lambda: Settings(_env_file=None, itinerary_narrator_provider="openai"),
     )
     provider = get_itinerary_narrator_provider()
     assert isinstance(provider, NotConnectedItineraryNarratorProvider)

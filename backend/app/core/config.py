@@ -1,3 +1,4 @@
+import os
 from functools import lru_cache
 from pathlib import Path
 
@@ -22,6 +23,17 @@ _ALLOWED_ACCOMMODATION_MANUAL_HTML_SOURCES = frozenset(
 _ALLOWED_FLIGHT_MANUAL_HTML_SOURCES = frozenset(
     {"generic", "skyscanner", "google_flights", "kiwi", "other"}
 )
+
+# Step 183B: allowed values for the persistence backend gate. An
+# unrecognized value clamps to "local_json" (the safe, current-behavior
+# default) rather than raising or silently doing nothing -- same
+# convention as every provider-selection field in this file. Setting
+# `DATABASE_URL` alone never changes this; only an explicit
+# `PERSISTENCE_BACKEND=postgres` does, and even then nothing in
+# app/repositories or app/services reads Postgres yet (see
+# backend/app/db/session.py) -- this field exists purely so a future
+# repository swap has a config surface to gate on.
+_ALLOWED_PERSISTENCE_BACKENDS = frozenset({"local_json", "postgres"})
 
 # backend/app/core/config.py -> parents[2] is the backend/ project root, so
 # a relative local_storage_path resolves the same way whether the app is
@@ -581,6 +593,18 @@ class Settings(BaseSettings):
     # original hand-written orchestrator loop.
     planning_engine_mode: str = Field(default="langgraph", alias="PLANNING_ENGINE_MODE")
 
+    # Persistence backend gate (Step 183B, docs/14_backend_architecture.md).
+    # "local_json" (default) is the only backend actually used anywhere
+    # today -- both repositories (PlanningStateRepository, TripRepository)
+    # still read/write exclusively through LocalJsonStore regardless of
+    # this value. "postgres" is accepted as an opt-in value for future
+    # repository work (Step 183D+) but currently has no effect on runtime
+    # behavior: no route, service, or repository branches on it yet.
+    # Setting `DATABASE_URL` by itself never switches persistence --
+    # only an explicit `PERSISTENCE_BACKEND=postgres` does, and even that
+    # is inert until a Postgres-backed repository exists.
+    persistence_backend: str = Field(default="local_json", alias="PERSISTENCE_BACKEND")
+
     # Itinerary narrator (Step 182F, docs/13_llm_reasoning_pipeline.md,
     # docs/14_backend_architecture.md). A separate, optional, read-only
     # LLM feature -- deliberately its own config surface, never reusing
@@ -650,6 +674,11 @@ class Settings(BaseSettings):
     def _normalize_flight_manual_html_source(cls, value: str) -> str:
         return value if value in _ALLOWED_FLIGHT_MANUAL_HTML_SOURCES else "generic"
 
+    @field_validator("persistence_backend", mode="after")
+    @classmethod
+    def _normalize_persistence_backend(cls, value: str) -> str:
+        return value if value in _ALLOWED_PERSISTENCE_BACKENDS else "local_json"
+
     def resolved_local_storage_path(self) -> Path:
         """Local development storage path, not a production database.
 
@@ -707,4 +736,25 @@ class Settings(BaseSettings):
 
 @lru_cache
 def get_settings() -> Settings:
+    """Process-wide cached `Settings` -- every route/service/provider
+    factory reads config through this, never `Settings()` directly.
+
+    Step 183B-FIX: when `TRAVELOB_TEST_MODE=1` (set as the very first line
+    of `backend/app/tests/conftest.py`, before any other import -- see
+    that file's comment for why the ordering matters), this constructs
+    `Settings(_env_file=None)` instead of `Settings()`, so the developer's
+    real local `.env` (e.g. live `FLIGHT_PROVIDER=kiwi_mcp`,
+    `ROUTING_PROVIDER=osrm`, `ITINERARY_NARRATOR_ENABLED=true`) never
+    leaks into the automated test suite's config, regardless of whether a
+    given test happens to `monkeypatch.setenv(...)` that specific field.
+    A test can still opt into a specific value via `monkeypatch.setenv(...)`
+    followed by `get_settings.cache_clear()` -- `_env_file=None` only
+    disables the dotenv *file* source, real OS environment variables (which
+    is exactly what `monkeypatch.setenv` sets) still apply.
+
+    Normal app/dev-server runtime never sets `TRAVELOB_TEST_MODE`, so this
+    branch never affects real usage -- `.env` is read exactly as before.
+    """
+    if os.environ.get("TRAVELOB_TEST_MODE") == "1":
+        return Settings(_env_file=None)
     return Settings()
