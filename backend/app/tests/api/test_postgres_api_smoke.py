@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import uuid
 
 import pytest
 from fastapi.testclient import TestClient
@@ -33,11 +34,22 @@ pytestmark = pytest.mark.skipif(
 
 
 def test_full_trip_lifecycle_persists_to_postgres(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Step 184D: `/trips` now requires a real session, and with
+    `PERSISTENCE_BACKEND=postgres` set, `/auth/signup` itself is also
+    backed by `PostgresUserRepository` -- so this signs up for real
+    against Postgres before doing anything else, proving the whole opted-
+    in stack (auth included) works end to end against a real database."""
     monkeypatch.setenv("PERSISTENCE_BACKEND", "postgres")
     get_settings.cache_clear()
 
     client = TestClient(app)
     try:
+        signup_response = client.post(
+            "/auth/signup",
+            json={"email": f"test-184d-{uuid.uuid4().hex}@example.com", "password": "testpassword123"},
+        )
+        assert signup_response.status_code == 201, signup_response.text
+
         create_response = client.post("/trips", json=create_trip_payload())
         assert create_response.status_code == 201
         trip_id = create_response.json()["data"]["trip_id"]

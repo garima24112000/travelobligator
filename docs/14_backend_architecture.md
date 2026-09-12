@@ -5254,3 +5254,439 @@ time with the real `.env` left in place throughout (~17s, zero network
 calls). `tsc`/`lint`/`build` all clean; zero frontend files touched
 anywhere across the whole of Section 183. **Section 183 (183A-183F) is
 ready to commit** as one stack, pending the user's own review.
+
+## 108. Auth Foundation: Passwords, Sessions, Errors -- No Route Wired Yet (Step 184B)
+
+Following the Step 184A read-only audit (which found **zero** auth/
+session/user concept anywhere in this codebase -- every `/trips/*` route
+is scoped only by knowledge of a `trip_id`), this step adds the backend
+primitives full signup/login/logout will need, without touching a single
+existing route. **`app/api/routes/trips.py` is byte-for-byte unchanged**
+-- every trip route keeps its current zero-authentication behavior
+exactly as before this step, and no `owner_id` exists on `trips` yet.
+
+- **Dependencies**: `bcrypt==5.0.0` (password hashing) and
+  `itsdangerous==2.2.0` (signed session cookies), both pinned explicitly
+  in `backend/requirements.txt`. Plain `bcrypt`, not `passlib` (version-
+  compatibility friction with newer `bcrypt` releases) -- salted,
+  adaptive hashing only, never a custom scheme or plain SHA/MD5.
+- **Config** (`Settings`, `backend/app/core/config.py`): `session_secret_key`
+  (`SESSION_SECRET_KEY`, default `None`), `session_cookie_name`
+  (default `"travelobligator_session"`), `session_ttl_seconds` (default
+  `604800`, one week), `session_cookie_secure` (default `False`, so
+  local HTTP dev keeps working), `session_cookie_samesite` (default
+  `"lax"`, normalized case-insensitively, unrecognized values clamp to
+  `"lax"` matching every other constrained field's convention),
+  `session_cookie_httponly` (default `True`). `session_secret_key`
+  defaulting to `None` is load-bearing: it means auth is "not configured"
+  out of the box, and every auth utility below refuses to operate at all
+  while it's unset, rather than falling back to a shared/predictable key
+  -- so importing this module, starting the app, or running the test
+  suite never requires it to be set.
+- **`backend/app/models/user.py`** (new): `UserRecord` (full internal
+  shape, including `password_hash`), `PublicUser`/`AuthResponse`
+  (API-facing, both structurally exclude `password_hash` --
+  `PublicUser.model_fields` has no such key at all, not just a masked
+  value), `SignupRequest`/`LoginRequest`. Email is normalized (trimmed,
+  lowercased) via a `field_validator` on every one of these models, with
+  a small manual shape check (non-empty local/domain parts, a `.` in the
+  domain) rather than depending on `pydantic[email]`/`email-validator`
+  (not already a project dependency). `SignupRequest.password` enforces
+  an 8-character minimum (`Field(min_length=8)`) and a 72-*byte* maximum
+  (bcrypt's own hard limit, enforced here too so an over-long password is
+  a normal 422 validation error, not a raw `ValueError` from the hashing
+  layer) -- `LoginRequest.password` deliberately has neither constraint,
+  since an existing account's password must still verify correctly even
+  if today's rules differ from whatever rules applied when it was
+  created.
+- **`backend/app/auth/passwords.py`** (new): `hash_password`/
+  `verify_password`. `verify_password` returns `False` (never raises) for
+  a wrong password, an over-length password, *or* a malformed/corrupt
+  stored hash -- a corrupt stored value fails closed rather than crashing
+  a future login route with a raw exception. Neither function logs or
+  includes the plaintext password in any exception message.
+- **`backend/app/auth/sessions.py`** (new): `create_session_token`/
+  `verify_session_token` (via `itsdangerous.URLSafeTimedSerializer`) and
+  `set_session_cookie`/`clear_session_cookie` (via FastAPI/Starlette's
+  own `Response.set_cookie`/`delete_cookie`). The signed token payload is
+  `{"user_id": ...}` **only** -- never a password, email, or API key --
+  verified by confirming both the token's own tests decode that exact
+  minimal payload. There is no server-side session store: the cookie's
+  HMAC signature plus its own embedded issue timestamp are the only
+  state `verify_session_token` needs, checked against
+  `session_ttl_seconds` on every call. `AuthNotConfiguredError` (a new
+  exception, not an `AppError`) is raised by both `create_session_token`
+  and `verify_session_token` whenever `session_secret_key` is unset --
+  callers must handle this as a distinct "server misconfigured" case, not
+  "not logged in." Cookie flags (`HttpOnly`/`Secure`/`SameSite`/
+  `Max-Age`) all come from `Settings`, never hardcoded.
+- **Auth errors** (`app/schemas/errors.py`'s `ErrorCode` enum +
+  `app/core/errors.py` constructors, matching the existing
+  `trip_not_found_error`-style centralized-constructor convention):
+  `AUTHENTICATION_REQUIRED`/`authentication_required_error()` (401, no or
+  invalid/expired session), `FORBIDDEN`/`forbidden_error()` (403,
+  authenticated but not the resource's owner -- deliberately distinct
+  from the existing 404 `trip_not_found_error` once Step 184D wires
+  ownership in, so "doesn't exist" and "exists, not yours" stay
+  distinguishable to a caller without either response revealing who the
+  real owner is), `INVALID_CREDENTIALS`/`invalid_credentials_error()`
+  (401, deliberately generic wording -- "Invalid email or password."
+  never reveals whether the email was registered or the password was
+  wrong, so a login attempt can't enumerate accounts),
+  `EMAIL_ALREADY_REGISTERED`/`email_already_registered_error()` (409, for
+  Step 184C's signup route), `AUTH_NOT_CONFIGURED`/
+  `auth_not_configured_error()` (503, the `AuthNotConfiguredError` →
+  HTTP-error translation for Step 184D's dependency to use). None of
+  these are raised by any route today.
+- **`backend/app/auth/dependencies.py`** (new): `get_current_user_id`, a
+  FastAPI dependency resolving a request down to a plain `user_id`
+  string (not a full `User` object -- no repository exists yet; a
+  `TODO` comment marks exactly where Step 184C's repository-backed
+  lookup will slot in). Raises `authentication_required_error()` for a
+  missing/invalid/expired cookie and `auth_not_configured_error()` when
+  the secret is unset. **Not applied to any route** -- confirmed by grep
+  showing zero references to it from `app/api/routes/trips.py`.
+
+**Tests** (`backend/app/tests/core/test_session_auth_config.py`,
+`test_errors.py` (extended), `backend/app/tests/models/test_user_models.py`,
+`backend/app/tests/auth/test_passwords.py`/`test_sessions.py`/
+`test_dependencies.py` -- ~77 new, zero requiring a live database):
+config defaults/normalization, `.env.example`'s `SESSION_SECRET_KEY=`
+blank placeholder, email normalization (including rejecting
+blank/malformed input), password length bounds (min 8, max 72 bytes),
+`PublicUser`/`AuthResponse` structurally excluding `password_hash`,
+hashing produces a different salted hash each time and never equals the
+plaintext, correct/wrong/malformed-hash verification, a full
+create→verify session-token round trip, tampered/wrong-secret/expired
+tokens all rejected, the token payload proven to contain only `user_id`
+(decoded directly, no secret needed since itsdangerous signs for
+tamper-evidence rather than encrypting), cookie flag tests asserting the
+literal `Set-Cookie` header contains `HttpOnly`/`Secure`/`SameSite=<value>`/
+`Max-Age=<value>` exactly matching config, the dependency raising 401 for
+missing/invalid tokens (tested by calling it directly with a
+hand-constructed `starlette.requests.Request` rather than a full
+`TestClient` round trip, since `AppError` needs `app/main.py`'s own
+exception handler registered to become a clean HTTP response -- exactly
+the same reason `trip_not_found_error` and friends are unit-tested this
+way elsewhere in this suite) and 503 for an unset secret.
+
+The full suite (2581 passed, 6 skipped -- unchanged from Step 183F's own
+6 skips, up from 2504 passed) runs with the developer's real local
+`.env` left in place, untouched. `tsc`/`lint`/`build` all clean; zero
+frontend files touched. `app/api/routes/trips.py` and
+`app/services/planning_orchestrator.py` are unmodified -- confirmed via
+`git diff --stat` showing neither file listed.
+
+Not done in this step, by design: no `/auth/*` routes (Step 184C), no
+user repository/persistence backend decision for users (Step 184C), no
+`owner_id` column/field anywhere (Step 184C's migration + Step 184D's
+route wiring), no route requires a session yet, no OAuth, no password
+reset, no email verification, no rate limiting.
+
+## 109. Persistent Users and Working `/auth/*` Routes, Trip Ownership Still Not Enforced (Step 184C)
+
+Following Step 184B's primitives-only foundation, this step makes
+signup/login/logout/current-user actually work end to end against a real
+(if minimal) user store -- while **`/trips/*` remains completely
+untouched**: no route requires a session, no trip gets an `owner_id` set
+on creation, and no route checks ownership. That enforcement is Step
+184D's job. `main.py` gained exactly one new line registering the new
+`/auth` router alongside the existing `/trips` one.
+
+**User repository** (mirrors `TripRepository`/`PlanningStateRepository`
+exactly): `backend/app/repositories/user_repository.py`'s `UserRepository`
+stores `UserRecord`s in a new `"users"` collection in the same
+`LocalJsonStore` file trips/planning-states already share -- confirmed by
+test that writing all three collections to one file never clobbers each
+other. `create_user` raises a new, backend-agnostic
+`UserAlreadyExistsError` (`app/repositories/protocols.py`) when the
+(already-normalized) email already has an account -- checked via
+`get_by_email` first, since local_json has no real unique-constraint
+mechanism of its own. `backend/app/repositories/postgres_user_repository.py`'s
+`PostgresUserRepository` satisfies the exact same
+`UserRepositoryProtocol`, but detects the duplicate via the real
+`users.email` UNIQUE constraint's `IntegrityError` instead of a separate
+lookup -- correct under concurrent signup attempts for the same email in
+a way a check-then-insert never could be. `app/repositories/factory.py`
+gained `get_user_repository()`, following the exact same lazy,
+per-call-`Settings.persistence_backend`-read pattern as
+`get_trip_repository()`/`get_planning_state_repository()` (Step 183D) --
+`local_json` (default) returns the same module-level singleton;
+`"postgres"` lazily builds and `lru_cache`s one `PostgresUserRepository`;
+`DATABASE_URL` alone still never selects Postgres.
+
+**Schema** (`backend/app/db/models.py` + a second Alembic migration,
+`835e5782d7a5_create_users_and_trips_owner_id.py`, chained after Step
+183C's `2fe86f95d81e`): a new `users` table (`user_id` PK, `email TEXT
+NOT NULL UNIQUE`, `password_hash TEXT NOT NULL`, `created_at`/
+`updated_at TIMESTAMPTZ NOT NULL`) plus a single new `trips.owner_id
+TEXT` column -- **nullable**, for backward compatibility with every
+`trips` row that already exists (including Section 183's own live
+verification rows), with a foreign key to `users.user_id` using `ON
+DELETE SET NULL` (never `CASCADE` -- deleting a user must never
+cascade-delete their trips' planning data) and its own index (the "My
+Trips" list query's future access pattern). Deliberately excludes, same
+as Step 183C's own migration: any change to `planning_states` (ownership
+lives on `trips` only -- derivable by joining through the existing 1:1
+`planning_states.trip_id → trips.trip_id` FK, never duplicated), a
+`sessions` table (this app's sessions are stateless signed cookies, see
+section 108 -- there is no server-side session state to persist), and
+any role/admin/permission column. `downgrade()` removes exactly what
+`upgrade()` added, in reverse order (index → FK → column → table),
+verified against a real Postgres (below).
+
+**Auth service** (`backend/app/auth/service.py`, new): `signup`
+normalizes email, hashes the password, creates the `UserRecord`, and
+converts a repository-level `UserAlreadyExistsError` into the existing
+`email_already_registered_error()` (409) -- callers never see a
+repository-specific exception. `login` looks up by email and verifies
+the bcrypt hash, raising the existing generic `invalid_credentials_error()`
+(401) for *either* an unknown email or a wrong password -- verified by a
+test asserting both cases produce byte-identical error messages, so
+neither can be used to enumerate registered accounts.
+`get_current_user_by_id` returns `None` (not an exception) for an
+unknown id, letting `app/auth/dependencies.py`'s `get_current_user`
+decide that's an authentication failure, not a service concern. Every
+function accepts an optional injected `UserRepositoryProtocol`
+(defaulting to `get_user_repository()`), so all of this is testable with
+a throwaway repository, never the real singleton or a live database.
+
+**`/auth/*` routes** (`backend/app/api/routes/auth.py`, new router,
+registered in `main.py`):
+- `POST /auth/signup` (201) and `POST /auth/login` (200) both call
+  `_require_auth_configured()` **before** touching the user repository --
+  if `SESSION_SECRET_KEY` is unset, the request fails with the existing
+  `auth_not_configured_error()` (503) before any account is created,
+  verified by a test showing a retry after the secret is fixed can still
+  succeed (no orphaned duplicate-email conflict from the failed attempt).
+  Both then set the signed, `HttpOnly` session cookie via
+  `app/auth/sessions.py`'s `set_session_cookie` and return `AuthResponse`
+  (never `password_hash` -- structurally absent from `PublicUser`, not
+  masked).
+- `POST /auth/logout` (200) always succeeds, even with
+  `SESSION_SECRET_KEY` unset -- clearing a cookie is a plain expired
+  `Set-Cookie` header, nothing is signed or verified.
+- `GET /auth/me` (200/401) uses the new `get_current_user` dependency
+  (below) and returns the same `AuthResponse` shape signup/login do.
+
+**Current-user dependency** (`app/auth/dependencies.py`): `get_current_user`
+(new, alongside Step 184B's `get_current_user_id`) resolves a request all
+the way to a `PublicUser` -- and, now that a repository exists, handles
+one more case Step 184B's `TODO` explicitly deferred: a *valid,
+correctly-signed, unexpired* token whose user no longer exists (deleted
+after the cookie was issued) also raises `authentication_required_error()`
+(401) rather than crashing or returning a phantom user. No test-only
+bypass exists anywhere in either dependency.
+
+**Tests** (~102 new across `test_user_repository.py`,
+`test_postgres_user_repository.py` (fake session, no live DB),
+`test_repository_factory.py` (extended), `test_migration_schema_users.py`
+(16, AST-based -- migration chains correctly, creates only `users`,
+`owner_id` nullable with the right FK/`ON DELETE`/index, no
+`planning_states`/`sessions`/role/`provider_cache` touch, `downgrade()`
+symmetric), `test_db_models.py` (extended -- now 3 tables, `UserRow`
+columns, `TripRow.owner_id`'s FK), `test_service.py`, `test_dependencies.py`
+(extended), `test_auth_routes.py` (21, full `TestClient` round trips), and
+a skipped-by-default `test_postgres_user_repository_integration.py`):
+signup/login/logout/me across both success and every named failure mode,
+password hashing never plaintext, duplicate email 409, generic
+credentials error verified byte-identical for unknown-email vs.
+wrong-password, expired-token 401, auth-not-configured 503 with no
+dangling user created, and -- the regression guard for this step's whole
+premise -- the full pre-existing `/trips/*` suite re-confirmed passing
+completely unauthenticated, since trip-route enforcement is explicitly
+184D's job, not this step's.
+
+One correctness fix made *during* this step's own live-Postgres run,
+worth recording: `test_auth_routes.py`'s first draft used fixed literal
+emails (`"a@b.com"`, `"user@example.com"`) -- fine against `local_json`
+(conftest.py's autouse fixture gives every test a fresh, empty store) but
+wrong against a real, persistent Postgres database with no such reset,
+where a fixed email collides with itself across separate test runs and
+produces a false `409` instead of testing what the test actually names.
+Fixed by generating a unique email per test (matching
+`test_postgres_repositories_integration.py`'s own `_new_trip_id()`
+convention) -- now correct and passing identically under both backends,
+confirmed by running the same 21 tests against `local_json` and then
+against a real live Postgres in the same session.
+
+**Live verification, completed**: `POSTGRES_HOST_PORT=15432 docker
+compose up -d postgres` → healthy → `alembic upgrade head` applied both
+migrations to a real, freshly-reset Postgres in one run → `psql \d trips`
+independently confirmed `owner_id` nullable with the exact
+`fk_trips_owner_id_users ... ON DELETE SET NULL` constraint and
+`ix_trips_owner_id` index → all 25 gated tests (4 user-repository
+integration + 21 full auth-route tests) passed against the real database
+→ `alembic downgrade base` reverted both migrations cleanly → `docker
+compose down` left zero containers running. `docker compose config` was
+not used at any point.
+
+The full suite (2654 passed, 10 skipped, up from 2581 passed/6 skipped)
+runs with the developer's real local `.env` left in place, untouched;
+`backend/.data/` confirmed empty before and after the whole run (no
+leftover test artifact from manual verification scripts touched real
+local dev storage). `tsc`/`lint`/`build` all clean; zero frontend files
+touched. `app/api/routes/trips.py`/`app/services/planning_orchestrator.py`
+still show zero relevant changes in `git diff` beyond what 184B already
+established as unmodified.
+
+Not done in this step, by design: no `/trips/*` route requires a session
+or checks ownership (Step 184D), no trip gets `owner_id` set on creation
+(Step 184D), no frontend login UI (Step 184E), no OAuth, no password
+reset, no email verification, no rate limiting, no admin/role concept.
+
+## 110. Route-Level Auth and Trip Owner Isolation -- Every `/trips/*` Route Now Requires Login (Step 184D)
+
+Every one of `app/api/routes/trips.py`'s 18 `{trip_id}`-scoped routes,
+plus `POST /trips` and the new `GET /trips`, now require a real,
+verified session. **This is the step that actually closes the access-
+control gap Step 184A's audit found** ("any caller who knows a
+`trip_id` can read or modify it") -- Steps 184B/184C only built the
+primitives/persistence/routes for auth itself, never touched a `/trips/*`
+route.
+
+**`owner_id` lives on `TripRecord` only, never on `PlanningState`** (a
+strict, deliberate boundary -- `PlanningState` has no `owner_id` field
+and never will): `TripRecord.owner_id: str | None = None`
+(`app/repositories/trip_repository.py`), persisted by both the local_json
+`TripRepository` and `PostgresTripRepository` (using the `trips.owner_id`
+column Step 183C's/184C's migrations already added -- no new migration
+needed this step). `TripRepository.create`/`PostgresTripRepository.create`
+both gained an `owner_id: str | None = None` parameter (backward
+compatible -- every pre-existing caller/test that doesn't pass one still
+works, defaulting to unowned). Both repositories gained
+`list_by_owner_id(owner_id) -> list[TripRecord]` -- `GET /trips`'s data
+source, verified to return only matching records both against a fake
+Postgres session and a real one. `PlanningOrchestrator.create_trip`
+gained an `owner_id` parameter, threaded straight through to
+`self.trip_repository.create(...)` -- `app/api/routes/trips.py`'s
+`create_trip` route always passes `current_user.user_id` there.
+
+**`app/auth/ownership.py`** (new): `require_trip_owner`, a FastAPI
+dependency usable as `Depends(require_trip_owner)` on any route with a
+`{trip_id}` path parameter -- FastAPI resolves `trip_id` from the URL and
+runs the nested `get_current_user` dependency (401 for missing/invalid/
+expired session) *before* this function's own body, so authentication and
+ownership are both enforced before any route logic runs, including every
+generation/regeneration/mutation path. Uses `TripRecord.owner_id` (via
+`get_trip_repository()`) as the sole source of truth for both existence
+and ownership:
+- No `TripRecord` at all -> `trip_not_found_error()` (404) -- **byte-for-
+  byte the same 404 behavior every route already had** before this step
+  (verified: none of the pre-existing "unknown trip_id" tests needed to
+  change).
+- `TripRecord.owner_id is None` (a trip created before Step 184D
+  existed) -> `forbidden_error()` (403) -- **never silently assigned to
+  whichever authenticated user asks for it first.** Documented
+  explicitly: pre-auth local dev trips (including Section 183's own live-
+  Postgres verification rows) are scratch data and are expected to need
+  regenerating under a real account after this step, not to remain
+  reachable.
+- `TripRecord.owner_id != current_user.user_id` -> the identical 403 --
+  a non-owner can never distinguish "unowned" from "owned by someone
+  else" from the response.
+
+**Every route wired** (`app/api/routes/trips.py`): `POST /trips` and the
+new `GET /trips` (below) use `Depends(get_current_user)` (no existing
+trip to check ownership against yet); the other 18 routes all use
+`Depends(require_trip_owner)`. This was a mechanical, per-route addition
+of one parameter each -- no other line in any of those 18 route bodies
+changed, and their existing internal `planning_state is None ->
+trip_not_found_error` checks stay in place unchanged as a defensive
+fallback (in normal operation `TripRecord`/`PlanningState` are always
+created together, so this dependency's own 404 check already covers the
+same case).
+
+**`GET /trips` ("My Trips")** (new route + new
+`TripListItem`/`TripListResponseData` schemas in `app/schemas/trips.py`):
+returns only `current_user`'s own trips (`get_trip_repository().
+list_by_owner_id(...)`), each summarized to `trip_id`/`status`/
+`primary_destination`/`origin_city`/`start_date`/`end_date`/
+`created_at`/`updated_at` -- **never the full `PlanningState`** for any
+trip in the list (that stays behind the still-individually-owner-checked
+`GET /trips/{trip_id}` and friends). `owner_id` itself never appears in
+any API response anywhere -- it's a `TripRecord`-only, repository-
+internal field.
+
+**Test client authentication** (`backend/app/tests/conftest.py`): since
+essentially the entire existing test suite exercises `/trips/*` through
+the shared `client` fixture, that fixture now performs a real
+`POST /auth/signup` (a fresh, unique throwaway user every call) before
+handing back the `TestClient` -- so every pre-existing test that
+creates/reads/mutates a trip via `client` kept passing **completely
+unmodified**: it was always implicitly "the trip's owner," it just didn't
+need to say so before. A new `second_client` fixture (and the underlying
+`new_authenticated_client()` helper, usable directly for a third, fourth,
+etc. distinct user) provides a second, distinct logged-in user for cross-
+user isolation tests. A new autouse `_configured_session_secret` fixture
+sets a real (test-only) `SESSION_SECRET_KEY` for the whole suite now,
+superseding the narrower per-file fixtures Step 184B/184C's own auth
+tests used, since auth is no longer an auth-specific concern once every
+trip route requires it. None of this is a bypass: every session is a real,
+signed cookie from a real signup, verified through the same code path
+production traffic uses.
+
+Fixing the existing suite for this required exactly 5 pre-existing tests
+to adapt (not a design flaw in this step -- each was relying on an
+absence this step's new autouse fixture changed): three `test_sessions.py`
+tests and one `test_session_auth_config.py` test needed an explicit
+`monkeypatch.delenv("SESSION_SECRET_KEY")`/alias-keyed override to prove
+their own "secret unset" behavior against the now-ambient test secret (the
+established alias-vs-field-name pydantic-settings precedence quirk, same
+class of issue Step 182G/183B-FIX/184C already each found once); one
+`test_auth_routes.py` test needed a genuinely fresh, never-authenticated
+`TestClient` instead of the now-always-logged-in `client` fixture. A
+sixth, unrelated latent flakiness was also found and fixed while re-
+running everything: `test_verify_session_token_returns_none_for_tampered_
+token` flipped only the token's *last* character, which base64url
+encoding can render a no-op tamper for certain byte-length/secret
+combinations -- fixed to corrupt a whole run of middle characters instead,
+confirmed stable across repeated runs.
+
+**Tests** (~190 new: `test_trip_route_auth_enforcement.py` (75 --
+parametrized across all 18 `{trip_id}` routes × unauthenticated-401/
+wrong-user-403/owner-passes/unowned-legacy-403, plus invalid-session,
+expired-session, and logout-then-protected checks), `test_trip_ownership.py`
+(10 -- create assigns owner, list-mine isolation, response-shape
+unchanged, manual trip_id access of another user's trip), `test_
+authenticated_trip_lifecycle_regression.py` (1, consolidated full create
+-> generate -> feedback -> lock-blocks-regeneration -> regenerate ->
+version-history lifecycle), plus repository-level owner_id/`list_by_
+owner_id` tests against both local_json and a fake Postgres session):
+every test in the 401/403/owner-passes/unowned-403 matrix was independently
+re-run against a real live Postgres in the same session as local_json,
+requiring two of the new test files' own helpers to be fixed from
+directly importing the local_json singletons to going through
+`get_trip_repository()`/`get_planning_state_repository()` (the same
+factory the real routes use) -- otherwise they silently wrote to the
+wrong backend under `PERSISTENCE_BACKEND=postgres` and produced false
+404s instead of the intended 403s. Both existing gated-Postgres smoke
+test files (`test_postgres_repositories_integration.py`,
+`test_postgres_api_smoke.py`) needed one real `POST /auth/signup` call
+added before their first `POST /trips`, for the same reason every other
+`/trips/*` caller now needs one.
+
+**Live verification, completed**: `POSTGRES_HOST_PORT=15432 docker
+compose up -d postgres` → healthy → `alembic upgrade head` (both
+migrations, no new one needed this step) → 117 gated tests (all Step
+183D/184C Postgres tests plus every new 184D auth-enforcement/ownership/
+lifecycle test) passed together against the real database → independently
+confirmed via `psql`: 195 real trips, 153 owned, 42 deliberately-unowned
+(from the "legacy trip" test cases), 332 real users → `alembic downgrade
+base` reverted both migrations cleanly → `docker compose down` left zero
+containers running. `docker compose config` was never used.
+
+The full suite (2750 passed, 10 skipped -- unchanged skip count, up from
+2654 passed) runs with the developer's real local `.env` left in place,
+untouched; `backend/.data/` confirmed absent before and after the whole
+run. `tsc`/`lint`/`build` all clean; zero frontend files touched --
+**the frontend cannot currently create or load a trip at all** (it sends
+no session cookie, and would 401 on every call), which is an expected,
+temporary consequence of this step landing before Step 184E's login UI
+and `credentials: "include"` wiring, not a regression to fix here.
+
+Not done in this step, by design: no frontend login/signup/logout UI or
+`credentials: "include"` (Step 184E), no roles/admin permissions, no
+OAuth, no password reset, no email verification, no rate limiting, no
+sessions table (cookies remain stateless), no `owner_id` on
+`planning_states` (ownership stays on `trips` only).

@@ -359,6 +359,15 @@ testing, same as the other optional demos above.
 
 ## Demo Walkthrough
 
+> **Note (Section 184):** every `/trips/*` call requires a logged-in
+> session (Step 184D), and the frontend now has a full sign-up/login/
+> logout UI for it (Step 184E). Before step 1 below, sign up or log in
+> on the screen the app shows first -- trips are private to your
+> account, and "My Trips" only ever lists your own. This requires
+> `SESSION_SECRET_KEY` to be set in your local `.env` (see "Getting
+> Started" above); if it isn't, the app shows a setup screen instead of
+> the login form rather than failing silently.
+
 The result page has a **Traveler view / Developer view** toggle (Traveler
 view is the default). Traveler view prioritizes the actual itinerary —
 a concise trip-context summary, the day-by-day plan, one trip-level
@@ -1109,8 +1118,36 @@ separately from MVP feature work):
   and Docker Compose port hardening plus a completed live verification
   (Step 183E) all exist, but nothing switches to Postgres unless
   `PERSISTENCE_BACKEND=postgres` is explicitly set)
-- authentication and per-user trip isolation (today: any caller who knows
-  a `trip_id` can read or modify it)
+- OAuth/password reset/email verification/rate limiting/admin roles/
+  session revocation (today: full email+password sign-up/login/logout and per-user trip
+  isolation are implemented end-to-end, backend (Step 184D) and frontend
+  (Step 184E) both. Backend: `POST /auth/signup`, `POST /auth/login`,
+  `POST /auth/logout`, `GET /auth/me`, and `GET /trips` ("My Trips") are
+  all real, working endpoints; `POST /trips` requires login and assigns
+  the new trip to the caller; every other `/trips/*` route requires
+  login **and** verifies the caller owns that specific trip, returning
+  `403` otherwise (never leaking who the real owner is) and `401` for
+  no/invalid/expired session. A trip created before Step 184D has no
+  owner and is `403` to everyone, never silently granted to whoever asks
+  first. Frontend: a full sign-up/login/logout UI and a "My Trips" list
+  gate the existing trip app shell -- the session lives only in a
+  signed, `HttpOnly` cookie sent via `credentials: "include"`, never a
+  token in `localStorage` or an `Authorization` header. **Developer Mode
+  permission decision (finalized, Step 184F)**: it remains a pure
+  frontend verbosity toggle visible to every signed-in user, with no
+  separate permission tier -- its own backend endpoints
+  (`ai-candidate-review`, `provider-coverage`, etc.) are owner-protected
+  exactly like every other trip route, and it only ever reveals more
+  detail about a trip the viewer already owns, never another user's data
+  or an operational/admin view. Admin/dev-only role gating stays
+  deferred until (if ever) Developer Mode exposes cross-user or
+  operational data -- it does not today. Sessions are stateless signed
+  cookies with no server-side session store, so there is no way to
+  revoke a single outstanding session short of rotating
+  `SESSION_SECRET_KEY` itself (which invalidates every session at once)
+  -- a documented limitation, not a bug. `SESSION_SECRET_KEY` must be
+  set in your local `.env` for any of this to work locally -- see the
+  note under "Demo Walkthrough")
 - Docker/deployment hardening (the committed frontend Dockerfile runs
   `npm run dev`, not a production build; the compose `redis` service
   exists but nothing in the app talks to it; `postgres` is now real and

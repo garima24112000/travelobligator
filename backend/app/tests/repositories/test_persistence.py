@@ -62,6 +62,60 @@ def test_trip_repository_persists_status_updates_across_instances(tmp_path: Path
     assert second.get("trip_abc").status == "generating"
 
 
+def test_trip_repository_persists_owner_id_across_instances(tmp_path: Path) -> None:
+    """Step 184D: owner_id is a real, persisted field on TripRecord --
+    not just an in-memory attribute of the instance that created it."""
+    store = LocalJsonStore(tmp_path / "state.json")
+    first = TripRepository(store=store)
+    first.create("trip_abc", owner_id="user_owner_123")
+
+    second = TripRepository(store=store)
+    record = second.get("trip_abc")
+
+    assert record is not None
+    assert record.owner_id == "user_owner_123"
+
+
+def test_trip_repository_create_defaults_owner_id_to_none(tmp_path: Path) -> None:
+    store = LocalJsonStore(tmp_path / "state.json")
+    repo = TripRepository(store=store)
+
+    record = repo.create("trip_abc")
+
+    assert record.owner_id is None
+
+
+def test_trip_repository_list_by_owner_id_returns_only_matching_trips(tmp_path: Path) -> None:
+    store = LocalJsonStore(tmp_path / "state.json")
+    repo = TripRepository(store=store)
+    repo.create("trip_a1", owner_id="user_a")
+    repo.create("trip_a2", owner_id="user_a")
+    repo.create("trip_b1", owner_id="user_b")
+    repo.create("trip_unowned")
+
+    user_a_trips = repo.list_by_owner_id("user_a")
+
+    assert {record.trip_id for record in user_a_trips} == {"trip_a1", "trip_a2"}
+
+
+def test_trip_repository_list_by_owner_id_never_returns_unowned_trips(tmp_path: Path) -> None:
+    store = LocalJsonStore(tmp_path / "state.json")
+    repo = TripRepository(store=store)
+    repo.create("trip_unowned")
+
+    assert repo.list_by_owner_id("user_a") == []
+
+
+def test_trip_repository_list_by_owner_id_returns_empty_for_unknown_owner(
+    tmp_path: Path,
+) -> None:
+    store = LocalJsonStore(tmp_path / "state.json")
+    repo = TripRepository(store=store)
+    repo.create("trip_abc", owner_id="user_a")
+
+    assert repo.list_by_owner_id("user_does_not_exist") == []
+
+
 def test_planning_state_repository_reloads_from_disk_in_a_fresh_instance(
     tmp_path: Path,
 ) -> None:

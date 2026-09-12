@@ -21,6 +21,15 @@ class ErrorCode(str, Enum):
     STAGE_FAILED = "STAGE_FAILED"
     UNSUPPORTED_OPERATION = "UNSUPPORTED_OPERATION"
     INTERNAL_ERROR = "INTERNAL_ERROR"
+    # Auth foundation (Step 184B) -- not raised by any route yet (no route
+    # is auth-gated until Step 184D). Declared now alongside the rest of
+    # this enum so app.auth's error constructors (core/errors.py) have a
+    # real, tested code to use once they are wired in.
+    AUTHENTICATION_REQUIRED = "AUTHENTICATION_REQUIRED"
+    FORBIDDEN = "FORBIDDEN"
+    INVALID_CREDENTIALS = "INVALID_CREDENTIALS"
+    EMAIL_ALREADY_REGISTERED = "EMAIL_ALREADY_REGISTERED"
+    AUTH_NOT_CONFIGURED = "AUTH_NOT_CONFIGURED"
 
 
 class ApiError(BaseModel):

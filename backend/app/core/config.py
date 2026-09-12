@@ -35,6 +35,14 @@ _ALLOWED_FLIGHT_MANUAL_HTML_SOURCES = frozenset(
 # repository swap has a config surface to gate on.
 _ALLOWED_PERSISTENCE_BACKENDS = frozenset({"local_json", "postgres"})
 
+# Step 184B: allowed values for the session cookie's SameSite attribute.
+# An unrecognized value clamps to "lax" (a safe, standard default) rather
+# than raising -- same convention as every other constrained-value field
+# in this file. Comparison is case-insensitive since real cookie
+# attribute values are conventionally capitalized ("Lax"/"Strict"/"None")
+# but env vars are easiest to write in lowercase.
+_ALLOWED_SESSION_COOKIE_SAMESITE_VALUES = frozenset({"lax", "strict", "none"})
+
 # backend/app/core/config.py -> parents[2] is the backend/ project root, so
 # a relative local_storage_path resolves the same way whether the app is
 # started from backend/ (local dev, Docker WORKDIR) or from the repo root.
@@ -651,6 +659,37 @@ class Settings(BaseSettings):
         default=6, alias="ITINERARY_NARRATOR_MAX_ITEMS_PER_DAY", ge=1
     )
 
+    # Auth/session foundation (Step 184B, docs/14_backend_architecture.md).
+    # Nothing reads these yet outside app/auth/ and this step's own tests --
+    # no route is auth-gated, no owner check exists, `/trips/*` behavior is
+    # completely unchanged. `session_secret_key` deliberately defaults to
+    # `None` ("auth not configured") rather than any built-in fallback
+    # value: `app/auth/sessions.py` refuses to sign or verify a session
+    # token at all while this is unset, rather than silently using a
+    # weak/predictable/shared default key. A real deployment sets a real
+    # secret only in its own `.env` -- `.env.example` ships a blank
+    # placeholder, never a real value, matching every other secret in this
+    # file. Because this defaults to `None`, importing this module, running
+    # the app, or running the test suite never requires it to be set.
+    session_secret_key: str | None = Field(default=None, alias="SESSION_SECRET_KEY")
+    session_cookie_name: str = Field(
+        default="travelobligator_session", alias="SESSION_COOKIE_NAME"
+    )
+    # One week, matching this being a simple, no-server-side-store session
+    # (the signed cookie's own embedded timestamp is the only expiry
+    # state) rather than a short-lived access token -- there is no refresh
+    # flow in this MVP, so re-login after expiry is the expected UX.
+    session_ttl_seconds: int = Field(
+        default=604800, alias="SESSION_TTL_SECONDS", gt=0
+    )
+    # `False` by default so local HTTP development (http://localhost:3000)
+    # keeps working without HTTPS -- a real deployment over HTTPS must set
+    # this to `true`, matching the standard "Secure cookies require HTTPS"
+    # rule; this app never sets it `true` on its own behalf.
+    session_cookie_secure: bool = Field(default=False, alias="SESSION_COOKIE_SECURE")
+    session_cookie_samesite: str = Field(default="lax", alias="SESSION_COOKIE_SAMESITE")
+    session_cookie_httponly: bool = Field(default=True, alias="SESSION_COOKIE_HTTPONLY")
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
@@ -678,6 +717,12 @@ class Settings(BaseSettings):
     @classmethod
     def _normalize_persistence_backend(cls, value: str) -> str:
         return value if value in _ALLOWED_PERSISTENCE_BACKENDS else "local_json"
+
+    @field_validator("session_cookie_samesite", mode="after")
+    @classmethod
+    def _normalize_session_cookie_samesite(cls, value: str) -> str:
+        lowered = value.strip().lower()
+        return lowered if lowered in _ALLOWED_SESSION_COOKIE_SAMESITE_VALUES else "lax"
 
     def resolved_local_storage_path(self) -> Path:
         """Local development storage path, not a production database.

@@ -3,16 +3,16 @@ from __future__ import annotations
 from sqlalchemy.dialects.postgresql import JSONB
 
 from app.db.base import Base
-import app.db.models  # noqa: F401  -- registers TripRow/PlanningStateRow on Base.metadata
+import app.db.models  # noqa: F401  -- registers TripRow/PlanningStateRow/UserRow on Base.metadata
 
-# Tests for the Step 183C SQLAlchemy table metadata
-# (backend/app/db/models.py). Pure Python-level metadata inspection --
-# never opens a connection, never requires Postgres/Docker, never calls
-# `Base.metadata.create_all`.
+# Tests for the Step 183C SQLAlchemy table metadata (extended in Step
+# 184C with UserRow/TripRow.owner_id). Pure Python-level metadata
+# inspection -- never opens a connection, never requires Postgres/Docker,
+# never calls `Base.metadata.create_all`.
 
 
-def test_importing_models_registers_exactly_two_tables() -> None:
-    assert set(Base.metadata.tables.keys()) == {"trips", "planning_states"}
+def test_importing_models_registers_exactly_three_tables() -> None:
+    assert set(Base.metadata.tables.keys()) == {"trips", "planning_states", "users"}
 
 
 def test_trip_row_columns() -> None:
@@ -20,6 +20,7 @@ def test_trip_row_columns() -> None:
     assert [c.name for c in table.columns] == [
         "trip_id",
         "status",
+        "owner_id",
         "created_at",
         "updated_at",
     ]
@@ -27,6 +28,52 @@ def test_trip_row_columns() -> None:
     assert table.columns["status"].nullable is False
     assert table.columns["created_at"].nullable is False
     assert table.columns["updated_at"].nullable is False
+
+
+def test_trip_row_owner_id_is_nullable_for_backward_compatibility() -> None:
+    table = Base.metadata.tables["trips"]
+    assert table.columns["owner_id"].nullable is True
+
+
+def test_trip_row_owner_id_foreign_key_uses_set_null() -> None:
+    table = Base.metadata.tables["trips"]
+    foreign_keys = list(table.columns["owner_id"].foreign_keys)
+    assert len(foreign_keys) == 1
+    assert foreign_keys[0].target_fullname == "users.user_id"
+    assert foreign_keys[0].ondelete == "SET NULL"
+
+
+def test_user_row_columns() -> None:
+    table = Base.metadata.tables["users"]
+    assert [c.name for c in table.columns] == [
+        "user_id",
+        "email",
+        "password_hash",
+        "created_at",
+        "updated_at",
+    ]
+    assert table.columns["user_id"].primary_key is True
+    assert table.columns["email"].nullable is False
+    assert table.columns["email"].unique is True
+    assert table.columns["password_hash"].nullable is False
+    assert table.columns["created_at"].nullable is False
+    assert table.columns["updated_at"].nullable is False
+
+
+def test_user_row_has_no_role_or_admin_column() -> None:
+    table = Base.metadata.tables["users"]
+    column_names = {name.lower() for name in table.columns.keys()}
+    for forbidden in ("role", "is_admin", "admin", "permission"):
+        assert forbidden not in column_names
+
+
+def test_planning_states_table_has_no_owner_or_user_column() -> None:
+    """Ownership lives on `trips` only."""
+    table = Base.metadata.tables["planning_states"]
+    for column_name in table.columns.keys():
+        lowered = column_name.lower()
+        assert "owner_id" not in lowered
+        assert "user_id" not in lowered
 
 
 def test_planning_state_row_columns() -> None:
@@ -63,14 +110,6 @@ def test_planning_state_row_has_foreign_key_to_trips_with_cascade() -> None:
     assert len(foreign_keys) == 1
     assert foreign_keys[0].target_fullname == "trips.trip_id"
     assert foreign_keys[0].ondelete == "CASCADE"
-
-
-def test_no_user_or_owner_columns_on_either_table() -> None:
-    for table in Base.metadata.tables.values():
-        for column_name in table.columns.keys():
-            lowered = column_name.lower()
-            assert "user_id" not in lowered
-            assert "owner_id" not in lowered
 
 
 def test_models_module_has_no_create_all_or_connection_call() -> None:

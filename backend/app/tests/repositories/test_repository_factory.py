@@ -10,6 +10,7 @@ from app.repositories.planning_state_repository import (
     planning_state_repository as local_planning_state_repository,
 )
 from app.repositories.trip_repository import trip_repository as local_trip_repository
+from app.repositories.user_repository import user_repository as local_user_repository
 
 # Tests for the Step 183D repository factory
 # (backend/app/repositories/factory.py). None of these require a live
@@ -47,6 +48,14 @@ def test_get_planning_state_repository_returns_local_singleton_by_default(
     assert factory_module.get_planning_state_repository() is local_planning_state_repository
 
 
+def test_get_user_repository_returns_local_singleton_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(factory_module, "get_settings", lambda: Settings(_env_file=None))
+
+    assert factory_module.get_user_repository() is local_user_repository
+
+
 def test_database_url_alone_does_not_select_postgres(monkeypatch: pytest.MonkeyPatch) -> None:
     """Matches Settings.persistence_backend's own contract (Step 183B):
     a real-looking DATABASE_URL with no explicit PERSISTENCE_BACKEND=postgres
@@ -62,6 +71,7 @@ def test_database_url_alone_does_not_select_postgres(monkeypatch: pytest.MonkeyP
 
     assert factory_module.get_trip_repository() is local_trip_repository
     assert factory_module.get_planning_state_repository() is local_planning_state_repository
+    assert factory_module.get_user_repository() is local_user_repository
 
 
 def test_factory_resolution_ignores_a_present_dotenv_file_selecting_postgres(
@@ -86,6 +96,7 @@ def test_factory_resolution_ignores_a_present_dotenv_file_selecting_postgres(
 
     assert factory_module.get_trip_repository() is local_trip_repository
     assert factory_module.get_planning_state_repository() is local_planning_state_repository
+    assert factory_module.get_user_repository() is local_user_repository
 
     get_settings.cache_clear()
 
@@ -134,3 +145,23 @@ def test_factory_returns_postgres_planning_state_repository_when_selected(
     assert factory_module.get_planning_state_repository() is repo
 
     factory_module._postgres_planning_state_repository.cache_clear()
+
+
+def test_factory_returns_postgres_user_repository_when_selected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.repositories.postgres_user_repository import PostgresUserRepository
+
+    monkeypatch.setattr(
+        factory_module,
+        "get_settings",
+        lambda: Settings(_env_file=None, persistence_backend="postgres"),
+    )
+    factory_module._postgres_user_repository.cache_clear()
+
+    repo = factory_module.get_user_repository()
+
+    assert isinstance(repo, PostgresUserRepository)
+    assert factory_module.get_user_repository() is repo
+
+    factory_module._postgres_user_repository.cache_clear()

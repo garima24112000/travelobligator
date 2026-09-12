@@ -2,6 +2,7 @@ import type {
   AICandidatePromotionData,
   AICandidateReviewData,
   ApiResponse,
+  AuthResponse,
   DestinationContextData,
   ExperiencePlanData,
   GenerationProgressData,
@@ -12,6 +13,7 @@ import type {
   RegenerationReadinessData,
   TripCreateData,
   TripData,
+  TripListResponseData,
   TripRequestInput,
   TripSummary,
   ValidationReportData,
@@ -36,21 +38,35 @@ export class ApiRequestError extends Error {
   }
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+// Step 184E: `credentials: "include"` sends/receives the backend's signed,
+// HttpOnly session cookie on every request -- this is the only place a
+// session is ever attached. There is no token to read or store on the
+// frontend side (no localStorage, no Authorization header) -- the browser
+// owns the cookie entirely.
+async function request<T>(
+  path: string,
+  init?: RequestInit,
+  options?: { allowNullData?: boolean },
+): Promise<T> {
   const response = await fetch(`${API_BASE_URL}${path}`, {
+    credentials: "include",
     headers: { "Content-Type": "application/json" },
     ...init,
   });
 
   const body = (await response.json()) as ApiResponse<T>;
 
-  if (!response.ok || !body.success || body.data === null) {
+  if (
+    !response.ok ||
+    !body.success ||
+    (body.data === null && !options?.allowNullData)
+  ) {
     const message =
       body.errors[0]?.message ?? body.message ?? "The request failed.";
     throw new ApiRequestError(message, response.status, body.errors[0]?.code ?? null);
   }
 
-  return body.data;
+  return body.data as T;
 }
 
 export function createTrip(input: TripRequestInput): Promise<TripCreateData> {
@@ -209,4 +225,41 @@ export function promoteAiCandidates(
     `/trips/${tripId}/ai-candidate-promotions`,
     { method: "POST" },
   );
+}
+
+// Auth (Step 184E; backend: app.api.routes.auth). Every call here goes
+// through the shared `request()` helper above, so the session cookie set
+// by signup/login is sent back automatically on every later call -- there
+// is nothing else for the caller to attach or store.
+export function signup(email: string, password: string): Promise<AuthResponse> {
+  return request<AuthResponse>("/auth/signup", {
+    method: "POST",
+    body: JSON.stringify({ email, password }),
+  });
+}
+
+export function login(email: string, password: string): Promise<AuthResponse> {
+  return request<AuthResponse>("/auth/login", {
+    method: "POST",
+    body: JSON.stringify({ email, password }),
+  });
+}
+
+// The backend's logout response carries no data payload (`data: null` on
+// success) -- `allowNullData` tells the shared helper not to treat that as
+// a failure, unlike every other endpoint here.
+export async function logout(): Promise<void> {
+  await request<null>(
+    "/auth/logout",
+    { method: "POST" },
+    { allowNullData: true },
+  );
+}
+
+export function getCurrentUser(): Promise<AuthResponse> {
+  return request<AuthResponse>("/auth/me");
+}
+
+export function listTrips(): Promise<TripListResponseData> {
+  return request<TripListResponseData>("/trips");
 }

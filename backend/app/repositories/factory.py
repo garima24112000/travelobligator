@@ -1,4 +1,5 @@
-"""Repository factory (Step 183D).
+"""Repository factory (Step 183D, extended in Step 184C with
+`get_user_repository()`).
 
 `get_trip_repository()`/`get_planning_state_repository()` are the single
 place production code (routes, `PlanningOrchestrator`) should resolve a
@@ -41,8 +42,10 @@ from app.repositories.planning_state_repository import (
 from app.repositories.protocols import (
     PlanningStateRepositoryProtocol,
     TripRepositoryProtocol,
+    UserRepositoryProtocol,
 )
 from app.repositories.trip_repository import trip_repository as _local_trip_repository
+from app.repositories.user_repository import user_repository as _local_user_repository
 
 
 @lru_cache
@@ -61,6 +64,13 @@ def _postgres_planning_state_repository() -> PlanningStateRepositoryProtocol:
     return PostgresPlanningStateRepository()
 
 
+@lru_cache
+def _postgres_user_repository() -> UserRepositoryProtocol:
+    from app.repositories.postgres_user_repository import PostgresUserRepository
+
+    return PostgresUserRepository()
+
+
 def get_trip_repository() -> TripRepositoryProtocol:
     if get_settings().persistence_backend == "postgres":
         return _postgres_trip_repository()
@@ -71,3 +81,9 @@ def get_planning_state_repository() -> PlanningStateRepositoryProtocol:
     if get_settings().persistence_backend == "postgres":
         return _postgres_planning_state_repository()
     return _local_planning_state_repository
+
+
+def get_user_repository() -> UserRepositoryProtocol:
+    if get_settings().persistence_backend == "postgres":
+        return _postgres_user_repository()
+    return _local_user_repository

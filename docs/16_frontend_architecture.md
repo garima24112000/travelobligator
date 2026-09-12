@@ -4147,3 +4147,233 @@ Live-reverified in both Traveler and Developer view against the real
 generated trip: `window.scrollTo(9999, 0)` now leaves `scrollX` at `0`
 in both modes, and `document.documentElement.scrollWidth ===
 clientWidth` (390 === 390). **Fixed, not deferred.**
+
+## 40. Section 184E: Full Frontend Auth -- Login, Signup, Logout, My Trips
+
+Steps 184B-184D built real, working backend auth (session cookies,
+`/auth/*` routes, and per-trip owner enforcement on every `/trips/*`
+route) with **zero frontend changes** -- see the previous revision of
+this section for that intermediate, frontend-cannot-function state.
+Step 184E closes that gap: the frontend now has a complete sign-up/
+login/logout flow and only ever shows trip data belonging to the
+signed-in user.
+
+**Session cookie wiring (`frontend/lib/api.ts`).** The shared
+`request()` helper now sends `credentials: "include"` on every call,
+so the backend's signed, `HttpOnly` session cookie is sent and received
+automatically by the browser. There is no token anywhere in frontend
+code -- no `localStorage`, no `Authorization`/`Bearer` header, nothing
+for the frontend to read, store, or attach itself. Five new thin
+wrappers were added alongside the existing one-function-per-endpoint
+list: `signup(email, password)`, `login(email, password)`, `logout()`,
+`getCurrentUser()`, `listTrips()` -- calling `POST /auth/signup`,
+`POST /auth/login`, `POST /auth/logout`, `GET /auth/me`, and `GET
+/trips` respectively. `logout()` is the one endpoint whose success
+response carries `data: null`; `request()` gained an `allowNullData`
+option (default off, so every other call's behavior is byte-for-byte
+unchanged) so that endpoint doesn't get misread as a failure.
+
+**New types (`frontend/lib/types.ts`).** `PublicUser`, `AuthResponse`,
+`TripListItem`, `TripListResponseData` mirror the backend's own shapes
+from `app.models.user`/`app.schemas.trips`. `PublicUser` has no
+`password_hash`/session-token field -- there was never one to mask,
+since the backend's own `PublicUser` model structurally excludes it.
+
+**Auth gating (`frontend/app/page.tsx`).** `Home()` now bootstraps by
+calling `GET /auth/me` once on mount (`checkAuth`, wired through a
+`useEffect`). Three outcomes, each a distinct early return before any
+trip-related state or UI exists:
+- **200** -- `currentUser` is set and `GET /trips` ("My Trips") is
+  fetched; the existing trip app shell renders as before.
+- **401** -- `currentUser` stays `null`; a login/signup panel renders
+  instead. No anonymous fallback, no fake user -- nothing under
+  `/trips` is ever called before this resolves to success.
+- **503 `AUTH_NOT_CONFIGURED`** -- a dedicated setup screen renders
+  (`authNotConfigured` state) explaining that the backend has no
+  `SESSION_SECRET_KEY` set, with the exact local-only
+  `secrets.token_urlsafe(48)` generation snippet and a "Retry" button
+  that re-runs `checkAuth`. The secret's value itself never appears
+  anywhere in this UI -- only the variable name and instructions.
+
+**Login/signup UI.** A single panel toggles between "Log in" and
+"Sign up" (`authMode` state, not persisted -- resets each page load).
+Signup additionally collects and client-side-checks a confirm-password
+field before ever calling the backend. Both forms reuse the existing
+`FOCUS_RING_CLASSNAME` for visible keyboard focus (Step 179D's
+convention) and show the backend's own validation/error message text
+(e.g. `EMAIL_ALREADY_REGISTERED`, `INVALID_CREDENTIALS`) inline --
+never a raw stack trace, never the password/hash itself.
+
+**Authenticated shell.** Once `currentUser` is set, a compact banner
+("Signed in as `<email>`" + a Log out button) and a "My trips" panel
+render above the existing "Create a new trip" form, inside the same
+`<section>` -- the create-trip form, the "load existing trip by
+trip_id" advanced fallback, the loading animation, the Traveler/
+Developer mode toggle, and every result section below are otherwise
+untouched. Developer Mode is **not** role-gated -- per Step 184A's
+original recommendation, it stays visible to every signed-in user for
+this MVP, since it only reveals more detail about a trip the viewer
+already has real, server-enforced access to.
+
+**My Trips.** `GET /trips` is refetched after a successful sign-in/
+sign-up and after a successful `POST /trips` (new trip creation) via a
+shared `refreshMyTrips()` helper, plus a manual "Refresh" button. Each
+row is a clickable summary (`primary_destination`, `origin_city`,
+`start_date`/`end_date`, `status`) that loads that trip through the
+same `loadPlanResult()` path the manual trip_id box already used. An
+empty list shows a friendly "you have not created any trips yet"
+message rather than nothing. The manual "load by trip_id" box remains
+as a power-user fallback; a 403 there (or anywhere else in the trip
+flow) is handled by the same `describeTripApiError()` helper described
+next.
+
+**401/403 handling.** A new `describeTripApiError(err, fallback)`
+helper is used by every existing trip-flow catch block (create+generate,
+load-by-id, My Trips row click, feedback submit). A `FORBIDDEN` result
+always renders as the fixed, non-revealing "You do not have access to
+this trip." -- never the requested trip's own data or existence. An
+`AUTHENTICATION_REQUIRED` result (a session that expired or was revoked
+mid-use) clears `currentUser`/`myTrips`/`result` so the login screen
+reappears, rather than leaving a half-authenticated shell stuck making
+requests that can never succeed. Locks/regeneration/AI-candidate action
+handlers deeper in the tree still surface the backend's own
+`ApiRequestError.message` directly for their own failures (unchanged
+from before 184E) -- reaching one of those with a `FORBIDDEN` requires
+manually tampering with a trip already loaded by its owner, not the
+primary "paste another user's trip_id" path this step targets, which
+goes through `describeTripApiError` via the "load existing trip" and
+"My Trips" entry points.
+
+**Logout.** Calls `POST /auth/logout`, then unconditionally clears
+`currentUser`, `myTrips`, `result`, `existingTripId`, and the feedback
+panel state -- even if the backend call itself fails -- so another
+user's trip data is never left visible on screen. The `mode`
+("user"/"developer") `localStorage` preference is intentionally left
+alone across logout/login, per the existing "not sensitive" rule for
+that key.
+
+## 41. Section 184F: Auth UX Polish and the Final Developer Mode Decision
+
+Step 184E built a complete, working auth UI; Step 184F is a pure polish
+pass over it plus one explicit, documented product decision -- no new
+screens, no new endpoints, no security-model change, and (as expected)
+zero backend files touched.
+
+**Developer Mode permission decision -- finalized.** Developer Mode
+stays visible to every logged-in user, with no role/permission tier of
+its own. This was Step 184A's original recommendation, reaffirmed here
+as the actual MVP decision rather than left as an open question: it is
+a verbosity toggle over a trip the viewer already has real, backend-
+enforced access to (`require_trip_owner`, Step 184D) -- switching it on
+reveals more detail about *that same trip*, never another user's data,
+never an admin/operational view. A short helper line now sits directly
+under the `ModeToggle` buttons in the result header: "Developer view
+shows diagnostics for your own trip. It does not change provider data
+or generation behavior." Admin/dev-only role gating remains explicitly
+deferred until (if ever) Developer Mode grows a feature that exposes
+cross-user or operational data -- it does not today, so no such gate
+was added. Developer Mode is still only reachable after `currentUser`
+is set (the same auth gate as everything else on this page), and it was
+never role-gated to begin with, so there was nothing to relax.
+
+**Auth screen polish.** No new dependency. Fixes: the login heading now
+reads "Log in to your account" (previously "Sign in", inconsistent with
+the "Log in" tab label right below it); the login/signup toggle is a
+labeled `role="group"` with `aria-pressed` on each button (matching the
+existing `ModeToggle` convention) and is disabled while a request is in
+flight so a submit can't race a mode switch; every input got a `name`
+attribute (`email`/`password`/`confirm-password`) for better password-
+manager/autofill behavior alongside the existing `autoComplete` values;
+the signup password field gained `minLength={8}` (client-side echo of
+the backend's own real minimum) plus a small "At least 8 characters"
+hint; the password-mismatch check moved from a floating error box to an
+inline message directly under the Confirm password field, wired via
+`aria-describedby`/`aria-invalid` on that input and `role="alert"` on
+the message itself, so a screen reader announces it at the point of the
+actual problem; every other (server-side) auth error still renders in
+the shared error box, now also `role="alert" aria-live="polite"`; the
+submit button's in-flight label is "Logging in…"/"Creating account…".
+Enter-key submit already worked (a single-line text input inside a
+`<form>` with a submit button) and needed no change. Mobile padding on
+all three top-level auth-adjacent screens (login/signup, the
+`AUTH_NOT_CONFIGURED` setup screen, and the authenticated shell) was
+tightened from a flat `p-8` to `p-6 sm:p-8` so narrow viewports get a
+bit more content width without introducing overflow.
+
+**Authenticated shell polish.** The "Signed in as" line is now visually
+quieter (`text-xs` label, `text-sm` email) than the "My trips"/create-
+trip sections below it -- clear without competing for attention -- and
+the Log out button got a slightly stronger border so it stays easy to
+find. The "My trips" panel now uses a subtle cyan-tinted border/
+background (`border-cyan-300/15 bg-cyan-400/[0.03]`) instead of the
+same neutral card style as the plain "signed in as" banner, so it reads
+as its own distinct, interactive section rather than blending into
+plain page furniture. Loading/error states inside it now live in an
+`aria-live="polite"` region (`role="alert"` on the error line
+specifically) so a status change is announced, not just visually
+shown. Long destination/origin names wrap (`break-words`) instead of
+overflowing narrow viewports. Clicking a specific trip row now shows a
+per-row "Loading…" line (new `loadingTripId` state, cleared on success,
+failure, and logout) instead of every row just going uniformly
+`disabled` with no indication of *which* one was clicked. The manual
+trip_id box was relabeled "Advanced: load a trip by ID" with an
+explicit "power-user fallback for 'My trips' above" line -- it still
+works exactly as before (still refused with a clean 403 for a trip_id
+you don't own), just clearly marked as the fallback path it always was,
+never the primary one.
+
+**My Trips behavior -- confirmed, one label change.** Refresh-on-
+signup, refresh-on-login, and refresh-on-create-trip were already wired
+in Step 184E and needed no change. The manual refresh button's label
+changed from bare "Refresh" to "Refresh trips" for clarity next to the
+per-row "Loading…" text now also present. No caching change was needed:
+`myTrips` was already reset to `[]` on logout and refetched fresh on
+the next login/signup, so a second account signing in on the same
+browser session already never saw the first account's list.
+
+**401/403 handling -- confirmed working, no logic change needed.**
+Re-verified live (a real second account manually pasting a first
+account's `trip_id`) that `describeTripApiError()` from Step 184E still
+renders the exact required copy ("You do not have access to this
+trip." for `FORBIDDEN`; clearing `currentUser`/`myTrips`/`result` and
+implicitly returning to the login screen for `AUTHENTICATION_REQUIRED`)
+with zero leaked trip content and zero stack traces. No code change was
+needed here -- 184E's implementation already met 184F's stated bar.
+
+**Accessibility/mobile -- re-verified at 375px and 390px viewport
+widths** (Playwright, both the login/signup screen and the
+authenticated shell): no horizontal overflow, every form control has a
+visible label, every interactive element (mode toggle, logout, My
+Trips rows, tab buttons) is keyboard-reachable with the shared
+`FOCUS_RING_CLASSNAME` focus ring, and the new `aria-live`/`role="alert"`
+regions read correctly. No frontend test framework exists in this repo
+(matches `CLAUDE.md`/`README.md`), so verification here is manual/
+Playwright-driven, not a committed test suite -- consistent with every
+prior frontend step.
+
+## 42. Section 184G (final step of Section 184): Frontend Final Verification
+
+Pure verification pass, zero frontend code changes. Re-ran the full
+signup → authenticated shell → create trip → generate plan → Traveler
+view → Developer view → feedback → regeneration-readiness flow live
+(Playwright, real `SESSION_SECRET_KEY` in local `.env`) and confirmed
+every 184E/184F behavior still holds exactly as documented in sections
+40-41 above: no trip UI renders before `currentUser` is set; a created
+trip appears in "My Trips" and reloads correctly; a cross-user manual
+`trip_id` paste still returns the fixed "You do not have access to this
+trip." message with zero leaked content; logout still clears every
+piece of trip-specific state (`result`, `myTrips`, `existingTripId`,
+feedback panel) from the DOM, not just from React state; a page reload
+still restores the session via `GET /auth/me`; the `AUTH_NOT_CONFIGURED`
+setup screen still renders with no secret value anywhere in its markup;
+375px and 390px are both still overflow-free. Also confirmed at the API
+level (through the authenticated browser session, not a raw
+unauthenticated `curl`) that regeneration's pre-existing Section 174
+rules are completely unaffected by the 184D auth layer: a trip with
+pending feedback and zero locks still regenerates successfully
+(`200`/`"applied"`), and adding an active lock afterward still produces
+the same `409 REGENERATION_BLOCKED_BY_LOCKS` refusal as before any auth
+code existed. No console errors beyond the expected pre-login `401` on
+the initial `/auth/me` bootstrap check. This closes Section 184
+(184A-184G) from the frontend side -- see `docs/CODEBASE_OVERVIEW.md`'s
+Section 184G entry for the equivalent backend-side final review.

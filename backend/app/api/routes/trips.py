@@ -3,8 +3,10 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, status
+from fastapi import APIRouter, Depends, status
 
+from app.auth.dependencies import get_current_user
+from app.auth.ownership import require_trip_owner
 from app.core.config import get_settings
 from app.core.errors import (
     REGENERATION_BLOCKED_BY_LOCKS_MESSAGE,
@@ -21,7 +23,8 @@ from app.core.response import success_response
 from app.models.common import ReadinessStatus
 from app.models.itinerary_narrative import ItineraryNarrativeStatus
 from app.models.planning_state import GenerationProgress, TripRequest
-from app.repositories.factory import get_planning_state_repository
+from app.models.user import PublicUser
+from app.repositories.factory import get_planning_state_repository, get_trip_repository
 from app.schemas.ai_candidate_promotion import AICandidatePromotionResponseData
 from app.schemas.ai_candidate_review import AICandidateReviewResponseData
 from app.schemas.api_responses import ApiResponse
@@ -40,6 +43,8 @@ from app.schemas.trips import (
     FeedbackRequest,
     LockRequest,
     RegenerateRequest,
+    TripListItem,
+    TripListResponseData,
     TripResponseData,
 )
 from app.schemas.validation_report import ValidationReportResponseData
@@ -69,17 +74,61 @@ router = APIRouter(prefix="/trips", tags=["trips"])
     response_model=ApiResponse[TripResponseData],
     status_code=status.HTTP_201_CREATED,
 )
-def create_trip(trip_request: TripRequest) -> ApiResponse[TripResponseData]:
-    planning_state = planning_orchestrator.create_trip(trip_request)
+def create_trip(
+    trip_request: TripRequest, current_user: PublicUser = Depends(get_current_user)
+) -> ApiResponse[TripResponseData]:
+    """Step 184D: requires a real session (401 if missing/invalid/expired)
+    and assigns the new trip to `current_user.user_id` -- no route ever
+    creates an unowned trip. `owner_id` lives only on the `TripRecord`
+    (`app/repositories/trip_repository.py`); `PlanningState`, and so this
+    response's shape, is completely unchanged."""
+    planning_state = planning_orchestrator.create_trip(
+        trip_request, owner_id=current_user.user_id
+    )
     data = TripResponseData(trip_id=planning_state.trip_id, planning_state=planning_state)
     return success_response(data)
+
+
+@router.get(
+    "",
+    response_model=ApiResponse[TripListResponseData],
+)
+def list_my_trips(
+    current_user: PublicUser = Depends(get_current_user),
+) -> ApiResponse[TripListResponseData]:
+    """"My Trips" (Step 184D) -- returns only `current_user`'s own trips,
+    never another user's, and never the full `PlanningState` for any of
+    them (see `TripListItem`'s own docstring). Ownership is `TripRecord.
+    owner_id`, not anything read from `PlanningState`."""
+    trip_records = get_trip_repository().list_by_owner_id(current_user.user_id)
+
+    items: list[TripListItem] = []
+    for record in trip_records:
+        planning_state = get_planning_state_repository().get_by_trip_id(record.trip_id)
+        trip_request = planning_state.trip_request if planning_state else None
+        items.append(
+            TripListItem(
+                trip_id=record.trip_id,
+                status=record.status,
+                primary_destination=trip_request.primary_destination if trip_request else None,
+                origin_city=trip_request.origin_city if trip_request else None,
+                start_date=trip_request.start_date if trip_request else None,
+                end_date=trip_request.end_date if trip_request else None,
+                created_at=record.created_at,
+                updated_at=record.updated_at,
+            )
+        )
+
+    return success_response(TripListResponseData(trips=items))
 
 
 @router.get(
     "/{trip_id}",
     response_model=ApiResponse[TripResponseData],
 )
-def get_trip(trip_id: str) -> ApiResponse[TripResponseData]:
+def get_trip(
+    trip_id: str, current_user: PublicUser = Depends(require_trip_owner)
+) -> ApiResponse[TripResponseData]:
     planning_state = get_planning_state_repository().get_by_trip_id(trip_id)
     if planning_state is None:
         raise trip_not_found_error(trip_id)
@@ -92,7 +141,9 @@ def get_trip(trip_id: str) -> ApiResponse[TripResponseData]:
     "/{trip_id}/generate",
     response_model=ApiResponse[TripResponseData],
 )
-def generate_trip_plan(trip_id: str) -> ApiResponse[TripResponseData]:
+def generate_trip_plan(
+    trip_id: str, current_user: PublicUser = Depends(require_trip_owner)
+) -> ApiResponse[TripResponseData]:
     # Step 171D: config-gated engine selection; Step 171E made "langgraph"
     # the default once it reached stage parity with the legacy path (see
     # PlanningOrchestrator.generate_full_plan_via_langgraph's docstring).
@@ -114,7 +165,9 @@ def generate_trip_plan(trip_id: str) -> ApiResponse[TripResponseData]:
     response_model=ApiResponse[TripResponseData],
 )
 def submit_trip_feedback(
-    trip_id: str, feedback_request: FeedbackRequest
+    trip_id: str,
+    feedback_request: FeedbackRequest,
+    current_user: PublicUser = Depends(require_trip_owner),
 ) -> ApiResponse[TripResponseData]:
     planning_state = planning_orchestrator.apply_feedback(
         trip_id, feedback_request.feedback_text
@@ -128,7 +181,9 @@ def submit_trip_feedback(
     response_model=ApiResponse[RegenerateResponseData],
 )
 def regenerate_trip_plan(
-    trip_id: str, regenerate_request: RegenerateRequest | None = None
+    trip_id: str,
+    regenerate_request: RegenerateRequest | None = None,
+    current_user: PublicUser = Depends(require_trip_owner),
 ) -> ApiResponse[RegenerateResponseData]:
     """Feedback-driven regeneration (Step 138 hard refusal; Step 174B added
     the real request contract and guardrails; Step 174C added the one
@@ -339,7 +394,11 @@ def regenerate_trip_plan(
     response_model=ApiResponse[TripResponseData],
     status_code=status.HTTP_201_CREATED,
 )
-def create_trip_lock(trip_id: str, lock_request: LockRequest) -> ApiResponse[TripResponseData]:
+def create_trip_lock(
+    trip_id: str,
+    lock_request: LockRequest,
+    current_user: PublicUser = Depends(require_trip_owner),
+) -> ApiResponse[TripResponseData]:
     planning_state = get_planning_state_repository().get_by_trip_id(trip_id)
     if planning_state is None:
         raise trip_not_found_error(trip_id)
@@ -366,7 +425,9 @@ def create_trip_lock(trip_id: str, lock_request: LockRequest) -> ApiResponse[Tri
     "/{trip_id}/locks/{lock_id}",
     response_model=ApiResponse[TripResponseData],
 )
-def delete_trip_lock(trip_id: str, lock_id: str) -> ApiResponse[TripResponseData]:
+def delete_trip_lock(
+    trip_id: str, lock_id: str, current_user: PublicUser = Depends(require_trip_owner)
+) -> ApiResponse[TripResponseData]:
     planning_state = get_planning_state_repository().get_by_trip_id(trip_id)
     if planning_state is None:
         raise trip_not_found_error(trip_id)
@@ -391,7 +452,9 @@ def delete_trip_lock(trip_id: str, lock_id: str) -> ApiResponse[TripResponseData
     "/{trip_id}/destination-context",
     response_model=ApiResponse[DestinationContextResponseData],
 )
-def get_destination_context(trip_id: str) -> ApiResponse[DestinationContextResponseData]:
+def get_destination_context(
+    trip_id: str, current_user: PublicUser = Depends(require_trip_owner)
+) -> ApiResponse[DestinationContextResponseData]:
     planning_state = get_planning_state_repository().get_by_trip_id(trip_id)
     if planning_state is None:
         raise trip_not_found_error(trip_id)
@@ -424,7 +487,9 @@ def get_destination_context(trip_id: str) -> ApiResponse[DestinationContextRespo
     "/{trip_id}/candidate-quality",
     response_model=ApiResponse[CandidateQualityResponseData],
 )
-def get_candidate_quality(trip_id: str) -> ApiResponse[CandidateQualityResponseData]:
+def get_candidate_quality(
+    trip_id: str, current_user: PublicUser = Depends(require_trip_owner)
+) -> ApiResponse[CandidateQualityResponseData]:
     """Read-only deterministic pre-ranking metadata (Step 156A/156B,
     docs/18_candidate_quality.md). Always reflects whatever
     `candidate_quality_report` already holds -- recomputed on the
@@ -447,7 +512,9 @@ def get_candidate_quality(trip_id: str) -> ApiResponse[CandidateQualityResponseD
     "/{trip_id}/experience-plan",
     response_model=ApiResponse[ExperiencePlanResponseData],
 )
-def get_experience_plan(trip_id: str) -> ApiResponse[ExperiencePlanResponseData]:
+def get_experience_plan(
+    trip_id: str, current_user: PublicUser = Depends(require_trip_owner)
+) -> ApiResponse[ExperiencePlanResponseData]:
     planning_state = get_planning_state_repository().get_by_trip_id(trip_id)
     if planning_state is None:
         raise trip_not_found_error(trip_id)
@@ -478,7 +545,9 @@ def get_experience_plan(trip_id: str) -> ApiResponse[ExperiencePlanResponseData]
     "/{trip_id}/validation-report",
     response_model=ApiResponse[ValidationReportResponseData],
 )
-def get_validation_report(trip_id: str) -> ApiResponse[ValidationReportResponseData]:
+def get_validation_report(
+    trip_id: str, current_user: PublicUser = Depends(require_trip_owner)
+) -> ApiResponse[ValidationReportResponseData]:
     planning_state = get_planning_state_repository().get_by_trip_id(trip_id)
     if planning_state is None:
         raise trip_not_found_error(trip_id)
@@ -508,7 +577,9 @@ def get_validation_report(trip_id: str) -> ApiResponse[ValidationReportResponseD
     "/{trip_id}/summary",
     response_model=ApiResponse[TripSummaryResponseData],
 )
-def get_trip_summary(trip_id: str) -> ApiResponse[TripSummaryResponseData]:
+def get_trip_summary(
+    trip_id: str, current_user: PublicUser = Depends(require_trip_owner)
+) -> ApiResponse[TripSummaryResponseData]:
     planning_state = get_planning_state_repository().get_by_trip_id(trip_id)
     if planning_state is None:
         raise trip_not_found_error(trip_id)
@@ -573,7 +644,9 @@ def get_trip_summary(trip_id: str) -> ApiResponse[TripSummaryResponseData]:
     "/{trip_id}/provider-coverage",
     response_model=ApiResponse[ProviderCoverageResponseData],
 )
-def get_provider_coverage(trip_id: str) -> ApiResponse[ProviderCoverageResponseData]:
+def get_provider_coverage(
+    trip_id: str, current_user: PublicUser = Depends(require_trip_owner)
+) -> ApiResponse[ProviderCoverageResponseData]:
     planning_state = get_planning_state_repository().get_by_trip_id(trip_id)
     if planning_state is None:
         raise trip_not_found_error(trip_id)
@@ -592,7 +665,9 @@ def get_provider_coverage(trip_id: str) -> ApiResponse[ProviderCoverageResponseD
     "/{trip_id}/regeneration-readiness",
     response_model=ApiResponse[RegenerationReadinessResponseData],
 )
-def get_regeneration_readiness(trip_id: str) -> ApiResponse[RegenerationReadinessResponseData]:
+def get_regeneration_readiness(
+    trip_id: str, current_user: PublicUser = Depends(require_trip_owner)
+) -> ApiResponse[RegenerationReadinessResponseData]:
     """Read-only gate explaining whether feedback-driven regeneration can
     run right now (Step 135). Always reflects the value already recomputed
     on the write paths (create/generate/feedback/lock create/lock remove)
@@ -614,7 +689,9 @@ def get_regeneration_readiness(trip_id: str) -> ApiResponse[RegenerationReadines
     "/{trip_id}/regeneration-attempts",
     response_model=ApiResponse[RegenerationAttemptsResponseData],
 )
-def get_regeneration_attempts(trip_id: str) -> ApiResponse[RegenerationAttemptsResponseData]:
+def get_regeneration_attempts(
+    trip_id: str, current_user: PublicUser = Depends(require_trip_owner)
+) -> ApiResponse[RegenerationAttemptsResponseData]:
     """Read-only audit trail of blocked `POST /trips/{trip_id}/regenerate`
     attempts (Step 142). Returns whatever has already been recorded, in
     stored order -- this endpoint never recomputes, mutates, or
@@ -635,7 +712,9 @@ def get_regeneration_attempts(trip_id: str) -> ApiResponse[RegenerationAttemptsR
     "/{trip_id}/generation-progress",
     response_model=ApiResponse[GenerationProgressResponseData],
 )
-def get_generation_progress(trip_id: str) -> ApiResponse[GenerationProgressResponseData]:
+def get_generation_progress(
+    trip_id: str, current_user: PublicUser = Depends(require_trip_owner)
+) -> ApiResponse[GenerationProgressResponseData]:
     """Read-only backend `PlanningOrchestrator` pipeline stage-progress
     readout (Step 163B, docs/13_llm_reasoning_pipeline.md section 44).
 
@@ -662,7 +741,9 @@ def get_generation_progress(trip_id: str) -> ApiResponse[GenerationProgressRespo
     "/{trip_id}/ai-candidate-review",
     response_model=ApiResponse[AICandidateReviewResponseData],
 )
-def get_ai_candidate_review(trip_id: str) -> ApiResponse[AICandidateReviewResponseData]:
+def get_ai_candidate_review(
+    trip_id: str, current_user: PublicUser = Depends(require_trip_owner)
+) -> ApiResponse[AICandidateReviewResponseData]:
     """Read-only AI candidate discovery/grounding/eligibility review report
     (Step 170A, extended with deterministic eligibility rules in Step
     170B, docs/13_llm_reasoning_pipeline.md, docs/14_backend_architecture.md).
@@ -696,7 +777,9 @@ def get_ai_candidate_review(trip_id: str) -> ApiResponse[AICandidateReviewRespon
     "/{trip_id}/ai-candidate-promotions",
     response_model=ApiResponse[AICandidatePromotionResponseData],
 )
-def promote_ai_candidates(trip_id: str) -> ApiResponse[AICandidatePromotionResponseData]:
+def promote_ai_candidates(
+    trip_id: str, current_user: PublicUser = Depends(require_trip_owner)
+) -> ApiResponse[AICandidatePromotionResponseData]:
     """Materializes Step 170B's deterministic eligibility verdicts into a
     dedicated `AICandidatePromotionReport`, stored on
     `planning_state.ai_candidate_promotion_report` (Step 170C,
@@ -732,7 +815,9 @@ def promote_ai_candidates(trip_id: str) -> ApiResponse[AICandidatePromotionRespo
     "/{trip_id}/langgraph-shadow-run",
     response_model=ApiResponse[LangGraphShadowRunResponseData],
 )
-def run_langgraph_shadow(trip_id: str) -> ApiResponse[LangGraphShadowRunResponseData]:
+def run_langgraph_shadow(
+    trip_id: str, current_user: PublicUser = Depends(require_trip_owner)
+) -> ApiResponse[LangGraphShadowRunResponseData]:
     """Read-only LangGraph shadow-run endpoint (Step 171C,
     docs/13_llm_reasoning_pipeline.md, docs/14_backend_architecture.md).
 

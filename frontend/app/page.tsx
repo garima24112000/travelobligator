@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import type * as Leaflet from "leaflet";
 import {
   ApiRequestError,
@@ -9,6 +9,7 @@ import {
   deleteTripLock,
   generatePlan,
   getAiCandidateReview,
+  getCurrentUser,
   getDestinationContext,
   getExperiencePlan,
   getGenerationProgress,
@@ -18,8 +19,12 @@ import {
   getTrip,
   getTripSummary,
   getValidationReport,
+  listTrips,
+  login,
+  logout,
   promoteAiCandidates,
   requestRegeneration,
+  signup,
   submitTripFeedback,
 } from "@/lib/api";
 import { buildTrustDashboardModel } from "@/lib/trust-dashboard";
@@ -58,6 +63,7 @@ import type {
   ProviderCoverageData,
   ProviderStatusEntry,
   PromotedAICandidate,
+  PublicUser,
   ReadinessChecklist,
   RegenerateResponseData,
   RegenerationAttempt,
@@ -72,6 +78,7 @@ import type {
   StayAreaGuidance,
   TravelTimeBuffer,
   TravelTimeBufferReport,
+  TripListItem,
   TripRequestInput,
   TripSummary,
   UserLock,
@@ -5279,6 +5286,181 @@ export default function Home() {
     string | null
   >(null);
 
+  // Step 184E: full frontend auth. `currentUser` is the sole gate for
+  // rendering the trip app shell below -- no anonymous fallback, no fake
+  // user, nothing trip-related ever fetched before this is set. The
+  // session itself lives only in the backend's signed HttpOnly cookie
+  // (see lib/api.ts's `credentials: "include"`); nothing here stores a
+  // token.
+  const [currentUser, setCurrentUser] = useState<PublicUser | null>(null);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [authNotConfigured, setAuthNotConfigured] = useState(false);
+  const [authMode, setAuthMode] = useState<"login" | "signup">("login");
+  const [authEmail, setAuthEmail] = useState("");
+  const [authPassword, setAuthPassword] = useState("");
+  const [authConfirmPassword, setAuthConfirmPassword] = useState("");
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [isAuthSubmitting, setIsAuthSubmitting] = useState(false);
+
+  const [myTrips, setMyTrips] = useState<TripListItem[]>([]);
+  const [myTripsLoading, setMyTripsLoading] = useState(false);
+  const [myTripsError, setMyTripsError] = useState<string | null>(null);
+  // Step 184F: which "My trips" row is currently being loaded, if any --
+  // lets that one row say "Loading…" instead of every row just going
+  // uniformly disabled with no indication of which one was clicked.
+  const [loadingTripId, setLoadingTripId] = useState<string | null>(null);
+
+  const refreshMyTrips = useCallback(async () => {
+    setMyTripsLoading(true);
+    setMyTripsError(null);
+    try {
+      const data = await listTrips();
+      setMyTrips(data.trips);
+    } catch (err) {
+      setMyTripsError(
+        err instanceof ApiRequestError
+          ? err.message
+          : "Could not load your trips.",
+      );
+    } finally {
+      setMyTripsLoading(false);
+    }
+  }, []);
+
+  const checkAuth = useCallback(async () => {
+    setAuthLoading(true);
+    setAuthNotConfigured(false);
+    try {
+      const data = await getCurrentUser();
+      setCurrentUser(data.user);
+      void refreshMyTrips();
+    } catch (err) {
+      if (err instanceof ApiRequestError && err.code === "AUTH_NOT_CONFIGURED") {
+        setAuthNotConfigured(true);
+      }
+      setCurrentUser(null);
+    } finally {
+      setAuthLoading(false);
+    }
+  }, [refreshMyTrips]);
+
+  useEffect(() => {
+    // `checkAuth`'s identity is stable (it only closes over the stable
+    // `refreshMyTrips`), so this effectively still only runs once on
+    // mount. The state updates inside `checkAuth` happen asynchronously,
+    // after a real network response -- this is the standard mount-time
+    // data-fetch pattern, not a synchronous cascading setState.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    void checkAuth();
+  }, [checkAuth]);
+
+  // Shared by every trip-related action below: a session that expired or
+  // was revoked mid-use surfaces here as a normal `ApiRequestError` with
+  // `code === "AUTHENTICATION_REQUIRED"` -- when that happens this clears
+  // the signed-in state so the login screen reappears, rather than leaving
+  // a half-authenticated shell with a trip request that will never
+  // succeed. A `FORBIDDEN` (wrong-user trip access) never reveals trip
+  // details, just a plain access message.
+  function describeTripApiError(err: unknown, fallback: string): string {
+    if (err instanceof ApiRequestError) {
+      if (err.code === "AUTHENTICATION_REQUIRED") {
+        setCurrentUser(null);
+        setMyTrips([]);
+        setResult(null);
+        return "Your session has ended. Please log in again.";
+      }
+      if (err.code === "FORBIDDEN") {
+        return "You do not have access to this trip.";
+      }
+      return err.message;
+    }
+    return fallback;
+  }
+
+  async function handleAuthSubmit() {
+    setAuthError(null);
+
+    const email = authEmail.trim();
+    if (!email || !authPassword) {
+      setAuthError("Enter your email and password.");
+      return;
+    }
+    if (authMode === "signup" && authPassword !== authConfirmPassword) {
+      setAuthError("Passwords do not match.");
+      return;
+    }
+
+    setIsAuthSubmitting(true);
+    try {
+      const data =
+        authMode === "signup"
+          ? await signup(email, authPassword)
+          : await login(email, authPassword);
+      setCurrentUser(data.user);
+      setAuthPassword("");
+      setAuthConfirmPassword("");
+      void refreshMyTrips();
+    } catch (err) {
+      if (err instanceof ApiRequestError && err.code === "AUTH_NOT_CONFIGURED") {
+        setAuthNotConfigured(true);
+      } else {
+        setAuthError(
+          err instanceof ApiRequestError
+            ? err.message
+            : "Something went wrong. Please try again.",
+        );
+      }
+    } finally {
+      setIsAuthSubmitting(false);
+    }
+  }
+
+  async function handleLogout() {
+    try {
+      await logout();
+    } catch {
+      // Even if the backend call itself fails, the local state below is
+      // still cleared -- logout must never leave another user's trip data
+      // visible on screen.
+    }
+    setCurrentUser(null);
+    setMyTrips([]);
+    setMyTripsError(null);
+    setLoadingTripId(null);
+    setResult(null);
+    setExistingTripId("");
+    setError(null);
+    resetFeedbackPanelState();
+    setAuthMode("login");
+    setAuthEmail("");
+    setAuthPassword("");
+    setAuthConfirmPassword("");
+    setAuthError(null);
+  }
+
+  async function handleSelectMyTrip(tripId: string) {
+    setExistingTripId(tripId);
+    setIsLoadingExisting(true);
+    setLoadingTripId(tripId);
+    setError(null);
+    setResult(null);
+    resetFeedbackPanelState();
+
+    try {
+      setResult(await loadPlanResult(tripId));
+    } catch (err) {
+      setError(
+        describeTripApiError(
+          err,
+          "Something went wrong while talking to the backend.",
+        ),
+      );
+    } finally {
+      setIsLoadingExisting(false);
+      setLoadingTripId(null);
+    }
+  }
+
   // Step 182C: User Mode / Developer Mode split. The initial value on
   // both the server render and the client's first render is always
   // "user" -- matching exactly -- so there is no hydration mismatch; the
@@ -5360,9 +5542,10 @@ export default function Home() {
       );
     } catch (err) {
       setFeedbackErrorMessage(
-        err instanceof ApiRequestError
-          ? err.message
-          : "Something went wrong while saving feedback.",
+        describeTripApiError(
+          err,
+          "Something went wrong while saving feedback.",
+        ),
       );
     } finally {
       setIsSubmittingFeedback(false);
@@ -5430,11 +5613,13 @@ export default function Home() {
       await new Promise((resolve) => setTimeout(resolve, 500));
 
       setResult(await loadPlanResult(tripId));
+      void refreshMyTrips();
     } catch (err) {
       setError(
-        err instanceof ApiRequestError
-          ? err.message
-          : "Something went wrong while talking to the backend.",
+        describeTripApiError(
+          err,
+          "Something went wrong while talking to the backend.",
+        ),
       );
     } finally {
       stopPolling();
@@ -5459,9 +5644,10 @@ export default function Home() {
       setResult(await loadPlanResult(tripId));
     } catch (err) {
       setError(
-        err instanceof ApiRequestError
-          ? err.message
-          : "Something went wrong while talking to the backend.",
+        describeTripApiError(
+          err,
+          "Something went wrong while talking to the backend.",
+        ),
       );
     } finally {
       setIsLoadingExisting(false);
@@ -5700,9 +5886,256 @@ export default function Home() {
     </div>
   ) : null;
 
+  // Step 184E: auth gating. Nothing trip-related is ever rendered or
+  // fetched until `currentUser` is set below -- no anonymous fallback.
+  if (authLoading) {
+    return (
+      <main className="flex min-h-screen items-center justify-center bg-slate-950 px-6 py-12 text-slate-100">
+        <p className="text-sm text-slate-400">Checking your sign-in status…</p>
+      </main>
+    );
+  }
+
+  if (authNotConfigured) {
+    return (
+      <main className="min-h-screen bg-slate-950 px-6 py-12 text-slate-100">
+        <section className="mx-auto max-w-lg rounded-3xl border border-amber-400/30 bg-amber-400/5 p-6 shadow-2xl sm:p-8">
+          <p className="text-sm font-semibold uppercase tracking-[0.3em] text-amber-200">
+            TravelObligator
+          </p>
+          <h1 className="mt-4 text-xl font-semibold text-amber-100">
+            Authentication is not configured on this server
+          </h1>
+          <p className="mt-3 text-sm leading-6 text-slate-300">
+            This backend has no <code className="text-amber-200">SESSION_SECRET_KEY</code>{" "}
+            set, so sign-in cannot work yet. For local development, generate
+            one and add it only to your backend&apos;s real, local{" "}
+            <code className="text-amber-200">.env</code> file (never commit
+            it), then restart the backend:
+          </p>
+          <pre className="mt-3 overflow-x-auto rounded-lg border border-white/10 bg-slate-900 p-3 text-xs text-slate-300">
+{`python - <<'PY'
+import secrets
+print(secrets.token_urlsafe(48))
+PY`}
+          </pre>
+          <p className="mt-2 text-sm text-slate-300">
+            Then add{" "}
+            <code className="text-amber-200">
+              SESSION_SECRET_KEY=&lt;generated_value&gt;
+            </code>{" "}
+            to your local <code className="text-amber-200">.env</code> only.
+          </p>
+          <button
+            type="button"
+            onClick={() => void checkAuth()}
+            className={`mt-5 rounded-lg border border-white/10 bg-slate-900 px-4 py-2 text-sm font-semibold text-slate-200 transition hover:bg-slate-800 ${FOCUS_RING_CLASSNAME}`}
+          >
+            Retry
+          </button>
+        </section>
+      </main>
+    );
+  }
+
+  if (!currentUser) {
+    // Step 184F: a dedicated, field-level message for the one client-side
+    // validation this screen does itself (everything else is the
+    // backend's own error text, shown verbatim in the generic error box
+    // below) -- lets the confirm-password input point `aria-describedby`
+    // at it instead of a rose-colored one-line box floating at the bottom.
+    const passwordMismatch =
+      authMode === "signup" && authError === "Passwords do not match.";
+
+    return (
+      <main className="flex min-h-screen items-center justify-center bg-slate-950 px-6 py-12 text-slate-100">
+        <section className="w-full max-w-md rounded-3xl border border-white/10 bg-white/5 p-6 shadow-2xl sm:p-8">
+          <p className="text-sm font-semibold uppercase tracking-[0.3em] text-cyan-200">
+            TravelObligator
+          </p>
+          <h1 className="mt-4 text-2xl font-semibold tracking-tight">
+            {authMode === "signup" ? "Create your account" : "Log in to your account"}
+          </h1>
+          <p className="mt-2 text-sm text-slate-400">
+            {authMode === "signup"
+              ? "Sign up to create and manage your own trips. Trips are private to your account."
+              : "Log in to see your own trips. Trips are private to your account."}
+          </p>
+
+          <div
+            role="group"
+            aria-label="Choose log in or sign up"
+            className="mt-6 flex rounded-lg border border-white/10 bg-slate-900 p-1 text-sm"
+          >
+            <button
+              type="button"
+              aria-pressed={authMode === "login"}
+              disabled={isAuthSubmitting}
+              onClick={() => {
+                setAuthMode("login");
+                setAuthError(null);
+              }}
+              className={`flex-1 rounded-md px-3 py-1.5 font-semibold transition disabled:cursor-not-allowed disabled:opacity-50 ${FOCUS_RING_CLASSNAME} ${
+                authMode === "login"
+                  ? "bg-cyan-400 text-slate-950"
+                  : "text-slate-300 hover:text-cyan-200"
+              }`}
+            >
+              Log in
+            </button>
+            <button
+              type="button"
+              aria-pressed={authMode === "signup"}
+              disabled={isAuthSubmitting}
+              onClick={() => {
+                setAuthMode("signup");
+                setAuthError(null);
+              }}
+              className={`flex-1 rounded-md px-3 py-1.5 font-semibold transition disabled:cursor-not-allowed disabled:opacity-50 ${FOCUS_RING_CLASSNAME} ${
+                authMode === "signup"
+                  ? "bg-cyan-400 text-slate-950"
+                  : "text-slate-300 hover:text-cyan-200"
+              }`}
+            >
+              Sign up
+            </button>
+          </div>
+
+          <form
+            className="mt-6 flex flex-col gap-4"
+            aria-busy={isAuthSubmitting}
+            onSubmit={(event) => {
+              event.preventDefault();
+              void handleAuthSubmit();
+            }}
+          >
+            <div className="flex flex-col gap-1">
+              <label
+                htmlFor="auth-email"
+                className="text-sm text-slate-300"
+              >
+                Email
+              </label>
+              <input
+                id="auth-email"
+                type="email"
+                name="email"
+                autoComplete="email"
+                required
+                disabled={isAuthSubmitting}
+                className={`rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-slate-100 disabled:cursor-not-allowed disabled:opacity-50 ${FOCUS_RING_CLASSNAME}`}
+                value={authEmail}
+                onChange={(event) => setAuthEmail(event.target.value)}
+              />
+            </div>
+
+            <div className="flex flex-col gap-1">
+              <label
+                htmlFor="auth-password"
+                className="text-sm text-slate-300"
+              >
+                Password
+              </label>
+              <input
+                id="auth-password"
+                type="password"
+                name="password"
+                autoComplete={
+                  authMode === "signup" ? "new-password" : "current-password"
+                }
+                required
+                minLength={authMode === "signup" ? 8 : undefined}
+                disabled={isAuthSubmitting}
+                // The hint below is a sibling of this input, outside the
+                // <label>, and connected only via aria-describedby -- so a
+                // screen reader announces the label as plain "Password",
+                // then the hint separately, never "Password At least 8
+                // characters." folded into one run-on accessible name.
+                aria-describedby={
+                  authMode === "signup" ? "password-hint" : undefined
+                }
+                className={`rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-slate-100 disabled:cursor-not-allowed disabled:opacity-50 ${FOCUS_RING_CLASSNAME}`}
+                value={authPassword}
+                onChange={(event) => setAuthPassword(event.target.value)}
+              />
+              {authMode === "signup" && (
+                <span id="password-hint" className="text-xs text-slate-500">
+                  At least 8 characters.
+                </span>
+              )}
+            </div>
+
+            {authMode === "signup" && (
+              <div className="flex flex-col gap-1">
+                <label
+                  htmlFor="auth-confirm-password"
+                  className="text-sm text-slate-300"
+                >
+                  Confirm password
+                </label>
+                <input
+                  id="auth-confirm-password"
+                  type="password"
+                  name="confirm-password"
+                  autoComplete="new-password"
+                  required
+                  disabled={isAuthSubmitting}
+                  aria-invalid={passwordMismatch}
+                  aria-describedby={
+                    passwordMismatch ? "confirm-password-error" : undefined
+                  }
+                  className={`rounded-lg border bg-slate-900 px-3 py-2 text-slate-100 disabled:cursor-not-allowed disabled:opacity-50 ${FOCUS_RING_CLASSNAME} ${
+                    passwordMismatch ? "border-rose-400/60" : "border-white/10"
+                  }`}
+                  value={authConfirmPassword}
+                  onChange={(event) =>
+                    setAuthConfirmPassword(event.target.value)
+                  }
+                />
+                {passwordMismatch && (
+                  <span
+                    id="confirm-password-error"
+                    role="alert"
+                    className="text-xs text-rose-300"
+                  >
+                    Passwords do not match.
+                  </span>
+                )}
+              </div>
+            )}
+
+            {authError && !passwordMismatch && (
+              <p
+                role="alert"
+                aria-live="polite"
+                className="rounded-lg border border-rose-400/30 bg-rose-400/10 px-3 py-2 text-sm text-rose-200"
+              >
+                {authError}
+              </p>
+            )}
+
+            <button
+              type="submit"
+              disabled={isAuthSubmitting}
+              className={`mt-1 rounded-lg bg-cyan-400 px-4 py-2 font-semibold text-slate-950 transition disabled:cursor-not-allowed disabled:opacity-50 ${FOCUS_RING_CLASSNAME}`}
+            >
+              {isAuthSubmitting
+                ? authMode === "signup"
+                  ? "Creating account…"
+                  : "Logging in…"
+                : authMode === "signup"
+                  ? "Create account"
+                  : "Log in"}
+            </button>
+          </form>
+        </section>
+      </main>
+    );
+  }
+
   return (
     <main className="min-h-screen bg-slate-950 px-6 py-12 text-slate-100">
-      <section className="mx-auto max-w-4xl rounded-3xl border border-white/10 bg-white/5 p-8 shadow-2xl">
+      <section className="mx-auto max-w-4xl rounded-3xl border border-white/10 bg-white/5 p-6 shadow-2xl sm:p-8">
         <p className="text-sm font-semibold uppercase tracking-[0.3em] text-cyan-200">
           TravelObligator
         </p>
@@ -5713,6 +6146,89 @@ export default function Home() {
           Everything below is read directly from the backend PlanningState.
           Nothing here is invented by the frontend.
         </p>
+
+        <div className="mt-6 flex flex-col gap-2 rounded-2xl border border-white/10 bg-white/5 p-4 sm:flex-row sm:items-center sm:justify-between">
+          <p className="text-xs text-slate-400">
+            Signed in as{" "}
+            <span className="text-sm font-semibold text-cyan-200 break-words">
+              {currentUser.email}
+            </span>
+          </p>
+          <button
+            type="button"
+            onClick={() => void handleLogout()}
+            className={`self-start rounded-lg border border-white/20 bg-slate-900 px-3 py-1.5 text-sm font-semibold text-slate-200 transition hover:border-cyan-300/40 hover:bg-slate-800 hover:text-cyan-200 sm:self-auto ${FOCUS_RING_CLASSNAME}`}
+          >
+            Log out
+          </button>
+        </div>
+
+        <div className="mt-6 rounded-2xl border border-cyan-300/15 bg-cyan-400/[0.03] p-5">
+          <div className="flex items-center justify-between">
+            <p className="text-xs font-semibold uppercase tracking-wide text-cyan-300/80">
+              My trips
+            </p>
+            <button
+              type="button"
+              onClick={() => void refreshMyTrips()}
+              disabled={myTripsLoading}
+              className={`text-xs font-semibold text-slate-400 transition hover:text-cyan-200 disabled:cursor-not-allowed disabled:opacity-50 ${FOCUS_RING_CLASSNAME}`}
+            >
+              {myTripsLoading ? "Refreshing…" : "Refresh trips"}
+            </button>
+          </div>
+          <div aria-live="polite">
+            {myTripsError && (
+              <p role="alert" className="mt-2 text-sm text-rose-300">
+                {myTripsError}
+              </p>
+            )}
+            {!myTripsError && myTripsLoading && myTrips.length === 0 && (
+              <p className="mt-2 text-sm text-slate-400">
+                Loading your trips…
+              </p>
+            )}
+            {!myTripsError && !myTripsLoading && myTrips.length === 0 && (
+              <p className="mt-2 text-sm text-slate-400">
+                You have not created any trips yet. Use the form below to
+                plan your first one.
+              </p>
+            )}
+          </div>
+          {myTrips.length > 0 && (
+            <ul className="mt-3 flex flex-col gap-2">
+              {myTrips.map((trip) => {
+                const isThisTripLoading =
+                  isLoadingExisting && loadingTripId === trip.trip_id;
+                return (
+                  <li key={trip.trip_id}>
+                    <button
+                      type="button"
+                      onClick={() => void handleSelectMyTrip(trip.trip_id)}
+                      disabled={isLoading || isLoadingExisting}
+                      aria-busy={isThisTripLoading}
+                      className={`w-full rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-left text-sm text-slate-200 transition hover:border-cyan-300/40 hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50 ${FOCUS_RING_CLASSNAME}`}
+                    >
+                      <p className="break-words font-semibold text-cyan-200">
+                        {trip.primary_destination ?? "Untitled destination"}
+                      </p>
+                      <p className="mt-0.5 break-words text-xs text-slate-400">
+                        {trip.origin_city ? `From ${trip.origin_city} · ` : ""}
+                        {trip.start_date ?? "?"} → {trip.end_date ?? "?"} ·{" "}
+                        {trip.status}
+                      </p>
+                      {isThisTripLoading && (
+                        <p className="mt-1 text-xs font-semibold text-cyan-300">
+                          Loading…
+                        </p>
+                      )}
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
 
         <div className="mt-8">
           <p className="text-xs font-semibold uppercase tracking-wide text-cyan-300/80">
@@ -5928,10 +6444,15 @@ export default function Home() {
 
         <div className="mt-6 rounded-2xl border border-white/5 bg-white/[0.02] p-5">
           <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
-            Already have a trip?
+            Advanced: load a trip by ID
           </p>
-          <label className="mt-2 flex flex-col gap-1 text-sm text-slate-400">
-            Load an existing trip by trip_id
+          <p className="mt-1 text-xs text-slate-500">
+            A power-user fallback for &ldquo;My trips&rdquo; above — most
+            people won&apos;t need this. Only works for a trip_id your own
+            account owns; any other trip_id is refused.
+          </p>
+          <label className="mt-3 flex flex-col gap-1 text-sm text-slate-400">
+            trip_id
             <div className="mt-1 flex flex-col gap-2 sm:flex-row">
               <input
                 className="flex-1 rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-slate-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/50"
@@ -5945,7 +6466,7 @@ export default function Home() {
                 disabled={isLoading || isLoadingExisting}
                 className="rounded-lg border border-white/10 bg-slate-900 px-4 py-2 font-semibold text-slate-300 transition hover:bg-slate-800 hover:text-cyan-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/50 disabled:cursor-not-allowed disabled:opacity-50 sm:shrink-0"
               >
-                {isLoadingExisting ? "Loading trip..." : "Load existing trip"}
+                {isLoadingExisting ? "Loading trip…" : "Load existing trip"}
               </button>
             </div>
           </label>
@@ -6033,6 +6554,10 @@ export default function Home() {
               </div>
 
               <ModeToggle mode={mode} onModeChange={setMode} />
+              <p className="text-xs text-slate-500">
+                Developer view shows diagnostics for your own trip. It does
+                not change provider data or generation behavior.
+              </p>
 
               {mode === "user" && (
                 <UserModeReadinessBanner

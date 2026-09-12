@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import uuid
 
 # Step 183B-FIX: this MUST be the first thing this module does, before any
 # `app.*` import below (including this file's own `from app.core.config
@@ -34,6 +35,7 @@ from app.providers.base import PlacesProvider
 from app.providers.gateway import provider_gateway
 from app.repositories.planning_state_repository import planning_state_repository
 from app.repositories.trip_repository import trip_repository
+from app.repositories.user_repository import user_repository
 from app.storage.local_json_store import LocalJsonStore
 from app.storage.provider_cache_store import ProviderCacheStore
 
@@ -152,20 +154,45 @@ def _deterministic_places_provider(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture(autouse=True)
 def _reset_in_memory_repositories(tmp_path: Path) -> None:
-    """Isolate the trip/planning-state repositories between test functions.
+    """Isolate the trip/planning-state/user repositories between test
+    functions.
 
-    Points both module-level repository singletons at a fresh temporary
-    JSON file (shared between them, matching how they share the real
-    storage file in app.core.config.Settings.local_storage_path) instead of
-    the real local development storage file, so test runs never read or
-    write persistent project data under backend/.data/.
+    Points all three module-level repository singletons at a fresh
+    temporary JSON file (shared between them, matching how they share the
+    real storage file in app.core.config.Settings.local_storage_path)
+    instead of the real local development storage file, so test runs
+    never read or write persistent project data under backend/.data/.
     """
     test_store = LocalJsonStore(tmp_path / "test_travelobligator_state.json")
     trip_repository._store = test_store
     trip_repository._trips = {}
     planning_state_repository._store = test_store
     planning_state_repository._states = {}
+    user_repository._store = test_store
+    user_repository._users = {}
     yield
+
+
+@pytest.fixture(autouse=True)
+def _configured_session_secret(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Step 184D: every `/trips/*` route now requires a real, verified
+    session, so every test that hits one (which is most of this suite)
+    needs a working `SESSION_SECRET_KEY` -- made autouse here rather than
+    per-file opt-in (the pattern Step 184B/184C's own auth-specific test
+    files used) precisely because it's no longer an auth-specific
+    concern, it's a whole-suite one.
+
+    This is a real, working secret enabling real signed-cookie
+    verification -- exactly as a real deployment configures one via
+    `.env` -- just a fixed, non-secret test value instead of a real one.
+    Not a bypass: `client` below still performs a genuine
+    `POST /auth/signup` to obtain its session; no route/dependency is
+    ever skipped or faked.
+    """
+    monkeypatch.setenv("SESSION_SECRET_KEY", "test-only-session-secret-for-pytest")
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
 
 
 @pytest.fixture(autouse=True)
@@ -225,9 +252,49 @@ def _isolate_provider_cache_store(monkeypatch: pytest.MonkeyPatch):
     shutil.rmtree(isolation_dir, ignore_errors=True)
 
 
+def _unique_test_email() -> str:
+    return f"test-{uuid.uuid4().hex}@example.com"
+
+
+def new_authenticated_client() -> TestClient:
+    """Returns a fresh `TestClient` that has already completed a real
+    `POST /auth/signup` (a unique, throwaway user every call) -- so it
+    carries a real, working session cookie for its lifetime, exactly as a
+    logged-in browser would. No test-only auth bypass: this is the exact
+    same signup endpoint `test_auth_routes.py` exercises directly.
+
+    Used directly by tests that need a second, distinct user (e.g. cross-
+    user 403 isolation checks) -- the shared `client` fixture below always
+    represents "the current test's own logged-in user."
+    """
+    test_client = TestClient(app)
+    signup_response = test_client.post(
+        "/auth/signup",
+        json={"email": _unique_test_email(), "password": "testpassword123"},
+    )
+    assert signup_response.status_code == 201, signup_response.text
+    return test_client
+
+
 @pytest.fixture()
 def client() -> TestClient:
-    return TestClient(app)
+    """Step 184D: every `/trips/*` route requires a real session, so this
+    shared fixture -- used by the large majority of this suite's existing
+    tests -- now signs up a fresh, unique user before handing back the
+    client, exactly like `new_authenticated_client()` above. This is why
+    every pre-existing test that creates/reads/mutates a trip via `client`
+    keeps passing unmodified after this step: it was always implicitly
+    "the trip owner," it just didn't need to say so before.
+    """
+    return new_authenticated_client()
+
+
+@pytest.fixture()
+def second_client() -> TestClient:
+    """A second, distinct logged-in user -- for cross-user isolation
+    tests that need to prove `second_client` cannot read/mutate whatever
+    `client` created."""
+    return new_authenticated_client()
 
 
 def create_trip_payload() -> dict[str, Any]:

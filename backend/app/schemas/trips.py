@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import date, datetime
 from typing import Any
 
 from pydantic import BaseModel, Field, field_validator
@@ -10,6 +11,30 @@ from app.models.planning_state import PlanningState
 class TripResponseData(BaseModel):
     trip_id: str
     planning_state: PlanningState
+
+
+class TripListItem(BaseModel):
+    """One row of `GET /trips`'s "My Trips" list (Step 184D) --
+    deliberately small: never the full `PlanningState` (that stays behind
+    `GET /trips/{trip_id}` and friends, each still owner-checked
+    individually). `primary_destination`/`origin_city`/`start_date`/
+    `end_date` are `None` only in the on-paper-impossible case of a
+    `TripRecord` with no matching `PlanningState` -- normal trips created
+    via `POST /trips` always have both.
+    """
+
+    trip_id: str
+    status: str
+    primary_destination: str | None = None
+    origin_city: str | None = None
+    start_date: date | None = None
+    end_date: date | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class TripListResponseData(BaseModel):
+    trips: list[TripListItem]
 
 
 class RegenerateRequest(BaseModel):

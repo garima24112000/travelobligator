@@ -127,3 +127,80 @@ def regeneration_no_pending_feedback_error() -> AppError:
         status_code=status.HTTP_409_CONFLICT,
         field="regeneration",
     )
+
+
+# Auth foundation (Step 184B). None of these are raised by any route yet --
+# no route is auth-gated until Step 184D wires `get_current_user_id`
+# (backend/app/auth/dependencies.py) and an owner check into
+# `app/api/routes/trips.py`. Declared now so that dependency, and the
+# `/auth/*` routes Step 184C adds, have real, tested error constructors
+# ready to use, matching every other error in this file's centralized-
+# constructor convention.
+
+
+def authentication_required_error() -> AppError:
+    """401 -- no session cookie present, or it failed to verify (missing,
+    malformed, unsigned/tampered, or expired). Deliberately the same
+    error for all of those cases -- never reveals *why* verification
+    failed, which could otherwise help an attacker distinguish a stolen-
+    but-expired cookie from a forged one."""
+    return AppError(
+        code=ErrorCode.AUTHENTICATION_REQUIRED,
+        message="Authentication is required for this request.",
+        status_code=status.HTTP_401_UNAUTHORIZED,
+    )
+
+
+def forbidden_error() -> AppError:
+    """403 -- a real, authenticated session, but not the resource's owner.
+    Distinct from `trip_not_found_error` (404): once Step 184D wires this
+    in, a non-owner gets 403 for a trip that exists (owned by someone
+    else) so the two cases stay distinguishable by the caller, without
+    the 403 response itself ever describing who the real owner is."""
+    return AppError(
+        code=ErrorCode.FORBIDDEN,
+        message="You do not have access to this resource.",
+        status_code=status.HTTP_403_FORBIDDEN,
+    )
+
+
+# Deliberately generic: never reveals whether the email is registered or
+# the password was wrong, so a login attempt can't be used to enumerate
+# registered accounts. Shared as a module-level constant so login-route
+# tests (Step 184C) and this constructor can never drift.
+INVALID_CREDENTIALS_MESSAGE = "Invalid email or password."
+
+
+def invalid_credentials_error() -> AppError:
+    """401 -- login failed. See `INVALID_CREDENTIALS_MESSAGE` for why the
+    message never distinguishes "unknown email" from "wrong password.\""""
+    return AppError(
+        code=ErrorCode.INVALID_CREDENTIALS,
+        message=INVALID_CREDENTIALS_MESSAGE,
+        status_code=status.HTTP_401_UNAUTHORIZED,
+    )
+
+
+def email_already_registered_error() -> AppError:
+    """409 -- signup with an email that already has an account."""
+    return AppError(
+        code=ErrorCode.EMAIL_ALREADY_REGISTERED,
+        message="An account with this email already exists.",
+        status_code=status.HTTP_409_CONFLICT,
+        field="email",
+    )
+
+
+def auth_not_configured_error() -> AppError:
+    """503 -- session signing/verification was attempted while
+    `Settings.session_secret_key` is unset. Distinct from
+    `authentication_required_error` (401): this is a server
+    misconfiguration, not "you're not logged in," and should be fixed by
+    an operator setting `SESSION_SECRET_KEY` in a real `.env`, not by a
+    user logging in again. Never includes the secret's value (there isn't
+    one to include -- that's the whole point)."""
+    return AppError(
+        code=ErrorCode.AUTH_NOT_CONFIGURED,
+        message="Authentication is not configured on this server.",
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+    )

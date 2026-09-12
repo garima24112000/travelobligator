@@ -45,6 +45,15 @@ pydantic==2.13.3
 pydantic_core==2.46.3
 pydantic-settings==2.7.1
 python-dotenv==1.2.2
+# Auth foundation (Step 184B) -- bcrypt for salted password hashing
+# (backend/app/auth/passwords.py), itsdangerous for signed/expiring
+# session cookies (backend/app/auth/sessions.py). Neither is imported by
+# any route yet -- foundation only, mirroring the "dependency declared
+# before it's wired in" pattern already used by SQLAlchemy/Alembic below.
+# Plain bcrypt (not passlib) to avoid passlib's version-compatibility
+# friction with newer bcrypt releases.
+bcrypt==5.0.0
+itsdangerous==2.2.0
 psycopg[binary]==3.2.3
 # SQLAlchemy + Alembic (Step 183B) -- foundation only: a sync engine/
 # session factory (backend/app/db/session.py) and a migrations

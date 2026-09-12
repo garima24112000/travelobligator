@@ -400,7 +400,17 @@ class PlanningOrchestrator:
             return self._trip_repo_override
         return get_trip_repository()
 
-    def create_trip(self, trip_request: TripRequest) -> PlanningState:
+    def create_trip(
+        self, trip_request: TripRequest, owner_id: str | None = None
+    ) -> PlanningState:
+        """`owner_id` (Step 184D) is stored only on the `TripRecord`
+        (`self.trip_repository`) -- never on `PlanningState` itself,
+        which has no `owner_id` field and never will (ownership lives on
+        `trips` only, see docs/14_backend_architecture.md section 110).
+        `app/api/routes/trips.py`'s `create_trip` route always passes the
+        authenticated caller's `current_user.user_id` here; `None` is
+        only a backward-compatible default for any other caller (e.g. a
+        test constructing a trip without a real login)."""
         planning_state = PlanningState(trip_request=trip_request)
         planning_state.set_active_stage(PlanningStage.CREATE_TRIP)
         planning_state.set_pipeline_status(PipelineStatus.DRAFT)
@@ -414,7 +424,7 @@ class PlanningOrchestrator:
         # this just confirms the "blocked, no generated plan yet" gate.
         planning_state = self.regeneration_readiness_service.recompute(planning_state)
 
-        self.trip_repository.create(planning_state.trip_id)
+        self.trip_repository.create(planning_state.trip_id, owner_id=owner_id)
         self.planning_state_repository.save(planning_state)
         return planning_state
 

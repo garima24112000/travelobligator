@@ -16,6 +16,39 @@ export type ApiResponse<T> = {
   errors: ApiError[];
 };
 
+// Auth types (Step 184E; backend: app.models.user.PublicUser/AuthResponse).
+// `PublicUser` deliberately has no `password_hash`/session-token field --
+// the backend's own `PublicUser` model structurally excludes it, so there
+// is nothing to mask here, only nothing to declare.
+export type PublicUser = {
+  user_id: string;
+  email: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type AuthResponse = {
+  user: PublicUser;
+};
+
+// One row of `GET /trips`'s "My Trips" list (Step 184D backend, Step 184E
+// frontend; backend: app.schemas.trips.TripListItem). Deliberately small --
+// never the full PlanningState (that stays behind `GET /trips/{trip_id}`).
+export type TripListItem = {
+  trip_id: string;
+  status: string;
+  primary_destination: string | null;
+  origin_city: string | null;
+  start_date: string | null;
+  end_date: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type TripListResponseData = {
+  trips: TripListItem[];
+};
+
 export type TripRequestInput = {
   destination_scope: "single_city";
   primary_destination: string;

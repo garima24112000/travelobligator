@@ -123,12 +123,26 @@ def test_full_api_flow_uses_postgres_when_persistence_backend_is_postgres(
 ) -> None:
     """End-to-end proof that trips.py/PlanningOrchestrator's factory
     wiring genuinely reaches Postgres when opted in -- not just that the
-    repository classes work in isolation."""
+    repository classes work in isolation.
+
+    Step 184D: `/trips` now requires a real session, and `PERSISTENCE_
+    BACKEND=postgres` means `/auth/signup` itself is also backed by
+    `PostgresUserRepository` (the same factory every repository goes
+    through) -- so this test signs up for real against Postgres too,
+    proving the *entire* opted-in stack (auth included) works end to end,
+    not just trip persistence in isolation.
+    """
     monkeypatch.setenv("PERSISTENCE_BACKEND", "postgres")
     get_settings.cache_clear()
 
     client = TestClient(app)
     try:
+        signup_response = client.post(
+            "/auth/signup",
+            json={"email": f"test-184d-{uuid.uuid4().hex}@example.com", "password": "testpassword123"},
+        )
+        assert signup_response.status_code == 201, signup_response.text
+
         create_response = client.post("/trips", json=create_trip_payload())
         assert create_response.status_code == 201
         trip_id = create_response.json()["data"]["trip_id"]
