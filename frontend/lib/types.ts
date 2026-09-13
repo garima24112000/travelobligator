@@ -326,17 +326,26 @@ export type AccommodationOffer = {
 // "not_connected"` with an empty `offers` list, and the frontend never
 // invents a different value client-side. `hotel_ratings_*` fields (Step
 // 177C/177D) describe the separate hotel-ratings enrichment pass that may
-// run after the base offers are found -- all stay `null`/`0` whenever
-// enrichment was never attempted (e.g. no offers to enrich).
+// run after the base offers are found -- all stay `null`/`0`/`[]`
+// whenever enrichment was never attempted (e.g. no offers to enrich).
+// `warnings` (Step 185C) and `hotel_ratings_warnings` (Step 185F,
+// restating `HotelRatingsResult.warnings` from Step 185E) are additive,
+// per-source diagnostic detail for multi-source manual/local ingestion --
+// e.g. "hotelbeds: no local file configured/found" -- never themselves a
+// claim that a source succeeded or failed to fabricate data. Both default
+// to `[]`, so every result built before their own step stays fully
+// backward compatible.
 export type AccommodationInventoryReport = {
   provider: string;
   status: "success" | "not_connected" | "unavailable" | "failed";
   offers: AccommodationOffer[];
   message: string | null;
+  warnings: string[];
   hotel_ratings_status: "success" | "not_connected" | "unavailable" | "failed" | null;
   hotel_ratings_provider: string | null;
   hotel_ratings_message: string | null;
   hotel_ratings_enriched_offer_count: number;
+  hotel_ratings_warnings: string[];
 };
 
 // Provenance for one scraped (not official-provider) flight offer
@@ -410,12 +419,17 @@ export type FlightOffer = {
 // always `status: "unavailable"` with an empty `offers` list, and the
 // frontend never invents a different value client-side. Flights are never
 // scheduled into daily itinerary experiences -- this report is inventory
-// reporting only.
+// reporting only. `warnings` (Step 185D) is additive, per-source
+// diagnostic detail for multi-source manual/local ingestion -- e.g.
+// "kiwi_manual: no local file path configured" -- never itself a claim
+// that a source succeeded or failed to fabricate data. Defaults to `[]`,
+// so every result built before Step 185D stays fully backward compatible.
 export type FlightInventoryReport = {
   provider: string;
   status: "success" | "not_connected" | "unavailable" | "failed";
   offers: FlightOffer[];
   message: string | null;
+  warnings: string[];
 };
 
 export type DailyPlan = {

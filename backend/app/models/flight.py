@@ -145,12 +145,23 @@ class FlightSearchResult(BaseModel):
     `offers` may only be non-empty when `status == success` -- a
     `not_connected`/`unavailable`/`failed` result must never carry a
     fabricated or leftover offer alongside its honest failure status.
+
+    `warnings` (Step 185D) is additive, optional per-source detail for
+    multi-source flight ingestion (`ScrapedLocalFlightProvider`) -- e.g.
+    "google_flights: no local file configured/found" alongside an
+    overall `success` result from other sources that did produce real
+    offers. Empty by default, so every result built before Step 185D
+    (and every single-source result today) stays fully backward
+    compatible. Never itself a claim that a source succeeded or failed
+    to fabricate data -- purely a human-readable trace of what this call
+    actually checked.
     """
 
     provider: str
     status: FlightSearchStatus
     offers: list[FlightOffer] = Field(default_factory=list)
     message: str | None = None
+    warnings: list[str] = Field(default_factory=list)
     searched_at: datetime | None = None
 
     origin: str | None = None

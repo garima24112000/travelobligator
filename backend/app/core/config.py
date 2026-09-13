@@ -23,6 +23,11 @@ _ALLOWED_ACCOMMODATION_MANUAL_HTML_SOURCES = frozenset(
 _ALLOWED_FLIGHT_MANUAL_HTML_SOURCES = frozenset(
     {"generic", "skyscanner", "google_flights", "kiwi", "other"}
 )
+# Step 185B: mirrors the two constants above, for a future manual/local
+# hotel-ratings ingestion adapter (Step 185E's job to actually build).
+_ALLOWED_HOTEL_RATINGS_MANUAL_HTML_SOURCES = frozenset(
+    {"generic", "tripadvisor", "google_places", "other"}
+)
 
 # Step 183B: allowed values for the persistence backend gate. An
 # unrecognized value clamps to "local_json" (the safe, current-behavior
@@ -344,19 +349,113 @@ class Settings(BaseSettings):
         default="scraped_local", alias="ACCOMMODATION_PROVIDER"
     )
 
-    # Config gate for get_hotel_ratings_provider (Step 177B,
+    # Config gate for get_hotel_ratings_provider (Step 177B, wired to a
+    # real local/manual adapter in Step 185E,
     # docs/13_llm_reasoning_pipeline.md, docs/14_backend_architecture.md).
-    # "not_connected" (default, and the only supported value as of Step
-    # 177B) -- see backend/app/providers/hotel_ratings/factory.py. An
-    # unsupported/unrecognized value falls back to "not_connected" rather
-    # than raising or fabricating rating data. No real Google Places/
-    # Tripadvisor/Amadeus/Yelp rating provider is wired in yet -- every
-    # such adapter would require its own conservative identity-matching
-    # design (no fuzzy matching), deferred to a later step. Not wired
-    # into ProviderGateway, PlanningOrchestrator, or
-    # AccommodationInventoryService yet.
+    # "not_connected" (default), "scraped_local", and "manual_html" (an
+    # alias for "scraped_local", mirroring `accommodation_provider`/
+    # `flight_provider`'s identical alias convention) are the only
+    # supported values -- see backend/app/providers/hotel_ratings/factory.py.
+    # An unsupported/unrecognized value falls back to "not_connected"
+    # rather than raising or fabricating rating data. No real Google
+    # Places/Tripadvisor/Amadeus/Yelp *live* rating provider is wired in --
+    # "scraped_local"/"manual_html" only ever read an already-supplied
+    # local HTML file (see `ScrapedLocalHotelRatingsProvider`), never a
+    # live network call; every such adapter's identity matching is
+    # conservative (no fuzzy matching). Wired into
+    # `AccommodationInventoryService` via `HotelRatingEnrichmentService`
+    # (Step 177C) -- still not read by `ProviderGateway`/
+    # `PlanningOrchestrator` directly.
     hotel_ratings_provider: str = Field(
         default="not_connected", alias="HOTEL_RATINGS_PROVIDER"
+    )
+
+    # Step 185B, wired to a real adapter in Step 185E. Mirrors
+    # `scraped_accommodation_provider_enabled`/
+    # `scraped_flight_provider_enabled` exactly: gates
+    # `ScrapedLocalHotelRatingsProvider` independently of
+    # `hotel_ratings_provider` selecting it -- both must be satisfied
+    # (`scraping_enabled` too) for a real local-file read to happen.
+    # Enabled by default for MVP local/manual testing; still never
+    # fabricates a rating with no file present -- see that adapter's own
+    # docstring.
+    scraped_hotel_ratings_provider_enabled: bool = Field(
+        default=True, alias="SCRAPED_HOTEL_RATINGS_PROVIDER_ENABLED"
+    )
+
+    # Step 185B, read by a real adapter as of Step 185E. Mirrors
+    # `accommodation_manual_html_source`/`flight_manual_html_source`.
+    # "generic" (default), "tripadvisor", "google_places", or "other" --
+    # an unrecognized value falls back to "generic".
+    # `resolve_manual_source_policy` (backend/app/providers/
+    # scraping_source_registry_defaults.py) resolves this label against
+    # the populated registry for display naming only -- it never selects
+    # a different provider, never enables a live API call, and never
+    # implies the labeled site's official API/site was actually used.
+    hotel_ratings_manual_html_source: str = Field(
+        default="generic", alias="HOTEL_RATINGS_MANUAL_HTML_SOURCE"
+    )
+
+    # Step 185B, read by a real adapter as of Step 185E. Mirrors
+    # `scraped_accommodation_html_path`/`scraped_flight_html_path`.
+    scraped_hotel_ratings_html_path: str | None = Field(
+        default=".data/manual_scrapes/hotel_ratings.html",
+        alias="SCRAPED_HOTEL_RATINGS_HTML_PATH",
+    )
+    scraped_hotel_ratings_source_id: str = Field(
+        default="manual_local_scraped_hotel_ratings",
+        alias="SCRAPED_HOTEL_RATINGS_SOURCE_ID",
+    )
+    scraped_hotel_ratings_source_name: str = Field(
+        default="Manual local scraped hotel ratings source",
+        alias="SCRAPED_HOTEL_RATINGS_SOURCE_NAME",
+    )
+    scraped_hotel_ratings_base_url: str | None = Field(
+        default=None, alias="SCRAPED_HOTEL_RATINGS_BASE_URL"
+    )
+
+    # Cache for the local/manual scraped hotel ratings provider (Step
+    # 185E), mirroring `scraped_accommodation_cache_enabled`/
+    # `scraped_flight_cache_enabled` exactly. Caches only the normalized
+    # `HotelRatingsResult` payload -- never the raw HTML file content.
+    # Enabled by default because caching itself never causes a network
+    # call or changes what data is returned, only how often the local
+    # file is re-read/re-parsed; the cache key includes every configured
+    # source file's mtime/size plus the incoming requests' own identity
+    # fields, so an edited local file (or a different set of accommodation
+    # offers to look ratings up for) is never served a stale cached
+    # result.
+    scraped_hotel_ratings_cache_enabled: bool = Field(
+        default=True, alias="SCRAPED_HOTEL_RATINGS_CACHE_ENABLED"
+    )
+    scraped_hotel_ratings_cache_ttl_seconds: int = Field(
+        default=3600, alias="SCRAPED_HOTEL_RATINGS_CACHE_TTL_SECONDS", ge=0
+    )
+
+    # Step 185E: optional, independent per-source local file paths --
+    # multi-source hotel-ratings ingestion, mirroring Step 185C/185D's
+    # accommodation/flight equivalents. Each defaults to its own real path
+    # under `.data/manual_scrapes/`, never created automatically, so
+    # "every source is eligible by default" without fabricating anything:
+    # with no file actually present at either path (the out-of-the-box
+    # state), `ScrapedLocalHotelRatingsProvider` honestly reports that
+    # source as missing, exactly like the original single-file path.
+    # These are independent of, and additive to, the pre-existing
+    # single-file `scraped_hotel_ratings_html_path`/
+    # `hotel_ratings_manual_html_source` pair (Step 185B) -- supplying
+    # only the original single file still works exactly as before.
+    # `google_places_ratings` here is a manual/local file label only --
+    # Google Places is never called live anywhere in this codebase; see
+    # `app.providers.scraping_source_registry_defaults`'s
+    # `google_places_ratings` entry for why it is tracked as a future
+    # *official-API* candidate rather than a scraping target.
+    scraped_hotel_ratings_html_path_tripadvisor: str | None = Field(
+        default=".data/manual_scrapes/hotel_ratings_tripadvisor.html",
+        alias="SCRAPED_HOTEL_RATINGS_HTML_PATH_TRIPADVISOR",
+    )
+    scraped_hotel_ratings_html_path_google_places_ratings: str | None = Field(
+        default=".data/manual_scrapes/hotel_ratings_google_places_ratings.html",
+        alias="SCRAPED_HOTEL_RATINGS_HTML_PATH_GOOGLE_PLACES_RATINGS",
     )
 
     # Scraping policy foundation (Step 168A, default flipped to enabled in
@@ -456,6 +555,49 @@ class Settings(BaseSettings):
         default="generic", alias="ACCOMMODATION_MANUAL_HTML_SOURCE"
     )
 
+    # Step 185C: optional, independent per-source local file paths --
+    # multi-source accommodation ingestion. Each defaults to its own real
+    # path under `.data/manual_scrapes/` (mirroring
+    # `scraped_accommodation_html_path` above), never created
+    # automatically, so "every source is eligible by default" without
+    # fabricating anything: with no file actually present at any of these
+    # paths (the out-of-the-box state), `ScrapedAccommodationProvider`
+    # honestly reports that source as missing, exactly like the original
+    # single-file path. Setting one of these to `None` explicitly disables
+    # that source's slot entirely (mirrors `scraped_accommodation_html_path
+    # =None`'s existing "explicitly cleared" behavior). These are
+    # independent of, and additive to, the pre-existing single-file
+    # `scraped_accommodation_html_path`/`accommodation_manual_html_source`
+    # pair -- supplying only the original single file (the pre-185C
+    # default) still works exactly as before; see
+    # `ScrapedAccommodationProvider`'s own docstring for the deterministic
+    # precedence used when both a per-source path and the legacy
+    # single-file path happen to resolve to the same real file.
+    scraped_accommodation_html_path_booking: str | None = Field(
+        default=".data/manual_scrapes/accommodations_booking.html",
+        alias="SCRAPED_ACCOMMODATION_HTML_PATH_BOOKING",
+    )
+    scraped_accommodation_html_path_expedia: str | None = Field(
+        default=".data/manual_scrapes/accommodations_expedia.html",
+        alias="SCRAPED_ACCOMMODATION_HTML_PATH_EXPEDIA",
+    )
+    scraped_accommodation_html_path_hotelbeds: str | None = Field(
+        default=".data/manual_scrapes/accommodations_hotelbeds.html",
+        alias="SCRAPED_ACCOMMODATION_HTML_PATH_HOTELBEDS",
+    )
+    scraped_accommodation_html_path_hostelworld: str | None = Field(
+        default=".data/manual_scrapes/accommodations_hostelworld.html",
+        alias="SCRAPED_ACCOMMODATION_HTML_PATH_HOSTELWORLD",
+    )
+    scraped_accommodation_html_path_vrbo: str | None = Field(
+        default=".data/manual_scrapes/accommodations_vrbo.html",
+        alias="SCRAPED_ACCOMMODATION_HTML_PATH_VRBO",
+    )
+    scraped_accommodation_html_path_airbnb: str | None = Field(
+        default=".data/manual_scrapes/accommodations_airbnb.html",
+        alias="SCRAPED_ACCOMMODATION_HTML_PATH_AIRBNB",
+    )
+
     # Config gate for get_flight_provider (Step 169B,
     # docs/12_provider_architecture.md, docs/14_backend_architecture.md).
     # "not_connected" and "scraped_local" (default) are the only supported
@@ -538,6 +680,33 @@ class Settings(BaseSettings):
     # live Kiwi MCP data. An unrecognized value falls back to `"generic"`.
     flight_manual_html_source: str = Field(
         default="generic", alias="FLIGHT_MANUAL_HTML_SOURCE"
+    )
+
+    # Step 185D: optional, independent per-source local file paths --
+    # multi-source flight ingestion, mirroring Step 185C's accommodation
+    # equivalent (`scraped_accommodation_html_path_booking` and friends).
+    # Each defaults to its own real path under `.data/manual_scrapes/`,
+    # never created automatically, so "every source is eligible by
+    # default" without fabricating anything: with no file actually
+    # present, that source is honestly recorded as missing (see
+    # `FlightSearchResult.warnings`) rather than blocking any other
+    # source that *does* have a file. These are independent of, and
+    # additive to, `scraped_flight_html_path`/`flight_manual_html_source`
+    # above -- supplying only the original single file (the pre-185D
+    # default) still works exactly as before. `kiwi_manual` here is a
+    # manual/local file label only, completely distinct from
+    # `flight_provider="kiwi_mcp"`/`kiwi_mcp_enabled` below.
+    scraped_flight_html_path_skyscanner: str | None = Field(
+        default=".data/manual_scrapes/flights_skyscanner.html",
+        alias="SCRAPED_FLIGHT_HTML_PATH_SKYSCANNER",
+    )
+    scraped_flight_html_path_google_flights: str | None = Field(
+        default=".data/manual_scrapes/flights_google_flights.html",
+        alias="SCRAPED_FLIGHT_HTML_PATH_GOOGLE_FLIGHTS",
+    )
+    scraped_flight_html_path_kiwi_manual: str | None = Field(
+        default=".data/manual_scrapes/flights_kiwi_manual.html",
+        alias="SCRAPED_FLIGHT_HTML_PATH_KIWI_MANUAL",
     )
 
     # Kiwi MCP flight provider foundation (Step 178B,
@@ -713,6 +882,11 @@ class Settings(BaseSettings):
     def _normalize_flight_manual_html_source(cls, value: str) -> str:
         return value if value in _ALLOWED_FLIGHT_MANUAL_HTML_SOURCES else "generic"
 
+    @field_validator("hotel_ratings_manual_html_source", mode="after")
+    @classmethod
+    def _normalize_hotel_ratings_manual_html_source(cls, value: str) -> str:
+        return value if value in _ALLOWED_HOTEL_RATINGS_MANUAL_HTML_SOURCES else "generic"
+
     @field_validator("persistence_backend", mode="after")
     @classmethod
     def _normalize_persistence_backend(cls, value: str) -> str:
@@ -761,6 +935,35 @@ class Settings(BaseSettings):
         path = Path(self.scraped_accommodation_html_path)
         return path if path.is_absolute() else _BACKEND_ROOT / path
 
+    def resolved_scraped_accommodation_html_paths_by_source(self) -> dict[str, Path | None]:
+        """Step 185C: multi-source accommodation ingestion -- resolves
+        every independent per-source local file path
+        (`scraped_accommodation_html_path_booking`/`_expedia`/
+        `_hotelbeds`/`_hostelworld`/`_vrbo`/`_airbnb`) the same way
+        `resolved_scraped_accommodation_html_path` resolves the original
+        single-file setting: a relative value resolves against the
+        backend project root, and `None` (explicitly cleared) stays
+        `None`. Returns one entry per source regardless of whether a real
+        file exists there -- callers must not assume any of these paths
+        actually exist; `ScrapedAccommodationProvider` is the one place
+        that checks.
+        """
+
+        def _resolve(value: str | None) -> Path | None:
+            if value is None:
+                return None
+            path = Path(value)
+            return path if path.is_absolute() else _BACKEND_ROOT / path
+
+        return {
+            "booking": _resolve(self.scraped_accommodation_html_path_booking),
+            "expedia": _resolve(self.scraped_accommodation_html_path_expedia),
+            "hotelbeds": _resolve(self.scraped_accommodation_html_path_hotelbeds),
+            "hostelworld": _resolve(self.scraped_accommodation_html_path_hostelworld),
+            "vrbo": _resolve(self.scraped_accommodation_html_path_vrbo),
+            "airbnb": _resolve(self.scraped_accommodation_html_path_airbnb),
+        }
+
     def resolved_scraped_flight_html_path(self) -> Path | None:
         """Local, manually-supplied scraped-flight HTML file path (Step
         169B) -- never a live website URL. Mirrors
@@ -777,6 +980,67 @@ class Settings(BaseSettings):
             return None
         path = Path(self.scraped_flight_html_path)
         return path if path.is_absolute() else _BACKEND_ROOT / path
+
+    def resolved_scraped_flight_html_paths_by_source(self) -> dict[str, Path | None]:
+        """Step 185D: multi-source flight ingestion -- resolves every
+        independent per-source local file path
+        (`scraped_flight_html_path_skyscanner`/`_google_flights`/
+        `_kiwi_manual`) the same way
+        `resolved_scraped_accommodation_html_paths_by_source` resolves
+        its accommodation equivalents. Returns one entry per source
+        regardless of whether a real file exists there -- callers must
+        not assume any of these paths actually exist;
+        `ScrapedLocalFlightProvider` is the one place that checks.
+        """
+
+        def _resolve(value: str | None) -> Path | None:
+            if value is None:
+                return None
+            path = Path(value)
+            return path if path.is_absolute() else _BACKEND_ROOT / path
+
+        return {
+            "skyscanner": _resolve(self.scraped_flight_html_path_skyscanner),
+            "google_flights": _resolve(self.scraped_flight_html_path_google_flights),
+            "kiwi_manual": _resolve(self.scraped_flight_html_path_kiwi_manual),
+        }
+
+    def resolved_scraped_hotel_ratings_html_path(self) -> Path | None:
+        """Local, manually-supplied scraped-hotel-ratings HTML file path
+        (Step 185B, wired to a real adapter in Step 185E) -- never a live
+        website URL. Mirrors `resolved_scraped_accommodation_html_path`/
+        `resolved_scraped_flight_html_path` exactly. Returns `None` when
+        unset.
+        """
+        if self.scraped_hotel_ratings_html_path is None:
+            return None
+        path = Path(self.scraped_hotel_ratings_html_path)
+        return path if path.is_absolute() else _BACKEND_ROOT / path
+
+    def resolved_scraped_hotel_ratings_html_paths_by_source(self) -> dict[str, Path | None]:
+        """Step 185E: multi-source hotel-ratings ingestion -- resolves
+        every independent per-source local file path
+        (`scraped_hotel_ratings_html_path_tripadvisor`/
+        `_google_places_ratings`) the same way
+        `resolved_scraped_flight_html_paths_by_source` resolves its flight
+        equivalents. Returns one entry per source regardless of whether a
+        real file exists there -- callers must not assume any of these
+        paths actually exist; `ScrapedLocalHotelRatingsProvider` is the
+        one place that checks.
+        """
+
+        def _resolve(value: str | None) -> Path | None:
+            if value is None:
+                return None
+            path = Path(value)
+            return path if path.is_absolute() else _BACKEND_ROOT / path
+
+        return {
+            "tripadvisor": _resolve(self.scraped_hotel_ratings_html_path_tripadvisor),
+            "google_places_ratings": _resolve(
+                self.scraped_hotel_ratings_html_path_google_places_ratings
+            ),
+        }
 
 
 @lru_cache

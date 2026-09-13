@@ -78,6 +78,12 @@ class ScrapingSourcePolicy(BaseModel):
     # policy silently gains flight-scraping permission just because this
     # field was added.
     allows_flights: bool = False
+    # Step 185B -- gates a future ratings/review parser (Step 185E's job)
+    # the same way `allows_lodging`/`allows_flights` gate their own
+    # parsers. Defaults to `False`, matching every other `allows_*` flag:
+    # no existing source policy silently gains review-scraping permission
+    # just because this field was added.
+    allows_reviews: bool = False
 
     requires_login: bool = False
     paywalled: bool = False

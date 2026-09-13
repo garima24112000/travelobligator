@@ -3694,3 +3694,582 @@ was implemented. No scraping (live or local-file) was added or changed --
 the manual/local HTML parsers still only ever read a file the user
 already supplied. No hotel, flight, rating, price, route, schedule, or
 booking link was fabricated.
+
+## 64. Populated Scraping Source Registry and Hotel-Ratings Manual-Ingestion Config Foundation (Step 185B)
+
+Step 185A's audit found that `app.models.scraping.ScrapingSourcePolicy`/
+`ScrapingSourceRegistry` (Step 168A) were a fully-built, tested safety
+contract with zero real entries -- `default_scraping_source_registry`
+stays empty by design, and the two scraped adapters each build their own
+ad-hoc inline `ScrapingSourcePolicy` rather than consulting it. Step 185B
+closes that gap without adding any live fetcher, browser automation, or
+source-specific parser (those are Step 185C/185D/185E's job).
+
+**New module: `backend/app/providers/scraping_source_registry_defaults.py`.**
+Populates a *separate* registry instance (`default_scraping_source_
+registry` in this new module -- never the empty one in `app.models.
+scraping`, which stays empty per its own existing test) with 14 real
+`ScrapingSourcePolicy` entries: 6 accommodation (`booking`, `expedia`,
+`hotelbeds`, `hostelworld`, `vrbo`, `airbnb`), 3 flight (`skyscanner`,
+`google_flights`, `kiwi_manual`), 2 ratings (`tripadvisor`,
+`google_places_ratings`), and 3 generic fallbacks (`generic_
+accommodation`, `generic_flight`, `generic_hotel_ratings`). Every one of
+the 14 is `enabled=False` -- representing a source and approving it for
+a future live fetch are deliberately different things, and this step
+only ever does the former; `active_sources()` returns `[]` for the whole
+populated registry.
+
+Classification follows Step 185A's audit exactly: the six sites CLAUDE.md's
+Core Rules name as restricted (Booking.com, Expedia, Vrbo, Airbnb,
+Tripadvisor, Google Flights) plus the three not-yet-human-reviewed sites
+(Hotelbeds, Hostelworld, Skyscanner) are all recorded
+`approved_for_personal_use=False` -- for the restricted six, that's a
+project-policy fact; for the other three, it's an honest "nobody has
+checked robots.txt/ToS for a specific page yet," not a claim about their
+technical bot-detection. Deliberately, `requires_login`/`paywalled`/
+`captcha_expected` stay `False` on every entry in this module -- this
+codebase never asserts an unverified technical claim about a real site
+it hasn't inspected; `approved_for_personal_use=False` alone is what
+keeps each one `is_unsafe` (see `ScrapingSourcePolicy.is_unsafe`'s
+existing `or not self.approved_for_personal_use` clause). The three
+`generic_*` entries are the only ones that could honestly be
+`approved_for_personal_use=True` -- no real site's identity is claimed by
+an anonymous locally-supplied file, so there is nothing to restrict;
+they still default `enabled=False` purely because no live fetcher exists
+in this codebase at all, not because anything about them is unsafe.
+
+`kiwi_manual` is a deliberately separate registry entry from the real,
+live `flight_provider="kiwi_mcp"` integration
+(`app/providers/flights/kiwi_mcp_adapter.py`) -- it only ever describes a
+manually-labeled local file, and a dedicated test confirms this module
+never imports anything from the `kiwi_mcp_*` modules. `google_places_
+ratings` is included per explicit request as a tracked *future,
+official-API* candidate (reusing the existing `GOOGLE_PLACES_API_KEY`
+already used elsewhere for open-data POI candidates), not a scraping
+target -- recorded with the same disabled shape as every other
+not-yet-implemented source purely for registry consistency.
+
+**Model change**: `ScrapingSourcePolicy` gained `allows_reviews: bool =
+False`, mirroring the existing `allows_lodging`/`allows_flights` fields
+exactly (added in Steps 168A/169C) -- gates a future ratings/review
+parser (Step 185E's job) the same way those two gate their own parsers.
+
+**Registry helpers**: `get_default_scraping_source_registry()` (returns
+the populated registry), `get_scraping_source_policy(source_id)` (single
+lookup by id, `None` if unregistered), and `resolve_manual_source_
+policy(category, source_label)` (resolves a `*_MANUAL_HTML_SOURCE` config
+label to its registered policy, scoped to `"accommodation"`/`"flight"`/
+`"hotel_ratings"`, falling back to that category's generic policy for an
+unrecognized category/label -- never raises, never returns `None`). None
+of the three ever perform a network call or import `app.core.config` --
+confirmed by dedicated tests, so this module is safe to import during
+test collection with zero risk of real-`.env` contamination.
+
+**Accommodation/flight adapter wiring**: `ScrapedAccommodationProvider`/
+`ScrapedLocalFlightProvider`'s `_effective_source_identity` helpers now
+resolve a non-generic `*_MANUAL_HTML_SOURCE` label's *display name*
+(`source_name`) through `resolve_manual_source_policy` instead of a small
+inline dict -- output text is byte-for-byte identical to before this
+step (verified by the full pre-existing test suite passing unchanged,
+plus new parametrized tests covering all 6 accommodation and all 3
+flight labels). The `ScrapingSourcePolicy` each adapter constructs for
+its own *actual local-file-read operation* is unrelated and intentionally
+unchanged: it still self-declares `enabled=True, approved_for_personal_
+use=True, requires_login=False, paywalled=False, captcha_expected=False`
+regardless of which brand is labeled, because reading a file the operator
+already supplied is categorically safe -- a completely different question
+from whether the labeled brand's own live website is approved for
+scraping (it is not, for every real brand in the registry). This is the
+key design decision of this step: consulting the registry for *display
+naming* must never be confused with deriving the adapter's own operational
+safety policy from it, which would have incorrectly blocked every named
+label from working at all. No source-specific *parsing* exists yet --
+every label still produces offers via the one existing generic HTML
+micro-format parser.
+
+`"generic"` (accommodation) and `"generic"`/`"other"` (flight) still mean
+"no relabeling," handled as an explicit early return before any registry
+lookup happens -- fixed a subtlety while wiring this in: naively resolving
+`"other"` through the registry would have returned the generic *registry
+entry's* display name ("Manual local scraped flight source") instead of
+leaving the operator's own configured `source_id`/`source_name`
+untouched, which a dedicated regression test now guards against.
+
+**Hotel ratings config-only foundation**: three new `Settings` fields --
+`scraped_hotel_ratings_provider_enabled` (default `True`, mirrors
+`scraped_accommodation_provider_enabled`/`scraped_flight_provider_
+enabled`), `hotel_ratings_manual_html_source` (default `"generic"`,
+allowed values `generic`/`tripadvisor`/`google_places`/`other`, same
+clamp-to-generic-on-unrecognized-value convention as the other two
+`*_manual_html_source` fields), and `scraped_hotel_ratings_html_path`
+(default `.data/manual_scrapes/hotel_ratings.html`, plus a
+`resolved_scraped_hotel_ratings_html_path()` method mirroring the
+existing two). All three have zero runtime effect today --
+`hotel_ratings_provider` still only supports `"not_connected"` (see
+`backend/app/providers/hotel_ratings/factory.py`, unchanged this step) --
+they exist purely so `.env`/`.env.example` already have the right shape,
+and `resolve_manual_source_policy("hotel_ratings", ...)` already has real
+registry entries to resolve against, once Step 185E adds a real
+`ScrapedHotelRatingsProvider`.
+
+**Tests**: 60 new tests -- `test_scraping_source_registry_defaults.py`
+(31 tests: population, restricted/unreviewed/generic classification,
+`active_sources()` emptiness, `kiwi_manual`/`kiwi_mcp` distinctness, no
+official-provider-claim field, no unverified bypass-flag assertions,
+`resolve_manual_source_policy` behavior for every category/label
+combination, import-safety, and a banned-overclaiming-phrase sweep over
+every registered source's name/notes), 19 in `test_hotel_ratings_
+config.py` (new fields' defaults/overrides/normalization/path
+resolution), plus parametrized additions to `test_scraped_accommodation_
+adapter.py` and `test_scraped_flight_cache.py` covering every named label
+resolving through the registry, missing-file/disabled-flag behavior
+unchanged, and confirming no named brand's registry `enabled`/
+`approved_for_personal_use` verdict ever leaks into the adapter's own
+operational policy. Full suite: 2810 passed + 10 skipped (up from 2750
+passed), `tsc`/`lint`/`build` all clean, zero frontend files touched. No
+live fetcher, browser automation, Playwright/Selenium dependency, real
+API key, or fake provider/rating data was added anywhere in this step.
+
+## 65. Accommodation Source-Specific Parsers and Multi-Source Ingestion (Step 185C)
+
+Step 185B populated the scraping source registry and wired the two
+existing adapters to consult it for display naming; it explicitly did
+not add any source-specific parsing or a way to combine more than one
+local file. Step 185C does both, for accommodation only (flights/ratings
+are Step 185D/185E's job), still adding zero live fetching, zero browser
+automation, and zero new dependency.
+
+**New package `backend/app/providers/accommodation/source_parsers/`**:
+seven modules -- `generic.py` plus one per brand (`booking.py`,
+`expedia.py`, `hotelbeds.py`, `hostelworld.py`, `vrbo.py`, `airbnb.py`).
+Every module is a pure `html: str -> AccommodationSearchResult`
+transform with the identical public signature; none opens a file, opens
+a socket, or imports requests/httpx/Playwright/Selenium. Each brand
+module recognizes the exact same Step 168B generic `property-card`
+micro-format, with one addition: a card may carry an optional synthetic
+`data-source="<brand>"` attribute. A brand's own parser includes a card
+if that attribute is absent (untagged cards always "delegate to
+generic" -- every existing fixture/test, which has no such attribute at
+all, is completely unaffected) or matches its own brand exactly; a card
+explicitly tagged for a *different* brand is excluded. `generic.py`
+applies no filter at all, preserving the pre-185C generic parser's exact
+behavior byte-for-byte. This filter lives in `scraped_parser.py` itself
+as a new optional `required_data_source` parameter on
+`parse_scraped_accommodation_html` (default `None` -- every pre-185C
+caller, and `generic.py`, pass nothing and get the unfiltered original
+behavior) -- one shared HTML-walking implementation, not six duplicated
+parser classes. Each module imports `scraped_parser` as a module object
+(`from app.providers.accommodation import scraped_parser as
+_scraped_parser`) rather than `from ... import parse_scraped_
+accommodation_html`, specifically so the canonical function remains
+monkeypatchable from any test regardless of how many wrapper modules sit
+between the adapter and it -- this is what let the pre-existing
+`_install_counting_parse`-style cache tests be updated (not silently
+broken) to patch the true shared function once, rather than needing a
+separate patch per source module.
+
+**Parser selection**: `get_accommodation_source_parser(source_id)`
+resolves a brand name to its module's `.parse` function via a
+module-object lookup table (`_PARSER_MODULES`), evaluated fresh on every
+call -- not a captured function reference frozen at import time -- so
+`monkeypatch.setattr(source_parsers.booking, "parse", fake)` in a test
+is honored immediately. An unknown/unrecognized `source_id` falls back
+to `generic.parse`, never raises. A sibling
+`get_accommodation_source_parser_version(source_id)` resolves the same
+way for each module's own `PARSER_VERSION` constant (e.g.
+`"accommodation_source_parser_booking_v1"`), used only to keep the
+provider's cache key sensitive to per-source parser-logic changes.
+Parser selection never changes provenance into official-provider data --
+every module, generic included, still produces offers through the one
+underlying function whose `ScrapedDataProvenance.official_provider` is
+structurally `Literal[False]`.
+
+**Multi-source config**: six new, fully independent `Settings` fields --
+`scraped_accommodation_html_path_booking`/`_expedia`/`_hotelbeds`/
+`_hostelworld`/`_vrbo`/`_airbnb` -- each defaulting to its own real path
+under `.data/manual_scrapes/` (e.g. `accommodations_booking.html`),
+never created automatically, mirroring `scraped_accommodation_html_path`
+exactly. A new `resolved_scraped_accommodation_html_paths_by_source()`
+method resolves all six against the backend project root in one call.
+Every default path is a distinct filename, so the out-of-the-box
+configuration can never collide with itself or with the pre-existing
+single-file setting.
+
+**`ScrapedAccommodationProvider` rewritten for multi-source aggregation**
+around a new `_resolve_slots()` function that builds the full list of
+local-file "slots" to attempt in one call: the original "legacy" slot
+(`scraped_accommodation_html_path` + `accommodation_manual_html_source`)
+plus the six independent per-brand slots, deduplicated by resolved
+absolute path. Deterministic precedence: if the legacy slot's path
+exactly matches one of the six brand slots' own path, the dedicated
+brand slot wins and the legacy slot is dropped (never double-counting
+offers from the same real file under two labels); among the six brand
+slots themselves, first-in-`_BRAND_SOURCE_IDS`-order wins any further
+collision. With every setting left at its default, no collision is
+possible at all. For each slot, the adapter still self-declares its own
+`ScrapingSourcePolicy` as `enabled=True, approved_for_personal_use=True`
+regardless of brand -- this is the key design invariant carried over
+from Step 185B: reading a locally-supplied file is a categorically safe
+operation, wholly separate from whether that brand's *live website* is
+approved for scraping (it is not, for every real brand, per the Step
+185B registry) -- consulting the registry here is for slot display
+naming only, never for gating whether the slot's own file may be read.
+
+**Aggregation rule** (implemented in `_parse_all_slots`): every
+successful slot's offers are concatenated into one result; a slot with
+no configured path, a missing file, an empty/no-property-card file, or a
+policy refusal is recorded as one line in a new `AccommodationSearchResult.
+warnings: list[str]` field (Step 185C's one small additive model change,
+default `[]`, fully backward compatible) rather than being silently
+dropped or downgrading an otherwise-successful result -- "do not
+downgrade the whole result just because one optional source is missing"
+is the core rule this implements. Status resolution: at least one
+success -> overall `success` (offers merged, warnings list every other
+source's honest reason); zero success but at least one hard parse
+failure -> overall `failed` (names which source(s) failed); zero success
+and zero failure (every configured source simply missing/empty) ->
+overall `unavailable`, message naming every path actually checked. A
+slot's parser call is individually wrapped in its own `try`/`except` --
+defensive hardening this step added after a test caught that an
+unexpected exception from one slot's parser would otherwise crash the
+whole multi-source request instead of being isolated to that one slot
+(the existing `parse_scraped_accommodation_html` already catches its own
+internal errors and never raises in practice, but the adapter must not
+assume every current or future source-parser module upholds that).
+
+**Cache**: one combined `query_hash` per call, built from the request
+fields plus *every slot's* `(source_id, parser_key, parser_version,
+path, exists, mtime_ns, size)` tuple -- changing any one slot's file (or
+adding/removing a slot's file) changes the hash, so editing the Booking
+file, say, never serves a stale result that still reflects an old
+Expedia-only cache entry, and vice versa. Only the final aggregate
+`success` result is ever cached, exactly as before this step; `not_
+connected`/`unavailable`/`failed` are never cached.
+
+**Tests**: 117 new tests across a new `test_accommodation_source_
+parsers.py` (90: happy path/field-extraction/delegation-to-generic/
+brand-exclusion/mixed-HTML/no-official-provider-claim/malformed-HTML/
+unsafe-policy-refusal/selection-helper/banned-overclaiming-phrase/
+disallowed-import coverage for every one of the seven parser modules), a
+new `test_scraped_accommodation_multi_source.py` (13: backward
+compatibility, multi-file merging, missing-optional-source isolation,
+all-six-plus-generic coexistence, malformed-source isolation, booking-
+links-never-confirmations, cache separation, no-network-call, and
+deterministic legacy/brand path-collision precedence), plus extensions
+to `test_accommodation_config.py` (per-source path defaults/overrides/
+clearing/resolution/distinctness) and two pre-existing cache tests
+updated (not weakened) to patch the new, correct monkeypatch target
+after the adapter stopped calling `parse_scraped_accommodation_html`
+directly. Full suite: 2927 passed + 10 skipped (up from 2810 passed),
+`tsc`/`lint`/`build` all clean, zero frontend files touched. No live
+fetcher, browser automation, Playwright/Selenium dependency, real API
+key, or fake accommodation data was added anywhere in this step; flight
+and hotel-ratings behavior are completely untouched.
+
+## 66. Flight Source-Specific Parsers and Multi-Source Ingestion (Step 185D)
+
+Step 185C did this for accommodation only; Step 185D applies the exact
+same architecture to flights -- three named sources (Skyscanner, Google
+Flights, Kiwi-manual) plus the existing generic fallback -- still adding
+zero live fetching, zero browser automation, and zero new dependency,
+and with special care to keep the new `kiwi_manual` manual/local parser
+structurally and behaviorally distinct from the real, live Kiwi MCP
+integration (`FLIGHT_PROVIDER=kiwi_mcp`), which this step does not touch
+at all.
+
+**New package `backend/app/providers/flights/source_parsers/`**: four
+modules -- `generic.py`, `skyscanner.py`, `google_flights.py`,
+`kiwi_manual.py`. Every module is a pure `html: str ->
+FlightSearchResult` transform with the identical public signature; none
+opens a file, opens a socket, or imports requests/httpx/Playwright/
+Selenium. Each brand module recognizes the existing generic flight-offer
+micro-format, with one addition mirroring 185C exactly: an offer card
+may carry an optional synthetic `data-source="<brand>"` attribute. A
+brand's own parser includes a card if that attribute is absent (untagged
+cards always delegate to generic, so every pre-185D fixture/test is
+unaffected) or matches its own brand exactly; a card tagged for a
+*different* brand is excluded. `generic.py` applies no filter, preserving
+the pre-185D generic flight parser's exact behavior byte-for-byte. This
+filter lives in `scraped_parser.py` itself as a new optional
+`required_data_source` parameter on `parse_scraped_flight_html` (default
+`None`), the flight-side twin of 185C's accommodation change. Each
+module imports `scraped_parser` as a module object (`from
+app.providers.flights import scraped_parser as _scraped_parser`) rather
+than importing the function by name, for the same monkeypatchability
+reason as 185C. `kiwi_manual.py` additionally asserts, inside its own
+`parse()` before returning, that every offer's `provider` field is never
+`"kiwi_mcp"` -- a defensive, structural guarantee on top of the fact
+that it never imports any `kiwi_mcp` module at all (confirmed by an
+AST-based import-safety test).
+
+**Parser selection**: `get_flight_source_parser(source_id)` and
+`get_flight_source_parser_version(source_id)` mirror the accommodation
+selection helpers exactly -- a module-object lookup table evaluated
+fresh on every call, unknown/unrecognized source falls back to
+`generic.parse` (never raises), and parser selection never changes
+provenance into official-provider data (`ScrapedDataProvenance.
+official_provider` stays structurally `Literal[False]` for every
+module). The adapter, not the selector, is responsible for remapping the
+legacy config label `"kiwi"` to the registry/parser key `"kiwi_manual"`
+before calling the selector -- the selector itself never recognizes bare
+`"kiwi"` or `"kiwi_mcp"` as a source id.
+
+**Multi-source config**: three new, fully independent `Settings` fields
+-- `scraped_flight_html_path_skyscanner`/`_google_flights`/
+`_kiwi_manual` -- each defaulting to its own real path under
+`.data/manual_scrapes/` (e.g. `flights_skyscanner.html`), never created
+automatically, mirroring `scraped_flight_html_path` exactly. A new
+`resolved_scraped_flight_html_paths_by_source()` method resolves all
+three against the backend project root in one call. Every default path
+is a distinct filename, so the out-of-the-box configuration can never
+collide with itself or with the pre-existing single-file setting.
+
+**`ScrapedLocalFlightProvider` rewritten for multi-source aggregation**
+around the same `_resolve_slots()` pattern as 185C: the original
+"legacy" slot (`scraped_flight_html_path` + `flight_manual_html_source`,
+with the legacy label `"kiwi"` remapped to parser/registry key
+`"kiwi_manual"` and `"other"` remapped to `"generic"` via
+`_legacy_parser_key`) plus the three independent per-brand slots,
+deduplicated by resolved absolute path with the same deterministic
+precedence rule as accommodation (dedicated brand slot wins over legacy
+on collision; first-in-declared-order wins among brand slots; no
+collision possible with default settings). For each slot, the adapter
+still self-declares its own `ScrapingSourcePolicy` as `enabled=True,
+approved_for_personal_use=True` regardless of brand -- the same
+categorically-safe-local-read-vs-not-approved-live-website invariant
+carried over from 185B/185C. Display naming for a brand slot is resolved
+via `get_scraping_source_policy(brand)` directly (not the accommodation
+side's `resolve_manual_source_policy`), because flight brand slot keys
+like `"kiwi_manual"` are registry keys, not legacy config-label
+vocabulary the way accommodation's brand keys happen to be.
+
+**Aggregation rule** (`_parse_all_slots`, identical design to 185C):
+every successful slot's offers are concatenated into one result; a slot
+with no configured path, a missing file, an empty/no-offer file, or a
+policy refusal is recorded as one line in a new `FlightSearchResult.
+warnings: list[str]` field (Step 185D's one small additive model change,
+default `[]`, fully backward compatible) rather than being silently
+dropped or downgrading an otherwise-successful result. Status
+resolution: at least one success -> overall `success`; zero success but
+at least one hard parse failure -> overall `failed`; zero success and
+zero failure -> overall `unavailable`. A slot's parser call is
+individually wrapped in its own `try`/`except`, carried over from 185C's
+defensive fix rather than rediscovered. One refinement specific to
+185D: when exactly one slot actually has a configured path (the
+overwhelmingly common single-source case, and the shape every pre-185D
+test exercises), the top-level `message` is that one slot's own precise
+reason verbatim, rather than a generic multi-source "Checked: a, b, c"
+summary -- preserving exact message substrings (e.g. "does not exist",
+"no valid flight offers") that pre-existing tests already asserted on.
+The generic multi-source summary message is used only once two or more
+slots are actually configured at once.
+
+**Cache**: one combined `query_hash` per call, built from the request
+fields plus *every slot's* `(source_id, parser_key, parser_version,
+path, exists, mtime_ns, size)` tuple, identical in structure to 185C --
+changing any one slot's file changes the hash, so a Skyscanner-only edit
+never serves a stale result reflecting an old Google-Flights-only cache
+entry, and vice versa. Only the final aggregate `success` result is ever
+cached, exactly as before this step.
+
+**Tests**: a new `test_flight_source_parsers.py` (54: happy path/
+field-extraction/delegation-to-generic/brand-exclusion/mixed-HTML/
+no-official-provider-claim/malformed-HTML/unsafe-policy-refusal/
+selection-helper/banned-overclaiming-phrase/disallowed-import coverage
+for all four parser modules, plus `kiwi_manual`-specific tests asserting
+`provider` is never `"kiwi_mcp"` and that the module never imports any
+`kiwi_mcp` module), a new `test_scraped_flight_multi_source.py` (15:
+backward compatibility, multi-file merging, missing-optional-source
+isolation, all-three-plus-generic coexistence, the legacy `"kiwi"` label
+resolving to the `kiwi_manual` parser, malformed-source isolation,
+booking-links-never-confirmations, cache separation, no-network-call),
+extensions to `test_flight_config.py` (per-source path defaults/
+overrides/clearing/resolution/distinctness), two pre-existing cache
+tests updated (not weakened) to patch the new correct monkeypatch target
+the same way 185C's were, two pre-existing provider tests retrofitted so
+their settings fixtures explicitly disable the three new per-brand paths
+(preserving true single-slot test isolation), and new E2E tests in
+`test_scraped_flight_e2e.py` confirming multi-source fixtures flow
+through `ProviderGateway`/`FlightInventoryService` into `PlanningState`
+and that the Traveler/Developer APIs never fabricate data. Full suite:
+3007 passed + 10 skipped (up from 2927 passed), `tsc`/`lint`/`build` all
+clean, zero frontend files touched. No live fetcher, browser automation,
+Playwright/Selenium dependency, real API key, or fake flight data was
+added anywhere in this step; accommodation, hotel-ratings, and Kiwi MCP
+behavior are completely untouched.
+
+## 67. Hotel-Ratings Source-Specific Parsers and Multi-Source Ingestion (Step 185E)
+
+Step 185B populated the scraping source registry and added the hotel-
+ratings config-only foundation (`SCRAPED_HOTEL_RATINGS_PROVIDER_ENABLED`/
+`HOTEL_RATINGS_MANUAL_HTML_SOURCE`/`SCRAPED_HOTEL_RATINGS_HTML_PATH`),
+but `hotel_ratings_provider` still only ever resolved to `not_connected`
+-- no adapter existed to select. Step 185E adds that adapter, applying
+the same source-specific-parser/multi-source architecture as
+accommodation (185C) and flights (185D) to hotel ratings, with one
+structural difference driven by `HotelRatingsProvider`'s own contract:
+`get_ratings(requests: list[HotelRatingsRequest]) -> HotelRatingsResult`
+takes a *list* of already-known-property identity requests and must
+return exactly one `HotelRatingLookupItem` per request, echoing back its
+`offer_id` -- there is no single "search" request to build offers from
+the way accommodation/flights have. So this step's adapter has two
+independent jobs: parse every configured local file into a flat list of
+rating records, then conservatively, exactly match each record's
+property name against each incoming request's `property_name`.
+
+**New module `backend/app/providers/hotel_ratings/scraped_parser.py`**:
+mirrors `app.providers.accommodation.scraped_parser`/`app.providers.
+flights.scraped_parser` structurally (same `HTMLParser`-subclass card-
+walking design, same `_refusal_reason`/safety-policy-first pattern,
+same `required_data_source` optional filter parameter), but its return
+type is new: `HotelRatingsParseResult` (`status: HotelRatingsParseStatus`
+-- `SUCCESS`/`NOT_CONNECTED`/`UNAVAILABLE`/`FAILED`, mirroring the other
+parsers' status vocabulary but distinct from `HotelRatingsStatus` itself
+since this is a lower-level parse-only result -- plus `records: list[
+ParsedHotelRatingRecord]`). `ParsedHotelRatingRecord` (a frozen
+dataclass) pairs a `property_name` (used only for later exact-name
+matching, never itself a claim of identity) with a fully-built
+`AccommodationRating` (already carrying honest provenance:
+`provider="scraped:<source_id>"`, `source_name` reading "not official
+... data", `data_status=scraped_public_page`). The micro-format is a
+`hotel-rating` element with `property-name`/`rating-value` (0-5 bounded,
+out-of-range or unparseable stays `None`, never clamped or guessed)/
+`review-count` (non-negative integer) leaf fields, plus the same
+optional `data-source="<brand>"` per-card marker Steps 185C/185D use. A
+record is only produced when `property-name` is present *and* at least
+one of `rating-value`/`review-count` parses successfully -- a name with
+neither is dropped entirely rather than producing a record that carries
+nothing. No review text is ever extracted or carried -- only a rating
+value and a review count, matching this step's explicit safety
+constraint against inventing raw review content or a "verified"/
+ranking claim of any kind.
+
+**New package `backend/app/providers/hotel_ratings/source_parsers/`**:
+three modules -- `generic.py`, `tripadvisor.py`, `google_places_
+ratings.py` -- each a pure HTML-string -> `HotelRatingsParseResult`
+transform, none opening a file/socket/requests/httpx/Playwright/
+Selenium. `get_hotel_ratings_source_parser(source_id)`/`get_hotel_
+ratings_source_parser_version(source_id)` mirror the accommodation/
+flight selection helpers exactly (module-object lookup table evaluated
+fresh per call, unknown source falls back to `generic`, never raises).
+`google_places_ratings` (never bare `google_places`) is named to match
+the Step 185B registry entry exactly and stays visually distinct from
+any possible future *official* Google Places API ratings adapter --
+this module never calls Google Places live, and never imports anything
+related to the existing `GOOGLE_PLACES_API_KEY`/open-data POI candidate
+integration.
+
+**Multi-source config**: two new, fully independent `Settings` fields --
+`scraped_hotel_ratings_html_path_tripadvisor`/`_google_places_ratings`
+-- each defaulting to its own real path under `.data/manual_scrapes/`
+(e.g. `hotel_ratings_tripadvisor.html`), mirroring `scraped_hotel_
+ratings_html_path` exactly. Three more new fields fill out this
+provider's config surface to match accommodation/flight's shape:
+`scraped_hotel_ratings_source_id`/`_source_name`/`_base_url` (the
+legacy-slot customizable identity, previously missing from Step 185B's
+config-only foundation) and `scraped_hotel_ratings_cache_enabled`/
+`_cache_ttl_seconds` (this provider's own cache gate, see below). A new
+`resolved_scraped_hotel_ratings_html_paths_by_source()` method resolves
+both per-brand paths against the backend project root in one call.
+
+**Provider selection**: `backend/app/providers/hotel_ratings/factory.py`
+gained two new supported names -- `"scraped_local"` and `"manual_html"`
+(a non-breaking alias, mirroring `accommodation_provider`/
+`flight_provider`'s identical Step 182E alias convention) -- both
+resolving to the new `ScrapedLocalHotelRatingsProvider`. `"not_connected"`
+(the unchanged default) and any unrecognized value still fall back to
+`NotConnectedHotelRatingsProvider` exactly as before this step.
+`"tripadvisor"`/`"google_places"` are never valid *provider* names --
+selecting a named brand's local file happens through `HOTEL_RATINGS_
+MANUAL_HTML_SOURCE`/the per-brand path settings once `hotel_ratings_
+provider` itself is `"scraped_local"`/`"manual_html"`. Unlike
+accommodation/flights (which default their provider to `scraped_local`),
+`hotel_ratings_provider` still defaults to `"not_connected"` -- enabling
+local/manual rating ingestion is an explicit opt-in, matching this
+step's own direction to enable ratings "for MVP testing" without
+silently changing default behavior for every existing trip.
+
+**`ScrapedLocalHotelRatingsProvider` (`backend/app/providers/hotel_
+ratings/scraped_adapter.py`)** mirrors `ScrapedLocalFlightProvider`'s
+`_resolve_slots()`/`_SlotFileState`/per-slot `try`/`except`-isolated
+`_parse_all_slots()` architecture almost exactly (same legacy-slot-vs-
+brand-slot deterministic path-collision precedence; same self-declared
+`enabled=True, approved_for_personal_use=True` operational policy per
+slot, categorically decoupled from the registry's real-brand `False`/
+`False` verdict; same `_legacy_parser_key`/`_LEGACY_LABEL_TO_PARSER_KEY`
+remapping for the one legacy label that doesn't already equal its
+canonical key -- `"google_places"` -> `"google_places_ratings"`, mirror-
+ing flight's `"kiwi"` -> `"kiwi_manual"`). The one new piece is
+`_match_records_to_requests` (module-level function): builds a dict of
+every merged record keyed by its normalized (lowercased, whitespace-
+collapsed) `property_name`, then for each incoming `HotelRatingsRequest`
+looks up an *exact* match -- zero candidates, 2+ candidates (ambiguous,
+even across two different source files), or a `property_name`-less
+request all resolve to `matched=False, rating=None`, mirroring
+`HotelRatingEnrichmentService`'s own no-fuzzy-matching philosophy at one
+layer down. `get_ratings` builds one combined `query_hash` per call from
+*both* the normalized `requests` list (offer_id/provider_property_id/
+provider/property_name/address/coordinates/source_name) *and* every
+slot's file identity -- unlike accommodation/flight's request-shape-
+stable single search, a hotel-ratings request list changes every time
+the underlying accommodation search does, so both must be part of the
+cache key for a hit to ever be semantically valid.
+
+**Aggregation rule** (`_parse_all_slots`): every successful slot's
+records are concatenated into one flat list before matching; a slot
+with no configured path, a missing file, an empty/no-record file, or a
+policy refusal is recorded as one line in the new `HotelRatingsResult.
+warnings: list[str]` field (this step's one small additive model
+change, default `[]`, fully backward compatible) rather than being
+silently dropped or downgrading an otherwise-successful result. Status
+resolution mirrors 185C/185D exactly: at least one record parsed ->
+overall `success` (items built via `_match_records_to_requests`,
+warnings list every other source's honest reason); zero records but at
+least one hard parse failure -> overall `failed`; zero records and zero
+failure -> overall `unavailable`. The same single-checked-slot message
+passthrough refinement from 185D carries over here too.
+
+**Wiring**: `AccommodationInventoryService.build_report` already called
+`HotelRatingEnrichmentService.enrich(result)` unconditionally since Step
+177C, and `HotelRatingEnrichmentService._resolve_provider` already
+called the real `get_hotel_ratings_provider()` factory when no override
+was given -- so this step required *zero* changes to either file.
+Setting `HOTEL_RATINGS_PROVIDER=scraped_local` alone is enough to start
+conservatively enriching accommodation offers, using the exact same
+`HotelRatingEnrichmentService` matching contract (never fuzzy, never
+overwrites an existing `rating_details`, never guesses between duplicate
+offer_ids) that has existed since Step 177C.
+
+**Tests**: a new `test_hotel_ratings_source_parsers.py` (43: happy path/
+field-extraction/delegation-to-generic/brand-exclusion/mixed-HTML/
+no-official-provider-claim/malformed-HTML/invalid-and-out-of-range-
+rating-value/unsafe-policy-refusal/selection-helper/banned-overclaiming-
+phrase/disallowed-import coverage for all three parser modules), a new
+`test_scraped_hotel_ratings_provider.py` (15: config-gate/missing-file/
+disabled-flag/malformed-markup/happy-path/exact-name-matching/case-
+insensitive-matching/ambiguous-duplicate-never-guesses/no-network
+coverage for the single-legacy-slot case), a new `test_scraped_hotel_
+ratings_multi_source.py` (16: backward compatibility, multi-file
+merging, missing-optional-source isolation, all-sources-plus-generic
+coexistence, unmatched/ambiguous-never-guesses, malformed-source
+isolation, provenance labeling, cache separation between tripadvisor and
+google_places_ratings, cache-key-changes-on-file-edit and on-different-
+requests, no-network-call, and deterministic legacy/brand path-collision
+precedence), extensions to `test_hotel_ratings_config.py` (new field
+defaults/overrides/clearing/resolution/distinctness) and `test_hotel_
+ratings_factory.py` (provider-selection tests for `scraped_local`/
+`manual_html`, replacing the old "only not_connected is supported"
+assertion), plus a new `test_scraped_hotel_ratings_e2e.py` (5: real
+end-to-end tests through the actual `/trips` HTTP API proving a matching
+local rating attaches, an unmatched one does not, a missing file leaves
+offers unchanged, `provider_coverage.hotel_ratings` reflects status
+honestly, and no fake rating/review-count ever appears in the API
+response -- achieved by mutating the real, already-constructed shared
+`hotel_rating_enrichment_service` singleton's own `_provider` attribute,
+since hotel ratings is reached through that shared object rather than
+through `ProviderGateway`). Full suite: 3101 passed + 10 skipped (up
+from 3007 passed), `tsc`/`lint`/`build` all clean, zero frontend files
+touched. No live fetcher, browser automation, Playwright/Selenium
+dependency, real API key, or fake rating/review data was added anywhere
+in this step; accommodation, flight, and Kiwi MCP behavior are
+completely untouched.

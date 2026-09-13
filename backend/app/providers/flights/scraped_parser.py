@@ -151,6 +151,13 @@ class _FlightOfferHTMLParser(HTMLParser):
             if _CARD_CLASS in classes:
                 self._card = {
                     "offer_id": attr_dict.get("data-offer-id"),
+                    # Step 185D: optional per-card brand tag (e.g.
+                    # `data-source="skyscanner"`), consumed only by
+                    # `parse_scraped_flight_html`'s optional
+                    # `required_data_source` filter below -- absent on
+                    # every pre-185D fixture, so this is `None` (and
+                    # thus ignored) for all existing behavior.
+                    "data_source": attr_dict.get("data-source"),
                     "fields": {},
                     "outbound_segments": [],
                     "return_segments": [],
@@ -406,6 +413,7 @@ def parse_scraped_flight_html(
     request: FlightSearchRequest,
     source_url: str | None = None,
     parser_version: str = "unknown",
+    required_data_source: str | None = None,
 ) -> FlightSearchResult:
     """Transforms an already-provided static HTML string into a normalized
     `FlightSearchResult`, honoring `source_policy`'s safety rules.
@@ -426,6 +434,20 @@ def parse_scraped_flight_html(
     own validation. Every returned offer carries a `scraped_provenance`
     labeling it `scraped_public_page`/`experimental`, with
     `official_provider` structurally fixed to `False`.
+
+    `required_data_source` (Step 185D, optional, default `None`): when
+    given, a card is included only if its own `data-source` attribute is
+    absent (untagged cards always "delegate to generic", i.e. are always
+    included) or matches this value exactly -- a card explicitly tagged
+    for a *different* brand is skipped. `None` (the default, used by
+    every pre-185D caller and by `source_parsers/generic.py`) applies no
+    filter at all, preserving this function's exact original behavior.
+    This mirrors `app.providers.accommodation.scraped_parser.
+    parse_scraped_accommodation_html`'s identical Step 185C mechanism,
+    and is the shared mechanism `app.providers.flights.source_parsers`'s
+    per-brand modules use to implement their own "brand-specific
+    micro-format, or delegate to generic" contract without duplicating
+    this module's own HTML-walking logic.
     """
     provider_name = f"scraped:{source_policy.source_id}"
 
@@ -438,10 +460,18 @@ def parse_scraped_flight_html(
         card_parser.feed(html)
         card_parser.close()
 
+        raw_cards = card_parser.cards
+        if required_data_source is not None:
+            raw_cards = [
+                raw_card
+                for raw_card in raw_cards
+                if raw_card.get("data_source") in (None, required_data_source)
+            ]
+
         fetched_at = _utc_now()
         offers = [
             offer
-            for raw_card in card_parser.cards
+            for raw_card in raw_cards
             if (
                 offer := _build_offer_from_card(
                     raw_card, source_policy, source_url, parser_version, fetched_at

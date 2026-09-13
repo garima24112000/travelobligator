@@ -167,18 +167,40 @@ class AccommodationSearchResult(BaseModel):
     received a conservatively-matched `rating_details` -- never a raw
     "items returned" count, which could include unmatched/ambiguous
     items that were correctly ignored.
+
+    `warnings` (Step 185C) is additive, optional per-source detail for
+    multi-source accommodation ingestion (`ScrapedAccommodationProvider`)
+    -- e.g. "hotelbeds: no local file configured/found" alongside an
+    overall `success` result from other sources that did produce real
+    offers. Empty by default, so every result built before Step 185C (and
+    every single-source result today) stays fully backward compatible.
+    Never itself a claim that a source succeeded or failed to fabricate
+    data -- purely a human-readable trace of what this call actually
+    checked.
+
+    `hotel_ratings_warnings` (Step 185F) restates
+    `HotelRatingsResult.warnings` (Step 185E) on this envelope so a
+    frontend already reading `hotel_ratings_status`/`_provider`/
+    `_message` here has the same per-source detail (e.g.
+    "google_places_ratings: no local file configured/found") without a
+    second API shape to read -- `HotelRatingEnrichmentService.enrich`
+    copies it straight through, never recomputes or filters it. Empty by
+    default, so every result built before Step 185F stays fully backward
+    compatible.
     """
 
     provider: str
     status: AccommodationSearchStatus
     offers: list[AccommodationOffer] = Field(default_factory=list)
     message: str | None = None
+    warnings: list[str] = Field(default_factory=list)
     generated_at: datetime = Field(default_factory=_utc_now)
 
     hotel_ratings_status: HotelRatingsStatus | None = None
     hotel_ratings_provider: str | None = None
     hotel_ratings_message: str | None = None
     hotel_ratings_enriched_offer_count: int = Field(default=0, ge=0)
+    hotel_ratings_warnings: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_offers_match_status(self) -> "AccommodationSearchResult":

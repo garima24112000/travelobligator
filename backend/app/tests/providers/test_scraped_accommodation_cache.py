@@ -15,6 +15,7 @@ from app.models.common import DataStatus
 from app.models.scraping import ScrapingSourceType
 from app.providers.accommodation import ScrapedAccommodationProvider
 from app.providers.accommodation import scraped_adapter as scraped_adapter_module
+from app.providers.accommodation import scraped_parser as scraped_parser_module
 from app.storage.provider_cache_store import ProviderCacheStore
 
 # Step 168D: cache/provenance-round-trip tests for
@@ -82,15 +83,26 @@ def _write_html(tmp_path: Path, content: str, name: str = "fixture.html") -> str
 def _install_counting_parse(monkeypatch: pytest.MonkeyPatch) -> dict[str, int]:
     """Wraps the real parser with a call counter so tests can prove
     whether a given `search_accommodations` call actually re-parsed the
-    HTML or was satisfied entirely from cache."""
+    HTML or was satisfied entirely from cache.
+
+    Step 185C: the adapter no longer calls `parse_scraped_accommodation_
+    html` directly -- it dispatches per source through
+    `app.providers.accommodation.source_parsers` (`generic.parse` for
+    the default/legacy label used throughout this file), which itself
+    calls `app.providers.accommodation.scraped_parser.
+    parse_scraped_accommodation_html` via a module-attribute reference
+    (not a `from ... import`), so patching that attribute on the
+    canonical `scraped_parser` module -- not the adapter module -- is
+    what every source_parsers module actually resolves at call time.
+    """
     call_count = {"count": 0}
-    real_parse = scraped_adapter_module.parse_scraped_accommodation_html
+    real_parse = scraped_parser_module.parse_scraped_accommodation_html
 
     def _counting_parse(*args: object, **kwargs: object):
         call_count["count"] += 1
         return real_parse(*args, **kwargs)
 
-    monkeypatch.setattr(scraped_adapter_module, "parse_scraped_accommodation_html", _counting_parse)
+    monkeypatch.setattr(scraped_parser_module, "parse_scraped_accommodation_html", _counting_parse)
     return call_count
 
 
@@ -172,7 +184,10 @@ def test_cache_round_trip_preserves_provenance_and_data_status(
     assert offer.scraped_provenance.official_provider is False
     assert offer.scraped_provenance.provenance == ScrapingSourceType.SCRAPED_PUBLIC_PAGE
     assert offer.scraped_provenance.source_type == ScrapingSourceType.SCRAPED_PUBLIC_PAGE
-    assert offer.scraped_provenance.parser_version == "scraped_accommodation_provider_v1"
+    # Step 185C: the default/legacy "generic" label now runs through
+    # `source_parsers.generic`, which carries its own parser_version
+    # naming convention -- see `get_accommodation_source_parser_version`.
+    assert offer.scraped_provenance.parser_version == "accommodation_source_parser_generic_v1"
     assert offer.scraped_provenance.source_id == settings.scraped_accommodation_source_id
     assert offer.scraped_provenance.source_name == settings.scraped_accommodation_source_name
 
@@ -257,6 +272,14 @@ def test_cache_key_changes_for_each_relevant_request_field(
 def test_cache_key_changes_when_parser_version_changes(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    """Step 185C: the cache key now includes each slot's parser version
+    via `get_accommodation_source_parser_version`, which reads
+    `source_parsers.generic.PARSER_VERSION` fresh on every call (the
+    default/legacy label used throughout this file resolves to the
+    `generic` source_parsers module) -- so patching that module
+    attribute is what changes the effective cache key here, mirroring
+    the pre-185C single adapter-level `_PARSER_VERSION` constant this
+    test used to patch."""
     html_path = _write_html(tmp_path, _TEST_HTML_ONE_PROPERTY)
     cache_store = ProviderCacheStore(tmp_path / "cache.sqlite3")
     settings = _enabled_settings(html_path)
@@ -266,7 +289,9 @@ def test_cache_key_changes_when_parser_version_changes(
     provider = ScrapedAccommodationProvider(cache_store=cache_store)
     provider.search_accommodations(_request())
 
-    monkeypatch.setattr(scraped_adapter_module, "_PARSER_VERSION", "scraped_accommodation_provider_v2")
+    from app.providers.accommodation.source_parsers import generic as generic_parser_module
+
+    monkeypatch.setattr(generic_parser_module, "PARSER_VERSION", "accommodation_source_parser_generic_v2")
     provider.search_accommodations(_request())
 
     assert call_count["count"] == 2

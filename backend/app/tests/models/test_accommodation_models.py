@@ -359,3 +359,26 @@ def test_offer_accepts_valid_rating_details() -> None:
     assert offer.rating_details.value == pytest.approx(4.5)
     assert offer.rating_details.review_count == 128
     assert offer.rating_details.scale_max == pytest.approx(5.0)
+
+
+# ---------------------------------------------------------------------------
+# 13. AccommodationSearchResult.hotel_ratings_warnings (Step 185F) is a
+#     wholly optional, additive field defaulting to an empty list -- every
+#     result built before this step remains valid.
+# ---------------------------------------------------------------------------
+
+
+def test_search_result_hotel_ratings_warnings_defaults_to_empty_list() -> None:
+    result = AccommodationSearchResult(
+        provider="fake_provider", status=AccommodationSearchStatus.NOT_CONNECTED
+    )
+    assert result.hotel_ratings_warnings == []
+
+
+def test_search_result_accepts_hotel_ratings_warnings() -> None:
+    result = AccommodationSearchResult(
+        provider="fake_provider",
+        status=AccommodationSearchStatus.NOT_CONNECTED,
+        hotel_ratings_warnings=["tripadvisor: no local file path configured."],
+    )
+    assert result.hotel_ratings_warnings == ["tripadvisor: no local file path configured."]

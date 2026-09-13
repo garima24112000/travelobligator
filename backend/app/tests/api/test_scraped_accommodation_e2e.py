@@ -60,6 +60,39 @@ def _enable_scraped_local(monkeypatch: pytest.MonkeyPatch, html_path: str) -> No
     )
 
 
+def _enable_multi_source_scraped_local(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    booking_html_path: str,
+    expedia_html_path: str,
+) -> None:
+    """Step 185C: mirrors `_enable_scraped_local` above, but also points
+    the Booking/Expedia per-source slots at real tmp files -- every other
+    per-brand slot is pointed at a tmp_path location that is guaranteed
+    not to exist, so this test never depends on (or is contaminated by)
+    the real dev `.data/manual_scrapes/` directory's actual contents.
+    """
+    settings = Settings(
+        _env_file=None,
+        scraping_enabled=True,
+        scraped_accommodation_provider_enabled=True,
+        accommodation_provider="scraped_local",
+        scraped_accommodation_html_path=str(tmp_path / "does-not-exist-generic.html"),
+        scraped_accommodation_html_path_booking=booking_html_path,
+        scraped_accommodation_html_path_expedia=expedia_html_path,
+        scraped_accommodation_html_path_hotelbeds=str(tmp_path / "does-not-exist-hotelbeds.html"),
+        scraped_accommodation_html_path_hostelworld=str(
+            tmp_path / "does-not-exist-hostelworld.html"
+        ),
+        scraped_accommodation_html_path_vrbo=str(tmp_path / "does-not-exist-vrbo.html"),
+        scraped_accommodation_html_path_airbnb=str(tmp_path / "does-not-exist-airbnb.html"),
+    )
+    monkeypatch.setattr(scraped_adapter_module, "get_settings", lambda: settings)
+    monkeypatch.setattr(
+        provider_gateway, "accommodation_inventory", ScrapedAccommodationProvider()
+    )
+
+
 def _generate_trip(client: TestClient) -> str:
     create_response = client.post("/trips", json=create_trip_payload())
     assert create_response.status_code == 201
@@ -354,3 +387,94 @@ def test_scraped_accommodation_provider_itself_makes_no_network_call(
     result = ScrapedAccommodationProvider().search_accommodations(request)
 
     assert result.status.value == "success"
+
+
+# ---------------------------------------------------------------------------
+# Step 185C: multi-source accommodation ingestion flows through
+# ProviderGateway/AccommodationInventoryService into PlanningState the
+# same way the single-file path already does -- distinct, source-labeled
+# offers from two local files, merged, still honest, still never
+# fabricating a price/rating/availability/booking-link the local fixture
+# didn't actually contain.
+# ---------------------------------------------------------------------------
+
+_TEST_HTML_BOOKING_PROPERTY = """
+<html><body>
+<div class="property-card" data-property-id="booking-1">
+  <h2 class="property-name">TEST_ONLY_BOOKING_PROPERTY</h2>
+  <span class="price" data-currency="USD">140.00</span>
+</div>
+</body></html>
+"""
+
+_TEST_HTML_EXPEDIA_PROPERTY = """
+<html><body>
+<div class="property-card" data-property-id="expedia-1">
+  <h2 class="property-name">TEST_ONLY_EXPEDIA_PROPERTY</h2>
+</div>
+</body></html>
+"""
+
+
+def test_multi_source_local_fixtures_flow_into_planning_state(
+    monkeypatch: pytest.MonkeyPatch, client: TestClient, tmp_path: Path
+) -> None:
+    booking_path = str(tmp_path / "booking_fixture.html")
+    Path(booking_path).write_text(_TEST_HTML_BOOKING_PROPERTY, encoding="utf-8")
+    expedia_path = str(tmp_path / "expedia_fixture.html")
+    Path(expedia_path).write_text(_TEST_HTML_EXPEDIA_PROPERTY, encoding="utf-8")
+    _enable_multi_source_scraped_local(monkeypatch, tmp_path, booking_path, expedia_path)
+
+    trip_id = _generate_trip(client)
+
+    response = client.get(f"/trips/{trip_id}")
+    assert response.status_code == 200
+    report = response.json()["data"]["planning_state"]["accommodation_inventory_report"]
+
+    assert report["status"] == "success"
+    property_names = {offer["property_name"] for offer in report["offers"]}
+    assert property_names == {"TEST_ONLY_BOOKING_PROPERTY", "TEST_ONLY_EXPEDIA_PROPERTY"}
+
+    for offer in report["offers"]:
+        assert offer["scraped_provenance"]["official_provider"] is False
+        assert "not official" in offer["scraped_provenance"]["source_name"]
+        # Never fabricated: the Expedia fixture has no price at all.
+        if offer["property_name"] == "TEST_ONLY_EXPEDIA_PROPERTY":
+            assert offer["total_price_amount"] is None
+            assert offer["rating"] is None
+            assert offer["booking_url"] is None
+
+    # Warnings name every other configured-but-missing source, never
+    # silently hidden and never downgrading the overall success.
+    assert len(report.get("warnings", [])) >= 4
+
+
+def test_multi_source_traveler_and_developer_api_never_fabricate_data(
+    monkeypatch: pytest.MonkeyPatch, client: TestClient, tmp_path: Path
+) -> None:
+    booking_path = str(tmp_path / "booking_fixture.html")
+    Path(booking_path).write_text(_TEST_HTML_BOOKING_PROPERTY, encoding="utf-8")
+    expedia_path = str(tmp_path / "expedia_fixture.html")
+    Path(expedia_path).write_text(_TEST_HTML_EXPEDIA_PROPERTY, encoding="utf-8")
+    _enable_multi_source_scraped_local(monkeypatch, tmp_path, booking_path, expedia_path)
+
+    trip_id = _generate_trip(client)
+
+    summary_response = client.get(f"/trips/{trip_id}/summary")
+    assert summary_response.status_code == 200
+
+    coverage_response = client.get(f"/trips/{trip_id}/provider-coverage")
+    assert coverage_response.status_code == 200
+    assert coverage_response.json()["data"]["provider_coverage"]["hotel_prices"] == "success"
+
+    validation_response = client.get(f"/trips/{trip_id}/validation-report")
+    assert validation_response.status_code == 200
+    validation_report = validation_response.json()["data"]["validation_report"]
+    accommodation_warnings = [
+        warning
+        for warning in validation_report["warnings"]
+        if warning["category"] == "accommodation_inventory"
+    ]
+    assert len(accommodation_warnings) == 1
+    assert "not official-provider data" in accommodation_warnings[0]["message"].lower()
+    assert validation_report["readiness_status"] != "blocked"

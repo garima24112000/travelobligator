@@ -415,3 +415,56 @@ def test_existing_rating_details_is_never_overwritten() -> None:
     assert enriched.offers[0].rating_details.value == pytest.approx(3.3)
     assert enriched.offers[0].rating_details.provider == "already_set_provider"
     assert enriched.hotel_ratings_enriched_offer_count == 0
+
+
+# ---------------------------------------------------------------------------
+# Step 185F: HotelRatingsResult.warnings is copied straight through onto
+# AccommodationSearchResult.hotel_ratings_warnings, in both the
+# non-success and success-with-items code paths.
+# ---------------------------------------------------------------------------
+
+
+def test_hotel_ratings_warnings_copied_through_on_non_success_result() -> None:
+    fake_provider = _FakeHotelRatingsProvider(
+        result=HotelRatingsResult(
+            provider="fake_hotel_ratings_provider",
+            status=HotelRatingsStatus.UNAVAILABLE,
+            items=[],
+            warnings=["tripadvisor: no local file path configured."],
+        )
+    )
+    service = HotelRatingEnrichmentService(provider=fake_provider)
+    result = _success_result([_offer()])
+
+    enriched = service.enrich(result)
+
+    assert enriched.hotel_ratings_warnings == ["tripadvisor: no local file path configured."]
+
+
+def test_hotel_ratings_warnings_copied_through_on_success_result() -> None:
+    fake_provider = _FakeHotelRatingsProvider(
+        result=HotelRatingsResult(
+            provider="fake_hotel_ratings_provider",
+            status=HotelRatingsStatus.SUCCESS,
+            items=[HotelRatingLookupItem(offer_id="offer_0", matched=True, rating=_rating())],
+            warnings=["google_places_ratings: no local file path configured."],
+        )
+    )
+    service = HotelRatingEnrichmentService(provider=fake_provider)
+    result = _success_result([_offer()])
+
+    enriched = service.enrich(result)
+
+    assert enriched.hotel_ratings_warnings == [
+        "google_places_ratings: no local file path configured."
+    ]
+    assert enriched.hotel_ratings_enriched_offer_count == 1
+
+
+def test_hotel_ratings_warnings_default_to_empty_list() -> None:
+    service = HotelRatingEnrichmentService(provider=NotConnectedHotelRatingsProvider())
+    result = _success_result([_offer()])
+
+    enriched = service.enrich(result)
+
+    assert enriched.hotel_ratings_warnings == []

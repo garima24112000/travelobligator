@@ -29,10 +29,24 @@ def _request(**overrides: object) -> FlightSearchRequest:
 
 
 def _enabled_settings(html_path: str | None, **overrides: object) -> Settings:
+    """Step 185D: the three independent per-brand flight paths
+    (`scraped_flight_html_path_skyscanner`/`_google_flights`/
+    `_kiwi_manual`) default to `None` here -- i.e. disabled -- so every
+    pre-185D test in this file keeps exercising true single-slot
+    (legacy-path-only) behavior in isolation, exactly as before this
+    step, rather than being unexpectedly influenced by those three
+    fields' own real (but here-irrelevant) default locations. Tests that
+    want multi-source behavior pass their own explicit per-brand path
+    overrides (see test_scraped_accommodation_multi_source.py's
+    accommodation equivalent, and this file's own flight multi-source
+    tests)."""
     fields: dict[str, object] = {
         "scraping_enabled": True,
         "scraped_flight_provider_enabled": True,
         "scraped_flight_html_path": html_path,
+        "scraped_flight_html_path_skyscanner": None,
+        "scraped_flight_html_path_google_flights": None,
+        "scraped_flight_html_path_kiwi_manual": None,
     }
     fields.update(overrides)
     return Settings(_env_file=None, **fields)

@@ -2583,6 +2583,60 @@ function ProviderCoverageSection({ coverage }: { coverage: ProviderCoverageData 
   );
 }
 
+// Step 185F: Developer-Mode source grouping for manual/local inventory
+// offers. Every adapter this app has (accommodation Step 185C, flight
+// Step 185D) builds its per-brand `source_name` from the exact same
+// backend template -- "... labeled by user as <Display>-derived; not
+// official <Display> data" (see `_source_identity_for_brand_slot` in
+// `app.providers.{accommodation,flights,hotel_ratings}.scraped_adapter`)
+// -- so this only ever restates a substring already present in that
+// backend-generated string, never invents or guesses a brand name. A
+// `source_name` that doesn't match this exact shape (e.g. a legacy
+// single-file label the operator customized themselves) falls back to
+// showing that string verbatim, and a source with no name at all falls
+// under the generic "Manual/local source" bucket -- grouping never hides
+// an offer, it only adds a heading above ones that already share a
+// `scraped_provenance`.
+const SOURCE_LABEL_DERIVED_PATTERN = /labeled by user as ([^;]+?)-derived/;
+
+function manualLocalSourceGroupLabel(
+  provenance: ScrapedAccommodationProvenance | ScrapedFlightProvenance | null,
+): string {
+  if (!provenance) return "Provider-connected";
+  const sourceName = provenance.source_name;
+  if (!sourceName) return "Manual/local source";
+  const match = sourceName.match(SOURCE_LABEL_DERIVED_PATTERN);
+  if (match) {
+    return `${match[1]}-derived manual/local data`;
+  }
+  return sourceName;
+}
+
+type SourceGroup<T> = {
+  label: string;
+  items: T[];
+};
+
+// Stable, first-seen-order grouping -- never re-sorts or re-ranks the
+// underlying list, only clusters same-label items together for display.
+function groupBySourceLabel<T>(items: T[], labelOf: (item: T) => string): SourceGroup<T>[] {
+  const order: string[] = [];
+  const byLabel = new Map<string, T[]>();
+  for (const item of items) {
+    const label = labelOf(item);
+    if (!byLabel.has(label)) {
+      byLabel.set(label, []);
+      order.push(label);
+    }
+    byLabel.get(label)!.push(item);
+  }
+  return order.map((label) => ({ label, items: byLabel.get(label)! }));
+}
+
+function offerCountLabel(count: number): string {
+  return `${count} offer${count === 1 ? "" : "s"}`;
+}
+
 function accommodationInventoryStatusLabel(status: string): string {
   switch (status) {
     case "success":
@@ -2613,23 +2667,37 @@ function scrapedConfidenceLabel(confidence: string): string {
 
 /**
  * One scraped offer's provenance badge (Step 168E/169E, merged into one
- * generic component in Step 179D). `ScrapedAccommodationProvenance` and
- * `ScrapedFlightProvenance` are structurally identical (see
+ * generic component in Step 179D, parsed-at timestamp added and Traveler-
+ * view `concise` mode added in Step 185F). `ScrapedAccommodationProvenance`
+ * and `ScrapedFlightProvenance` are structurally identical (see
  * `frontend/lib/types.ts`); this renders whichever one the caller passes,
  * with the caller supplying only the one thing that legitimately differs
  * between an accommodation offer and a flight offer -- the exact list of
  * fields not yet verified (`notVerifiedFor`), so the accommodation and
  * flight wording stay distinct, word for word, exactly as before this
- * merge. Renders parser/source metadata only when the backend actually
- * returned it. This never implies official verification: the badge itself
- * is the opposite claim ("not official-provider data").
+ * merge. Renders parser/source/timestamp metadata only when the backend
+ * actually returned it -- `fetched_at` is shown verbatim as "Parsed at"
+ * (this is when the local file was parsed, not a live fetch) and omitted
+ * entirely when `null`; this component never computes or displays the
+ * current time itself. This never implies official verification: the
+ * badge itself is the opposite claim ("not official-provider data").
+ *
+ * `concise` (Step 185F, default `false`) omits the `parser_version` line
+ * -- an internal module identifier, not something a traveler needs -- so
+ * Traveler-view cards (`TravelerWhereToStaySection`/
+ * `TravelerFlightOfferCard`) can reuse this exact same badge without
+ * leaking debug detail; Developer-view cards
+ * (`AccommodationInventorySection`/`FlightInventorySection`) keep the
+ * default full detail unchanged.
  */
 function ProvenanceBadge({
   provenance,
   notVerifiedFor,
+  concise = false,
 }: {
   provenance: ScrapedAccommodationProvenance | ScrapedFlightProvenance;
   notVerifiedFor: string;
+  concise?: boolean;
 }) {
   return (
     <div className="mt-2 rounded-md border border-amber-300/30 bg-amber-950/20 p-2 text-[11px] text-amber-200/90">
@@ -2651,7 +2719,10 @@ function ProvenanceBadge({
           ""
         )}
       </p>
-      {provenance.parser_version && (
+      {provenance.fetched_at && (
+        <p className="mt-0.5 text-amber-300/60">Parsed at: {provenance.fetched_at}</p>
+      )}
+      {!concise && provenance.parser_version && (
         <p className="mt-0.5 font-mono text-amber-300/60">
           Parser: {provenance.parser_version}
         </p>
@@ -2673,14 +2744,17 @@ function legacyOfferRatingLabel(offer: AccommodationOffer): string {
 }
 
 /**
- * One offer's provider-backed hotel rating snapshot (Step 177D), rendered
- * only when `HotelRatingEnrichmentService` (Step 177C) attached a real,
- * exactly-matched `rating_details` with a non-null `value` -- this never
- * shows a placeholder for a missing/unmatched rating. `scale_max` always
- * comes from the backend, never assumed to be 5 by this component.
- * Review count and source are shown only when the backend actually
- * returned them. This is never labeled verified/official/confirmed, and
- * never used to imply one offer is better than another.
+ * One offer's provider-backed hotel rating snapshot (Step 177D, parsed-at
+ * timestamp added in Step 185F), rendered only when
+ * `HotelRatingEnrichmentService` (Step 177C) attached a real, exactly-
+ * matched `rating_details` with a non-null `value` -- this never shows a
+ * placeholder for a missing/unmatched rating. `scale_max` always comes
+ * from the backend, never assumed to be 5 by this component. Review
+ * count, source, and retrieved-at timestamp are shown only when the
+ * backend actually returned them; `retrieved_at` is omitted entirely when
+ * `null`, and this component never computes or displays the current time
+ * itself. This is never labeled verified/official/confirmed, and never
+ * used to imply one offer is better than another.
  */
 function AccommodationRatingDetailsCard({
   ratingDetails,
@@ -2699,10 +2773,13 @@ function AccommodationRatingDetailsCard({
           : ""}
       </p>
       {(ratingDetails.source_name || ratingDetails.provider) && (
-        <p className="mt-0.5 text-slate-400">
+        <p className="mt-0.5 break-words text-slate-400">
           Source: {ratingDetails.source_name ?? ratingDetails.provider} ·{" "}
           {ratingDetails.data_status}
         </p>
+      )}
+      {ratingDetails.retrieved_at && (
+        <p className="mt-0.5 text-slate-500">Retrieved at: {ratingDetails.retrieved_at}</p>
       )}
       <p className="mt-0.5 text-slate-500">
         Provider-reported rating data -- not a claim that it is verified,
@@ -2735,7 +2812,17 @@ function AccommodationRatingDetailsCard({
 // honest, fields-actually-returned-only offer card can be reused by the
 // new Traveler-view trip-level "Where to stay" section without
 // duplicating its markup -- behavior-equivalent, not a new component.
-function AccommodationOfferCard({ offer }: { offer: AccommodationOffer }) {
+// `concise` (Step 185F, default `false`) is passed through to
+// `ProvenanceBadge` so Traveler view's `TravelerWhereToStaySection` reuse
+// of this card never leaks a `parser_version` debug string -- Developer
+// view's `AccommodationInventorySection` keeps the default full detail.
+function AccommodationOfferCard({
+  offer,
+  concise = false,
+}: {
+  offer: AccommodationOffer;
+  concise?: boolean;
+}) {
   return (
     <li className="rounded-lg border border-white/10 bg-slate-900/60 p-3 text-sm">
       <p className="break-words font-medium text-slate-100">
@@ -2770,9 +2857,72 @@ function AccommodationOfferCard({ offer }: { offer: AccommodationOffer }) {
         <ProvenanceBadge
           provenance={offer.scraped_provenance}
           notVerifiedFor="price, availability, rating, or booking-link accuracy"
+          concise={concise}
         />
       )}
     </li>
+  );
+}
+
+// Step 185F: Developer-Mode-only hotel-ratings enrichment diagnostic --
+// shows the exact backend status/provider/message/warnings for the
+// separate `HotelRatingEnrichmentService` pass (Step 177C), plus, when at
+// least one offer actually carries a real `rating_details.value`, a
+// source-label grouping of which ratings came from which manual/local
+// file (Step 185E). Renders only fields the backend actually returned;
+// never fabricates a rating, review count, or "verified"/ranking claim.
+function HotelRatingsEnrichmentDiagnostic({
+  report,
+}: {
+  report: AccommodationInventoryReport | null;
+}) {
+  if (!report) return null;
+  const status = report.hotel_ratings_status;
+  const ratedOffers = report.offers.filter(
+    (offer) => offer.rating_details !== null && offer.rating_details.value !== null,
+  );
+
+  if (status === null && ratedOffers.length === 0) {
+    // Enrichment was never attempted at all (e.g. no offers to enrich) --
+    // nothing honest to report here.
+    return null;
+  }
+
+  const ratingGroups = groupBySourceLabel(ratedOffers, (offer) =>
+    offer.rating_details?.source_name || offer.rating_details?.provider || "Manual/local rating source",
+  );
+
+  return (
+    <div className="mt-4 rounded-xl border border-white/10 bg-slate-950/30 p-3">
+      <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">
+        Hotel ratings enrichment
+      </p>
+      <p className="mt-1 text-xs text-slate-300">
+        Status: {status ?? "not_connected"}
+        {report.hotel_ratings_provider ? ` · Provider: ${report.hotel_ratings_provider}` : ""}
+        {` · Enriched ${report.hotel_ratings_enriched_offer_count} offer(s)`}
+      </p>
+      {report.hotel_ratings_message && (
+        <p className="mt-1 break-words text-xs text-slate-400">
+          {report.hotel_ratings_message}
+        </p>
+      )}
+      <SummaryList title="Hotel ratings warnings" items={report.hotel_ratings_warnings} />
+      {ratingGroups.length > 0 && (
+        <div className="mt-2 flex flex-col gap-2">
+          {ratingGroups.map((group) => (
+            <p key={group.label} className="break-words text-[11px] text-slate-500">
+              {group.label} — {offerCountLabel(group.items.length)}
+            </p>
+          ))}
+        </div>
+      )}
+      <p className="mt-1 text-[11px] text-slate-500">
+        Local/manual rating data, not official-provider data -- this is
+        never a claim that any review has been verified, and it is never
+        used to rank or recommend an offer.
+      </p>
+    </div>
   );
 }
 
@@ -2784,6 +2934,10 @@ function AccommodationInventorySection({
   const status = report?.status ?? "not_connected";
   const offers = report?.offers ?? [];
   const isConnectedWithOffers = status === "success" && offers.length > 0;
+  const sourceGroups = groupBySourceLabel(offers, (offer) =>
+    manualLocalSourceGroupLabel(offer.scraped_provenance),
+  );
+  const hasMultipleSourceGroups = sourceGroups.length > 1;
 
   return (
     <div id="accommodation-inventory" className="rounded-2xl border border-white/10 bg-white/5 p-5">
@@ -2792,12 +2946,40 @@ function AccommodationInventorySection({
         Bookable lodging inventory: {accommodationInventoryStatusLabel(status)}
       </p>
 
+      {/* Developer Mode surfaces the backend's own message/warnings
+          verbatim (Step 185F) -- e.g. a missing/malformed local file
+          path, or which optional per-source files had no data. Wrapped
+          with break-words/break-all so a long file path or URL never
+          creates horizontal overflow. */}
+      {report?.message && (
+        <p className="mt-2 break-words text-xs text-slate-400">{report.message}</p>
+      )}
+      <SummaryList title="Source warnings" items={report?.warnings ?? []} />
+
       {!isConnectedWithOffers ? (
         <DisclaimerNote tone="amber" spacingClassName="mt-2">
           No official lodging inventory provider is connected yet. Prices,
           ratings, availability, amenities, and booking links are
           unavailable unless returned by an official provider.
         </DisclaimerNote>
+      ) : hasMultipleSourceGroups ? (
+        <div className="mt-3 flex flex-col gap-4">
+          {sourceGroups.map((group) => (
+            <div key={group.label}>
+              <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                {group.label} — {offerCountLabel(group.items.length)}
+              </p>
+              <ul className="mt-2 flex flex-col gap-2">
+                {group.items.map((offer, index) => (
+                  <AccommodationOfferCard
+                    key={`${offer.provider_property_id}-${index}`}
+                    offer={offer}
+                  />
+                ))}
+              </ul>
+            </div>
+          ))}
+        </div>
       ) : (
         <ul className="mt-3 flex flex-col gap-2">
           {offers.map((offer, index) => (
@@ -2805,6 +2987,8 @@ function AccommodationInventorySection({
           ))}
         </ul>
       )}
+
+      <HotelRatingsEnrichmentDiagnostic report={report} />
 
       <p className="mt-3 text-xs text-slate-500">
         Open-data accommodation-like places are location candidates only,
@@ -2837,6 +3021,7 @@ function TravelerWhereToStaySection({
   const offers = accommodationInventoryReport?.offers ?? [];
   const hasBookableOffers =
     accommodationInventoryReport?.status === "success" && offers.length > 0;
+  const hasManualLocalOffers = offers.some((offer) => offer.scraped_provenance !== null);
   const stayAreaCandidates = stayAreaGuidance.suggested_anchor_accommodation_pois;
   const hasStayAreaCandidates = stayAreaCandidates.length > 0;
 
@@ -2850,12 +3035,18 @@ function TravelerWhereToStaySection({
             Bookable lodging inventory from a connected provider,
             source-limited to the fields it actually returned -- not a
             confirmed booking or a &ldquo;best&rdquo; ranking.
+            {hasManualLocalOffers &&
+              " Some or all of this comes from a manual/local HTML source, not official-provider data."}
           </DisclaimerNote>
           <ul className="mt-3 flex flex-col gap-2">
             {offers
               .slice(0, TRAVELER_WHERE_TO_STAY_MAX_CARDS)
               .map((offer, index) => (
-                <AccommodationOfferCard key={`${offer.provider_property_id}-${index}`} offer={offer} />
+                <AccommodationOfferCard
+                  key={`${offer.provider_property_id}-${index}`}
+                  offer={offer}
+                  concise
+                />
               ))}
           </ul>
         </>
@@ -2991,9 +3182,81 @@ function FlightSegmentSummary({ segment }: { segment: FlightSegment }) {
   );
 }
 
+// Step 185F: extracted from FlightInventorySection so the same full-detail
+// card (every field FlightInventorySection has always rendered, unchanged)
+// can be grouped by source without duplicating markup. Behavior-
+// equivalent to the inline `<li>` this replaces -- not a new component
+// concept.
+function FlightOfferCard({ offer }: { offer: FlightOffer }) {
+  return (
+    <li className="rounded-lg border border-white/10 bg-slate-900/60 p-3 text-sm">
+      <p className="break-all font-mono text-[11px] text-slate-500">
+        {offer.offer_id}
+        {offer.source_name ? ` · ${offer.source_name}` : ""}
+      </p>
+      {offer.outbound_segments.map((segment, segmentIndex) => (
+        <FlightSegmentSummary key={`outbound-${segmentIndex}`} segment={segment} />
+      ))}
+      {offer.return_segments.length > 0 && (
+        <p className="mt-2 text-[11px] uppercase tracking-wide text-slate-500">Return</p>
+      )}
+      {offer.return_segments.map((segment, segmentIndex) => (
+        <FlightSegmentSummary key={`return-${segmentIndex}`} segment={segment} />
+      ))}
+      {offer.total_price_amount !== null && offer.currency && (
+        <p className="mt-1 text-xs text-slate-300">
+          {offer.total_price_amount} {offer.currency}
+        </p>
+      )}
+      {offer.availability_status && (
+        <p className="mt-1 text-xs text-slate-400">Availability: {offer.availability_status}</p>
+      )}
+      {offer.baggage_policy && (
+        <p className="mt-1 text-xs text-slate-400">Baggage: {offer.baggage_policy}</p>
+      )}
+      {offer.cancellation_policy && (
+        <p className="mt-1 text-xs text-slate-400">Cancellation: {offer.cancellation_policy}</p>
+      )}
+      {offer.booking_url && (
+        <div className="mt-1 text-xs text-cyan-200">
+          <p className="text-xs uppercase tracking-wide text-slate-400">
+            Provider-supplied booking link -- not a booking confirmation
+          </p>
+          <p className="break-all">{offer.booking_url}</p>
+        </div>
+      )}
+      {offer.scraped_provenance && (
+        <ProvenanceBadge
+          provenance={offer.scraped_provenance}
+          notVerifiedFor="schedule, price, availability, baggage-policy, or booking-link accuracy"
+        />
+      )}
+      {!offer.scraped_provenance && isKiwiMcpFlightOffer(offer) && <KiwiMcpOfferBadge />}
+    </li>
+  );
+}
+
+// Step 185F: this offer's Developer-Mode source-group label -- a real
+// Kiwi MCP offer (live, third-party-provider data, never scraped) always
+// gets its own explicit "Kiwi MCP" group, kept structurally separate from
+// any `kiwi_manual` manual/local group (which falls under the normal
+// `manualLocalSourceGroupLabel` path via its own `scraped_provenance`) --
+// the two are never merged into one bucket, mirroring how the rest of
+// this app never conflates kiwi_manual with kiwi_mcp.
+function flightSourceGroupLabel(offer: FlightOffer): string {
+  if (offer.scraped_provenance) {
+    return manualLocalSourceGroupLabel(offer.scraped_provenance);
+  }
+  if (isKiwiMcpFlightOffer(offer)) {
+    return "Kiwi MCP (third-party provider data)";
+  }
+  return "Provider-connected";
+}
+
 /**
  * Bookable flight inventory panel (Step 169E, extended in Step 178D for
- * Kiwi MCP labeling, docs/16_frontend_architecture.md). Renders only
+ * Kiwi MCP labeling, Step 185F for Developer-Mode messages/warnings/
+ * source grouping, docs/16_frontend_architecture.md). Renders only
  * backend-returned `FlightInventoryReport` fields -- it never invents an
  * airline, flight number, airport, departure/arrival time, duration,
  * price, availability, baggage policy, cancellation policy, or booking
@@ -3020,6 +3283,8 @@ function FlightInventorySection({
   const isConnectedWithOffers = status === "success" && offers.length > 0;
   const hasScrapedOffers = offers.some((offer) => offer.scraped_provenance !== null);
   const hasKiwiMcpOffers = offers.some(isKiwiMcpFlightOffer);
+  const sourceGroups = groupBySourceLabel(offers, flightSourceGroupLabel);
+  const hasMultipleSourceGroups = sourceGroups.length > 1;
 
   return (
     <div id="flight-inventory" className="rounded-2xl border border-white/10 bg-white/5 p-5">
@@ -3028,6 +3293,16 @@ function FlightInventorySection({
         Flight inventory: {flightInventoryStatusLabel(status, hasScrapedOffers, hasKiwiMcpOffers)}
       </p>
 
+      {/* Developer Mode surfaces the backend's own message/warnings
+          verbatim (Step 185F) -- e.g. a missing/malformed local file
+          path, or which optional per-source files had no data. Wrapped
+          with break-words/break-all so a long file path or URL never
+          creates horizontal overflow. */}
+      {report?.message && (
+        <p className="mt-2 break-words text-xs text-slate-400">{report.message}</p>
+      )}
+      <SummaryList title="Source warnings" items={report?.warnings ?? []} />
+
       {!isConnectedWithOffers ? (
         <DisclaimerNote tone="amber" spacingClassName="mt-2">
           No official flight inventory provider is connected yet. Airlines,
@@ -3035,70 +3310,25 @@ function FlightInventorySection({
           policies, and booking links are unavailable unless returned by
           an official provider or a manual/local HTML file.
         </DisclaimerNote>
+      ) : hasMultipleSourceGroups ? (
+        <div className="mt-3 flex flex-col gap-4">
+          {sourceGroups.map((group) => (
+            <div key={group.label}>
+              <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                {group.label} — {offerCountLabel(group.items.length)}
+              </p>
+              <ul className="mt-2 flex flex-col gap-2">
+                {group.items.map((offer, index) => (
+                  <FlightOfferCard key={`${offer.offer_id}-${index}`} offer={offer} />
+                ))}
+              </ul>
+            </div>
+          ))}
+        </div>
       ) : (
         <ul className="mt-3 flex flex-col gap-2">
           {offers.map((offer, index) => (
-            <li
-              key={`${offer.offer_id}-${index}`}
-              className="rounded-lg border border-white/10 bg-slate-900/60 p-3 text-sm"
-            >
-              <p className="break-all font-mono text-[11px] text-slate-500">
-                {offer.offer_id}
-                {offer.source_name ? ` · ${offer.source_name}` : ""}
-              </p>
-              {offer.outbound_segments.map((segment, segmentIndex) => (
-                <FlightSegmentSummary
-                  key={`outbound-${segmentIndex}`}
-                  segment={segment}
-                />
-              ))}
-              {offer.return_segments.length > 0 && (
-                <p className="mt-2 text-[11px] uppercase tracking-wide text-slate-500">
-                  Return
-                </p>
-              )}
-              {offer.return_segments.map((segment, segmentIndex) => (
-                <FlightSegmentSummary
-                  key={`return-${segmentIndex}`}
-                  segment={segment}
-                />
-              ))}
-              {offer.total_price_amount !== null && offer.currency && (
-                <p className="mt-1 text-xs text-slate-300">
-                  {offer.total_price_amount} {offer.currency}
-                </p>
-              )}
-              {offer.availability_status && (
-                <p className="mt-1 text-xs text-slate-400">
-                  Availability: {offer.availability_status}
-                </p>
-              )}
-              {offer.baggage_policy && (
-                <p className="mt-1 text-xs text-slate-400">
-                  Baggage: {offer.baggage_policy}
-                </p>
-              )}
-              {offer.cancellation_policy && (
-                <p className="mt-1 text-xs text-slate-400">
-                  Cancellation: {offer.cancellation_policy}
-                </p>
-              )}
-              {offer.booking_url && (
-                <div className="mt-1 text-xs text-cyan-200">
-                  <p className="text-xs uppercase tracking-wide text-slate-400">
-                    Provider-supplied booking link -- not a booking confirmation
-                  </p>
-                  <p className="break-all">{offer.booking_url}</p>
-                </div>
-              )}
-              {offer.scraped_provenance && (
-                <ProvenanceBadge
-                  provenance={offer.scraped_provenance}
-                  notVerifiedFor="schedule, price, availability, baggage-policy, or booking-link accuracy"
-                />
-              )}
-              {!offer.scraped_provenance && isKiwiMcpFlightOffer(offer) && <KiwiMcpOfferBadge />}
-            </li>
+            <FlightOfferCard key={`${offer.offer_id}-${index}`} offer={offer} />
           ))}
         </ul>
       )}
@@ -4636,6 +4866,7 @@ function TravelerFlightOfferCard({ offer }: { offer: FlightOffer }) {
         <ProvenanceBadge
           provenance={offer.scraped_provenance}
           notVerifiedFor="schedule, price, availability, baggage-policy, or booking-link accuracy"
+          concise
         />
       )}
       {!offer.scraped_provenance && isKiwiMcpFlightOffer(offer) && <KiwiMcpOfferBadge />}
@@ -4777,6 +5008,7 @@ function UserModeFlightSummary({
   const status = report?.status ?? "not_connected";
   const offers = report?.offers ?? [];
   const hasOffers = status === "success" && offers.length > 0;
+  const hasManualLocalOffers = offers.some((offer) => offer.scraped_provenance !== null);
   // Step 182G: a real, connected/enabled flight provider that genuinely
   // found nothing (or errored) for this route/date is a different, more
   // accurate message than "not connected at all" -- confirmed live
@@ -4797,6 +5029,8 @@ function UserModeFlightSummary({
           <DisclaimerNote tone="amber" spacingClassName="mt-2">
             Concise flight offer summary -- not a booking. See Developer
             view for full schedule, baggage, and cancellation details.
+            {hasManualLocalOffers &&
+              " Some or all of this comes from a manual/local HTML source, not official-provider data."}
           </DisclaimerNote>
           <ul className="mt-3 flex flex-col gap-2">
             {offers

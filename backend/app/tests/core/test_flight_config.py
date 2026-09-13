@@ -187,3 +187,126 @@ def test_settings_constructs_without_any_partner_flight_credential(
 
     assert settings.flight_provider == "scraped_local"
     assert settings.skyscanner_api_key is None
+
+
+# ---------------------------------------------------------------------------
+# Step 185D: independent per-source local file paths -- multi-source
+# flight ingestion. Each defaults to its own real path (never `None`), so
+# every source is "known and eligible" out of the box, but with no file
+# actually present at any of these paths (the fresh-clone state), the
+# provider honestly reports each one as missing -- see
+# test_scraped_flight_provider.py/test_scraped_flight_multi_source.py for
+# that behavior.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "field_name,alias,expected_default",
+    [
+        (
+            "scraped_flight_html_path_skyscanner",
+            "SCRAPED_FLIGHT_HTML_PATH_SKYSCANNER",
+            ".data/manual_scrapes/flights_skyscanner.html",
+        ),
+        (
+            "scraped_flight_html_path_google_flights",
+            "SCRAPED_FLIGHT_HTML_PATH_GOOGLE_FLIGHTS",
+            ".data/manual_scrapes/flights_google_flights.html",
+        ),
+        (
+            "scraped_flight_html_path_kiwi_manual",
+            "SCRAPED_FLIGHT_HTML_PATH_KIWI_MANUAL",
+            ".data/manual_scrapes/flights_kiwi_manual.html",
+        ),
+    ],
+)
+def test_per_source_flight_html_path_default(
+    field_name: str, alias: str, expected_default: str
+) -> None:
+    field_info = Settings.model_fields[field_name]
+    assert field_info.default == expected_default
+    assert field_info.alias == alias
+
+
+def test_settings_constructs_without_any_per_source_flight_path_env_var(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setitem(Settings.model_config, "env_file", None)
+    settings = Settings()
+
+    assert settings.scraped_flight_html_path_skyscanner == (
+        ".data/manual_scrapes/flights_skyscanner.html"
+    )
+    assert settings.scraped_flight_html_path_google_flights == (
+        ".data/manual_scrapes/flights_google_flights.html"
+    )
+    assert settings.scraped_flight_html_path_kiwi_manual == (
+        ".data/manual_scrapes/flights_kiwi_manual.html"
+    )
+    # The pre-185D single-file setting is completely untouched.
+    assert settings.scraped_flight_html_path == ".data/manual_scrapes/flights.html"
+    assert settings.flight_manual_html_source == "generic"
+
+
+def test_per_source_flight_html_path_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setitem(Settings.model_config, "env_file", None)
+    monkeypatch.setenv("SCRAPED_FLIGHT_HTML_PATH_SKYSCANNER", "/tmp/example-skyscanner.html")
+
+    settings = Settings()
+
+    assert settings.scraped_flight_html_path_skyscanner == "/tmp/example-skyscanner.html"
+    # Other sources are unaffected.
+    assert settings.scraped_flight_html_path_google_flights == (
+        ".data/manual_scrapes/flights_google_flights.html"
+    )
+
+
+def test_per_source_flight_html_path_can_be_cleared(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setitem(Settings.model_config, "env_file", None)
+    settings = Settings(scraped_flight_html_path_skyscanner=None)
+
+    assert settings.scraped_flight_html_path_skyscanner is None
+    assert settings.resolved_scraped_flight_html_paths_by_source()["skyscanner"] is None
+
+
+def test_resolved_per_source_flight_html_paths_are_relative_to_backend_root(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setitem(Settings.model_config, "env_file", None)
+    settings = Settings()
+
+    resolved = settings.resolved_scraped_flight_html_paths_by_source()
+
+    assert set(resolved.keys()) == {"skyscanner", "google_flights", "kiwi_manual"}
+    for brand, path in resolved.items():
+        assert path is not None
+        assert path.is_absolute()
+        assert path.name == f"flights_{brand}.html"
+        assert path.parent.name == "manual_scrapes"
+
+
+def test_resolved_per_source_flight_html_path_respects_absolute_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setitem(Settings.model_config, "env_file", None)
+    absolute_path = "/tmp/example-absolute-skyscanner.html"
+    settings = Settings(scraped_flight_html_path_skyscanner=absolute_path)
+
+    resolved = settings.resolved_scraped_flight_html_paths_by_source()
+
+    assert resolved["skyscanner"] == Path(absolute_path)
+
+
+def test_per_source_flight_paths_are_distinct_from_each_other_and_from_legacy_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every default path is a distinct filename -- the out-of-the-box
+    configuration never accidentally makes two sources (or a brand and
+    the legacy single-file setting) collide on the same real file."""
+    monkeypatch.setitem(Settings.model_config, "env_file", None)
+    settings = Settings()
+
+    resolved = settings.resolved_scraped_flight_html_paths_by_source()
+    all_paths = list(resolved.values()) + [settings.resolved_scraped_flight_html_path()]
+
+    assert len(all_paths) == len(set(all_paths))

@@ -4377,3 +4377,137 @@ code existed. No console errors beyond the expected pre-login `401` on
 the initial `/auth/me` bootstrap check. This closes Section 184
 (184A-184G) from the frontend side -- see `docs/CODEBASE_OVERVIEW.md`'s
 Section 184G entry for the equivalent backend-side final review.
+
+## 43. Section 185F: Frontend/Source Diagnostics Polish for Manual/Local Provider Ingestion
+
+Steps 185B-185E built real backend source-specific parsing, multi-source
+merging, and hotel-ratings enrichment for accommodation/flight/rating
+manual-local ingestion -- but the frontend hadn't been touched since
+before Step 185B, so none of that detail (per-source warnings, parsed-at
+timestamps, which brand a given offer/rating actually came from) was
+visible anywhere. This step makes it visible in Developer view only,
+without adding a single line of new copy to Traveler view beyond one
+conditional "manual/local" mention in two already-existing disclaimers.
+
+**Type alignment (`frontend/lib/types.ts`)**: added `warnings: string[]`
+to `AccommodationInventoryReport` (Step 185C) and `FlightInventoryReport`
+(Step 185D) -- the backend already returned both; no frontend type
+declared them until now. Added `hotel_ratings_warnings: string[]` to
+`AccommodationInventoryReport`, backed by one small, additive backend
+field (see below). `ScrapedAccommodationProvenance`/
+`ScrapedFlightProvenance.fetched_at` and
+`AccommodationRatingDetails.retrieved_at` already existed in this file
+(added in Steps 168E/177B) but were never rendered anywhere -- this step
+is the first to read them.
+
+**One additive backend field**: `AccommodationSearchResult.
+hotel_ratings_warnings: list[str]` (`backend/app/models/accommodation.py`),
+populated by `HotelRatingEnrichmentService.enrich` copying
+`HotelRatingsResult.warnings` (Step 185E) straight through in both its
+`model_copy` branches (`backend/app/services/hotel_rating_enrichment_
+service.py`) -- never recomputed, filtered, or reworded. This exists
+because `HotelRatingsResult` itself is never part of any API response
+(only `AccommodationSearchResult`'s scalar `hotel_ratings_status`/
+`_provider`/`_message`/`_enriched_offer_count` restatements were), so
+there was previously no serializable field carrying this detail at all
+-- a real, minimal type-contract gap, not a frontend-only fix. 5 new
+backend tests (2 model, 3 enrichment-service) confirm the field defaults
+to `[]` and is copied through correctly in both the non-success and
+success-with-items enrichment paths.
+
+**`ProvenanceBadge` parsed-at display**: now renders a `provenance.
+fetched_at` line as "Parsed at: <timestamp>" (never "Fetched at" --
+this is when a local file was parsed, not a live fetch) immediately
+after the existing source/URL line, omitted entirely when `null`. Never
+computes or displays the current time itself. `AccommodationRatingDetailsCard`
+gained an equivalent "Retrieved at: <timestamp>" line from
+`rating_details.retrieved_at`, same omit-when-absent rule.
+
+**`ProvenanceBadge` `concise` mode (fixes a real, pre-185F gap)**: while
+verifying Traveler view stayed "concise" per this step's own
+requirement, live testing (Playwright, real signup → generate → toggle
+flow) found that `parser_version` (an internal module-version string,
+e.g. `accommodation_source_parser_booking_v1`) was *already* leaking
+into Traveler view -- `AccommodationOfferCard`/`TravelerFlightOfferCard`
+have reused the same full `ProvenanceBadge` in both Developer and
+Traveler contexts since Steps 182D/169E, and nothing had ever gated the
+parser-version line by view mode. Added a `concise?: boolean` prop
+(default `false`) to `ProvenanceBadge`, threaded through a new `concise?:
+boolean` prop on `AccommodationOfferCard`; `TravelerWhereToStaySection`
+and `TravelerFlightOfferCard` now pass `concise` explicitly, while
+Developer view's `AccommodationInventorySection`/`FlightInventorySection`
+keep the default (full detail, unchanged). Confirmed live afterward:
+Traveler view (default mode, and after toggling Developer → Traveler)
+never contains the string `"Parser:"` anywhere in its rendered text;
+Developer view still does.
+
+**Developer-Mode failure/warning messages**: `AccommodationInventorySection`
+and `FlightInventorySection` now render the backend's own `report.message`
+(regardless of status -- a `success` message is informative too, e.g.
+"Parsed 2 offer(s) from 2 source(s): ...") and `report.warnings` (via the
+existing `SummaryList` component) directly above the offer list, wrapped
+with `break-words`/`break-all` so a long local file path or URL never
+creates horizontal overflow. A new `HotelRatingsEnrichmentDiagnostic`
+component (Developer view only, rendered inside
+`AccommodationInventorySection`) shows the hotel-ratings pass's own
+status/provider/message/`hotel_ratings_warnings`, plus a source-label
+grouping of which ratings actually attached (e.g. "Manual local scraped
+hotel ratings source — 1 offer"), or renders nothing at all when
+enrichment was never attempted (no offers to enrich).
+
+**Developer-Mode source grouping**: a new `groupBySourceLabel` helper
+(stable, first-seen-order grouping, never re-sorts) plus
+`manualLocalSourceGroupLabel` -- which extracts the `<Brand>-derived`
+substring already present in every adapter's own generated `source_name`
+(the identical `"... labeled by user as <Display>-derived; not official
+<Display> data"` template every one of `app.providers.{accommodation,
+flights,hotel_ratings}.scraped_adapter`'s `_source_identity_for_brand_
+slot` functions produces) and reformats it as "`<Display>-derived
+manual/local data`" -- never invents a brand name, and falls back to the
+raw `source_name` (or "Manual/local source" if absent) for anything that
+doesn't match that exact shape, e.g. an operator-customized legacy
+single-file label. `AccommodationInventorySection`/`FlightInventorySection`
+group their offers by this label whenever 2+ distinct groups exist (a
+single-source result still renders as one flat list, unchanged);
+grouping never hides an offer, every card stays fully expanded. Flights
+additionally give a real Kiwi MCP offer (`isKiwiMcpFlightOffer`) its own
+explicit "Kiwi MCP (third-party provider data)" group, structurally
+never merged with a `kiwi_manual` group (which gets its own
+`scraped_provenance`-derived label like every other brand). Live-verified
+with two real local accommodation files (Booking/Expedia) and two real
+local flight files (Skyscanner/Google Flights) simultaneously configured
+-- headers read exactly "Booking.com-derived manual/local data — 1
+offer" / "Expedia-derived manual/local data — 1 offer" and the flight
+equivalents, matching this step's own target format precisely.
+
+**Traveler Mode caveats**: `TravelerWhereToStaySection`'s and
+`UserModeFlightSummary`'s existing disclaimers (already accurate, kept
+verbatim otherwise) now append one conditional sentence -- "Some or all
+of this comes from a manual/local HTML source, not official-provider
+data." -- only when at least one rendered offer actually carries
+`scraped_provenance`. No full missing-file diagnostics, warnings list,
+or parser identifier of any kind was added to Traveler view; "not a
+booking confirmation" wording is unchanged.
+
+**Mobile/long-text handling**: every new message/warning/group-header
+line uses the same `break-words`/`break-all` Tailwind utilities already
+established in Sections 179C/184G as this codebase's overflow-safety
+pattern -- no new truncation/ellipsis technique was introduced, and none
+of this step's new text is ever hidden behind a "show more" interaction.
+Live-verified at 375px and 390px, in both Developer view (with the new
+grouped sections, long file-path warnings, and the hotel-ratings
+diagnostic all visible) and Traveler view: `document.documentElement.
+scrollWidth` never exceeded `clientWidth` at either width, in either
+mode.
+
+**Live verification** (Playwright, real signup → create trip → generate
+→ Developer view → Traveler view flow, against a throwaway local backend
+pointed at scratch-only fixture files -- never a real commercial
+website, never the real `backend/.data/`): confirmed every behavior
+described above end to end, including the `parser_version` leak this
+step's own testing caught and fixed. The only console message across
+the whole flow was the pre-existing, already-documented pre-login `401`
+on the initial `/auth/me` bootstrap check (Section 184G). No JS runtime
+error. `tsc --noEmit`, `eslint`, and `next build` all clean. No live
+scraping, browser automation, or provider API call was added anywhere in
+this step; the frontend still only ever displays backend-returned data.

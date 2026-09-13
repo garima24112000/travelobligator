@@ -812,6 +812,19 @@ this is the primary wired base)
 - Fallback: the manual/local HTML accommodation fallback below (label it
   `ACCOMMODATION_MANUAL_HTML_SOURCE=booking` for clearer provenance —
   still never official Booking.com data).
+- Registry classification (Step 185B, `backend/app/providers/scraping_
+  source_registry_defaults.py`): manual/local HTML only — restricted from
+  live scraping per this project's policy. Represented in the source
+  registry with `approved_for_personal_use=False`/`enabled=False`, so it
+  can never be activated for a future live fetch even if one is ever
+  built; a real Booking Demand API partnership remains a possible,
+  separate, non-scraping future path.
+- Source-specific parser (Step 185C): `backend/app/providers/
+  accommodation/source_parsers/booking.py` — its own dedicated file at
+  `SCRAPED_ACCOMMODATION_HTML_PATH_BOOKING` (can be supplied alongside
+  every other source's own file at the same time), same manual/local
+  micro-format as every other source, never a claim of matching
+  Booking.com's real DOM.
 - Missing (always, today): `accommodation_provider` never resolves to a
   Booking adapter — selecting `"booking"` explicitly falls back to
   `not_connected` (see `get_accommodation_provider`'s "unsupported name"
@@ -826,6 +839,13 @@ this is the primary wired base)
   `EXPEDIA_RAPID_API_BASE_URL` — placeholders only.
 - Fallback: manual/local HTML accommodation fallback
   (`ACCOMMODATION_MANUAL_HTML_SOURCE=expedia`).
+- Registry classification (Step 185B): manual/local HTML only —
+  restricted from live scraping per this project's policy, same as
+  Booking.com. A real Expedia Rapid API partnership remains a possible,
+  separate, non-scraping future path.
+- Source-specific parser (Step 185C): `source_parsers/expedia.py`, its
+  own `SCRAPED_ACCOMMODATION_HTML_PATH_EXPEDIA` file, same pattern as
+  Booking.com above.
 - Missing (always, today): same `not_connected` fallback as Booking.com.
 
 **Hotelbeds API** (lodging)
@@ -837,6 +857,16 @@ this is the primary wired base)
   placeholders only.
 - Fallback: manual/local HTML accommodation fallback
   (`ACCOMMODATION_MANUAL_HTML_SOURCE=hotelbeds`).
+- Registry classification (Step 185B): not restricted by this project's
+  policy (Hotelbeds is a B2B wholesale platform, not a consumer search
+  site), but no human has reviewed a live fetch path yet, so it is
+  recorded `approved_for_personal_use=False`/`enabled=False` the same as
+  the restricted sources today. Its real, honest official-API path (the
+  Hotelbeds developer/partner program above) is the most realistic
+  upgrade of any source in this list.
+- Source-specific parser (Step 185C): `source_parsers/hotelbeds.py`, its
+  own `SCRAPED_ACCOMMODATION_HTML_PATH_HOTELBEDS` file, same pattern as
+  Booking.com above.
 - Missing (always, today): same `not_connected` fallback.
 
 **Hostelworld Partner/Affiliate API** (lodging)
@@ -847,6 +877,14 @@ this is the primary wired base)
   only.
 - Fallback: manual/local HTML accommodation fallback
   (`ACCOMMODATION_MANUAL_HTML_SOURCE=hostelworld`).
+- Registry classification (Step 185B): not restricted by this project's
+  policy, but no human has reviewed a live fetch path yet (bot-detection
+  is commonly reported on Hostelworld's public search pages), so it is
+  recorded `approved_for_personal_use=False`/`enabled=False` for now. A
+  real affiliate/API integration remains a possible future path.
+- Source-specific parser (Step 185C): `source_parsers/hostelworld.py`,
+  its own `SCRAPED_ACCOMMODATION_HTML_PATH_HOSTELWORLD` file, same
+  pattern as Booking.com above.
 - Missing (always, today): same `not_connected` fallback.
 
 **Vrbo** (vacation rentals — partner/connectivity, effectively an Expedia
@@ -863,6 +901,16 @@ Group path)
   has no lodging-type distinction) — label it
   `ACCOMMODATION_MANUAL_HTML_SOURCE=vrbo`. If you'd rather not label it
   at all, it's just `not_connected`/manual review.
+- Registry classification (Step 185B): manual/local HTML only —
+  restricted from live scraping per this project's policy, same as
+  Booking.com/Expedia. A real Vrbo partner integration (shares Expedia
+  Group's partner ecosystem) remains a possible, separate, non-scraping
+  future path.
+- Source-specific parser (Step 185C): `source_parsers/vrbo.py`, its own
+  `SCRAPED_ACCOMMODATION_HTML_PATH_VRBO` file, same pattern as
+  Booking.com above -- no vacation-rental-specific field exists on this
+  app's `AccommodationOffer` model, so this parser extracts exactly the
+  same fields every other source parser does.
 - Missing (always, today): same `not_connected` fallback.
 
 **Airbnb** (lodging — partner/API program only; a restricted provider,
@@ -879,6 +927,14 @@ never scraped)
   (`ACCOMMODATION_MANUAL_HTML_SOURCE=airbnb`) — and the label always
   reads "not official Airbnb data"; this app never implies an official
   Airbnb connection under any configuration.
+- Registry classification (Step 185B): manual/local HTML only,
+  indefinitely — restricted from live scraping per this project's
+  policy, and Airbnb's official API is invitation-only/property-
+  management-focused, not a general search API a small app could
+  realistically obtain.
+- Source-specific parser (Step 185C): `source_parsers/airbnb.py`, its
+  own `SCRAPED_ACCOMMODATION_HTML_PATH_AIRBNB` file, same pattern as
+  Booking.com above.
 - Missing (always, today): same `not_connected` fallback.
 
 **Skyscanner Travel API** (flights)
@@ -890,9 +946,41 @@ never scraped)
   only.
 - Fallback: manual/local HTML flight fallback
   (`FLIGHT_MANUAL_HTML_SOURCE=skyscanner`).
+- Registry classification (Step 185B): not restricted by this project's
+  policy, but Skyscanner's public partner API program is largely closed
+  to new developers today and bot-detection is commonly reported on its
+  public site, so no human has reviewed a live fetch path yet —
+  recorded `approved_for_personal_use=False`/`enabled=False` for now.
+- Source-specific parser (Step 185D): `backend/app/providers/
+  flights/source_parsers/skyscanner.py` — its own dedicated file at
+  `SCRAPED_FLIGHT_HTML_PATH_SKYSCANNER` (can be supplied alongside every
+  other flight source's own file at the same time), same manual/local
+  micro-format as every other source, never a claim of matching
+  Skyscanner's real DOM.
 - Missing (always, today): `flight_provider` never resolves to a
   Skyscanner adapter — selecting `"skyscanner"` explicitly falls back to
   `not_connected`.
+
+**Google Flights** (flights — restricted provider, never scraped)
+- Status: not implemented, and not scraped under any circumstance —
+  Google Flights is on this app's restricted-provider list.
+- Key needed: not applicable — Google does not offer a general-developer
+  Google Flights API today (its older QPX Express API was discontinued),
+  so there is no realistic official-API path to document here.
+- Access: none.
+- Env: no dedicated credential exists (there is nothing to configure).
+- Fallback: manual/local HTML flight fallback
+  (`FLIGHT_MANUAL_HTML_SOURCE=google_flights`) — the label always reads
+  "not official Google Flights data."
+- Registry classification (Step 185B): manual/local HTML only,
+  indefinitely — restricted from live scraping per this project's
+  policy, with no realistic official-API alternative to work toward.
+- Source-specific parser (Step 185D): `source_parsers/google_flights.py`,
+  its own `SCRAPED_FLIGHT_HTML_PATH_GOOGLE_FLIGHTS` file, same pattern as
+  Skyscanner above.
+- Missing (always, today): `flight_provider` never resolves to a Google
+  Flights adapter; this is always `not_connected` unless a local file is
+  supplied and labeled.
 
 **Tripadvisor Content API** (hotel ratings/reviews)
 - Status: not implemented — `hotel_ratings_provider` only supports
@@ -903,15 +991,56 @@ never scraped)
 - Access: apply through the Tripadvisor Content API developer portal.
 - Env: `TRIPADVISOR_API_KEY`/`TRIPADVISOR_API_BASE_URL` — placeholders
   only.
-- Fallback: none implemented in this step. A manual/local
-  review-fallback file is not currently modeled — rather than force one
-  in, hotel ratings simply stay `not_connected` until a real,
-  credentialed adapter (or a deliberately-designed manual fallback) is
-  built with its own tests.
-- Missing (always, today): `provider_coverage.hotel_ratings` stays
-  `None` (enrichment was never attempted) whenever no accommodation
-  offers exist to enrich, or reports `not_connected` otherwise — never a
-  fabricated rating.
+- Fallback: manual/local HTML rating fallback
+  (`HOTEL_RATINGS_MANUAL_HTML_SOURCE=tripadvisor`) — the label always
+  reads "not official Tripadvisor data."
+- Registry classification (Step 185B): manual/local HTML only —
+  restricted from live scraping per this project's policy. The real,
+  honest long-term path is the official Tripadvisor Content API above,
+  which would be an official API call, not scraping.
+- Source-specific parser (Step 185E): `backend/app/providers/
+  hotel_ratings/source_parsers/tripadvisor.py` — its own dedicated file
+  at `SCRAPED_HOTEL_RATINGS_HTML_PATH_TRIPADVISOR` (can be supplied
+  alongside every other rating source's own file at the same time), same
+  manual/local micro-format as every other source, never a claim of
+  matching Tripadvisor's real DOM.
+- Missing (always, today): `hotel_ratings_provider` still defaults to
+  `not_connected`; selecting `HOTEL_RATINGS_PROVIDER=scraped_local` (or
+  the `manual_html` alias) with no local file present honestly reports
+  `unavailable` rather than a fabricated rating.
+
+**Google Places ratings** (hotel ratings/reviews — tracked future
+official-API candidate, not a scraping target)
+- Status: not implemented. Google Places is never scraped anywhere in
+  this app.
+- Key needed: yes, if ever implemented — reuses the existing
+  `GOOGLE_PLACES_API_KEY` (already used elsewhere in this app for
+  open-data POI candidates, not ratings).
+- Access: same Google Cloud/Places API console access already documented
+  for the existing places-candidate integration.
+- Env: `GOOGLE_PLACES_API_KEY` (existing), `HOTEL_RATINGS_MANUAL_HTML_
+  SOURCE=google_places` for provenance labeling only, if a manual
+  fallback is ever built.
+- Fallback: manual/local HTML rating fallback
+  (`HOTEL_RATINGS_MANUAL_HTML_SOURCE=google_places`, resolved internally
+  to the distinct `google_places_ratings` registry/parser key) — the
+  label always reads "not official Google Places data." This is local/
+  manual file labeling only, never a live Google Places API call in this
+  step.
+- Registry classification (Step 185B): tracked as a future *official-
+  API* candidate (via the real Google Places API), not a scraping
+  target — recorded with the same disabled/not-yet-approved shape as
+  every other not-yet-implemented source purely for registry
+  consistency, not because it carries the same restriction as the
+  policy-restricted sources above.
+- Source-specific parser (Step 185E): `source_parsers/google_places_
+  ratings.py`, its own `SCRAPED_HOTEL_RATINGS_HTML_PATH_GOOGLE_PLACES_
+  RATINGS` file, same pattern as Tripadvisor above. Reuses no part of
+  `GOOGLE_PLACES_API_KEY`/the existing open-data POI candidate
+  integration — this is a wholly separate, local-file-only path.
+- Missing (always, today): `hotel_ratings_provider` still defaults to
+  `not_connected`; a real, official Google Places ratings API adapter
+  remains a possible, separate, non-scraping future path.
 
 **Manual/local HTML accommodation fallback**
 - Used for: lodging inventory when no official API is connected — the
@@ -932,6 +1061,25 @@ never scraped)
 - Missing: with no file at the configured path, `accommodation_inventory_report.status`
   is honestly `unavailable`, `offers` stays empty — never a fabricated
   offer.
+- **Multi-source (Step 185C):** besides the single shared file above,
+  six independent per-source files can be configured at once —
+  `SCRAPED_ACCOMMODATION_HTML_PATH_BOOKING`/`_EXPEDIA`/`_HOTELBEDS`/
+  `_HOSTELWORLD`/`_VRBO`/`_AIRBNB` (each defaults to its own real path
+  under `.data/manual_scrapes/`, e.g.
+  `accommodations_booking.html`) — each parsed by its own
+  source-specific parser module
+  (`backend/app/providers/accommodation/source_parsers/`). Any
+  combination can be present simultaneously; offers from every
+  successful source are merged into one result, and a source with no
+  file present is recorded in the new `accommodation_inventory_report.
+  warnings` list rather than blocking the others or being silently
+  dropped. This is still local/manual ingestion only — no source-specific
+  parser means live-site support, no browser automation exists, and
+  every offer still carries the same "not official `<Name>` data"
+  provenance labeling as before. If every configured source (shared file
+  and all six per-brand files) is missing, the whole result stays
+  `unavailable`; if a configured file exists but cannot be parsed, that
+  source is reported `failed`.
 
 **Manual/local HTML flight fallback**
 - Used for: flight inventory when no official/live API is connected —
@@ -945,19 +1093,92 @@ never scraped)
 - Env: `FLIGHT_PROVIDER=scraped_local` (or the `manual_html` alias, Step
   182E), plus `SCRAPED_FLIGHT_HTML_PATH`/`SCRAPED_FLIGHT_SOURCE_ID`/
   `SCRAPED_FLIGHT_SOURCE_NAME`/`FLIGHT_MANUAL_HTML_SOURCE`.
-- Fallback: this *is* the fallback for Skyscanner above (and for Kiwi
-  when Kiwi MCP is disabled).
+- Fallback: this *is* the fallback for Skyscanner/Google Flights above
+  (and for Kiwi when Kiwi MCP is disabled — labeled
+  `FLIGHT_MANUAL_HTML_SOURCE=kiwi`, registered in the source registry as
+  the distinct `kiwi_manual` entry so it's never confused with the real,
+  live `FLIGHT_PROVIDER=kiwi_mcp` integration).
 - Missing: with no file at the configured path,
   `flight_inventory_report.status` is honestly `unavailable` — never a
   fabricated offer, flight number, airline, or schedule.
+- **Multi-source (Step 185D):** besides the single shared file above,
+  three independent per-source files can be configured at once —
+  `SCRAPED_FLIGHT_HTML_PATH_SKYSCANNER`/`_GOOGLE_FLIGHTS`/`_KIWI_MANUAL`
+  (each defaults to its own real path under `.data/manual_scrapes/`,
+  e.g. `flights_skyscanner.html`) — each parsed by its own
+  source-specific parser module
+  (`backend/app/providers/flights/source_parsers/`). Any combination can
+  be present simultaneously; offers from every successful source are
+  merged into one result, and a source with no file present is recorded
+  in the new `flight_inventory_report.warnings` list rather than
+  blocking the others or being silently dropped. `kiwi_manual` here is
+  the manual/local HTML parser for a Kiwi-labeled file and is completely
+  separate from — and never imports anything from — the real, live
+  `FLIGHT_PROVIDER=kiwi_mcp` integration; a `kiwi_manual` offer's
+  `provider` field is always prefixed `scraped:`, never `kiwi_mcp`. This
+  is still local/manual ingestion only — no source-specific parser means
+  live-site support, no browser automation exists, and every offer still
+  carries the same "not official `<Name>` data" provenance labeling as
+  before. If every configured source (shared file and all three
+  per-brand files) is missing, the whole result stays `unavailable`; if
+  a configured file exists but cannot be parsed, that source is reported
+  `failed`.
 
 **Manual/local review/rating fallback**
-- Not implemented in this step. `hotel_ratings_provider` only supports
-  `not_connected` — there is no manual/local HTML parser for ratings or
-  reviews today, and Step 182E deliberately does not force one into
-  product behavior. If one is built later, it will follow the exact same
-  pattern as the accommodation/flight fallbacks above: a local file the
-  user supplies, parsed by a static parser, never a live fetch.
+- Used for: hotel ratings/review counts when no official API is
+  connected — the default (`not_connected`) unless explicitly opted in.
+- Status: implemented (`ScrapedLocalHotelRatingsProvider`, Step 185E).
+- Key needed: no.
+- Access: none — you supply a local HTML file yourself, at
+  `SCRAPED_HOTEL_RATINGS_HTML_PATH` (default
+  `.data/manual_scrapes/hotel_ratings.html`). This app never fetches
+  that page itself.
+- Env: `HOTEL_RATINGS_PROVIDER=scraped_local` (or the `manual_html`
+  alias, mirroring `ACCOMMODATION_PROVIDER`/`FLIGHT_PROVIDER`'s
+  identical alias convention — default stays `not_connected`), plus
+  `SCRAPED_HOTEL_RATINGS_PROVIDER_ENABLED`/
+  `SCRAPED_HOTEL_RATINGS_HTML_PATH`/
+  `SCRAPED_HOTEL_RATINGS_SOURCE_ID`/`SCRAPED_HOTEL_RATINGS_SOURCE_NAME`/
+  `HOTEL_RATINGS_MANUAL_HTML_SOURCE`.
+- Fallback: this *is* the fallback for Tripadvisor/Google Places ratings
+  above.
+- Missing: with no file at the configured path,
+  `HotelRatingsResult.status` is honestly `unavailable` — never a
+  fabricated rating value, review count, or review text. Every
+  accommodation offer keeps `rating_details: null` in that case, exactly
+  as before this step.
+- **How matching works:** this provider never fuzzy-matches. For each
+  accommodation offer already found, it looks for an *exact*
+  (case/whitespace-insensitive) property-name match among every parsed
+  rating record; zero matches, or an *ambiguous* match (the same name
+  appearing in two different rating files with two different ratings),
+  both leave that offer's rating honestly unmatched — never a guessed
+  attachment to the wrong property.
+- **Multi-source (Step 185E):** besides the single shared file above,
+  two independent per-source files can be configured at once —
+  `SCRAPED_HOTEL_RATINGS_HTML_PATH_TRIPADVISOR`/
+  `_GOOGLE_PLACES_RATINGS` (each defaults to its own real path under
+  `.data/manual_scrapes/`, e.g. `hotel_ratings_tripadvisor.html`) — each
+  parsed by its own source-specific parser module
+  (`backend/app/providers/hotel_ratings/source_parsers/`). Any
+  combination can be present simultaneously; matched ratings from every
+  successful source are merged into one result, and a source with no
+  file present is recorded in the new `HotelRatingsResult.warnings` list
+  rather than blocking the others or being silently dropped. This is
+  still local/manual ingestion only — no source-specific parser means
+  live-site support, no browser automation exists, no live Tripadvisor
+  or Google Places request is ever made, and every rating still carries
+  `data_status=scraped_public_page` provenance labeling. If every
+  configured source (shared file and both per-brand files) is missing,
+  the whole result stays `unavailable`; if a configured file exists but
+  cannot be parsed, that source is reported `failed`. Only a rating
+  value and a review count are ever extracted — no raw review text, no
+  "top-rated"/"best" ranking claim, and no claim that a review has been
+  verified.
+- Wired into `HotelRatingEnrichmentService` (Step 177C) automatically —
+  setting `HOTEL_RATINGS_PROVIDER=scraped_local` needs no other code
+  change to start conservatively enriching accommodation offers whose
+  `property_name` exactly matches a parsed rating record.
 
 For every manual/local HTML fallback above: a `*_MANUAL_HTML_SOURCE`
 label (e.g. `booking`, `skyscanner`) only changes the *displayed*
@@ -968,6 +1189,148 @@ by user" / "not official `<Name>` data." Setting a
 login/paywall/CAPTCHA/bot-protection/rate-limit, and never calls the
 named provider's website in any way — it only relabels a file you
 already supplied yourself.
+
+As of Step 185B, every named source above (Booking, Expedia, Hotelbeds,
+Hostelworld, Vrbo, Airbnb, Skyscanner, Google Flights, Kiwi-manual,
+Tripadvisor, Google Places ratings) is represented in a real, populated
+`ScrapingSourceRegistry` (`backend/app/providers/scraping_source_
+registry_defaults.py`), not just a display-name dict — this makes each
+source's classification (restricted-by-policy vs. not-yet-reviewed vs.
+future-official-API-candidate) an inspectable, tested fact rather than
+an implicit assumption. No entry in that registry is `enabled=True` for
+live fetch — representing a source and activating it for live scraping
+are deliberately different things, and this step only ever does the
+former.
+
+As of Step 185C, the six accommodation sources above (Booking, Expedia,
+Hotelbeds, Hostelworld, Vrbo, Airbnb) each get their own source-specific
+parser module (`backend/app/providers/accommodation/source_parsers/`)
+and their own independent, optional local file path
+(`SCRAPED_ACCOMMODATION_HTML_PATH_BOOKING` and five siblings) — any
+combination of these six files, plus the original shared single file,
+can be present at once, and `ScrapedAccommodationProvider` merges every
+successful source's offers into one result. A source-specific parser
+recognizing a brand's own synthetic micro-format (an optional
+`data-source="<brand>"` marker) is still not, and is never claimed to
+be, live-site support: every parser here is a pure HTML-string
+transform, never a URL fetch, and an untagged card is always accepted
+regardless (delegating to the same generic behavior this app has always
+had). A source with no file present is recorded in
+`accommodation_inventory_report.warnings`, never silently dropped and
+never downgrading another source's real success.
+
+As of Step 185D, the same pattern extends to flights: the three flight
+sources above (Skyscanner, Google Flights, Kiwi-manual) each get their
+own source-specific parser module
+(`backend/app/providers/flights/source_parsers/`) and their own
+independent, optional local file path
+(`SCRAPED_FLIGHT_HTML_PATH_SKYSCANNER` and two siblings) — any
+combination of these three files, plus the original shared single file,
+can be present at once, and `ScrapedLocalFlightProvider` merges every
+successful source's offers into one result. `kiwi_manual` is a distinct
+registry entry and parser module from the live `kiwi_mcp` integration —
+structurally (it never imports any `kiwi_mcp` module), behaviorally
+(every offer it returns has `provider` prefixed `scraped:`, asserted
+defensively inside the parser itself), and semantically (it is always
+named `kiwi_manual` in code, config, and docs, never bare `kiwi`). A
+source with no file present is recorded in
+`flight_inventory_report.warnings`, never silently dropped and never
+downgrading another source's real success. Step 185D made no frontend
+changes and did not touch accommodation, hotel ratings, or Kiwi MCP
+behavior.
+
+As of Step 185E, the same pattern extends to hotel ratings/reviews: the
+two rating sources above (Tripadvisor, Google Places ratings) each get
+their own source-specific parser module
+(`backend/app/providers/hotel_ratings/source_parsers/`) and their own
+independent, optional local file path
+(`SCRAPED_HOTEL_RATINGS_HTML_PATH_TRIPADVISOR` and one sibling) — any
+combination of these two files, plus the original shared single file,
+can be present at once, and `ScrapedLocalHotelRatingsProvider` merges
+every successful source's parsed rating records before conservatively,
+exactly matching each one against an already-known accommodation offer's
+`property_name` (never fuzzy — an ambiguous or absent match always
+leaves that offer's rating honestly unmatched). Unlike accommodation and
+flights, `HOTEL_RATINGS_PROVIDER` still defaults to `not_connected` —
+enabling local/manual rating ingestion is an explicit opt-in
+(`HOTEL_RATINGS_PROVIDER=scraped_local`), matching the user's own
+"enable ratings/reviews through safe local/manual ingestion for MVP
+testing" direction for this step without changing any other provider's
+default. A source with no file present is recorded in
+`HotelRatingsResult.warnings`, never silently dropped and never
+downgrading another source's real success. `HotelRatingEnrichmentService`
+(Step 177C) needed zero code changes to pick up the new provider — it
+already resolved whichever adapter `HOTEL_RATINGS_PROVIDER` selects.
+Step 185E made no frontend changes and did not touch accommodation,
+flight, or Kiwi MCP behavior.
+
+As of Step 185F, the frontend (`frontend/app/page.tsx`) makes every
+manual/local ingestion fact above visible without displaying it in
+Traveler view. Developer view now shows: the backend's own inventory
+`message` and per-source `warnings` verbatim for accommodation and
+flight inventory (a missing/malformed local file path, or which optional
+per-source file had no data); a "Hotel ratings enrichment" diagnostic
+block (status/provider/message/warnings/enriched-offer-count) for the
+Step 177C/185E ratings pass; and Developer-Mode source grouping --
+accommodation and flight offers are grouped by their `scraped_provenance`
+brand label (e.g. "Booking.com-derived manual/local data — 2 offers"),
+hotel ratings are grouped by rating source label the same way, and a
+real Kiwi MCP offer always gets its own separate "Kiwi MCP (third-party
+provider data)" group, never merged with a `kiwi_manual` group. Every
+`ProvenanceBadge`/rating-details card now shows a "Parsed at"/"Retrieved
+at" timestamp when the backend actually returned one -- omitted
+entirely when absent, and the frontend never computes or displays the
+current time itself. Traveler view stays concise: it reuses the same
+card components but in a new `concise` mode that omits the
+`parser_version` debug string (fixing a real, pre-185F gap where it was
+already leaking into Traveler view), and its existing "not a confirmed
+booking"/"not a booking confirmation" caveats now also mention
+"manual/local" explicitly whenever the underlying offers actually came
+from that source. `AccommodationInventoryReport.warnings`/
+`FlightInventoryReport.warnings` (Steps 185C/185D) were added to
+`frontend/lib/types.ts` for the first time in this step -- the backend
+already returned them, but no frontend type declared them until now.
+One small, additive backend field was added to support this:
+`AccommodationSearchResult.hotel_ratings_warnings` (restating
+`HotelRatingsResult.warnings` from Step 185E onto the envelope
+`HotelRatingEnrichmentService` already returns) -- no parsing, matching,
+or provider-selection behavior changed anywhere. No live scraping,
+browser automation, or provider API call was added; the frontend still
+only ever displays backend-returned data and synthesizes nothing --
+never an offer, rating, price, or warning of its own.
+
+**Section 185 complete (185A-185G).** Taken together, Steps 185A-185F add
+commercial-provider-*aware* manual/local ingestion for accommodation
+(Booking, Expedia, Hotelbeds, Hostelworld, Vrbo, Airbnb, plus a generic
+fallback), flights (Skyscanner, Google Flights, Kiwi-manual, plus a
+generic fallback), and hotel ratings (Tripadvisor, Google Places
+ratings, plus a generic fallback) -- never live restricted scraping,
+never browser automation, and never a login/CAPTCHA/paywall/bot-
+protection/rate-limit bypass. Every one of those sources is represented
+in the scraping source registry so its classification is an inspectable
+fact, not an assumption, but representation is not activation: zero
+registry entries are `enabled=True`, so nothing here is, or has ever
+been, a live fetcher. `kiwi_manual` (a manual/local file label) stays
+structurally, behaviorally, and semantically separate from the real,
+live `kiwi_mcp` integration everywhere in this codebase. A missing
+configured local file is always `unavailable` (or skipped with a
+warning, for one optional source among several); a malformed one is
+always `failed` -- neither ever produces a fabricated offer, rating,
+price, schedule, or booking link. A source-specific parser recognizing a
+brand's own synthetic micro-format is never a claim of live-site support
+or official-provider data, and a booking link sourced from any of this
+data is never presented as a booking confirmation. Step 185G (this
+step) is a final review/safety-audit/docs-cleanup/demo-verification pass
+only -- it found and fixed one real test-isolation gap (a pytest
+fixture that isolates the provider cache from `backend/.data/` had not
+been updated for Step 185E's new hotel-ratings adapter) and added no new
+product behavior. Developer Mode surfaces every one of the facts above
+(warnings, messages, timestamps, source grouping); Traveler Mode stays
+concise and itinerary-focused throughout. See `docs/12_provider_
+architecture.md`, `docs/14_backend_architecture.md`, and `docs/16_
+frontend_architecture.md` for the full per-step writeups, and `docs/
+CODEBASE_OVERVIEW.md`'s "Section 185 complete" entry for the final
+audit's own detailed findings.
 
 ---
 

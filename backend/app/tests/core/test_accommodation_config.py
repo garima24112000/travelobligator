@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from app.core.config import Settings
@@ -121,3 +123,154 @@ def test_settings_constructs_without_any_partner_accommodation_credential(
     assert settings.hostelworld_api_key is None
     assert settings.vrbo_partner_api_key is None
     assert settings.airbnb_partner_api_key is None
+
+
+# ---------------------------------------------------------------------------
+# Step 185C: independent per-source local file paths -- multi-source
+# accommodation ingestion. Each defaults to its own real path (never
+# `None`), so every source is "known and eligible" out of the box, but
+# with no file actually present at any of these paths (the fresh-clone
+# state), the provider honestly reports each one as missing -- see
+# test_scraped_accommodation_adapter.py for that behavior.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "field_name,alias,expected_default",
+    [
+        (
+            "scraped_accommodation_html_path_booking",
+            "SCRAPED_ACCOMMODATION_HTML_PATH_BOOKING",
+            ".data/manual_scrapes/accommodations_booking.html",
+        ),
+        (
+            "scraped_accommodation_html_path_expedia",
+            "SCRAPED_ACCOMMODATION_HTML_PATH_EXPEDIA",
+            ".data/manual_scrapes/accommodations_expedia.html",
+        ),
+        (
+            "scraped_accommodation_html_path_hotelbeds",
+            "SCRAPED_ACCOMMODATION_HTML_PATH_HOTELBEDS",
+            ".data/manual_scrapes/accommodations_hotelbeds.html",
+        ),
+        (
+            "scraped_accommodation_html_path_hostelworld",
+            "SCRAPED_ACCOMMODATION_HTML_PATH_HOSTELWORLD",
+            ".data/manual_scrapes/accommodations_hostelworld.html",
+        ),
+        (
+            "scraped_accommodation_html_path_vrbo",
+            "SCRAPED_ACCOMMODATION_HTML_PATH_VRBO",
+            ".data/manual_scrapes/accommodations_vrbo.html",
+        ),
+        (
+            "scraped_accommodation_html_path_airbnb",
+            "SCRAPED_ACCOMMODATION_HTML_PATH_AIRBNB",
+            ".data/manual_scrapes/accommodations_airbnb.html",
+        ),
+    ],
+)
+def test_per_source_html_path_default(field_name: str, alias: str, expected_default: str) -> None:
+    field_info = Settings.model_fields[field_name]
+    assert field_info.default == expected_default
+    assert field_info.alias == alias
+
+
+def test_settings_constructs_without_any_per_source_path_env_var(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setitem(Settings.model_config, "env_file", None)
+    settings = Settings()
+
+    assert settings.scraped_accommodation_html_path_booking == (
+        ".data/manual_scrapes/accommodations_booking.html"
+    )
+    assert settings.scraped_accommodation_html_path_expedia == (
+        ".data/manual_scrapes/accommodations_expedia.html"
+    )
+    assert settings.scraped_accommodation_html_path_hotelbeds == (
+        ".data/manual_scrapes/accommodations_hotelbeds.html"
+    )
+    assert settings.scraped_accommodation_html_path_hostelworld == (
+        ".data/manual_scrapes/accommodations_hostelworld.html"
+    )
+    assert settings.scraped_accommodation_html_path_vrbo == (
+        ".data/manual_scrapes/accommodations_vrbo.html"
+    )
+    assert settings.scraped_accommodation_html_path_airbnb == (
+        ".data/manual_scrapes/accommodations_airbnb.html"
+    )
+    # The pre-185C single-file setting is completely untouched.
+    assert settings.scraped_accommodation_html_path == ".data/manual_scrapes/accommodations.html"
+    assert settings.accommodation_manual_html_source == "generic"
+
+
+def test_per_source_html_path_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setitem(Settings.model_config, "env_file", None)
+    monkeypatch.setenv("SCRAPED_ACCOMMODATION_HTML_PATH_BOOKING", "/tmp/example-booking.html")
+
+    settings = Settings()
+
+    assert settings.scraped_accommodation_html_path_booking == "/tmp/example-booking.html"
+    # Other sources are unaffected.
+    assert settings.scraped_accommodation_html_path_expedia == (
+        ".data/manual_scrapes/accommodations_expedia.html"
+    )
+
+
+def test_per_source_html_path_can_be_cleared(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setitem(Settings.model_config, "env_file", None)
+    settings = Settings(scraped_accommodation_html_path_booking=None)
+
+    assert settings.scraped_accommodation_html_path_booking is None
+    assert settings.resolved_scraped_accommodation_html_paths_by_source()["booking"] is None
+
+
+def test_resolved_per_source_html_paths_are_relative_to_backend_root(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setitem(Settings.model_config, "env_file", None)
+    settings = Settings()
+
+    resolved = settings.resolved_scraped_accommodation_html_paths_by_source()
+
+    assert set(resolved.keys()) == {
+        "booking",
+        "expedia",
+        "hotelbeds",
+        "hostelworld",
+        "vrbo",
+        "airbnb",
+    }
+    for brand, path in resolved.items():
+        assert path is not None
+        assert path.is_absolute()
+        assert path.name == f"accommodations_{brand}.html"
+        assert path.parent.name == "manual_scrapes"
+
+
+def test_resolved_per_source_html_path_respects_absolute_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setitem(Settings.model_config, "env_file", None)
+    absolute_path = "/tmp/example-absolute-booking.html"
+    settings = Settings(scraped_accommodation_html_path_booking=absolute_path)
+
+    resolved = settings.resolved_scraped_accommodation_html_paths_by_source()
+
+    assert resolved["booking"] == Path(absolute_path)
+
+
+def test_per_source_paths_are_distinct_from_each_other_and_from_legacy_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every default path is a distinct filename -- the out-of-the-box
+    configuration never accidentally makes two sources (or a brand and
+    the legacy single-file setting) collide on the same real file."""
+    monkeypatch.setitem(Settings.model_config, "env_file", None)
+    settings = Settings()
+
+    resolved = settings.resolved_scraped_accommodation_html_paths_by_source()
+    all_paths = list(resolved.values()) + [settings.resolved_scraped_accommodation_html_path()]
+
+    assert len(all_paths) == len(set(all_paths))

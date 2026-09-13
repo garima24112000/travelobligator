@@ -6,7 +6,11 @@ import inspect
 import pytest
 
 from app.core.config import Settings
-from app.providers.hotel_ratings import NotConnectedHotelRatingsProvider, get_hotel_ratings_provider
+from app.providers.hotel_ratings import (
+    NotConnectedHotelRatingsProvider,
+    ScrapedLocalHotelRatingsProvider,
+    get_hotel_ratings_provider,
+)
 from app.providers.hotel_ratings import factory as factory_module
 
 # Safety tests for the Step 177B hotel ratings provider factory. Mirrors
@@ -159,10 +163,39 @@ def test_not_connected_module_has_no_disallowed_imports() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Only "not_connected" is a supported provider name as of Step 177B -- no
-# real Google Places/Tripadvisor/Amadeus/Yelp adapter exists to select.
+# Step 185E: "scraped_local"/"manual_html" now select the real local/
+# manual ScrapedLocalHotelRatingsProvider -- still no live Google Places/
+# Tripadvisor/Amadeus/Yelp network integration exists to select.
 # ---------------------------------------------------------------------------
 
 
-def test_only_not_connected_is_currently_supported() -> None:
-    assert list(factory_module._SUPPORTED_PROVIDERS.keys()) == ["not_connected"]
+def test_supported_providers_are_not_connected_and_scraped_local_and_manual_html() -> None:
+    assert set(factory_module._SUPPORTED_PROVIDERS.keys()) == {
+        "not_connected",
+        "scraped_local",
+        "manual_html",
+    }
+
+
+def test_factory_returns_scraped_local_provider_for_scraped_local_name() -> None:
+    provider = get_hotel_ratings_provider("scraped_local")
+    assert isinstance(provider, ScrapedLocalHotelRatingsProvider)
+
+
+def test_factory_returns_scraped_local_provider_for_manual_html_alias() -> None:
+    """"manual_html" is a non-breaking alias for "scraped_local" -- same
+    adapter class, mirroring accommodation_provider/flight_provider's
+    identical Step 182E alias convention."""
+    provider = get_hotel_ratings_provider("manual_html")
+    assert isinstance(provider, ScrapedLocalHotelRatingsProvider)
+    assert isinstance(get_hotel_ratings_provider("scraped_local"), type(provider))
+
+
+def test_factory_uses_settings_hotel_ratings_provider_scraped_local(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        factory_module, "get_settings", lambda: Settings(hotel_ratings_provider="scraped_local")
+    )
+    provider = get_hotel_ratings_provider()
+    assert isinstance(provider, ScrapedLocalHotelRatingsProvider)

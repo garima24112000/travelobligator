@@ -369,6 +369,94 @@ def test_manual_html_source_label_change_busts_the_cache(
 
 
 # ---------------------------------------------------------------------------
+# Step 185B: every named accommodation label now resolves through the
+# real, populated `ScrapingSourceRegistry` (previously a small inline
+# dict) -- confirms each one still produces the exact same manual/local,
+# not-official display text as before, still via the one existing
+# generic parser (no source-specific parsing exists yet).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "label,expected_display_name",
+    [
+        ("booking", "Booking.com"),
+        ("expedia", "Expedia"),
+        ("hotelbeds", "Hotelbeds"),
+        ("hostelworld", "Hostelworld"),
+        ("vrbo", "Vrbo"),
+        ("airbnb", "Airbnb"),
+    ],
+)
+def test_every_named_accommodation_label_resolves_through_the_registry(
+    label: str, expected_display_name: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    html_path = _write_html(tmp_path, _TEST_HTML_ONE_PROPERTY)
+    settings = _enabled_settings(html_path, accommodation_manual_html_source=label)
+    monkeypatch.setattr(scraped_adapter_module, "get_settings", lambda: settings)
+
+    result = ScrapedAccommodationProvider().search_accommodations(_request())
+    offer = result.offers[0]
+
+    assert result.status == AccommodationSearchStatus.SUCCESS
+    assert offer.scraped_provenance is not None
+    assert offer.scraped_provenance.official_provider is False
+    assert offer.scraped_provenance.source_id == f"manual_local_scraped_accommodation_{label}"
+    assert expected_display_name in offer.scraped_provenance.source_name
+    assert "labeled by user" in offer.scraped_provenance.source_name
+    assert f"not official {expected_display_name} data" in offer.scraped_provenance.source_name
+    # Still the one existing generic parser -- real facts unaffected.
+    assert offer.property_name == "TEST_ONLY_SCRAPED_PROPERTY_ALPHA"
+
+
+def test_registry_consultation_still_returns_unavailable_for_missing_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A named brand label changes only display naming -- it never makes
+    a missing local file appear present."""
+    missing_path = str(tmp_path / "does-not-exist.html")
+    settings = _enabled_settings(missing_path, accommodation_manual_html_source="expedia")
+    monkeypatch.setattr(scraped_adapter_module, "get_settings", lambda: settings)
+
+    result = ScrapedAccommodationProvider().search_accommodations(_request())
+
+    assert result.status == AccommodationSearchStatus.UNAVAILABLE
+    assert result.offers == []
+
+
+def test_registry_consultation_still_returns_not_connected_when_disabled(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    html_path = _write_html(tmp_path, _TEST_HTML_ONE_PROPERTY)
+    settings = _enabled_settings(
+        html_path,
+        accommodation_manual_html_source="airbnb",
+        scraped_accommodation_provider_enabled=False,
+    )
+    monkeypatch.setattr(scraped_adapter_module, "get_settings", lambda: settings)
+
+    result = ScrapedAccommodationProvider().search_accommodations(_request())
+
+    assert result.status == AccommodationSearchStatus.NOT_CONNECTED
+    assert result.offers == []
+
+
+def test_named_brand_label_never_flips_registry_enabled_or_approval_for_the_adapter() -> None:
+    """The adapter's own local-file-read operation always self-declares
+    safe/enabled regardless of brand label -- that is unrelated to (and
+    never derived from) the named brand's own `is_unsafe`/`enabled`
+    verdict in the registry, which stays unsafe/disabled for every real
+    brand."""
+    from app.providers.scraping_source_registry_defaults import get_scraping_source_policy
+
+    for source_id in ("booking", "expedia", "hotelbeds", "hostelworld", "vrbo", "airbnb"):
+        policy = get_scraping_source_policy(source_id)
+        assert policy is not None
+        assert policy.enabled is False
+        assert policy.approved_for_personal_use is False
+
+
+# ---------------------------------------------------------------------------
 # 10. Missing price/rating/availability/booking_url remains missing/
 # unknown.
 # ---------------------------------------------------------------------------

@@ -12,6 +12,7 @@ from app.models.flight import FlightSearchRequest, FlightSearchStatus
 from app.models.scraping import ScrapingSourceType
 from app.providers.flights import ScrapedLocalFlightProvider
 from app.providers.flights import scraped_adapter as scraped_adapter_module
+from app.providers.flights import scraped_parser as scraped_parser_module
 from app.storage.provider_cache_store import ProviderCacheStore
 
 # Step 169D: parser+cache wiring tests for ScrapedLocalFlightProvider.
@@ -68,10 +69,18 @@ def _request(**overrides: object) -> FlightSearchRequest:
 
 
 def _enabled_settings(html_path: str | None, **overrides: object) -> Settings:
+    """Step 185D: the three independent per-brand flight paths default
+    to `None` here -- see the identical comment on
+    test_scraped_flight_provider.py's own `_enabled_settings` for why:
+    it keeps every pre-185D test in this file exercising true
+    single-slot (legacy-path-only) behavior in isolation."""
     fields: dict[str, object] = {
         "scraping_enabled": True,
         "scraped_flight_provider_enabled": True,
         "scraped_flight_html_path": html_path,
+        "scraped_flight_html_path_skyscanner": None,
+        "scraped_flight_html_path_google_flights": None,
+        "scraped_flight_html_path_kiwi_manual": None,
     }
     fields.update(overrides)
     return Settings(_env_file=None, **fields)
@@ -86,15 +95,27 @@ def _write_html(tmp_path: Path, content: str, name: str = "fixture.html") -> str
 def _install_counting_parse(monkeypatch: pytest.MonkeyPatch) -> dict[str, int]:
     """Wraps the real parser with a call counter so tests can prove
     whether a given `search_flights` call actually re-parsed the HTML or
-    was satisfied entirely from cache."""
+    was satisfied entirely from cache.
+
+    Step 185D: the adapter no longer calls `parse_scraped_flight_html`
+    directly -- it dispatches per source through
+    `app.providers.flights.source_parsers` (`generic.parse` for the
+    default/legacy label used throughout this file), which itself calls
+    `app.providers.flights.scraped_parser.parse_scraped_flight_html` via
+    a module-attribute reference (not a `from ... import`), so patching
+    that attribute on the canonical `scraped_parser` module -- not the
+    adapter module -- is what every source_parsers module actually
+    resolves at call time. Mirrors
+    `test_scraped_accommodation_cache.py`'s identical Step 185C fix.
+    """
     call_count = {"count": 0}
-    real_parse = scraped_adapter_module.parse_scraped_flight_html
+    real_parse = scraped_parser_module.parse_scraped_flight_html
 
     def _counting_parse(*args: object, **kwargs: object):
         call_count["count"] += 1
         return real_parse(*args, **kwargs)
 
-    monkeypatch.setattr(scraped_adapter_module, "parse_scraped_flight_html", _counting_parse)
+    monkeypatch.setattr(scraped_parser_module, "parse_scraped_flight_html", _counting_parse)
     return call_count
 
 
@@ -222,7 +243,10 @@ def test_parsed_offers_have_scraped_public_page_provenance(
     assert offer.scraped_provenance.official_provider is False
     assert offer.scraped_provenance.provenance == ScrapingSourceType.SCRAPED_PUBLIC_PAGE
     assert offer.scraped_provenance.source_type == ScrapingSourceType.SCRAPED_PUBLIC_PAGE
-    assert offer.scraped_provenance.parser_version == "scraped_flight_provider_v1"
+    # Step 185D: the default/legacy "generic" label now runs through
+    # source_parsers.generic, which carries its own parser_version
+    # naming convention -- see get_flight_source_parser_version.
+    assert offer.scraped_provenance.parser_version == "flight_source_parser_generic_v1"
     assert offer.scraped_provenance.source_id == settings.scraped_flight_source_id
     assert offer.scraped_provenance.source_name == settings.scraped_flight_source_name
 
@@ -315,6 +339,109 @@ def test_manual_html_source_label_never_overrides_a_customized_source_name(
 
 
 # ---------------------------------------------------------------------------
+# Step 185B: every named flight label now resolves through the real,
+# populated `ScrapingSourceRegistry` (previously a small inline dict) --
+# confirms each one still produces the exact same manual/local,
+# not-official display text as before, still via the one existing
+# generic parser (no source-specific parsing exists yet).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "label,expected_display_name",
+    [
+        ("skyscanner", "Skyscanner"),
+        ("google_flights", "Google Flights"),
+        ("kiwi", "Kiwi"),
+    ],
+)
+def test_every_named_flight_label_resolves_through_the_registry(
+    label: str, expected_display_name: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    html_path = _write_html(tmp_path, _TEST_HTML_ONE_OFFER)
+    cache_store = ProviderCacheStore(tmp_path / "cache.sqlite3")
+    settings = _enabled_settings(html_path, flight_manual_html_source=label)
+    monkeypatch.setattr(scraped_adapter_module, "get_settings", lambda: settings)
+
+    result = ScrapedLocalFlightProvider(cache_store=cache_store).search_flights(_request())
+    offer = result.offers[0]
+
+    assert result.status == FlightSearchStatus.SUCCESS
+    assert offer.scraped_provenance is not None
+    assert offer.scraped_provenance.official_provider is False
+    assert offer.scraped_provenance.source_id == f"manual_local_scraped_flight_{label}"
+    assert expected_display_name in offer.scraped_provenance.source_name
+    assert "labeled by user" in offer.scraped_provenance.source_name
+    assert f"not official {expected_display_name} data" in offer.scraped_provenance.source_name
+    assert offer.provider.startswith("scraped:")
+    assert offer.provider != "kiwi_mcp"
+
+
+def test_flight_manual_html_source_other_label_leaves_defaults_unchanged(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """"other" (like "generic") means no named brand is claimed -- it
+    must never accidentally resolve to the generic *registry* policy's
+    own display name."""
+    html_path = _write_html(tmp_path, _TEST_HTML_ONE_OFFER)
+    cache_store = ProviderCacheStore(tmp_path / "cache.sqlite3")
+    settings = _enabled_settings(html_path, flight_manual_html_source="other")
+    monkeypatch.setattr(scraped_adapter_module, "get_settings", lambda: settings)
+
+    result = ScrapedLocalFlightProvider(cache_store=cache_store).search_flights(_request())
+    offer = result.offers[0]
+
+    assert offer.scraped_provenance.source_id == "manual_local_scraped_flight"
+    assert offer.scraped_provenance.source_name == "Manual local scraped flight source"
+
+
+def test_registry_consultation_still_returns_unavailable_for_missing_flight_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    missing_path = str(tmp_path / "does-not-exist.html")
+    cache_store = ProviderCacheStore(tmp_path / "cache.sqlite3")
+    settings = _enabled_settings(missing_path, flight_manual_html_source="google_flights")
+    monkeypatch.setattr(scraped_adapter_module, "get_settings", lambda: settings)
+
+    result = ScrapedLocalFlightProvider(cache_store=cache_store).search_flights(_request())
+
+    assert result.status == FlightSearchStatus.UNAVAILABLE
+    assert result.offers == []
+
+
+def test_registry_consultation_still_returns_not_connected_when_disabled(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    html_path = _write_html(tmp_path, _TEST_HTML_ONE_OFFER)
+    cache_store = ProviderCacheStore(tmp_path / "cache.sqlite3")
+    settings = _enabled_settings(
+        html_path,
+        flight_manual_html_source="skyscanner",
+        scraped_flight_provider_enabled=False,
+    )
+    monkeypatch.setattr(scraped_adapter_module, "get_settings", lambda: settings)
+
+    result = ScrapedLocalFlightProvider(cache_store=cache_store).search_flights(_request())
+
+    assert result.status == FlightSearchStatus.NOT_CONNECTED
+    assert result.offers == []
+
+
+def test_named_flight_brand_label_never_flips_registry_enabled_or_approval() -> None:
+    """The adapter's own local-file-read operation always self-declares
+    safe/enabled regardless of brand label -- unrelated to (and never
+    derived from) the named brand's own `is_unsafe`/`enabled` verdict in
+    the registry, which stays unsafe/disabled for every real brand."""
+    from app.providers.scraping_source_registry_defaults import get_scraping_source_policy
+
+    for source_id in ("skyscanner", "google_flights", "kiwi_manual"):
+        policy = get_scraping_source_policy(source_id)
+        assert policy is not None
+        assert policy.enabled is False
+        assert policy.approved_for_personal_use is False
+
+
+# ---------------------------------------------------------------------------
 # 10/11/12. Missing price/booking_url/carrier/flight-number/airport/time/
 # duration/baggage/cancellation/availability remain missing after the
 # provider flow.
@@ -402,7 +529,10 @@ def test_cache_round_trip_preserves_provenance_and_data_status(
     assert offer.scraped_provenance.official_provider is False
     assert offer.scraped_provenance.provenance == ScrapingSourceType.SCRAPED_PUBLIC_PAGE
     assert offer.scraped_provenance.source_type == ScrapingSourceType.SCRAPED_PUBLIC_PAGE
-    assert offer.scraped_provenance.parser_version == "scraped_flight_provider_v1"
+    # Step 185D: the default/legacy "generic" label now runs through
+    # source_parsers.generic, which carries its own parser_version
+    # naming convention -- see get_flight_source_parser_version.
+    assert offer.scraped_provenance.parser_version == "flight_source_parser_generic_v1"
     assert offer.scraped_provenance.source_id == settings.scraped_flight_source_id
     assert offer.scraped_provenance.source_name == settings.scraped_flight_source_name
 
@@ -474,6 +604,13 @@ def test_cache_key_changes_for_each_relevant_request_field(
 def test_cache_key_changes_when_parser_version_changes(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    """Step 185D: the cache key now includes each slot's parser version
+    via `get_flight_source_parser_version`, which reads `source_parsers.
+    generic.PARSER_VERSION` fresh on every call (the default/legacy label
+    used throughout this file resolves to the `generic` source_parsers
+    module) -- so patching that module attribute is what changes the
+    effective cache key here, mirroring the pre-185D single adapter-level
+    `_PARSER_VERSION` constant this test used to patch."""
     html_path = _write_html(tmp_path, _TEST_HTML_ONE_OFFER)
     cache_store = ProviderCacheStore(tmp_path / "cache.sqlite3")
     settings = _enabled_settings(html_path)
@@ -483,7 +620,9 @@ def test_cache_key_changes_when_parser_version_changes(
     provider = ScrapedLocalFlightProvider(cache_store=cache_store)
     provider.search_flights(_request())
 
-    monkeypatch.setattr(scraped_adapter_module, "_PARSER_VERSION", "scraped_flight_provider_v2")
+    from app.providers.flights.source_parsers import generic as generic_parser_module
+
+    monkeypatch.setattr(generic_parser_module, "PARSER_VERSION", "flight_source_parser_generic_v2")
     provider.search_flights(_request())
 
     assert call_count["count"] == 2

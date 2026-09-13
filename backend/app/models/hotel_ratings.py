@@ -122,12 +122,23 @@ class HotelRatingsResult(BaseModel):
     status. A `success` result may still contain unmatched items
     (`matched=False`, `rating=None`) for requests the provider searched
     but could not safely resolve.
+
+    `warnings` (Step 185E) is additive, optional per-source detail for
+    multi-source hotel-ratings ingestion (`ScrapedLocalHotelRatingsProvider`)
+    -- e.g. "google_places_ratings: no local file configured/found"
+    alongside an overall `success` result built from other sources that
+    did produce real ratings. Empty by default, so every result built
+    before Step 185E stays fully backward compatible. Never itself a
+    claim that a source succeeded or failed to fabricate data -- purely a
+    human-readable trace of what this call actually checked, mirroring
+    `AccommodationSearchResult.warnings`/`FlightSearchResult.warnings`.
     """
 
     provider: str
     status: HotelRatingsStatus
     items: list[HotelRatingLookupItem] = Field(default_factory=list)
     message: str | None = None
+    warnings: list[str] = Field(default_factory=list)
     generated_at: datetime = Field(default_factory=_utc_now)
 
     @model_validator(mode="after")

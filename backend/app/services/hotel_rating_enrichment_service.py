@@ -25,6 +25,13 @@ logger = logging.getLogger(__name__)
 # ratings provider, `enrich` is a complete no-op: it returns the exact
 # same `result` object it was given, unmodified.
 #
+# Step 185F: also copies `HotelRatingsResult.warnings` (Step 185E's
+# multi-source per-source detail) straight through onto the returned
+# `AccommodationSearchResult.hotel_ratings_warnings` -- never recomputed,
+# filtered, or reworded, so a frontend diagnostic view can show the exact
+# same per-source reasons (e.g. "tripadvisor: configured scraped-hotel-
+# ratings HTML path does not exist") that the provider itself produced.
+#
 # Matching is deliberately conservative and never fuzzy: an offer's own
 # fields are used only to build an internal, per-call correlation id
 # (`offer_id`, synthesized from list position -- never a field read from
@@ -165,6 +172,7 @@ class HotelRatingEnrichmentService:
                     "hotel_ratings_provider": ratings_result.provider,
                     "hotel_ratings_message": ratings_result.message,
                     "hotel_ratings_enriched_offer_count": 0,
+                    "hotel_ratings_warnings": ratings_result.warnings,
                 }
             )
 
@@ -192,6 +200,7 @@ class HotelRatingEnrichmentService:
                 "hotel_ratings_provider": ratings_result.provider,
                 "hotel_ratings_message": ratings_result.message,
                 "hotel_ratings_enriched_offer_count": enriched_count,
+                "hotel_ratings_warnings": ratings_result.warnings,
             }
         )
 

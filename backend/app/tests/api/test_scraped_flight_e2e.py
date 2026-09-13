@@ -59,6 +59,32 @@ def _enable_scraped_local(monkeypatch: pytest.MonkeyPatch, html_path: str) -> No
     monkeypatch.setattr(provider_gateway, "flight_inventory", ScrapedLocalFlightProvider())
 
 
+def _enable_multi_source_scraped_local(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    skyscanner_html_path: str,
+    google_flights_html_path: str,
+) -> None:
+    """Step 185D: mirrors `_enable_scraped_local` above, but also points
+    the Skyscanner/Google Flights per-source slots at real tmp files --
+    the kiwi_manual slot is pointed at a tmp_path location guaranteed not
+    to exist, so this test never depends on (or is contaminated by) the
+    real dev `.data/manual_scrapes/` directory's actual contents.
+    """
+    settings = Settings(
+        _env_file=None,
+        scraping_enabled=True,
+        scraped_flight_provider_enabled=True,
+        flight_provider="scraped_local",
+        scraped_flight_html_path=str(tmp_path / "does-not-exist-generic.html"),
+        scraped_flight_html_path_skyscanner=skyscanner_html_path,
+        scraped_flight_html_path_google_flights=google_flights_html_path,
+        scraped_flight_html_path_kiwi_manual=str(tmp_path / "does-not-exist-kiwi-manual.html"),
+    )
+    monkeypatch.setattr(scraped_adapter_module, "get_settings", lambda: settings)
+    monkeypatch.setattr(provider_gateway, "flight_inventory", ScrapedLocalFlightProvider())
+
+
 def _generate_trip(client: TestClient) -> str:
     create_response = client.post("/trips", json=create_trip_payload())
     assert create_response.status_code == 201
@@ -328,3 +354,100 @@ def test_scraped_flight_provider_itself_makes_no_network_call(
     result = ScrapedLocalFlightProvider().search_flights(request)
 
     assert result.status.value == "success"
+
+
+# ---------------------------------------------------------------------------
+# Step 185D: multi-source flight ingestion flows through
+# ProviderGateway/FlightInventoryService into PlanningState the same way
+# the single-file path already does -- distinct, source-labeled offers
+# from two local files, merged, still honest, still never fabricating a
+# price/schedule/availability/booking-link the local fixture didn't
+# actually contain.
+# ---------------------------------------------------------------------------
+
+_TEST_HTML_SKYSCANNER_OFFER = """
+<html><body>
+<div class="flight-offer" data-offer-id="skyscanner-1">
+  <div class="outbound-segment">
+    <span class="origin-airport">TST</span>
+    <span class="destination-airport">DMO</span>
+  </div>
+  <span class="total-price" data-currency="USD">210.00</span>
+</div>
+</body></html>
+"""
+
+_TEST_HTML_GOOGLE_FLIGHTS_OFFER = """
+<html><body>
+<div class="flight-offer" data-offer-id="google-flights-1">
+  <div class="outbound-segment">
+    <span class="origin-airport">TST</span>
+    <span class="destination-airport">DMO</span>
+  </div>
+</div>
+</body></html>
+"""
+
+
+def test_multi_source_local_fixtures_flow_into_planning_state(
+    monkeypatch: pytest.MonkeyPatch, client: TestClient, tmp_path: Path
+) -> None:
+    skyscanner_path = str(tmp_path / "skyscanner_fixture.html")
+    Path(skyscanner_path).write_text(_TEST_HTML_SKYSCANNER_OFFER, encoding="utf-8")
+    google_flights_path = str(tmp_path / "google_flights_fixture.html")
+    Path(google_flights_path).write_text(_TEST_HTML_GOOGLE_FLIGHTS_OFFER, encoding="utf-8")
+    _enable_multi_source_scraped_local(monkeypatch, tmp_path, skyscanner_path, google_flights_path)
+
+    trip_id = _generate_trip(client)
+
+    response = client.get(f"/trips/{trip_id}")
+    assert response.status_code == 200
+    report = response.json()["data"]["planning_state"]["flight_inventory_report"]
+
+    assert report["status"] == "success"
+    offer_ids = {offer["offer_id"] for offer in report["offers"]}
+    assert offer_ids == {"skyscanner-1", "google-flights-1"}
+
+    for offer in report["offers"]:
+        assert offer["scraped_provenance"]["official_provider"] is False
+        assert "not official" in offer["scraped_provenance"]["source_name"]
+        assert offer["provider"] != "kiwi_mcp"
+        # Never fabricated: the Google Flights fixture has no price at all.
+        if offer["offer_id"] == "google-flights-1":
+            assert offer["total_price_amount"] is None
+            assert offer["booking_url"] is None
+            assert offer["baggage_policy"] is None
+
+    # Warnings name the other configured-but-missing source (kiwi_manual),
+    # never silently hidden and never downgrading the overall success.
+    assert len(report.get("warnings", [])) >= 1
+
+
+def test_multi_source_traveler_and_developer_api_never_fabricate_data(
+    monkeypatch: pytest.MonkeyPatch, client: TestClient, tmp_path: Path
+) -> None:
+    skyscanner_path = str(tmp_path / "skyscanner_fixture.html")
+    Path(skyscanner_path).write_text(_TEST_HTML_SKYSCANNER_OFFER, encoding="utf-8")
+    google_flights_path = str(tmp_path / "google_flights_fixture.html")
+    Path(google_flights_path).write_text(_TEST_HTML_GOOGLE_FLIGHTS_OFFER, encoding="utf-8")
+    _enable_multi_source_scraped_local(monkeypatch, tmp_path, skyscanner_path, google_flights_path)
+
+    trip_id = _generate_trip(client)
+
+    summary_response = client.get(f"/trips/{trip_id}/summary")
+    assert summary_response.status_code == 200
+
+    coverage_response = client.get(f"/trips/{trip_id}/provider-coverage")
+    assert coverage_response.status_code == 200
+
+    validation_response = client.get(f"/trips/{trip_id}/validation-report")
+    assert validation_response.status_code == 200
+    validation_report = validation_response.json()["data"]["validation_report"]
+    flight_warnings = [
+        warning
+        for warning in validation_report["warnings"]
+        if warning["category"] == "flight_inventory"
+    ]
+    assert len(flight_warnings) == 1
+    assert "not official-provider data" in flight_warnings[0]["message"].lower()
+    assert validation_report["readiness_status"] != "blocked"
