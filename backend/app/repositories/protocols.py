@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
+from app.models.generation_job import GenerationJob
 from app.models.planning_state import PlanningState
 from app.models.user import UserRecord
 from app.repositories.trip_repository import TripRecord
@@ -59,3 +60,30 @@ class UserRepositoryProtocol(Protocol):
     def get_by_user_id(self, user_id: str) -> UserRecord | None: ...
 
     def get_by_email(self, email: str) -> UserRecord | None: ...
+
+
+class GenerationJobRepositoryProtocol(Protocol):
+    """Async job foundation (Step 186B, wired into real orchestration in
+    Step 186C, duplicate/restart hardening in Step 186E --
+    docs/14_backend_architecture.md sections 116-118). Structural
+    contract for `JobRepository` (`app/repositories/job_repository.py`);
+    see `app/repositories/factory.py`'s `get_job_repository()` docstring
+    for why this currently resolves to the local_json implementation
+    regardless of `Settings.persistence_backend`.
+    """
+
+    def create(self, job: GenerationJob) -> GenerationJob: ...
+
+    def save(self, job: GenerationJob) -> GenerationJob: ...
+
+    def get_by_job_id(self, job_id: str) -> GenerationJob | None: ...
+
+    def list_by_trip_id(self, trip_id: str) -> list[GenerationJob]: ...
+
+    def list_by_trip_id_and_status(
+        self, trip_id: str, statuses: set[str]
+    ) -> list[GenerationJob]: ...
+
+    def list_running_by_trip_id(self, trip_id: str) -> list[GenerationJob]: ...
+
+    def list_non_terminal(self) -> list[GenerationJob]: ...

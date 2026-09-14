@@ -30,6 +30,13 @@ class ErrorCode(str, Enum):
     INVALID_CREDENTIALS = "INVALID_CREDENTIALS"
     EMAIL_ALREADY_REGISTERED = "EMAIL_ALREADY_REGISTERED"
     AUTH_NOT_CONFIGURED = "AUTH_NOT_CONFIGURED"
+    # Async job foundation (Step 186B) -- not raised by any route yet (no
+    # job orchestration exists until Step 186C). Declared now alongside
+    # the rest of this enum so a future route/dependency has a real,
+    # tested code ready to use, mirroring how AUTHENTICATION_REQUIRED/
+    # FORBIDDEN/etc. were added ahead of Step 184D actually wiring them in.
+    JOB_NOT_FOUND = "JOB_NOT_FOUND"
+    JOB_ALREADY_RUNNING = "JOB_ALREADY_RUNNING"
 
 
 class ApiError(BaseModel):

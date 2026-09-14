@@ -191,6 +191,43 @@ def email_already_registered_error() -> AppError:
     )
 
 
+# Async job foundation (Step 186B, wired into real routes in Step 186C,
+# duplicate/staleness hardening in Step 186E -- docs/14_backend_
+# architecture.md sections 116-118). Declared ahead of Step 186C wiring
+# them in, mirroring the "Auth foundation" pattern above (Step 184B added
+# its constructors before Step 184D wired them in); both are real,
+# raised error paths as of Step 186C.
+
+
+def job_not_found_error(job_id: str) -> AppError:
+    """404 -- no `GenerationJob` exists with this id (for the trip in
+    question, once a route enforces that scoping)."""
+    return AppError(
+        code=ErrorCode.JOB_NOT_FOUND,
+        message=f"Job '{job_id}' was not found.",
+        status_code=status.HTTP_404_NOT_FOUND,
+        field="job_id",
+    )
+
+
+def job_already_running_error(trip_id: str) -> AppError:
+    """409 -- a new generate/regenerate job was requested for `trip_id`
+    while `Settings.generation_job_max_running_per_trip` genuinely active
+    (non-stale) queued/running jobs already exist for it (Step 186E's
+    `generation_job_service.check_no_duplicate_running_job` reconciles
+    any stale job first, so this never fires because of one left behind
+    by a dead background task)."""
+    return AppError(
+        code=ErrorCode.JOB_ALREADY_RUNNING,
+        message=(
+            f"A generation or regeneration job is already running for trip "
+            f"'{trip_id}'. Wait for it to finish before starting another."
+        ),
+        status_code=status.HTTP_409_CONFLICT,
+        field="trip_id",
+    )
+
+
 def auth_not_configured_error() -> AppError:
     """503 -- session signing/verification was attempted while
     `Settings.session_secret_key` is unset. Distinct from

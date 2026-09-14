@@ -11,8 +11,13 @@ import app.db.models  # noqa: F401  -- registers TripRow/PlanningStateRow/UserRo
 # never calls `Base.metadata.create_all`.
 
 
-def test_importing_models_registers_exactly_three_tables() -> None:
-    assert set(Base.metadata.tables.keys()) == {"trips", "planning_states", "users"}
+def test_importing_models_registers_exactly_four_tables() -> None:
+    assert set(Base.metadata.tables.keys()) == {
+        "trips",
+        "planning_states",
+        "users",
+        "generation_jobs",
+    }
 
 
 def test_trip_row_columns() -> None:
@@ -110,6 +115,104 @@ def test_planning_state_row_has_foreign_key_to_trips_with_cascade() -> None:
     assert len(foreign_keys) == 1
     assert foreign_keys[0].target_fullname == "trips.trip_id"
     assert foreign_keys[0].ondelete == "CASCADE"
+
+
+def test_generation_job_row_columns() -> None:
+    table = Base.metadata.tables["generation_jobs"]
+    assert [c.name for c in table.columns] == [
+        "job_id",
+        "trip_id",
+        "owner_id",
+        "job_type",
+        "status",
+        "progress_stage",
+        "message",
+        "error_code",
+        "error_message",
+        "created_at",
+        "started_at",
+        "finished_at",
+        "result_version",
+        "changed_sections",
+    ]
+    assert table.columns["job_id"].primary_key is True
+    for not_null_column in (
+        "trip_id",
+        "owner_id",
+        "job_type",
+        "status",
+        "created_at",
+        "changed_sections",
+    ):
+        assert table.columns[not_null_column].nullable is False
+    for nullable_column in (
+        "progress_stage",
+        "message",
+        "error_code",
+        "error_message",
+        "started_at",
+        "finished_at",
+        "result_version",
+    ):
+        assert table.columns[nullable_column].nullable is True
+
+
+def test_generation_job_row_changed_sections_is_postgres_jsonb() -> None:
+    table = Base.metadata.tables["generation_jobs"]
+    assert isinstance(table.columns["changed_sections"].type, JSONB)
+
+
+def test_generation_job_row_result_version_is_text_not_integer() -> None:
+    """Deviation from a literal reading of the migration spec's
+    "INTEGER" -- mirrors `GenerationJob.result_version: str | None`,
+    which holds a version label like "v2", never a numeric id."""
+    from sqlalchemy import Text
+
+    table = Base.metadata.tables["generation_jobs"]
+    assert isinstance(table.columns["result_version"].type, Text)
+
+
+def test_generation_job_row_has_foreign_key_to_trips_with_cascade() -> None:
+    table = Base.metadata.tables["generation_jobs"]
+    foreign_keys = list(table.columns["trip_id"].foreign_keys)
+    assert len(foreign_keys) == 1
+    assert foreign_keys[0].target_fullname == "trips.trip_id"
+    assert foreign_keys[0].ondelete == "CASCADE"
+
+
+def test_generation_job_row_has_foreign_key_to_users_with_cascade() -> None:
+    table = Base.metadata.tables["generation_jobs"]
+    foreign_keys = list(table.columns["owner_id"].foreign_keys)
+    assert len(foreign_keys) == 1
+    assert foreign_keys[0].target_fullname == "users.user_id"
+    assert foreign_keys[0].ondelete == "CASCADE"
+
+
+def test_generation_job_row_owner_id_is_not_nullable_unlike_trip_row() -> None:
+    """Deliberate divergence from `TripRow.owner_id` (nullable + SET
+    NULL, for backward compatibility with pre-184C trips) --
+    `GenerationJob.owner_id` is always a required value from job-creation
+    time, so there is no legacy-row case to preserve."""
+    table = Base.metadata.tables["generation_jobs"]
+    assert table.columns["owner_id"].nullable is False
+
+
+def test_generation_jobs_has_expected_indexes() -> None:
+    table = Base.metadata.tables["generation_jobs"]
+    index_column_sets = {
+        tuple(sorted(column.name for column in index.columns)) for index in table.indexes
+    }
+    assert ("trip_id",) in index_column_sets
+    assert ("owner_id",) in index_column_sets
+    assert ("status",) in index_column_sets
+    assert ("status", "trip_id") in index_column_sets
+
+
+def test_no_secret_or_password_columns_on_generation_jobs() -> None:
+    table = Base.metadata.tables["generation_jobs"]
+    column_names = {name.lower() for name in table.columns.keys()}
+    for forbidden in ("password", "session_token", "api_key", "secret"):
+        assert forbidden not in column_names
 
 
 def test_models_module_has_no_create_all_or_connection_call() -> None:

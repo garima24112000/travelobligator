@@ -848,6 +848,27 @@ export type RegenerateResponseData = {
   message: string;
 };
 
+// Step 186D: `POST /trips/{trip_id}/regenerate` returns `RegenerateResponseData`
+// (200, applied synchronously) when `ASYNC_GENERATION_ENABLED=false` (the
+// default), or a `StartJobResponseData` (202, job just created) when it's
+// `true`. The frontend must not assume either shape -- see
+// `isStartJobResponseData` in app/page.tsx for the structural check that
+// tells them apart at runtime.
+export type RegenerateOrJobResponse = RegenerateResponseData | StartJobResponseData;
+
+// `POST /trips/{trip_id}/generate` returns the full `{trip_id,
+// planning_state}` shape (200, synchronous, the default) or a
+// `StartJobResponseData` (202, job just created) when async mode is
+// enabled. `planning_state` is intentionally untyped here (`unknown`) --
+// callers of `generatePlan` never read it directly, always following up
+// with `loadPlanResult` for the plan's real content either way.
+export type GenerateSyncResponse = {
+  trip_id: string;
+  planning_state: unknown;
+};
+
+export type GenerateOrJobResponse = GenerateSyncResponse | StartJobResponseData;
+
 // One audit record of a `POST /trips/{trip_id}/regenerate` call (backend:
 // app.models.planning_state.RegenerationAttempt /
 // app.services.regeneration_attempt_service.RegenerationAttemptService).
@@ -895,6 +916,54 @@ export type GenerationProgress = {
 export type GenerationProgressData = {
   trip_id: string;
   generation_progress: GenerationProgress;
+};
+
+// Async job foundation (Step 186B-C, backend: app.models.generation_job.
+// GenerationJob / app.schemas.generation_job.JobResponseData). A
+// `GenerationJob` is job *control* state (identity/status/error) --
+// completely separate from `GenerationProgress` above, which stays the
+// plan-facing, real-backend-stage progress model. `status="succeeded"`
+// means the backend pipeline ran to completion, exactly like a `200`
+// from the synchronous path -- never a claim the itinerary is
+// travel-ready/final/guaranteed. Only ever populated when the backend is
+// running with `ASYNC_GENERATION_ENABLED=true` (default `false`); with
+// the flag off, `POST /generate`/`.../regenerate` never return this shape
+// at all. `owner_id` is deliberately absent -- the backend's own
+// `JobResponseData` never includes it (every job endpoint is already
+// owner-scoped), so there is nothing to mirror here.
+export type GenerationJobStatus =
+  | "queued"
+  | "running"
+  | "succeeded"
+  | "failed"
+  | "cancelled";
+
+export type GenerationJobType = "generate" | "regenerate";
+
+export type JobResponseData = {
+  job_id: string;
+  trip_id: string;
+  job_type: GenerationJobType;
+  status: GenerationJobStatus;
+  progress_stage: string | null;
+  message: string | null;
+  error_code: string | null;
+  error_message: string | null;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  result_version: string | null;
+  changed_sections: string[];
+};
+
+// Returned the moment a job is created (`202 Accepted`) -- structurally
+// identical to `JobResponseData` on the backend too (a subclass with no
+// added fields), kept as its own name only to mirror that distinction.
+export type StartJobResponseData = JobResponseData;
+
+export type JobListResponseData = {
+  trip_id: string;
+  jobs: JobResponseData[];
 };
 
 // One AI-proposed candidate's review state (Step 170A, extended with

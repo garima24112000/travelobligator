@@ -5,10 +5,13 @@ import type {
   AuthResponse,
   DestinationContextData,
   ExperiencePlanData,
+  GenerateOrJobResponse,
   GenerationProgressData,
+  JobListResponseData,
+  JobResponseData,
   ProviderCoverageData,
+  RegenerateOrJobResponse,
   RegenerateRequestInput,
-  RegenerateResponseData,
   RegenerationAttemptsData,
   RegenerationReadinessData,
   TripCreateData,
@@ -76,8 +79,16 @@ export function createTrip(input: TripRequestInput): Promise<TripCreateData> {
   });
 }
 
-export function generatePlan(tripId: string): Promise<unknown> {
-  return request(`/trips/${tripId}/generate`, { method: "POST" });
+// Step 186C/D: returns the full sync `{trip_id, planning_state}` shape
+// (200) with the default `ASYNC_GENERATION_ENABLED=false`, or a
+// `StartJobResponseData` job envelope (202) when the backend has async
+// generation enabled. Callers must check `isStartJobResponseData(...)`
+// (app/page.tsx) before assuming either shape -- this function itself
+// makes no assumption and performs no polling; that's the caller's job.
+export function generatePlan(tripId: string): Promise<GenerateOrJobResponse> {
+  return request<GenerateOrJobResponse>(`/trips/${tripId}/generate`, {
+    method: "POST",
+  });
 }
 
 export function getTripSummary(tripId: string): Promise<TripSummary> {
@@ -158,25 +169,30 @@ export function getRegenerationReadiness(
 }
 
 // Requests real regeneration (backend: app.api.routes.trips.
-// regenerate_trip_plan, Step 174B-174D). Always sends `confirm: true` --
-// the backend itself decides whether that succeeds (a generated plan,
-// pending feedback, zero active locks, and a real derivable affected
-// stage all being required) or refuses with a specific error code
-// (REGENERATION_BLOCKED_BY_LOCKS, REGENERATION_NO_PENDING_FEEDBACK, or
-// REGENERATION_NOT_AVAILABLE). Callers should only ever call this when
+// regenerate_trip_plan, Step 174B-174D, async job path Step 186C).
+// Always sends `confirm: true` -- the backend itself decides whether that
+// succeeds (a generated plan, pending feedback, zero active locks, and a
+// real derivable affected stage all being required) or refuses with a
+// specific error code (REGENERATION_BLOCKED_BY_LOCKS,
+// REGENERATION_NO_PENDING_FEEDBACK, or REGENERATION_NOT_AVAILABLE) --
+// those refusal checks always run synchronously regardless of async mode.
+// Callers should only ever call this when
 // `RegenerationReadiness.can_regenerate` is already `true` -- the backend
 // re-checks every condition itself regardless, so this call is never the
-// sole safety gate. On success this resolves with the real
-// `RegenerateResponseData`; on refusal it throws `ApiRequestError` (read
-// `.code`/`.message`) exactly like every other endpoint here.
+// sole safety gate. On success this resolves with either the real
+// `RegenerateResponseData` (200, sync/default) or a `StartJobResponseData`
+// job envelope (202, async mode) -- see `isStartJobResponseData` in
+// app/page.tsx. On refusal (including `JOB_ALREADY_RUNNING`) it throws
+// `ApiRequestError` (read `.code`/`.message`) exactly like every other
+// endpoint here.
 export function requestRegeneration(
   tripId: string,
-): Promise<RegenerateResponseData> {
+): Promise<RegenerateOrJobResponse> {
   const body: RegenerateRequestInput = {
     confirm: true,
     scope: "affected_stages",
   };
-  return request<RegenerateResponseData>(`/trips/${tripId}/regenerate`, {
+  return request<RegenerateOrJobResponse>(`/trips/${tripId}/regenerate`, {
     method: "POST",
     body: JSON.stringify(body),
   });
@@ -199,6 +215,24 @@ export function getGenerationProgress(
   return request<GenerationProgressData>(
     `/trips/${tripId}/generation-progress`,
   );
+}
+
+// Async job foundation (Step 186B/C, backend: app.models.generation_job.
+// GenerationJob). Read-only, owner-protected -- never triggers a job and
+// never mutates PlanningState. Only ever returns non-empty/real data when
+// the backend has `ASYNC_GENERATION_ENABLED=true` and at least one
+// generate/regenerate call has actually created a job for this trip;
+// with the default sync mode, `getTripJobs` always resolves to an empty
+// list since nothing ever creates a job.
+export function getTripJobs(tripId: string): Promise<JobListResponseData> {
+  return request<JobListResponseData>(`/trips/${tripId}/jobs`);
+}
+
+export function getTripJob(
+  tripId: string,
+  jobId: string,
+): Promise<JobResponseData> {
+  return request<JobResponseData>(`/trips/${tripId}/jobs/${jobId}`);
 }
 
 // Read-only AI candidate discovery/grounding/eligibility review (Step

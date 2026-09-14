@@ -782,6 +782,66 @@ class Settings(BaseSettings):
     # is inert until a Postgres-backed repository exists.
     persistence_backend: str = Field(default="local_json", alias="PERSISTENCE_BACKEND")
 
+    # Async job foundation (Step 186B, docs/14_backend_architecture.md
+    # section 116). Declared now so a later step (186C) has a real, typed
+    # config surface to gate on -- nothing reads `async_generation_enabled`
+    # yet: `POST /trips/{trip_id}/generate`/`.../regenerate` remain fully
+    # synchronous regardless of this value, exactly as before this step.
+    # Default `False` so current behavior is completely unchanged; only an
+    # explicit `ASYNC_GENERATION_ENABLED=true` (once 186C wires it up) will
+    # ever change that. This never implies Redis/Celery/RQ/a worker process
+    # are in use -- see `redis_url` above, still never read by any code
+    # path in `backend/app/` today.
+    async_generation_enabled: bool = Field(
+        default=False, alias="ASYNC_GENERATION_ENABLED"
+    )
+
+    # How long a terminal (succeeded/failed/cancelled) `GenerationJob`
+    # record is considered fresh enough to still be worth reading/showing,
+    # for a future cleanup/expiry step to reference (Step 186B declares
+    # this; no code reads or enforces it yet -- `JobRepository` never
+    # deletes or hides an expired job on its own). Must be positive: zero
+    # or negative has no sane meaning for a TTL. Default of 86400s (24
+    # hours) is a conservative, human-scale window for local/manual
+    # testing, not a production retention policy.
+    generation_job_ttl_seconds: int = Field(
+        default=86400, alias="GENERATION_JOB_TTL_SECONDS", gt=0
+    )
+
+    # Maximum number of `queued`/`running` jobs allowed to exist at once
+    # for a single trip, for a future step (186C) to enforce as a
+    # duplicate-job guard before starting a new background generation/
+    # regeneration. Declared now so that guard has a real config surface;
+    # `JobRepository`/`get_job_repository()` themselves never enforce this
+    # limit -- Step 186B adds no route wiring or background execution.
+    # Must be at least 1 -- a limit of 0 would make generation/regeneration
+    # permanently unavailable, which is never the intent of this setting.
+    generation_job_max_running_per_trip: int = Field(
+        default=1, alias="GENERATION_JOB_MAX_RUNNING_PER_TRIP", ge=1
+    )
+
+    # Duplicate-job/restart hardening (Step 186E,
+    # docs/14_backend_architecture.md section 118). Distinct from
+    # `generation_job_ttl_seconds` above on purpose -- that setting is
+    # about how long a *finished* job record stays worth displaying;
+    # this one is about how long a job is allowed to sit `queued`/
+    # `running` before `generation_job_service.check_no_duplicate_
+    # running_job` treats it as abandoned (a background task that died
+    # without the process crashing outright, so app startup's own
+    # recovery pass never saw it) rather than genuinely still in
+    # progress. Reusing one field for both concepts would make either
+    # value's "safe default" wrong for the other purpose. A stale job is
+    # never deleted or silently ignored -- it is marked `failed` with a
+    # safe, honest `JOB_INTERRUPTED` error (see `mark_job_interrupted`)
+    # so Developer Mode can explain what happened and a fresh attempt is
+    # never blocked forever. Must be positive, matching every other
+    # duration setting in this file. Default of 3600s (1 hour) is a
+    # conservative upper bound for this app's real, typically-fast
+    # pipeline -- generous enough to never fire during a normal run.
+    generation_job_stale_after_seconds: int = Field(
+        default=3600, alias="GENERATION_JOB_STALE_AFTER_SECONDS", gt=0
+    )
+
     # Itinerary narrator (Step 182F, docs/13_llm_reasoning_pipeline.md,
     # docs/14_backend_architecture.md). A separate, optional, read-only
     # LLM feature -- deliberately its own config surface, never reusing

@@ -1472,8 +1472,77 @@ fixed.
 Deferred / not yet implemented (production-hardening work, tracked
 separately from MVP feature work):
 
-- async/background job processing for plan generation (today: a single
-  synchronous request per generation call)
+- async/background job processing for plan generation (today: still a
+  single synchronous request per generation call **by default** — Step
+  186B added an inert `GenerationJob` model/config/local_json
+  `JobRepository` foundation, and Step 186C wired real backend job
+  orchestration behind `ASYNC_GENERATION_ENABLED` (default `false`, still
+  the default — every existing synchronous behavior is byte-for-byte
+  unchanged unless this is explicitly set to `true`). With it enabled:
+  `POST /trips/{trip_id}/generate`/`.../regenerate` return `202 Accepted`
+  with a job envelope instead of blocking, `GET /trips/{trip_id}/jobs`/
+  `GET /trips/{trip_id}/jobs/{job_id}` expose job status
+  (`queued`/`running`/`succeeded`/`failed`/`cancelled`), and a queued/
+  running job already in flight for a trip is rejected with
+  `JOB_ALREADY_RUNNING` rather than starting a second one. Execution uses
+  FastAPI's own `BackgroundTasks` — no Redis/Celery/RQ/separate worker
+  process, and the `redis` compose service remains completely unused.
+  `PlanningState.generation_progress` (Step 163B) is still the
+  plan-facing progress model, untouched by this work; `GenerationJob` is
+  job *control* state only, never a source of travel facts, and a job
+  `succeeded` status means "the pipeline ran to completion," never
+  "travel-ready/final/guaranteed." Step 186D made the frontend
+  backward-compatible with both response shapes: `frontend/app/page.tsx`
+  structurally detects (`isStartJobResponseData`, never by trusting the
+  HTTP status code alone) whether `/generate`/`/regenerate` returned the
+  long-standing synchronous shape or a `202` job envelope, and only polls
+  `GET /trips/{trip_id}/jobs/{job_id}` (1.5s interval, owner-protected,
+  stopped on unmount/logout/a new job starting) when a real job actually
+  exists. With the default `ASYNC_GENERATION_ENABLED=false`, this new
+  code path is simply never reached — sync mode is byte-for-byte
+  unchanged, confirmed live (signup → create trip → generate → feedback →
+  regenerate, no job card, no console errors). With it enabled, the
+  create/generate button now stages real copy ("Creating trip..." →
+  "Starting generation..." → "Generating itinerary..." → "Loading
+  completed itinerary...") and a compact job-status card appears
+  (concise in Traveler view; job_id/error_code/changed_sections/
+  timestamps in Developer view) — the existing decorative loading
+  plane still only reflects real `GenerationProgress`/job data, never a
+  fabricated jump to "landed" just because a `202` was accepted. Step
+  186E then hardened the whole path: a per-trip lock closes a genuine
+  request-level race around the duplicate-job check (live-verified
+  against a real running backend — two truly concurrent generate
+  requests for the same trip always produce exactly one `202` and one
+  `409 JOB_ALREADY_RUNNING`), a job left `queued`/`running` by a killed/
+  restarted process is marked `failed`/`JOB_INTERRUPTED` at the next app
+  startup rather than blocking that trip forever (also live-verified
+  with a real `kill -9` + restart — never resumed, never faked as
+  succeeded), the same staleness check runs before every duplicate check
+  and every job read so a hung-without-a-restart job doesn't block
+  forever either, and the frontend now resumes polling an already-
+  queued/running job when a trip is (re)loaded instead of silently
+  dropping it. Still entirely single-process hardening — real cross-
+  process/multi-worker locking remains deferred. See
+  `docs/14_backend_architecture.md` sections 116-118 and
+  `docs/16_frontend_architecture.md` sections 46-47. Step 186F then gave
+  `GenerationJob` the same opt-in Postgres persistence `trips`/
+  `planning_states`/`users` already had: a third migration creates
+  `generation_jobs`, `PostgresJobRepository` implements the same
+  interface as the local `JobRepository`, and `get_job_repository()` now
+  resolves to it exactly when `PERSISTENCE_BACKEND=postgres` is
+  explicitly set (`DATABASE_URL` alone still never switches it) —
+  `local_json` remains the default everywhere, startup recovery and
+  duplicate/lock/staleness handling all work unchanged against either
+  backend, and jobs still never resume across a restart under Postgres
+  any more than they do under local_json. See
+  `docs/14_backend_architecture.md` section 119. Step 186G (final step)
+  re-verified this entire stack live end to end with zero code changes —
+  including a real `kill -9` mid-job followed by a real restart, which
+  confirmed the interrupted job is honestly marked failed and never
+  blocks a fresh attempt — and found it ready to commit as one stack.
+  Real cross-process/multi-worker locking remains deferred, and this is
+  still `BackgroundTasks` execution only — no Redis/Celery/RQ/separate
+  worker process exists)
 - PostgreSQL persistence as the *default* (today: a local, gitignored
   JSON file remains default — see `ARCHITECTURE.md` section 12a; a
   dependency/connection foundation (Step 183B), schema migration (Step

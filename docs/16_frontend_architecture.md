@@ -4511,3 +4511,294 @@ on the initial `/auth/me` bootstrap check (Section 184G). No JS runtime
 error. `tsc --noEmit`, `eslint`, and `next build` all clean. No live
 scraping, browser automation, or provider API call was added anywhere in
 this step; the frontend still only ever displays backend-returned data.
+
+## 44. Section 186B: No Frontend Change -- Backend Job Foundation Only
+
+Step 186B (`docs/14_backend_architecture.md` section 116) adds an async
+job model/config/repository foundation on the backend
+(`GenerationJob`/`JobRepository`/`ASYNC_GENERATION_ENABLED`) -- **zero
+frontend files were touched**. `frontend/app/page.tsx`'s existing
+`handlePlanTrip`/`handleRegenerate` polling (Step 163C, section 45 of
+`docs/13_llm_reasoning_pipeline.md`) still polls the same
+`GET /trips/{trip_id}/generation-progress` endpoint exactly as before;
+`frontend/lib/api.ts`/`types.ts` are unchanged. No job-aware API call,
+job-id polling, or new loading/failed-job UI exists yet -- that is
+planned for Step 186D, once a backend route actually creates and exposes
+a job (Step 186C). Until then, `POST /trips/{trip_id}/generate` and
+`.../regenerate` return exactly the same synchronous response shapes the
+frontend already expects.
+
+## 45. Section 186C: Backend Job Orchestration Now Real, Still No Frontend Change
+
+Step 186C (`docs/14_backend_architecture.md` section 117) wires Step
+186B's job foundation into real backend orchestration -- `POST
+/trips/{trip_id}/generate`/`.../regenerate` can now actually return `202
+Accepted` with a job envelope, and `GET /trips/{trip_id}/jobs`/`GET
+/trips/{trip_id}/jobs/{job_id}` are now real, working, owner-protected
+endpoints -- but **only when an operator explicitly sets
+`ASYNC_GENERATION_ENABLED=true`**, which nothing in this repository does
+by default. `frontend/app/page.tsx`'s `handlePlanTrip`/`handleRegenerate`
+still call `generatePlan`/`requestRegeneration` (`frontend/lib/api.ts`)
+exactly as before and only ever exercise the default, unchanged
+synchronous path -- **zero frontend files were touched in this step**,
+and the frontend has no code path that would even recognize a `202`
+response or a job envelope shape if it received one. Job-aware polling,
+a queued/running/succeeded/failed loading UI, and safe handling of a
+page refresh mid-job all remain Step 186D's job.
+
+## 46. Section 186D: Frontend Async Job Polling and Loading UX
+
+Step 186D makes the frontend backward-compatible with both response
+shapes `POST /trips/{trip_id}/generate`/`.../regenerate` can now return
+(Step 186C) -- the long-standing synchronous shape (default,
+`ASYNC_GENERATION_ENABLED=false`) and a `202` job envelope (only when an
+operator explicitly enables async mode). **With the flag off -- the only
+state anyone deploying this app has today -- the frontend is unchanged
+in behavior**, confirmed by a full live signup -> create trip -> generate
+-> feedback -> regenerate walkthrough with no job card and no console
+errors.
+
+**Type alignment** (`frontend/lib/types.ts`): `GenerationJobStatus`
+(`queued`/`running`/`succeeded`/`failed`/`cancelled`),
+`GenerationJobType` (`generate`/`regenerate`), `JobResponseData`
+(mirrors the backend's own `JobResponseData` field-for-field --
+deliberately no `owner_id`, since the backend never sends one either),
+`StartJobResponseData` (aliased to `JobResponseData`, matching the
+backend's shape-identical subclass), `JobListResponseData`, and two
+response unions -- `GenerateOrJobResponse`/`RegenerateOrJobResponse` --
+so `generatePlan`/`requestRegeneration` (`frontend/lib/api.ts`) can be
+typed honestly without assuming either shape. New `getTripJobs`/
+`getTripJob` helpers in `lib/api.ts` call the two Step 186C endpoints;
+`credentials: "include"`, `ApiRequestError.code`, and every other
+existing `request()` behavior are completely unchanged.
+
+**Response-shape detection** (`app/page.tsx`): `isStartJobResponseData`
+is a structural check (`job_id`/`job_type`/`status` all present, never
+the HTTP status code, which the shared `request()` helper doesn't even
+expose to callers) -- it cannot mistake a full `PlanningState`/
+`RegenerateResponseData` response for a job envelope, since neither ever
+carries a `job_id`.
+
+**Job polling** (`useJobPolling`, a small custom hook, module-scope):
+each call site (the top-level `Home` component for generate; each
+`RegenerationReadinessSection` instance for regenerate) gets its own
+independent `activeJob`/`jobPollingError` state and interval, polling
+`GET /trips/{trip_id}/jobs/{job_id}` every 1.5s until a terminal status,
+with automatic cleanup on unmount (logout unmounts the whole trip shell;
+a Traveler/Developer mode toggle unmounts one `RegenerationReadinessSection`
+instance -- a known, documented limitation is that toggling view mode
+mid-regeneration abandons that instance's poll, matching how that
+component's pre-186D local state already reset on such a toggle).
+`AUTHENTICATION_REQUIRED`/`FORBIDDEN`/`JOB_NOT_FOUND` stop polling and
+reject immediately so the caller's existing error handling (which already
+knows how to clear auth state) can react; a transient network failure
+surfaces a small retryable `jobPollingError` note without ever stopping
+the poll on its own.
+
+One real bug was caught and fixed during this step's own live manual
+verification (not by `tsc`/`lint`/the existing test suite, none of which
+could have caught it): the hook's original `stop()` function cleared the
+polling interval *and* unconditionally rejected any pending
+`waitForJob()` promise -- which meant the poll's own internal
+terminal-status branch (`stop(); resolve(job);`) rejected the promise
+with a "cancelled" error a split second before its own `resolve(job)`
+call, since a promise can only settle once. Every real, successful async
+generate/regenerate silently swallowed its own success: the button reset
+to idle, but `setResult`/`refreshMyTrips`/`clearJob` were never reached,
+so the itinerary never rendered and the stale "succeeded" job card never
+cleared. Root-caused via a live Playwright walkthrough (see below) and
+fixed by separating "stop the timer" (`stopTimer`, used by every
+success/definitive-failure path) from "cancel and reject" (`cancel`,
+used only by external callers -- unmount, logout, a new job
+superseding an old one).
+
+**Generate UX**: the create/generate button now stages real copy tied to
+`handlePlanTrip`'s actual phase -- "Creating trip..." ->
+"Starting generation..." -> "Generating itinerary..." (async mode only;
+the synchronous default blocks straight through "Starting generation..."
+since the whole call already completes by the time any other phase would
+show) -> "Loading completed itinerary...". The existing decorative
+loading plane (`TravelGenerationLoading`, Step 163A/163C) is untouched --
+it already reads `GenerationProgress` polled from `GET
+/generation-progress`, which the orchestrator updates identically whether
+`ASYNC_GENERATION_ENABLED` is on or off (the same `PlanningOrchestrator`
+call runs either way, just via `BackgroundTasks` in async mode), so the
+plane's gradual movement and its `isCompleted` "landed" state were
+already correct for both modes with no changes needed there. A new
+`JobStatusCard` component adds the job's own identity/terminal-outcome/
+error detail on top -- never a fabricated percent or ETA, never a claim
+that a `202` response alone means the itinerary is ready (the itinerary
+is only ever loaded after `waitForJob` resolves with `status ===
+"succeeded"`). A queued/running job already found for a trip (`JOB_ALREADY_
+RUNNING`) shows the backend's own already-friendly refusal message.
+
+**Regenerate UX** (`RegenerationReadinessSection`): the four cheap
+refusal checks (missing confirm, active locks, no pending feedback, no
+derivable affected stage) render exactly as before, synchronously, in
+both modes -- verified live by triggering each one with async mode on
+and confirming the same error codes/messages appear with no job ever
+created. The allowed/eligible case now branches: sync mode keeps
+`regenerateSuccess` exactly as it always rendered; async mode creates a
+job, polls it via the same `useJobPolling` hook, and only calls
+`onRegenerateSuccess()` (the existing full `loadPlanResult` refresh) once
+the job actually succeeds -- a failed/cancelled job is fed through the
+same refusal-display path the synchronous errors already use, so no
+separate error UI needed inventing. A new `onAuthenticationRequired`
+prop lets a 401 encountered mid-poll clear the top-level `Home`
+component's auth/trip/job state and return to the login screen, matching
+every other trip action's existing behavior.
+
+**Job status UI** (`JobStatusCard`): Traveler view shows status/message/
+real `progress_stage` (relabeled through the same
+`FRIENDLY_STAGE_LABEL_BY_BACKEND_KEY` map the loading plane already
+uses) only; Developer view adds job_id (`break-all`, wraps safely on
+mobile)/job_type/status/error_code/result_version/created_at in a small
+`dl` grid. No stack trace, no provider secret, no fabricated percent --
+confirmed both structurally (no such fields exist on `JobResponseData`)
+and live (a Developer-view job card was captured at 375px with zero
+horizontal overflow, `error_message` shown verbatim from the backend's
+own safe, controlled string).
+
+**Live verification** (Playwright against real `uvicorn`/`next dev`
+servers, real signup -> create trip -> generate -> feedback -> regenerate,
+in both `ASYNC_GENERATION_ENABLED=false` and `=true`, never a real
+commercial website): sync mode fully unaffected (single "Starting
+generation..." button phase, itinerary renders, zero job card, only the
+pre-existing documented pre-login `401` bootstrap console message).
+Async mode: full button-phase staging observed, `GenerationProgress`
+showed real intermediate percents (not an instant 0->100 jump) backing
+the plane animation, the job-status card showed real, live
+`succeeded` transitions for both generate and regenerate, the itinerary
+rendered only after the job succeeded, "My Trips" reflected the new trip
+afterward, a second user attempting to load the first user's `trip_id`
+saw the existing "You do not have access to this trip" message with zero
+itinerary content leaked, 375px/390px viewports showed zero horizontal
+overflow in both Traveler and Developer view (including the denser
+Developer job-diagnostics grid), and no password/session/API-key-shaped
+string ever reached the browser console.
+
+## 47. Section 186E: Duplicate/Failure/Restart Hardening -- Frontend Resume + a Real Backend Bug Found Live
+
+Step 186E (`docs/14_backend_architecture.md` section 118) closes Step
+186D's own documented "no in-place resumption" MVP-scope gap and adds
+duplicate/failure/restart hardening throughout the backend job path.
+The frontend-facing pieces:
+
+**Resume on reload/trip-select**: `useJobPolling` (the shared hook both
+`Home` and `RegenerationReadinessSection` already used) gained
+`seedJob(job)` -- sets `activeJob` from an already-known job without
+starting a new poll. A new `resumeExistingJobIfAny(tripId)` helper in
+`Home`, called by both `handleSelectMyTrip` and
+`handleLoadExistingTrip` right after their existing `clearJob()`, fetches
+`GET /trips/{tripId}/jobs` and, if the newest job is still `queued`/
+`running`, resumes polling it via the exact same `waitForJob` the
+generate/regenerate flows use; a terminal newest job is still seeded so
+its real status renders, but never re-polled. `loadPlanResult` is still
+attempted afterward regardless of that job's outcome -- a failed/
+cancelled *regenerate* job never invalidates an already-existing
+successful plan, and the existing "not been generated yet" honest
+refusal still covers a trip with no successful generation at all. This
+never shows another user's job (every call is owner-scoped exactly like
+every other trip endpoint) and never caches a job across logout/login
+(`clearJob()` on logout, plus a fresh `resumeExistingJobIfAny` call on
+every trip load, always wins over whatever was there before).
+
+**Duplicate/failure UX polish**: the decorative loading plane
+(`TravelGenerationLoading`) gained a belt-and-suspenders `isCompleted`
+guard so it can never show its "landed" state for a `failed`/`cancelled`
+job, even in principle -- the pre-existing `backendProgress?.status ===
+"completed"` check already never reports "completed" for a run the
+backend itself marked failed, so this is defense in depth, not a fix for
+an observed bug. `JobStatusCard` gained one line of retry-affordance
+copy for a failed **generate** job only ("You can start generation again
+using the form above.") -- reusing the existing create-trip button
+rather than adding a new endpoint or a per-trip retry action; a failed
+regenerate job has no equivalent since regeneration needs fresh feedback
+first.
+
+**A real backend bug, found and fixed via this step's own live
+verification** (not by `tsc`/`lint`/the existing test suite): while
+verifying the duplicate-job guard against a real running `uvicorn`
+process (not `TestClient`), two genuinely concurrent `POST /generate`
+requests for the same trip -- fired from separate threads via Python's
+`requests` library, and separately reproduced via two concurrent
+in-browser `fetch()` calls sharing the same authenticated session --
+correctly produced exactly one `202` and one `409 JOB_ALREADY_RUNNING`
+with the backend's own friendly message, proving the new per-trip lock
+(`generation_job_service._trip_lock_registry`) actually closes the race
+window it was built for. Restart recovery was verified the same way: a
+`queued`/`running` job was persisted to disk, the real backend process
+was `kill -9`'d and restarted, and the very next job-status read showed
+`failed`/`JOB_INTERRUPTED` -- never `succeeded`, no stack trace -- with a
+fresh generate for that trip immediately working afterward. Sync mode
+(`ASYNC_GENERATION_ENABLED=false`, unset in this repo by default) was
+re-confirmed completely unaffected: signup -> create -> generate ->
+feedback -> regenerate all worked exactly as before, zero job card ever
+appeared, and the only console message was the pre-existing, already-
+documented pre-login `401` bootstrap check. Logging out ~200ms into a
+fresh async generate correctly returned to the login screen with zero
+leaked trip/job data and zero new console errors. 375px viewport showed
+zero horizontal overflow after a real generate completed.
+
+## 48. Section 186G (final step of Section 186): Full-Stack Final Verification
+
+Pure verification pass, zero frontend code changes -- every frontend
+behavior documented in sections 44-47 above was re-confirmed live against
+real backend/frontend servers rather than carried forward from prior
+steps' own claims. Sync mode (`ASYNC_GENERATION_ENABLED` unset): signup,
+create, generate, feedback, and regenerate all returned their long-
+standing synchronous shapes with zero job card ever rendered, confirmed
+both via a direct API script and a live browser session. Async mode
+(`ASYNC_GENERATION_ENABLED=true`): the create/generate button's staged
+copy ("Generating itinerary...", "Loading completed itinerary...") was
+observed via Playwright exactly as Step 186D built it, the button stayed
+genuinely disabled for the whole in-flight window (duplicate-click
+protection confirmed at the DOM level, not just by code reading), My
+Trips refreshed after a successful async generate, and a follow-up
+regenerate -- gated correctly by `regeneration_readiness.can_regenerate`
+flipping to `true` right after feedback submission, exactly as
+`PlanningOrchestrator.apply_feedback`'s own readiness recompute
+guarantees -- completed and rendered "applied." A `kill -9` mid-run
+followed by a real process restart (same `SESSION_SECRET_KEY` so the
+session survived, matching real operator practice) was confirmed end to
+end: the interrupted job read back as `failed`/`JOB_INTERRUPTED` with the
+existing safe message, never `succeeded`, and a fresh generate
+immediately afterward returned `202` rather than being blocked. Cross-
+user access to another user's trip still renders the fixed "You do not
+have access to this trip." message; logout during a session cleanly
+returns to the login screen. 375px/390px both stayed overflow-free
+throughout, including the brief window a job/loading state is visible.
+The only console message across every run was the pre-existing,
+already-documented pre-login `401` bootstrap check -- no new console
+error, and no secret/session-cookie value ever appeared in the DOM or
+console.
+
+**One real, honest artifact of this app's own speed, not a bug**: this
+demo pipeline's stage services are almost entirely local/`not_connected`
+placeholders, so a full generate/regenerate run typically completes in
+well under a second end to end -- faster than `useJobPolling`'s
+1.5-second poll interval. In practice this means the job status card's
+very first read is often already the terminal `succeeded` status; a
+`queued`/`running` frame is real (the backend genuinely passes through
+both) but frequently too brief for the frontend's first poll to observe
+it. This is correct, honest behavior -- the UI never fabricates a
+"landed" state early, it just may not visibly linger on "running" for a
+pipeline this fast -- and does not change anything about the polling
+contract; it would look different against a slower, real-provider-backed
+pipeline where a run takes several seconds.
+
+**Two pieces of pre-existing (pre-Section-186) UI copy were noticed but
+deliberately left unchanged**, since they predate this section and a
+copy-only edit unrelated to the async-job stack is outside this step's
+scope: `FeedbackPanel`'s "Plan regeneration will be added later." and
+`handleSubmitFeedback`'s success toast "Regeneration is not implemented
+yet." are both stale leftovers from before Section 174 implemented real
+feedback-driven regeneration -- neither is inaccurate in a way that
+overclaims (if anything, both *understate* current capability), and
+fixing them is flagged here for a future small copy step rather than
+folded into this final-verification pass.
+
+This closes Section 186 (186A-186G) from the frontend side -- see
+`docs/CODEBASE_OVERVIEW.md`'s Section 186G entry for the equivalent
+backend-side final review and `docs/14_backend_architecture.md` section
+120 for the full backend confirmation list.

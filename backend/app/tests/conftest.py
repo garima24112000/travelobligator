@@ -33,6 +33,7 @@ from app.models.common import DataStatus, GeoPoint, ProviderStatus
 from app.models.providers import NormalizedPlace, ProviderResponse
 from app.providers.base import PlacesProvider
 from app.providers.gateway import provider_gateway
+from app.repositories.job_repository import job_repository
 from app.repositories.planning_state_repository import planning_state_repository
 from app.repositories.trip_repository import trip_repository
 from app.repositories.user_repository import user_repository
@@ -170,6 +171,11 @@ def _reset_in_memory_repositories(tmp_path: Path) -> None:
     planning_state_repository._states = {}
     user_repository._store = test_store
     user_repository._users = {}
+    # Step 186B: job_repository (backend/app/repositories/job_repository.py)
+    # shares the same underlying file as the other three, under its own
+    # "jobs" collection -- reset here for the same isolation reason.
+    job_repository._store = test_store
+    job_repository._jobs = {}
     yield
 
 
@@ -253,6 +259,21 @@ def _isolate_provider_cache_store(monkeypatch: pytest.MonkeyPatch):
 
     yield
     shutil.rmtree(isolation_dir, ignore_errors=True)
+
+
+@pytest.fixture()
+def async_generation_enabled(monkeypatch: pytest.MonkeyPatch):
+    """Step 186C: opts a single test into `ASYNC_GENERATION_ENABLED=true`
+    -- deliberately NOT autouse, since the default (`false`) synchronous
+    behavior is what almost every existing test in this suite exercises
+    and must keep exercising unchanged. `get_settings()` reads config
+    fresh on every call (never cached across a config change within a
+    test), matching every other config-toggling fixture in this file.
+    """
+    monkeypatch.setenv("ASYNC_GENERATION_ENABLED", "true")
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
 
 
 def _unique_test_email() -> str:

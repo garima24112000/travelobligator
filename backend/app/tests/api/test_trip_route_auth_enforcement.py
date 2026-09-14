@@ -10,7 +10,7 @@ from app.tests.conftest import create_trip_payload, new_authenticated_client
 
 # Step 184D: the full auth-enforcement matrix across every `/trips/*`
 # route -- not just one or two representative ones. Every route below
-# (18 of them, everything except `POST /trips` and `GET /trips`, which
+# (20 of them, everything except `POST /trips` and `GET /trips`, which
 # have their own dedicated tests in test_trip_ownership.py) is checked
 # for:
 #   1. Unauthenticated -> 401 AUTHENTICATION_REQUIRED.
@@ -50,13 +50,22 @@ _TRIP_ID_ROUTES: list[tuple[str, str, dict | None]] = [
     ("GET", "/trips/{trip_id}/ai-candidate-review", None),
     ("POST", "/trips/{trip_id}/ai-candidate-promotions", None),
     ("POST", "/trips/{trip_id}/langgraph-shadow-run", None),
+    # Step 186C: async job foundation endpoints. `job_id` is always a
+    # placeholder below -- the 401/403 checks all fire before a job lookup
+    # would ever happen (see app/auth/ownership.py's `require_trip_owner`),
+    # so its actual validity never matters for these tests, mirroring
+    # `lock_id`'s existing placeholder pattern above.
+    ("GET", "/trips/{trip_id}/jobs", None),
+    ("GET", "/trips/{trip_id}/jobs/{job_id}", None),
 ]
 
-assert len(_TRIP_ID_ROUTES) == 18
+assert len(_TRIP_ID_ROUTES) == 20
 
 
-def _format_path(template: str, trip_id: str, lock_id: str = "lock_placeholder") -> str:
-    return template.format(trip_id=trip_id, lock_id=lock_id)
+def _format_path(
+    template: str, trip_id: str, lock_id: str = "lock_placeholder", job_id: str = "job_placeholder"
+) -> str:
+    return template.format(trip_id=trip_id, lock_id=lock_id, job_id=job_id)
 
 
 def _call(client: TestClient, method: str, path: str, body: dict | None) -> object:

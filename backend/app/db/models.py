@@ -1,5 +1,5 @@
 """Minimal SQLAlchemy table metadata for future Postgres repositories
-(Step 183C, extended in Step 184C).
+(Step 183C, extended in Step 184C, Step 186F).
 
 Deliberately NOT imported by any route/service/repository directly --
 only by the opt-in `Postgres*Repository` classes (constructed only when
@@ -12,11 +12,14 @@ that Pydantic model remains the single source of truth for validation and
 business logic everywhere in this codebase. `PlanningStateRow.state` just
 holds that model's `model_dump(mode="json")` output, mirroring exactly
 what `PlanningStateRepository.save` already writes to `LocalJsonStore`
-today. Likewise `UserRow` does not replace `app.models.user.UserRecord`.
+today. Likewise `UserRow` does not replace `app.models.user.UserRecord`,
+and `GenerationJobRow` does not replace
+`app.models.generation_job.GenerationJob`.
 
-Importing this module registers `TripRow`/`PlanningStateRow`/`UserRow` on
-`Base.metadata` (used by `alembic/env.py` for future autogenerate diffs)
-but does NOT create any table and does NOT open a database connection --
+Importing this module registers `TripRow`/`PlanningStateRow`/`UserRow`/
+`GenerationJobRow` on `Base.metadata` (used by `alembic/env.py` for
+future autogenerate diffs) but does NOT create any table and does NOT
+open a database connection --
 nothing in this codebase calls `Base.metadata.create_all(engine)`; the
 actual schema is created via the Alembic migrations in
 `backend/alembic/versions/`, which this module's column definitions
@@ -107,3 +110,54 @@ class PlanningStateRow(Base):
     state: Mapped[dict] = mapped_column(JSONB, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class GenerationJobRow(Base):
+    """Mirrors `app.models.generation_job.GenerationJob` (Step 186F). Not
+    read or written by any repository unless
+    `Settings.persistence_backend == "postgres"` -- see
+    `app/repositories/postgres_job_repository.py`.
+
+    This is job *control* state (identity, ownership, lifecycle, error)
+    only -- never a source of travel facts, and never a claim about the
+    resulting plan's quality (see `GenerationJob`'s own docstring). No
+    secret, password, session token, or API key is ever stored here.
+
+    `owner_id` is `NOT NULL` with `ON DELETE CASCADE`, unlike
+    `TripRow.owner_id` (nullable + `SET NULL`, for backward compatibility
+    with pre-184C trip rows). `GenerationJob.owner_id` is always a real,
+    required value from job-creation time (Step 186C) -- there is no
+    legacy-row case to preserve, and a job record has no independent
+    value once its owner is gone. `result_version` is `Text`, not an
+    integer -- it mirrors `GenerationJob.result_version: str | None`,
+    which holds a version *label* like `"v2"`, never a numeric id.
+    """
+
+    __tablename__ = "generation_jobs"
+    __table_args__ = (
+        Index("ix_generation_jobs_trip_id", "trip_id"),
+        Index("ix_generation_jobs_owner_id", "owner_id"),
+        Index("ix_generation_jobs_status", "status"),
+        Index("ix_generation_jobs_trip_id_status", "trip_id", "status"),
+    )
+
+    job_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    trip_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("trips.trip_id", ondelete="CASCADE"), nullable=False
+    )
+    owner_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("users.user_id", ondelete="CASCADE"), nullable=False
+    )
+    job_type: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False)
+    progress_stage: Mapped[str | None] = mapped_column(Text, nullable=True)
+    message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error_code: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    result_version: Mapped[str | None] = mapped_column(Text, nullable=True)
+    changed_sections: Mapped[list[str]] = mapped_column(
+        JSONB, nullable=False, server_default="[]"
+    )

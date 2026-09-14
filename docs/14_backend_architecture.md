@@ -5935,3 +5935,760 @@ rating_enrichment_service.py` confirming the copy-through in both
 passed + 10 skipped (up from 3101). No new backend behavior beyond this
 one field -- accommodation/flight parsing, hotel-ratings matching, and
 every other provider adapter are completely untouched.
+
+## 116. Async Job Model/Config/Repository Foundation, No Orchestration Yet (Step 186B)
+
+Section 186 (a multi-step audit + build-out, starting with a read-only
+audit at Step 186A) is moving `POST /trips/{trip_id}/generate` and
+`.../regenerate` from today's fully synchronous, request-response
+execution toward async/background jobs, without breaking the MVP along
+the way. Step 186B adds only the inert foundation those routes will sit
+on top of once a later step (186C) wires them up -- **no route, service,
+or background task calls any of this yet**, and `/generate`/`/regenerate`
+remain exactly as synchronous as before this step (confirmed by
+`backend/app/tests/api/test_async_job_foundation_noop.py`).
+
+**Config** (`backend/app/core/config.py`): three new fields, all with
+safe, current-behavior-preserving defaults and no new required env var --
+`async_generation_enabled: bool = False` (`ASYNC_GENERATION_ENABLED`),
+`generation_job_ttl_seconds: int = 86400` (`GENERATION_JOB_TTL_SECONDS`,
+must be `> 0`), and `generation_job_max_running_per_trip: int = 1`
+(`GENERATION_JOB_MAX_RUNNING_PER_TRIP`, must be `>= 1`). `Settings.redis_url`
+is untouched and still never read by any code path in `backend/app/` --
+this step adds no Redis/Celery/RQ usage and no worker process.
+
+**Model** (`backend/app/models/generation_job.py`, new file):
+`GenerationJobStatus` (`queued`/`running`/`succeeded`/`failed`/
+`cancelled`), `GenerationJobType` (`generate`/`regenerate`), and
+`GenerationJob` (`job_id` -- `job_<uuid4 hex>`, mirroring `_new_id`'s
+convention elsewhere; `trip_id`; required `owner_id`; `job_type`;
+`status`; `progress_stage` -- validated against exactly
+`GENERATION_STAGE_KEYS`, the same real stage keys
+`PlanningState.generation_progress` already uses, so a job can never
+claim a fabricated/cosmetic phase; `message`; `error_code`/
+`error_message`; `created_at`/`started_at`/`finished_at`;
+`result_version`/`changed_sections`, mirroring
+`RegenerateResponseData`'s own fields for a regeneration job). No
+percent/ETA field exists here -- percent-complete stays owned entirely
+by `PlanningState.generation_progress`. No secret/password/session-
+token/API-key field exists. `GenerationJob.status="succeeded"` documents
+that it means "the pipeline ran to completion," exactly like today's
+`200` from `/generate`, never "travel-ready/final/guaranteed" -- that
+judgment stays with `validation_report`/`regeneration_readiness`/
+`provider_coverage`, all untouched by this model. Helper functions
+(`create_queued_job`, `mark_job_running`, `mark_job_succeeded`,
+`mark_job_failed`, `mark_job_cancelled`) mutate-and-return a
+`GenerationJob` exactly like `PlanningState.set_pipeline_status` does for
+`PlanningState` -- none of them persist anything themselves.
+
+**Repository** (`backend/app/repositories/job_repository.py`, new file):
+`JobRepository`, local-JSON-backed exactly like `PlanningStateRepository`/
+`TripRepository` -- same file, new `"jobs"` collection, loaded into
+memory at construction, whole collection rewritten on every
+`create`/`save`. `create`/`save`/`get_by_job_id`/`list_by_trip_id`/
+`list_by_trip_id_and_status`/`list_running_by_trip_id` (queued+running
+only) round out the `GenerationJobRepositoryProtocol` added to
+`backend/app/repositories/protocols.py`. `list_by_trip_id` (and the
+status-filtered variants built on it) returns jobs oldest-first by
+`created_at` -- matching this codebase's existing audit-trail convention
+(`regeneration_attempts`/`version_history`, both read back in append
+order) rather than newest-first; documented and tested in
+`test_job_repository.py`. Writing the `"jobs"` collection never touches
+`"trips"`/`"planning_states"`/`"users"` in the same file
+(`LocalJsonStore.write_collection` only ever replaces the one named
+collection).
+
+**Factory** (`backend/app/repositories/factory.py`): new
+`get_job_repository()`. Deliberately returns the local_json `JobRepository`
+singleton **regardless of `Settings.persistence_backend`** -- unlike
+`get_trip_repository()`/`get_planning_state_repository()`/
+`get_user_repository()`, there is no `PostgresJobRepository` yet. This is
+a documented, temporary Step 186B decision (a real Postgres-backed jobs
+table/repository is deferred to Step 186F), not an oversight; setting
+`PERSISTENCE_BACKEND=postgres` today has zero effect on job storage.
+`DATABASE_URL` alone still never selects Postgres for anything, matching
+every other repository's existing contract; constructing this module
+never opens a DB connection.
+
+**Errors** (`backend/app/schemas/errors.py`/`backend/app/core/errors.py`):
+two new codes/constructors, `JOB_NOT_FOUND`/`job_not_found_error` (404)
+and `JOB_ALREADY_RUNNING`/`job_already_running_error` (409) -- mirroring
+how Step 184B added auth error constructors before Step 184D wired them
+into a route. **Neither is raised by any route yet.**
+
+**Tests**: `test_async_generation_config.py` (config defaults/overrides/
+validation, plus an explicit proof that `REDIS_URL` never implies async
+generation is active), `test_generation_job_models.py` (id prefix,
+status/type enums, queued defaults, each `mark_job_*` transition,
+progress-stage validation against `GENERATION_STAGE_KEYS`, no secret
+fields, no percent/ETA field, serialization round-trip),
+`test_job_repository.py` (CRUD, per-trip/per-status filtering, running-
+jobs filtering, collection isolation from `trips`/`planning_states`/
+`users`, deterministic oldest-first ordering, reload-from-disk, no Redis
+import), extensions to `test_repository_factory.py` (`get_job_repository`
+returns the local_json singleton both by default and under
+`persistence_backend="postgres"`, import never connects), and a new
+`test_async_job_foundation_noop.py` proving `/generate`/`/regenerate`
+response shapes and behavior are byte-for-byte unchanged and that neither
+route ever creates a `GenerationJob`. Full suite: 3152 passed + 10
+skipped (up from 3106) -- every pre-existing test, including every
+`test_generate_*`/`test_regenerate_*` guardrail test from Sections 163
+and 174, passes completely unmodified.
+
+No frontend file was touched. No `/trips/*` route, `PlanningOrchestrator`
+method, provider adapter, or auth behavior changed. `docs/17_regeneration_
+manual_qa.md`'s safety contract is unaffected. See `README.md`'s "Current
+Status" section and `.env.example` for the corresponding user-facing
+documentation of this step's scope, and section 6.6 of
+`docs/CODEBASE_OVERVIEW.md` for the storage-layer summary.
+
+## 117. Backend Async Generate/Regenerate Job Orchestration Behind ASYNC_GENERATION_ENABLED (Step 186C)
+
+Step 186C wires Step 186B's inert job foundation into
+`POST /trips/{trip_id}/generate` and `.../regenerate`, entirely behind
+`Settings.async_generation_enabled` (default `False`, unchanged). With
+the flag off -- the only state anyone deploying this app has today --
+both routes are **byte-for-byte identical** to before this step: same
+200/409 response shapes, same error codes, same synchronous blocking
+behavior, confirmed by the full pre-186C test suite passing completely
+unmodified (`test_generate_*`, `test_regenerate_*`,
+`test_async_job_foundation_noop.py` from 186B). This section describes
+what changes only when an operator explicitly opts in.
+
+**Executor**: FastAPI's own `BackgroundTasks` (a route parameter,
+`background_tasks: BackgroundTasks`) -- no Redis, Celery, RQ, or separate
+worker process. Starlette runs a synchronous callable passed to
+`background_tasks.add_task(...)` via its thread pool
+(`anyio.to_thread.run_sync`), so a real ASGI server's event loop is never
+blocked by the fully synchronous `PlanningOrchestrator`/regeneration-
+mutation calls underneath. `TestClient` (used by every test in this
+section) awaits the full ASGI response cycle -- including the background
+task -- before returning control to the calling test, so a dispatched
+job has *already run to completion* by the time `client.post(...)`
+returns; no sleep/poll loop is needed anywhere in this step's tests to
+observe a job's terminal state.
+
+**Route changes** (`backend/app/api/routes/trips.py`):
+
+- `POST /trips/{trip_id}/generate`: when `async_generation_enabled` is
+  `True`, calls `generation_job_service.start_generate_job(...)` (owner
+  check via `require_trip_owner` already ran before this point, as
+  always) and returns `202 Accepted` with a `StartJobResponseData`
+  envelope -- via a raw `JSONResponse` returned directly from the route,
+  which bypasses FastAPI's `response_model` validation for just this one
+  call so the decorator can keep declaring `ApiResponse[TripResponseData]`
+  (today's real, default shape) without that declaration ever being
+  applied to the differently-shaped async payload. The full
+  `PlanningState` is not returned by this call in async mode -- callers
+  poll `GET /trips/{trip_id}/jobs/{job_id}` (new) or the pre-existing
+  `GET /trips/{trip_id}/generation-progress` instead.
+- `POST /trips/{trip_id}/regenerate`: outcomes 1-4 (missing/false
+  `confirm`, active locks, no pending feedback, no derivable affected
+  stage) are **always synchronous**, completely unchanged, regardless of
+  the flag -- `test_async_regenerate.py`'s refusal tests confirm the
+  exact same error codes fire with the flag on. Only outcome 5 (Section
+  174's real mutation) branches: with the flag on, after the same
+  duplicate-job check `/generate` uses, a queued `GenerationJob` is
+  created (`job_type=regenerate`, `progress_stage` seeded to the first
+  derived affected stage -- a real `GENERATION_STAGE_KEYS` value, never a
+  fabricated one) and `202 Accepted` is returned; the real mutation runs
+  in the background.
+
+**Extracted mutation helper**
+(`backend/app/services/regeneration_mutation_service.py`, new file):
+`apply_regeneration_mutation(planning_state, affected_stages,
+pending_events) -> RegenerationMutationResult` is Step 174C/174D's
+"outcome 5" body, relocated out of the route unchanged -- same calls, in
+the same order (`PlanningOrchestrator.rerun_affected_stages` ->
+itinerary narrator refresh -> `VersioningService.create_version_after_
+feedback` -> mark feedback applied -> recompute `pending_feedback_
+summary`/`plan_diff_preview`/`regeneration_readiness`), still raising
+(never swallowing) via a new `RegenerationMutationError` when the rerun
+itself fails. Both the synchronous route and the async job runner
+(`generation_job_service.run_regenerate_job`) call this exact same
+function -- no regeneration semantics were rewritten, only relocated so
+both callers share one implementation. This works because every service
+this function touches (`planning_orchestrator`, `versioning_service`,
+`feedback_service`, `plan_diff_preview_service`, `regeneration_readiness_
+service`, `itinerary_narrative_service`) is the same process-wide
+singleton regardless of which module imports it -- confirmed by every
+pre-existing `test_regenerate_guardrails.py` monkeypatch (which patches
+attributes on those singleton instances, not on `trips.py`'s module
+namespace) still passing unmodified after the relocation.
+
+**Dispatcher** (`backend/app/services/generation_job_service.py`, new
+file):
+
+- `check_no_duplicate_running_job(trip_id)` -- raises
+  `job_already_running_error(trip_id)` (409 `JOB_ALREADY_RUNNING`) when
+  `JobRepository.list_running_by_trip_id(trip_id)` already has
+  `>= Settings.generation_job_max_running_per_trip` (default `1`) queued/
+  running jobs. Never blocks a different trip, never blocks on a terminal
+  (succeeded/failed/cancelled) job, never leaks another user's jobs
+  (scoped to `trip_id` only). Applies to both `/generate` and
+  `/regenerate`.
+- `start_generate_job(trip_id, owner_id, background_tasks)` /
+  `start_regenerate_job(trip_id, owner_id, affected_stages,
+  applied_feedback_event_ids, background_tasks)` -- run the duplicate
+  check, create the queued `GenerationJob` via `JobRepository.create`,
+  schedule `run_generate_job`/`run_regenerate_job` via
+  `background_tasks.add_task`, and return the queued job so the route can
+  build the `202` envelope from it.
+- `run_generate_job(job_id)` -- marks the job `running`, calls the exact
+  same `PlanningOrchestrator.generate_full_plan`/`generate_full_plan_
+  via_langgraph` entry point the synchronous route already calls (no
+  stage duplicated, no provider call added; `PlanningState.generation_
+  progress` keeps being updated by the orchestrator itself, completely
+  unaffected by this step), and marks the job `succeeded` (with
+  `result_version`/`changed_sections` from the freshly-generated
+  `PlanningState`) or `failed` (fixed, safe `error_code="STAGE_FAILED"`/
+  `error_message` -- never the raw exception, never a stack trace) if the
+  orchestrator raises. Always reloads its own repository references by id
+  rather than trusting anything the dispatching request held, since on a
+  real ASGI server this runs after that request has already returned.
+- `run_regenerate_job(job_id, affected_stage_values,
+  applied_feedback_event_ids)` -- receives plain strings, not live
+  objects, and re-derives `affected_stages`/`pending_events` against a
+  freshly-loaded `PlanningState` before calling `apply_regeneration_
+  mutation`; if the named feedback events are no longer present (a
+  defensive check, not expected to trigger in the current single-process
+  local_json model where the duplicate-job guard already prevents a
+  second regenerate job from racing this one), the job fails safely
+  rather than acting on stale data. On success, marks the job `succeeded`
+  with `result_version`/`changed_sections` and calls
+  `regeneration_attempt_service.record_applied_attempt`, saving
+  `planning_state`, exactly like the synchronous route does. On failure
+  (`RegenerationMutationError`), records a failed `RegenerationAttempt`
+  (`status="failed"`, the same `REGENERATION_NOT_AVAILABLE_MESSAGE`) and
+  marks the job `failed` -- no version is created, no feedback is marked
+  applied, matching the synchronous path's failure contract exactly.
+- `get_job(trip_id, job_id)` / `list_jobs(trip_id)` -- trivial
+  trip-scoped reads `backend/app/api/routes/trips.py`'s two new job
+  endpoints call directly.
+
+**New response schemas** (`backend/app/schemas/generation_job.py`, new
+file): `JobResponseData` (mirrors `GenerationJob` field-for-field, with
+one deliberate omission -- `owner_id`, since every job endpoint is
+already owner-scoped via `require_trip_owner` before this schema is ever
+built), `StartJobResponseData` (structurally identical, used for the
+`202` moment), `JobListResponseData`. No secret, stack trace, or another
+user's data is ever included.
+
+**New endpoints** (`backend/app/api/routes/trips.py`):
+
+- `GET /trips/{trip_id}/jobs` -- every `GenerationJob` ever created for
+  `trip_id`, oldest first (`JobRepository`'s existing documented
+  ordering). Always empty with the flag off, since nothing ever creates a
+  job in that mode.
+- `GET /trips/{trip_id}/jobs/{job_id}` -- one job's current status. A
+  `job_id` that exists but belongs to a *different* trip returns
+  `JOB_NOT_FOUND` (404), identically to a `job_id` that doesn't exist at
+  all -- never leaking that the job exists elsewhere. Both routes use
+  `Depends(require_trip_owner)` exactly like every other `/trips/*`
+  route, added to `test_trip_route_auth_enforcement.py`'s full matrix
+  (now 20 routes, up from 18): unauthenticated -> 401, wrong user -> 403,
+  owner -> passes, legacy unowned trip -> 403.
+
+**Tests**: `test_generation_job_service.py` (service-level, bypassing
+FastAPI/BackgroundTasks entirely -- duplicate-guard behavior, both
+runners' success/failure transitions, safe error messages with no leaked
+exception text, `get_job`/`list_jobs` trip-scoping), `test_async_
+generate.py` and `test_async_regenerate.py` (full API round-trips:
+`202` + job envelope, job reaching `succeeded`/`failed`, `GET
+/generation-progress` still working, duplicate-job `409`, terminal jobs
+never blocking a new one, sync-mode default explicitly re-confirmed
+unaffected), `test_job_endpoints.py` (owner/wrong-user/unauthenticated,
+empty-list-before-any-job, cross-trip job isolation, `owner_id` never in
+any response), and extensions to `test_trip_route_auth_enforcement.py`.
+Every pre-186C regeneration/generation test (`test_regenerate_refusal.py`,
+`test_regenerate_guardrails.py`, `test_generation_progress.py`,
+`test_regeneration_readiness.py`,
+`test_authenticated_trip_lifecycle_regression.py`) passes completely
+unmodified. One pre-existing test file needed a small, mechanical update:
+`test_itinerary_narrative_generation.py` monkeypatched
+`app.api.routes.trips.itinerary_narrative_service` directly (the
+regenerate route's own module-level reference, pre-186C) -- since that
+call moved into `regeneration_mutation_service.py` unchanged, the test
+now patches that module's reference instead. No behavior assertion in
+that file changed; it still proves the exact same narrator-success/
+narrator-failure/narrator-disabled outcomes for both generate and
+regenerate.
+
+No provider/API/scraping behavior changed. No Redis/Celery/RQ/worker
+process was added. No Postgres jobs table/repository was added --
+`get_job_repository()` still resolves to the local_json singleton
+regardless of `Settings.persistence_backend` (Step 186F's job). Frontend
+is completely untouched -- polling/loading UX for this new job API is
+Step 186D's job, not this one.
+
+## 118. Duplicate-Job, Failure, and Restart Hardening (Step 186E)
+
+Step 186E hardens the async job path Step 186C wired in against four
+real MVP gaps: a genuine request-level race around the duplicate-job
+check, a background task left permanently "running" if it silently dies
+without a process restart, a job left permanently "running" if the
+process *does* restart (FastAPI's own `BackgroundTasks` hold no durable
+state), and one unhandled-exception path in `run_regenerate_job` that
+had escaped Step 186C's own safety contract. All of this is **single-
+process** hardening -- true cross-process/multi-worker durable locking
+(Redis, a database row lock, etc.) remains explicitly deferred, and
+nothing here changes `ASYNC_GENERATION_ENABLED`'s default (`False`).
+
+**1. Duplicate-job race hardening** -- FastAPI runs a sync `def` route
+(both `/generate`/`/regenerate` handlers) in a real thread-pool thread
+(via anyio), so two near-simultaneous requests for the same `trip_id`
+can genuinely interleave between `check_no_duplicate_running_job`'s read
+and `start_generate_job`/`start_regenerate_job`'s later write -- both
+could see "nothing running" and both create a job. A new per-trip
+`threading.Lock` registry (`generation_job_service._trip_lock_registry`,
+guarded by its own meta-lock) now wraps the entire reconcile-check-
+create sequence in both `start_*_job` functions, keyed by `trip_id` --
+shared between generate and regenerate, so the two can't race each
+other into double-creating a job for the same trip either. **Live-
+verified against a real running `uvicorn` process** (not just
+`TestClient`): two genuinely concurrent `POST /generate` requests fired
+from separate threads against the same trip_id produced exactly one
+`202` and one `409 JOB_ALREADY_RUNNING` with the backend's own existing
+friendly message, every time. The lock registry grows by one entry per
+distinct `trip_id` ever seen by the process and is never pruned --
+acceptable at this local-dev-scale MVP, not a real leak concern.
+
+**2. Stale/interrupted job model** (`backend/app/models/generation_job.py`):
+`mark_job_interrupted(job, message=...)` -- reuses `mark_job_failed`'s
+exact contract (`status=failed`, `finished_at` set) under a new, honest,
+controlled `JOB_INTERRUPTED` error code and a default message ("This
+background job was interrupted before it completed... Start generation
+again.") that never claims a resumed run or a fabricated success.
+
+**3. Startup/restart recovery** (`backend/app/main.py`, new `lifespan`
+context manager; `backend/app/services/generation_job_service.
+recover_interrupted_jobs()`): runs once, synchronously, before the app
+serves its first request. By construction -- not as a "can't tell whose
+job this is, so give up" fallback -- any job already persisted as
+`queued`/`running` at that exact moment cannot belong to the process now
+starting (which hasn't had a chance to create one yet), so every one of
+them is unambiguously left over from a previous process; each is marked
+`failed`/`JOB_INTERRUPTED`, never resumed, never faked as succeeded. A
+new `JobRepository.list_non_terminal()` (and its
+`GenerationJobRepositoryProtocol` counterpart) scans every trip's jobs
+at once, since recovery isn't scoped to one trip. **Live-verified**: a
+`queued`/`running` job was persisted to the local JSON store, the real
+backend process was `kill -9`'d (a hard crash, not a graceful shutdown)
+and restarted, and the very next `GET /trips/{trip_id}/jobs/{job_id}`
+call showed `status=failed`/`error_code=JOB_INTERRUPTED` -- never
+`succeeded`, no stack trace -- and a fresh `POST /generate` for that
+same trip immediately succeeded (`202`) afterward. Because `TestClient`
+only runs FastAPI's lifespan when used as `with TestClient(app):` (never
+on a bare `TestClient(app)`, which this codebase's shared `client`
+fixture uses), a dedicated pytest
+(`test_lifespan_recovers_interrupted_jobs_on_real_app_startup`)
+exercises the *real* `app.main` wiring end to end via that `with` form,
+separately from the standalone `recover_interrupted_jobs()` unit tests.
+
+**4. Stale guard before new job** -- `check_no_duplicate_running_job`
+now calls a new `_reconcile_stale_jobs(trip_id)` *first*: any `queued`/
+`running` job for that trip older than `Settings.generation_job_
+stale_after_seconds` (new field, default 3600s/1 hour -- deliberately
+separate from `generation_job_ttl_seconds`, which is about how long a
+*finished* job stays worth displaying, not how long a job may run before
+being considered abandoned) is marked interrupted before the "is
+something already running" check runs. This is a narrower, always-on
+complement to startup recovery: it catches the rarer case of a
+background task that died without the *process* restarting (e.g. some
+truly unexpected escape from this module's own try/except). A job
+younger than the window, a terminal job, or a different trip's job is
+never touched. `GET /trips/{trip_id}/jobs` and `GET /trips/{trip_id}/
+jobs/{job_id}` (`generation_job_service.list_jobs`/`get_job`) call the
+same reconciliation before returning, so an owner reading a job's status
+right after a long-hung background task sees the honest, current
+`failed`/`JOB_INTERRUPTED` state rather than a `running` status that
+will never change on its own.
+
+**5. Background failure hardening**
+(`backend/app/services/generation_job_service.py`): two new helpers,
+`safe_job_error_code(exc)`/`safe_job_error_message(exc, fallback=...)`,
+exist as a single choke point that can never be handed a raw exception
+string/repr/traceback by accident -- both deliberately never read
+`exc`'s message/args (which could incidentally contain a file path or
+other incidental detail), always returning a fixed, pre-written,
+controlled value. `run_generate_job`'s existing `except Exception` now
+routes through them (no behavior change, just a documented safety
+choke point). `run_regenerate_job` gained a genuinely new top-level
+`try/except Exception` wrapping its entire body (previously only
+`apply_regeneration_mutation`'s own `RegenerationMutationError` was
+caught) -- an unexpected exception from anywhere else in that function
+(e.g. `regeneration_attempt_service.record_applied_attempt` failing
+*after* an otherwise-successful mutation) would previously have escaped
+uncaught, left the job `running` forever, and blocked every future
+attempt for that trip until the staleness window or a restart cleared
+it. Every failure path already guaranteed (and still guarantees):
+`finished_at` set, a controlled `error_code`, no raw exception text, a
+generate failure never fabricates `result_version`/a completed plan, and
+a regenerate failure never marks feedback applied or creates a version
+(`mark_job_failed`/`mark_job_interrupted` never touch `result_version`/
+`changed_sections`, which stay at their fresh-job defaults).
+`PlanningState.generation_progress` continues to be updated by the
+orchestrator exactly as before -- this step adds no new progress
+fabrication anywhere.
+
+**6. Job endpoint hardening** -- `require_trip_owner` still gates both
+job routes exactly as before (401/403/404 all unchanged); the only
+addition is the stale-reconciliation call inside `list_jobs`/`get_job`
+described above. `owner_id` remains omitted from the public
+`JobResponseData` schema, unchanged.
+
+**7-8. Frontend reload/resume + duplicate/failure UX**
+(`frontend/app/page.tsx`): `useJobPolling` gained a `seedJob(job)`
+function (sets `activeJob` without starting a new poll) alongside its
+existing `waitForJob`/`clearJob`. A new `resumeExistingJobIfAny(tripId)`
+helper -- called by both `handleSelectMyTrip` and
+`handleLoadExistingTrip`, right after their existing `clearJob()` --
+fetches `GET /trips/{tripId}/jobs` (owner-protected, like every other
+trip call; a no-op empty list in sync mode) and, if the newest job is
+still `queued`/`running`, resumes polling it via the same `waitForJob`
+the generate/regenerate flows already use; a terminal newest job is
+still seeded so its real status is visible. `loadPlanResult` is still
+attempted regardless of the resumed job's outcome -- a failed/cancelled
+*regenerate* job never invalidates an already-existing successful plan,
+and a trip with no successful generation at all still gets the same
+honest "not been generated yet" message it always has. This closes
+Step 186D's original "no in-place resumption" MVP-scope note. The
+decorative loading plane (`TravelGenerationLoading`) gained a
+belt-and-suspenders `isCompleted` guard (`activeJob?.status !==
+"failed"/"cancelled"`, alongside the pre-existing `backendProgress?.
+status === "completed"` check, which already never reports "completed"
+for a run the backend itself marked failed) so it can never show its
+"landed" state for a failed/cancelled/interrupted job. `JobStatusCard`
+gained one line of retry-affordance copy ("You can start generation
+again using the form above.") shown only for a failed **generate** job
+-- reusing the existing create-trip button/form rather than adding a new
+endpoint or a per-trip retry action; a failed regenerate job has no
+equivalent (regeneration needs fresh feedback), so it gets no such hint.
+**Live-verified**: a queued job seeded directly into a freshly-restarted
+process's store was picked up on page reload via `resumeExistingJobIfAny`
+and correctly rendered through to its (in that test, staleness-
+reconciled) terminal state; logging out ~200ms into a fresh generate
+correctly returned to the login screen with zero leaked trip/job data
+and zero new console errors; 375px/390px showed zero horizontal overflow
+after a real generate completed.
+
+**Tests**: `test_generation_job_hardening.py` (new, 19 tests --
+mutual-exclusion proof of the per-trip lock via externally holding it
+and confirming a concurrent `start_*_job` call blocks, shared-lock proof
+between generate/regenerate, stale-job reconciliation, startup recovery
+including the real-lifespan end-to-end test, `get_job`/`list_jobs`
+surfacing reconciled state, the two new safe-error helpers, and the
+`run_regenerate_job` top-level-guard regression), plus extensions to
+`test_async_generation_config.py` (`generation_job_stale_after_seconds`),
+`test_generation_job_models.py` (`mark_job_interrupted`),
+`test_job_repository.py` (`list_non_terminal`), and
+`test_job_endpoints.py` (owner/wrong-user/recovered-job read paths).
+Full suite: 3230 passed + 10 skipped (up from 3197) -- every pre-186E
+test, including every existing async job/generate/regenerate test, still
+passes completely unmodified.
+
+## 119. Opt-In Postgres Persistence for Generation Jobs (Step 186F)
+
+Extends Step 183D/184C's opt-in Postgres persistence backend
+(`Settings.persistence_backend`, still `"local_json"` by default) to
+`GenerationJob` records -- the last of the four local-JSON collections
+(`trips`, `planning_states`, `users`, now `jobs`) to gain a Postgres
+equivalent. `local_json` remains the default in every environment;
+`DATABASE_URL` alone still never switches persistence, only an explicit
+`PERSISTENCE_BACKEND=postgres` does; `ASYNC_GENERATION_ENABLED` still
+defaults `false`; no Redis/Celery/RQ/separate worker process is added --
+async execution is still FastAPI's own `BackgroundTasks`, unchanged from
+Step 186C.
+
+**1. Migration** (`backend/alembic/versions/
+6fabeaa6455e_create_generation_jobs.py`, `down_revision=835e5782d7a5`,
+the third Postgres schema migration): creates `generation_jobs` mirroring
+`GenerationJob` field-for-field -- `job_id TEXT PRIMARY KEY`, `trip_id`/
+`owner_id`/`job_type`/`status`/`created_at TEXT|TIMESTAMPTZ NOT NULL`,
+`progress_stage`/`message`/`error_code`/`error_message`/`started_at`/
+`finished_at`/`result_version` all nullable, `changed_sections JSONB NOT
+NULL DEFAULT '[]'`. Two deliberate deviations from a literal migration
+spec, both documented in the migration's own docstring: `result_version`
+is `TEXT`, not `INTEGER` -- it mirrors `GenerationJob.result_version:
+str | None`, a version *label* like `"v2"`, never a numeric id; `owner_id`
+is `NOT NULL` with `ON DELETE CASCADE` (unlike `trips.owner_id`, nullable
++ `SET NULL` for backward compatibility with pre-184C rows) -- a
+`GenerationJob` always has a real, required `owner_id` from creation time
+(Step 186C), so there is no legacy-row case to preserve, and a job record
+has no independent value once its owner is gone. `trip_id` uses `ON
+DELETE CASCADE` (matching `planning_states.trip_id`). Indexes on
+`trip_id`, `owner_id`, `status`, plus a composite `(trip_id, status)`
+index for the running-jobs-per-trip query path. `downgrade()` drops all
+four indexes then the table, verified by actually running it against a
+real Postgres (see item 8 below). No provider fact, no stack trace, no
+secret/password/session-token/API-key column exists, and no change
+touches `provider_cache` (stays SQLite, independent).
+
+**2. SQLAlchemy model** (`backend/app/db/models.py`): new
+`GenerationJobRow`, same `Base`/`Mapped[...]`/`mapped_column(...)`/
+`Index` conventions as `TripRow`/`PlanningStateRow`/`UserRow`. Importing
+`app.db.models` now registers four tables on `Base.metadata`
+(`trips`, `planning_states`, `users`, `generation_jobs`) -- still no
+`create_all` call and no import-time connection anywhere in the module.
+
+**3. Postgres repository**
+(`backend/app/repositories/postgres_job_repository.py`, new
+`PostgresJobRepository`): implements the exact same
+`GenerationJobRepositoryProtocol` surface as the local `JobRepository` --
+`create`/`save`/`get_by_job_id`/`list_by_trip_id`/
+`list_by_trip_id_and_status`/`list_running_by_trip_id`/
+`list_non_terminal`. Opens a short-lived `Session` per call via the
+injected/default `get_session_factory()`, never at import time. `create`
+and `save` both upsert via `pg_insert(...).on_conflict_do_update(...)`
+keyed on `job_id` -- matching `JobRepository.create`/`.save`'s shared
+"replace by id" semantics exactly (the local repository's `create` and
+`save` are byte-for-byte the same method); `save` additionally excludes
+`created_at` from its update set so a job's creation time survives every
+subsequent status transition, while `create` includes it (a duplicate
+`create()` call for the same `job_id` is, by construction, describing the
+same creation event). Every row is validated back through
+`GenerationJob.model_validate` on read, so a corrupt/malformed row (e.g.
+an invalid status enum value) surfaces a real `ValidationError` rather
+than being silently coerced. List methods order by `(created_at,
+job_id)` ascending, matching `JobRepository._jobs_for_trip`'s ordering
+exactly. `changed_sections` round-trips through the `JSONB` column as a
+plain `list[str]`.
+
+**4. Repository factory**
+(`backend/app/repositories/factory.py`): `get_job_repository()` now
+branches on `Settings.persistence_backend` exactly like
+`get_trip_repository()`/`get_planning_state_repository()`/
+`get_user_repository()` already did -- `"local_json"` (default) returns
+the existing `JobRepository` singleton unchanged; `"postgres"` lazily
+constructs and `@lru_cache`s one `PostgresJobRepository`, first
+connecting only on the first call made while that setting is active.
+Resolved fresh on every call (never captured at import time), same
+Step 183B-FIX-derived discipline as every other factory function here.
+
+**5. Startup recovery with Postgres**: no code change was needed in
+`generation_job_service.recover_interrupted_jobs()` or `app.main`'s
+`lifespan` -- both already call `get_job_repository()` from the factory,
+so once the factory resolves to `PostgresJobRepository`, recovery
+transparently scans `generation_jobs` instead of the local JSON store.
+With `local_json` (the default), behavior is exactly Step 186E's
+unchanged. With `postgres` selected, `list_non_terminal()` queries every
+`queued`/`running` row across all trips and marks each `failed`
+(`JOB_INTERRUPTED`) -- jobs are never resumed, matching the local
+behavior's own documented guarantee. If Postgres is selected but the
+database is unreachable at startup, `recover_interrupted_jobs()` lets the
+underlying SQLAlchemy connection error propagate and fail startup --
+consistent with this codebase's existing convention for every other
+opt-in Postgres code path (no repository anywhere adds special
+down-database handling; a broken opt-in dependency failing loudly, not
+silently degrading, is the established pattern). Confirmed end-to-end
+against a real Postgres: two jobs (one `queued`, one `running`) seeded
+directly via `PostgresJobRepository`, `recover_interrupted_jobs()` called
+with `PERSISTENCE_BACKEND=postgres`, both jobs reloaded as `failed`/
+`JOB_INTERRUPTED` from a completely fresh repository/session (see
+`test_startup_recovery_marks_queued_and_running_postgres_jobs_interrupted`).
+
+**6. Async service compatibility**: `generation_job_service.py` required
+zero changes -- every one of its functions already goes through
+`get_job_repository()`, never importing `JobRepository` directly, so the
+duplicate-running-job guard, the per-trip `threading.Lock` registry, the
+stale-job reconciliation pass, and both job runners all work unchanged
+against `PostgresJobRepository`. Confirmed live: an async `POST
+/trips/{id}/generate` with `PERSISTENCE_BACKEND=postgres` and
+`ASYNC_GENERATION_ENABLED=true` creates a job row in `generation_jobs`,
+runs it to `succeeded` in the same `BackgroundTasks` cycle
+`TestClient` already awaits, and a completely fresh
+`PostgresJobRepository` instance reads back the same terminal state.
+
+**7. Tests** (all hermetic by default, matching every other Postgres
+test file in this codebase):
+- `test_migration_schema_generation_jobs.py` (new, static AST parsing,
+  no live Postgres) -- migration file exists and chains after
+  `835e5782d7a5`; exactly one new table; expected column list/
+  nullability; `result_version` is `Text` not `Integer`;
+  `changed_sections` is `JSONB` with an empty-list `server_default`;
+  both foreign keys use `ON DELETE CASCADE`; exactly two foreign keys;
+  primary key on `job_id`; all four expected indexes exist including the
+  `(trip_id, status)` composite; no `provider_cache` table; no secret/
+  password/stack-trace-shaped column; `downgrade()` drops all four
+  indexes then the table.
+- `test_db_models.py` (extended) -- importing `app.db.models` now
+  registers exactly four tables; `GenerationJobRow`'s full column list/
+  nullability; `changed_sections` is Postgres `JSONB`; `result_version`
+  is `Text`; both foreign keys and their `ON DELETE CASCADE` behavior;
+  `owner_id` is `NOT NULL` (the deliberate divergence from `TripRow`);
+  all four indexes present; no secret/password column; the existing
+  no-`create_all`/no-connection static-AST test still passes unmodified.
+- `test_postgres_job_repository.py` (new, 13 tests, fake-session unit
+  tests -- no live Postgres) -- `create`/`save` upsert statement shape
+  and bound params; `save` excludes `created_at` from its update set;
+  `get_by_job_id` returns `None` for a missing row and validates a real
+  row back through Pydantic; a malformed row (invalid status) raises
+  `ValidationError`; `list_by_trip_id`/`list_by_trip_id_and_status`/
+  `list_running_by_trip_id`/`list_non_terminal` statement shape and
+  ordering; `changed_sections` round-trips; failed/interrupted jobs
+  round-trip their error fields; `created_at` is preserved on reload.
+- `test_repository_factory.py` (updated) -- replaced the now-outdated
+  `test_get_job_repository_returns_local_singleton_even_under_postgres`
+  (which asserted the pre-186F "always local_json" behavior) with
+  `test_factory_returns_postgres_job_repository_when_selected`, matching
+  the existing trip/planning-state/user equivalents; the
+  `DATABASE_URL`-alone and dotenv-ignored tests now also assert
+  `get_job_repository()` stays local_json in both cases.
+- Gated live-Postgres tests, skipped unless `TRAVELOB_RUN_POSTGRES_TESTS=1`
+  (new `test_postgres_job_repository_integration.py`, 4 tests; new
+  `test_postgres_async_job_api_integration.py`, 4 tests): create/get/
+  save/list-running round trip against a real database; startup recovery
+  marks queued/running Postgres jobs interrupted; async generate/
+  regenerate against `PERSISTENCE_BACKEND=postgres` create and complete a
+  real job end-to-end through the actual API; wrong-user job access still
+  403; a job looked up under a different trip still 404.
+  `test_postgres_opt_in_gating.py` gained two subprocess-based tests
+  confirming both new gated files skip (never error, never require a
+  database) under a clean environment, matching the existing convention
+  for every other gated Postgres test file.
+- Regression: default `pytest` remains fully hermetic -- 3269 passed +
+  18 skipped (up from 3230 passed + 10 skipped; the 8 new skips are the
+  two new gated files' tests, correctly skipped by default). Every
+  pre-186F test, including every existing local_json job/generate/
+  regenerate test, passes completely unmodified.
+
+**8. Live Postgres verification** (Docker available in this
+environment): `POSTGRES_HOST_PORT=15432 docker compose up -d postgres`
+→ healthy; `alembic upgrade head` applied all three revisions cleanly
+against a fresh database; the 8 gated job tests (both new files) passed
+against the real database; the pre-existing gated trip/planning-state/
+user/API-smoke suites (20 tests) were re-run against the same database
+and still pass, confirming the new migration didn't disturb the earlier
+two; `alembic downgrade base` dropped all three revisions' tables
+cleanly (including `generation_jobs`); `docker compose down` removed the
+container and network. No `docker compose config` was run, no `.env`
+was modified or printed, and no secret/session-cookie value was printed
+at any point.
+
+**Safety confirmation**: no new/changed code or docs claim fake progress,
+a fake ETA, fake provider success, that jobs resume across a restart,
+that job success means the itinerary is guaranteed/final/travel-ready,
+that Redis/RQ/Celery is active, that async behavior is on by default, or
+any change to provider/API/scraping/auth/generation semantics.
+`GenerationJobRow`/`generation_jobs` store job control/status metadata
+only -- identity, ownership, lifecycle, and a short controlled error
+code/message, exactly like the local_json `"jobs"` collection it mirrors.
+
+## 120. Section 186G (final step of Section 186): Full-Stack Final Review and Live Verification
+
+Pure verification and commit-readiness pass over the entire 186A-186F
+stack -- no new feature, no `ASYNC_GENERATION_ENABLED` default change,
+no Redis/RQ/Celery, no separate worker process, no generation/
+regeneration/auth/provider semantics change. Zero backend source files
+were edited this step (`compileall` recompiled nothing).
+
+**Config/defaults re-confirmed by direct file read**: `async_generation_
+enabled` defaults `False`; `generation_job_ttl_seconds` defaults `86400`
+with `gt=0`; `generation_job_max_running_per_trip` defaults `1` with
+`ge=1`; `generation_job_stale_after_seconds` defaults `3600` with `gt=0`;
+`redis_url` is declared but read by no code path under `app/`
+(`docker-compose.yml`'s `redis` service has no `depends_on` consumer in
+app code); `database_url` alone never switches `persistence_backend`
+(re-confirmed: `Settings._normalize_persistence_backend` only ever reads
+the `PERSISTENCE_BACKEND` field, never `database_url`); `PERSISTENCE_
+BACKEND=postgres` is required for every `Postgres*Repository`, confirmed
+end-to-end again in this step's own live-Postgres run.
+
+**Job model re-confirmed**: `GenerationJob`'s fields are exactly control/
+status metadata (identity, ownership, lifecycle, error) -- no provider
+fact, API key, session cookie, password, or stack trace field exists;
+`new_job_id()` uses the stable `job_<uuid4 hex>` prefix matching every
+other id in this codebase; `GenerationJobStatus`/`GenerationJobType`
+vocabularies are exactly `queued/running/succeeded/failed/cancelled` and
+`generate/regenerate`; `progress_stage`'s field validator rejects any
+value outside `GENERATION_STAGE_KEYS` (real backend stages only, `None`
+always allowed) -- there is no ETA/percent field on `GenerationJob` at
+all, real or fabricated; `mark_job_failed`/`mark_job_interrupted` always
+carry a short, pre-written `error_code`/`error_message`, never a raw
+exception; `status="succeeded"` is documented, in the model's own
+docstring, as pipeline completion only, never a travel-readiness claim.
+
+**Backend async orchestration re-confirmed live** (real `uvicorn`, not
+just `TestClient`): with `ASYNC_GENERATION_ENABLED` unset, `POST
+/generate` returned the full synchronous `TripResponseData` (no
+`job_id`), `POST /regenerate` returned the same synchronous `"applied"`/
+refusal shapes as before Section 186, and `GET /trips/{id}/jobs` reads
+back an empty list -- byte-for-byte the pre-186 contract. With it set to
+`true`: `POST /generate` returned `202` with a queued job envelope; an
+immediate duplicate `POST /generate` for the same trip returned `409
+JOB_ALREADY_RUNNING`; the job reached `succeeded` with a real
+`result_version`/`changed_sections`; `GET /trips/{id}/jobs/{job_id}` and
+`GET /trips/{id}/jobs` both work and are owner-protected end to end (a
+second signed-up user got `403` on both); a `job_id` looked up under a
+different trip_id returned `404 JOB_NOT_FOUND` without revealing it
+exists elsewhere; `POST /regenerate` after feedback returned `202`, and
+the resulting job also reached `succeeded`. All confirmed via a live
+Python HTTP client against a real running backend, not mocked.
+
+**Failure/restart hardening re-confirmed live with a real crash**: a job
+was created, then the backend process was sent `SIGKILL` at the earliest
+possible moment after the `202` response (killed in-process, no extra
+round trip, to catch it before the background task could finish) --
+restarting with the *same* `SESSION_SECRET_KEY` (so the existing session
+cookie kept working, matching real operator practice across a restart)
+showed the job had been marked `failed`/`JOB_INTERRUPTED` by the new
+process's startup recovery, with the existing safe, controlled message
+(`"This background job was interrupted before it completed... Start
+generation again."`) -- never `succeeded`, no raw exception text. A
+fresh `POST /generate` for the same trip immediately afterward returned
+`202`, confirming the interrupted job never blocks a future attempt.
+
+**Postgres job persistence re-confirmed live**, repeating 186F's exact
+verification end to end one more time: `POSTGRES_HOST_PORT=15432 docker
+compose up -d postgres` → healthy → `alembic upgrade head` (all three
+revisions) → the 8 gated job tests
+(`test_postgres_job_repository_integration.py`,
+`test_postgres_async_job_api_integration.py`) passed against the real
+database → the pre-existing 20 gated trip/planning-state/user/API-smoke
+tests were re-run against the same database and still pass → `alembic
+downgrade base` dropped all three revisions cleanly → `docker compose
+down` left zero containers/networks. No `docker compose config` was run.
+
+**Frontend async UX re-confirmed live via Playwright** (isolated install
+under a scratch directory, cached Chromium, never touching the project's
+own `package.json`/lock file) -- see `docs/16_frontend_architecture.md`
+section 48 for the full writeup, including one honest non-bug finding
+(this demo pipeline often completes faster than the 1.5s poll interval,
+so the visible `queued`/`running` window can be very brief) and two
+pre-existing, out-of-scope stale UI copy strings noticed but
+deliberately left unfixed.
+
+**Safety/no-fabrication re-audited**: the full grep suite (identifiers,
+banned-phrase safety language, secret patterns) was re-run across
+`README.md`/`.env.example`/`frontend/`/`backend/app/`/`backend/alembic/`/
+`docs/`/`docker-compose.yml`. Every "guaranteed"/"travel-ready"/
+"production-ready"-shaped match is either a negation ("never claims..."),
+a test guardrail asserting the word's *absence* from real output, or (one
+instance, `docs/14_backend_architecture.md`'s existing "every failure
+path already guaranteed" line) a plain-English description of this
+codebase's own error-handling guarantee, not a claim about the itinerary
+-- left unchanged as unambiguous in context. Every `*_KEY=`/`gsk_`/`sk-`
+match is a docs placeholder, an explicit test-only fake token, or (one
+new-to-this-audit case) a Playwright test signup email string that
+happens to contain the substring `sk-`-adjacent characters purely by
+coincidence of a random suffix -- not a credential. Zero real secrets
+found anywhere. `git check-ignore -v` reconfirmed `.env`, `backend/.data/
+travelobligator_state.json`, and `backend/.data/provider_cache.sqlite3`
+all stay correctly gitignored.
+
+**Transparency note, matching this codebase's own established
+convention** (e.g. Step 183E's `docker compose config` incident): while
+inspecting a live backend process's environment for this step's own
+restart-recovery test, a `ps eww` command incidentally printed a
+locally-generated, random, throwaway `SESSION_SECRET_KEY` value to this
+session's own tool output -- never the real project `.env`'s secret,
+never written to any file, and of no value outside that one ephemeral
+verification process (which was killed and never reused). Recorded here
+for the same reason 183E's note exists: so the record is honest about
+exactly what happened, even though nothing sensitive was actually
+exposed by it.
+
+**Full suite**: 3269 passed + 18 skipped, unchanged from 186F.
+`compileall`/`tsc`/`lint`/`build` all clean. `git check-ignore` clean.
+**Section 186 (186A-186G) is verified ready to commit as a single
+stack.** Nothing committed by this step.

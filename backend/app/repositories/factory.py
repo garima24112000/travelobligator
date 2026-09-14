@@ -1,5 +1,6 @@
 """Repository factory (Step 183D, extended in Step 184C with
-`get_user_repository()`).
+`get_user_repository()` and Step 186F with a Postgres-backed
+`get_job_repository()`).
 
 `get_trip_repository()`/`get_planning_state_repository()` are the single
 place production code (routes, `PlanningOrchestrator`) should resolve a
@@ -36,10 +37,12 @@ from __future__ import annotations
 from functools import lru_cache
 
 from app.core.config import get_settings
+from app.repositories.job_repository import job_repository as _local_job_repository
 from app.repositories.planning_state_repository import (
     planning_state_repository as _local_planning_state_repository,
 )
 from app.repositories.protocols import (
+    GenerationJobRepositoryProtocol,
     PlanningStateRepositoryProtocol,
     TripRepositoryProtocol,
     UserRepositoryProtocol,
@@ -71,6 +74,13 @@ def _postgres_user_repository() -> UserRepositoryProtocol:
     return PostgresUserRepository()
 
 
+@lru_cache
+def _postgres_job_repository() -> GenerationJobRepositoryProtocol:
+    from app.repositories.postgres_job_repository import PostgresJobRepository
+
+    return PostgresJobRepository()
+
+
 def get_trip_repository() -> TripRepositoryProtocol:
     if get_settings().persistence_backend == "postgres":
         return _postgres_trip_repository()
@@ -87,3 +97,21 @@ def get_user_repository() -> UserRepositoryProtocol:
     if get_settings().persistence_backend == "postgres":
         return _postgres_user_repository()
     return _local_user_repository
+
+
+def get_job_repository() -> GenerationJobRepositoryProtocol:
+    """Async job foundation (Step 186B, wired to Postgres in Step 186F --
+    docs/14_backend_architecture.md sections 116-119).
+
+    Same per-call resolution as `get_trip_repository()`/
+    `get_planning_state_repository()`/`get_user_repository()` above:
+    `"local_json"` (the default) returns the existing module-level
+    `JobRepository` singleton unchanged; `PERSISTENCE_BACKEND=postgres`
+    lazily constructs and caches one `PostgresJobRepository` for the
+    process, first connecting only on the first call made while that
+    setting is active. `DATABASE_URL` alone never switches this -- only
+    an explicit `PERSISTENCE_BACKEND=postgres` does.
+    """
+    if get_settings().persistence_backend == "postgres":
+        return _postgres_job_repository()
+    return _local_job_repository

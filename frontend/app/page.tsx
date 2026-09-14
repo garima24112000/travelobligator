@@ -17,6 +17,8 @@ import {
   getRegenerationAttempts,
   getRegenerationReadiness,
   getTrip,
+  getTripJob,
+  getTripJobs,
   getTripSummary,
   getValidationReport,
   listTrips,
@@ -58,6 +60,7 @@ import type {
   ImplementationGaps,
   ItineraryNarrativeDayOutput,
   ItineraryNarrativeReport,
+  JobResponseData,
   PendingFeedbackSummary,
   PlanDiffPreview,
   ProviderCoverageData,
@@ -4043,6 +4046,11 @@ const REGENERATION_REASON_CODE_LABELS: Record<string, string> = {
   REGENERATION_BLOCKED_BY_LOCKS: "Blocked by active locks",
   REGENERATION_NO_PENDING_FEEDBACK: "No pending feedback",
   REGENERATION_APPLIED: "Regeneration applied",
+  // Step 186C/D: async job foundation error codes -- surfaced through the
+  // exact same generic ApiRequestError catch path every refusal above
+  // already uses, so no separate error-handling branch was needed here.
+  JOB_ALREADY_RUNNING: "Already in progress",
+  JOB_NOT_FOUND: "Job not found",
   UNKNOWN_ERROR: "Unknown error",
 };
 
@@ -4220,12 +4228,21 @@ function RegenerationReadinessSection({
   readiness,
   onRegenerationAttemptsChange,
   onRegenerateSuccess,
+  onAuthenticationRequired,
+  mode,
   compact = false,
 }: {
   tripId: string;
   readiness: RegenerationReadiness;
   onRegenerationAttemptsChange: (attempts: RegenerationAttempt[]) => void;
   onRegenerateSuccess: () => Promise<void>;
+  // Step 186D: called (instead of showing a generic error) when a
+  // request or job poll here comes back `AUTHENTICATION_REQUIRED` -- lets
+  // the top-level `Home` component clear its auth/trip state and show the
+  // login screen, exactly like every other trip action already does via
+  // its own `describeTripApiError`.
+  onAuthenticationRequired: () => void;
+  mode: "user" | "developer";
   // Step 182C: `compact` renders the same readiness state and the exact
   // same regenerate button/handler/success/error UI, but hides the
   // dl-grid diagnostic breakdown, required/available/missing-input lists,
@@ -4244,36 +4261,91 @@ function RegenerationReadinessSection({
   } | null>(null);
   const [regenerateSuccess, setRegenerateSuccess] =
     useState<RegenerateResponseData | null>(null);
+  // Step 186D: independent job-polling instance for this component
+  // instance only -- see `useJobPolling`'s own docstring for why that's
+  // the right scope (one active foreground job per mounted instance;
+  // unmounting this instance, e.g. via a mode toggle or logout hiding the
+  // whole result view, automatically stops any in-flight poll).
+  const { activeJob, jobPollingError, waitForJob, clearJob } = useJobPolling();
+
+  async function handleRegenerationRefusal(err: unknown) {
+    setRegenerateError(
+      err instanceof ApiRequestError
+        ? { code: err.code ?? "UNKNOWN_ERROR", message: err.message }
+        : {
+            code: "UNKNOWN_ERROR",
+            message: "Something went wrong while requesting regeneration.",
+          },
+    );
+    if (err instanceof ApiRequestError && err.code === "AUTHENTICATION_REQUIRED") {
+      onAuthenticationRequired();
+      return;
+    }
+    // Refusal only ever appends one audit attempt -- refresh just that
+    // list, never the rest of the plan, and never loadPlanResult. Skipped
+    // for JOB_ALREADY_RUNNING/JOB_NOT_FOUND, which never touch
+    // regeneration_attempts on the backend at all.
+    if (
+      err instanceof ApiRequestError &&
+      (err.code === "JOB_ALREADY_RUNNING" || err.code === "JOB_NOT_FOUND")
+    ) {
+      return;
+    }
+    try {
+      const attemptsData = await getRegenerationAttempts(tripId);
+      onRegenerationAttemptsChange(attemptsData.regeneration_attempts);
+    } catch {
+      // If refreshing the audit list itself fails, leave the previously
+      // displayed attempts as-is instead of clearing them.
+    }
+  }
 
   async function handleRegenerate() {
     setIsRegenerating(true);
     setRegenerateError(null);
     setRegenerateSuccess(null);
+    clearJob();
     try {
       const data = await requestRegeneration(tripId);
+
+      if (isStartJobResponseData(data)) {
+        // Async mode (Step 186C): a job was created, not applied yet --
+        // never show "applied" or touch the plan until it actually
+        // succeeds. Poll until it reaches a terminal status.
+        const finalJob = await waitForJob(tripId, data.job_id);
+        if (finalJob.status === "succeeded") {
+          // Full refresh so the itinerary, movement rows, route paths,
+          // version history, diff preview, and readiness all reflect the
+          // regenerated state together -- never just this section's own
+          // local state.
+          await onRegenerateSuccess();
+        } else {
+          await handleRegenerationRefusal(
+            new ApiRequestError(
+              finalJob.error_message ??
+                (finalJob.status === "cancelled"
+                  ? "Regeneration was cancelled."
+                  : "Regeneration failed unexpectedly."),
+              500,
+              finalJob.error_code,
+            ),
+          );
+        }
+        return;
+      }
+
       setRegenerateSuccess(data);
       // Full refresh so the itinerary, movement rows, route paths, version
       // history, diff preview, and readiness all reflect the regenerated
       // state together -- never just this section's own local state.
       await onRegenerateSuccess();
     } catch (err) {
-      setRegenerateError(
-        err instanceof ApiRequestError
-          ? { code: err.code ?? "UNKNOWN_ERROR", message: err.message }
-          : {
-              code: "UNKNOWN_ERROR",
-              message: "Something went wrong while requesting regeneration.",
-            },
-      );
-      // Refusal only ever appends one audit attempt -- refresh just that
-      // list, never the rest of the plan, and never loadPlanResult.
-      try {
-        const attemptsData = await getRegenerationAttempts(tripId);
-        onRegenerationAttemptsChange(attemptsData.regeneration_attempts);
-      } catch {
-        // If refreshing the audit list itself fails, leave the previously
-        // displayed attempts as-is instead of clearing them.
+      if (err instanceof JobPollingCancelledError) {
+        // Abandoned (unmount/logout) -- the whole view is going away or
+        // already gone; nothing to show.
+        return;
       }
+      await handleRegenerationRefusal(err);
     } finally {
       setIsRegenerating(false);
     }
@@ -4426,6 +4498,8 @@ function RegenerationReadinessSection({
             ? "Regeneration is blocked until feedback exists and no active locks are present."
             : "Regeneration is available only when feedback is pending and no active locks exist."}
         </p>
+
+        <JobStatusCard job={activeJob} pollingError={jobPollingError} mode={mode} />
 
         {regenerateSuccess && (
           <div className="mt-3 rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-3 text-sm">
@@ -5495,6 +5569,312 @@ function TravelGenerationLoading({
   );
 }
 
+// Step 186D: async job polling foundation. `POST /generate`/`.../regenerate`
+// return either their long-standing synchronous shape (200, the default,
+// `ASYNC_GENERATION_ENABLED=false`) or a `StartJobResponseData` job
+// envelope (202, only when the backend has async mode explicitly
+// enabled) -- see docs/14_backend_architecture.md section 117. This
+// structural check is how the frontend tells them apart; it never trusts
+// the HTTP status code alone (the shared `request()` helper in lib/api.ts
+// doesn't expose it), and it never mistakes a full `PlanningState`
+// response for a job (a `PlanningState`/summary object has no
+// `job_id`/`job_type` field at all).
+function isStartJobResponseData(data: unknown): data is JobResponseData {
+  if (typeof data !== "object" || data === null) return false;
+  const candidate = data as Record<string, unknown>;
+  return (
+    typeof candidate.job_id === "string" &&
+    (candidate.job_type === "generate" || candidate.job_type === "regenerate") &&
+    typeof candidate.status === "string"
+  );
+}
+
+function isTerminalJobStatus(status: JobResponseData["status"]): boolean {
+  return status === "succeeded" || status === "failed" || status === "cancelled";
+}
+
+// Step 186D: create/generate button copy, one phrase per real phase of
+// `handlePlanTrip` -- never a single generic "Planning..." any more, and
+// never implies the itinerary is ready before `loadPlanResult` actually
+// succeeds. "generating" only ever applies in async mode (the
+// synchronous default blocks through "starting_generation" instead,
+// since the whole call already completes before this component sees any
+// other phase).
+type GenerationPhase =
+  | "idle"
+  | "creating_trip"
+  | "starting_generation"
+  | "generating"
+  | "loading_itinerary";
+
+function generateButtonLabel(phase: GenerationPhase): string {
+  switch (phase) {
+    case "creating_trip":
+      return "Creating trip...";
+    case "starting_generation":
+      return "Starting generation...";
+    case "generating":
+      return "Generating itinerary...";
+    case "loading_itinerary":
+      return "Loading completed itinerary...";
+    default:
+      return "Create trip and generate plan";
+  }
+}
+
+// Raised by `useJobPolling`'s `waitForJob` when polling is stopped from
+// outside the in-flight wait (logout, unmount, a new job starting) --
+// callers should treat this as "abandoned," not a real failure, and
+// avoid showing an error banner for it.
+class JobPollingCancelledError extends Error {
+  constructor() {
+    super("Job polling was cancelled.");
+    this.name = "JobPollingCancelledError";
+  }
+}
+
+const JOB_POLL_INTERVAL_MS = 1500;
+
+/**
+ * Shared polling primitive for both the generate flow (`Home`) and the
+ * regenerate flow (`RegenerationReadinessSection`) -- each call site gets
+ * its own independent instance (one active foreground job per instance,
+ * matching Section 186D's MVP scope), with automatic cleanup on unmount.
+ *
+ * `waitForJob` polls `GET /trips/{tripId}/jobs/{jobId}` every
+ * `JOB_POLL_INTERVAL_MS` and resolves with the job the moment it reaches
+ * a terminal status (`succeeded`/`failed`/`cancelled`) -- it never
+ * fabricates progress or infers completion from anything but that real
+ * response. A transient network failure surfaces via `jobPollingError`
+ * (retryable, polling continues); `AUTHENTICATION_REQUIRED`/`FORBIDDEN`/
+ * `JOB_NOT_FOUND` stop polling and reject immediately so the caller's own
+ * existing error handling (which already knows how to show/clear auth
+ * state) can react.
+ */
+function useJobPolling() {
+  const [activeJob, setActiveJob] = useState<JobResponseData | null>(null);
+  const [jobPollingError, setJobPollingError] = useState<string | null>(null);
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const cancelRef = useRef<(() => void) | null>(null);
+
+  // Only ever stops the interval -- never settles the in-flight wait's
+  // promise. Deliberately separate from `cancel` below: `waitForJob`'s own
+  // success/definitive-failure paths must be able to stop the timer
+  // *after* they've already called `resolve`/`reject` themselves, without
+  // that also triggering the unrelated "abandoned" rejection `cancel`
+  // performs for external callers.
+  const stopTimer = useCallback(() => {
+    if (timerRef.current !== null) {
+      clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
+  }, []);
+
+  // External cancellation (unmount, logout, a new wait superseding this
+  // one) -- stops the timer AND rejects whatever wait is still pending,
+  // so the caller's own `await waitForJob(...)` doesn't hang forever.
+  const cancel = useCallback(() => {
+    stopTimer();
+    if (cancelRef.current !== null) {
+      const reject = cancelRef.current;
+      cancelRef.current = null;
+      reject();
+    }
+  }, [stopTimer]);
+
+  // Stop polling on unmount -- e.g. logout (which unmounts the whole
+  // trip-app shell) or a mode toggle unmounting one of the two
+  // RegenerationReadinessSection instances.
+  useEffect(() => cancel, [cancel]);
+
+  const waitForJob = useCallback(
+    (tripId: string, jobId: string): Promise<JobResponseData> => {
+      cancel(); // a new wait always supersedes any prior one on this instance
+      return new Promise<JobResponseData>((resolve, reject) => {
+        cancelRef.current = () => reject(new JobPollingCancelledError());
+        timerRef.current = setInterval(() => {
+          void getTripJob(tripId, jobId)
+            .then((job) => {
+              setJobPollingError(null);
+              setActiveJob(job);
+              if (isTerminalJobStatus(job.status)) {
+                stopTimer();
+                cancelRef.current = null; // resolving normally, not cancelling
+                resolve(job);
+              }
+            })
+            .catch((err: unknown) => {
+              if (
+                err instanceof ApiRequestError &&
+                (err.code === "AUTHENTICATION_REQUIRED" ||
+                  err.code === "FORBIDDEN" ||
+                  err.code === "JOB_NOT_FOUND")
+              ) {
+                stopTimer();
+                cancelRef.current = null; // rejecting directly below, not via cancel()
+                reject(err);
+                return;
+              }
+              // Transient failure (network blip, etc.) -- keep polling.
+              setJobPollingError(
+                "Having trouble checking job status — retrying…",
+              );
+            });
+        }, JOB_POLL_INTERVAL_MS);
+      });
+    },
+    [cancel, stopTimer],
+  );
+
+  const clearJob = useCallback(() => {
+    cancel();
+    setActiveJob(null);
+    setJobPollingError(null);
+  }, [cancel]);
+
+  // Step 186E: seeds `activeJob` with an already-known job (e.g. the
+  // newest job `GET /trips/{tripId}/jobs` returned when a trip was
+  // loaded) without starting a new wait -- used only to *display* a
+  // terminal job's status immediately. Resuming a still-queued/running
+  // job is `waitForJob` itself, called separately by the caller right
+  // after this.
+  const seedJob = useCallback((job: JobResponseData) => {
+    setActiveJob(job);
+  }, []);
+
+  return { activeJob, jobPollingError, waitForJob, clearJob, seedJob };
+}
+
+// Human-readable labels for a job's real `progress_stage` -- reuses the
+// exact same friendly copy the decorative loading animation already uses
+// for `GenerationProgress.current_stage` (`FRIENDLY_STAGE_LABEL_BY_BACKEND_KEY`
+// above), since both are drawn from the same real backend pipeline stage
+// vocabulary. Never invents a stage the backend didn't actually report.
+function friendlyJobStageLabel(stage: string | null): string | null {
+  if (stage === null) return null;
+  return FRIENDLY_STAGE_LABEL_BY_BACKEND_KEY[stage] ?? stage;
+}
+
+const JOB_STATUS_LABELS: Record<JobResponseData["status"], string> = {
+  queued: "Queued",
+  running: "Running",
+  succeeded: "Succeeded",
+  failed: "Failed",
+  cancelled: "Cancelled",
+};
+
+/**
+ * Compact job-status card (Step 186D) -- shown only when a real
+ * `GenerationJob` exists for the trip (async mode only; with the default
+ * synchronous behavior, `job` is always `null` and this renders nothing).
+ * Traveler view shows status/message/stage only; Developer view adds
+ * job_id/job_type/error_code/changed_sections/timestamps. Never shows a
+ * stack trace, a fabricated percent/ETA, or a claim that a succeeded job
+ * means the itinerary is travel-ready/final/guaranteed -- that judgment
+ * stays with the validation report, completely separate from this card.
+ */
+function JobStatusCard({
+  job,
+  pollingError,
+  mode,
+}: {
+  job: JobResponseData | null;
+  pollingError: string | null;
+  mode: "user" | "developer";
+}) {
+  if (job === null) return null;
+
+  const toneClassName =
+    job.status === "succeeded"
+      ? "border-emerald-400/30 bg-emerald-400/10 text-emerald-100"
+      : job.status === "failed"
+        ? "border-red-400/30 bg-red-400/10 text-red-100"
+        : job.status === "cancelled"
+          ? "border-amber-400/30 bg-amber-400/10 text-amber-100"
+          : "border-cyan-300/30 bg-cyan-300/10 text-cyan-50";
+
+  const stageLabel = friendlyJobStageLabel(job.progress_stage);
+
+  return (
+    <div className={`mt-4 rounded-2xl border p-4 text-sm ${toneClassName}`}>
+      <p className="font-semibold">
+        {job.job_type === "generate" ? "Generation" : "Regeneration"}:{" "}
+        {JOB_STATUS_LABELS[job.status]}
+      </p>
+      {stageLabel && !isTerminalJobStatus(job.status) && (
+        <p className="mt-1 text-xs opacity-90">{stageLabel}</p>
+      )}
+      {job.status === "failed" && (
+        <>
+          <p className="mt-1 break-words text-xs opacity-90">
+            {job.error_message ?? "The job failed unexpectedly."}
+          </p>
+          {/* Step 186E: a simple retry affordance -- reuses the
+              existing create/generate form and button below rather than
+              adding a new endpoint or a "retry this trip" action. A
+              failed regenerate job has no equivalent per-trip retry
+              button today (regeneration requires fresh feedback), so
+              this hint only applies to a failed initial generation. */}
+          {job.job_type === "generate" && (
+            <p className="mt-1 text-[11px] opacity-80">
+              You can start generation again using the form above.
+            </p>
+          )}
+        </>
+      )}
+      {job.status === "cancelled" && (
+        <p className="mt-1 text-xs opacity-90">
+          {job.message ?? "The job was cancelled."}
+        </p>
+      )}
+      {job.status === "succeeded" && job.changed_sections.length > 0 && (
+        <p className="mt-1 break-words text-xs opacity-90">
+          Changed: {job.changed_sections.join(", ")}
+        </p>
+      )}
+      {pollingError && (
+        <p className="mt-1 text-[11px] opacity-80">{pollingError}</p>
+      )}
+      {mode === "developer" && (
+        <dl className="mt-2 grid grid-cols-2 gap-2 text-[11px] opacity-90 sm:grid-cols-3">
+          <div>
+            <dt className="uppercase tracking-wide opacity-70">Job ID</dt>
+            <dd className="break-all">{job.job_id}</dd>
+          </div>
+          <div>
+            <dt className="uppercase tracking-wide opacity-70">Type</dt>
+            <dd>{job.job_type}</dd>
+          </div>
+          <div>
+            <dt className="uppercase tracking-wide opacity-70">Status</dt>
+            <dd>{job.status}</dd>
+          </div>
+          {job.error_code && (
+            <div>
+              <dt className="uppercase tracking-wide opacity-70">
+                Error code
+              </dt>
+              <dd className="break-all">{job.error_code}</dd>
+            </div>
+          )}
+          {job.result_version && (
+            <div>
+              <dt className="uppercase tracking-wide opacity-70">
+                Result version
+              </dt>
+              <dd>{job.result_version}</dd>
+            </div>
+          )}
+          <div>
+            <dt className="uppercase tracking-wide opacity-70">Created</dt>
+            <dd className="break-words">{job.created_at}</dd>
+          </div>
+        </dl>
+      )}
+    </div>
+  );
+}
+
 // Step 182C: User Mode / Developer Mode toggle persistence key.
 const VIEW_MODE_STORAGE_KEY = "travelobligator.viewMode";
 
@@ -5507,6 +5887,18 @@ export default function Home() {
   const [backendProgress, setBackendProgress] = useState<GenerationProgress | null>(
     null,
   );
+  // Step 186D: which phase of the create-trip-and-generate flow is
+  // currently in progress -- purely UI copy, never a claim of real
+  // backend stage progress (that stays `backendProgress`/`activeJob`
+  // below). "generating" only applies while an async job is queued/
+  // running; the synchronous default path never spends visible time
+  // there since the whole call blocks until it's already done.
+  const [generationPhase, setGenerationPhase] = useState<GenerationPhase>("idle");
+  // Step 186D: the one active foreground generate job for this session,
+  // if the backend has ASYNC_GENERATION_ENABLED=true and actually created
+  // one -- see `useJobPolling`'s own docstring. Always `null` with the
+  // default synchronous behavior.
+  const { activeJob, jobPollingError, waitForJob, clearJob, seedJob } = useJobPolling();
   const [existingTripId, setExistingTripId] = useState("");
   const [isLoadingExisting, setIsLoadingExisting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -5595,16 +5987,30 @@ export default function Home() {
   // a half-authenticated shell with a trip request that will never
   // succeed. A `FORBIDDEN` (wrong-user trip access) never reveals trip
   // details, just a plain access message.
+  // Step 186D: shared by both the top-level auth-required handling below
+  // and RegenerationReadinessSection's own `onAuthenticationRequired`
+  // prop -- a session that expired/was revoked while a regenerate job
+  // was being polled clears exactly the same state a direct 401 on this
+  // component would, rather than leaving a stale trip visible under a
+  // now-logged-out session.
+  function handleAuthenticationRequired() {
+    setCurrentUser(null);
+    setMyTrips([]);
+    setResult(null);
+    clearJob();
+  }
+
   function describeTripApiError(err: unknown, fallback: string): string {
     if (err instanceof ApiRequestError) {
       if (err.code === "AUTHENTICATION_REQUIRED") {
-        setCurrentUser(null);
-        setMyTrips([]);
-        setResult(null);
+        handleAuthenticationRequired();
         return "Your session has ended. Please log in again.";
       }
       if (err.code === "FORBIDDEN") {
         return "You do not have access to this trip.";
+      }
+      if (err.code === "JOB_ALREADY_RUNNING") {
+        return "A generation or regeneration job is already running for this trip. Please wait for it to finish.";
       }
       return err.message;
     }
@@ -5670,6 +6076,32 @@ export default function Home() {
     setAuthPassword("");
     setAuthConfirmPassword("");
     setAuthError(null);
+    // Step 186D: stop any in-flight generate-job polling and drop its
+    // state -- a logged-out session must never keep polling or later
+    // render a job that belonged to whoever was just signed in.
+    clearJob();
+    setGenerationPhase("idle");
+  }
+
+  // Step 186E: called by both `handleSelectMyTrip`/`handleLoadExistingTrip`
+  // right after `clearJob()`. Fetches `tripId`'s own jobs (owner-protected,
+  // like every other trip endpoint -- never another user's) and, if the
+  // newest one is still `queued`/`running`, resumes polling it instead of
+  // silently dropping it (Section 186D's original "no resumption" MVP
+  // scope, now closed). A `failed`/`cancelled`/`succeeded` newest job is
+  // still seeded into `activeJob` so its real status is visible, but never
+  // re-polled -- it already reached a terminal state. Always safe/cheap in
+  // sync mode too: `GET /trips/{tripId}/jobs` simply returns an empty list
+  // when nothing ever created a job, so `newestJob` stays `null` and this
+  // is a no-op.
+  async function resumeExistingJobIfAny(tripId: string): Promise<void> {
+    const jobsData = await getTripJobs(tripId);
+    if (jobsData.jobs.length === 0) return;
+    const newestJob = jobsData.jobs[jobsData.jobs.length - 1];
+    seedJob(newestJob);
+    if (newestJob.status === "queued" || newestJob.status === "running") {
+      await waitForJob(tripId, newestJob.job_id);
+    }
   }
 
   async function handleSelectMyTrip(tripId: string) {
@@ -5679,10 +6111,24 @@ export default function Home() {
     setError(null);
     setResult(null);
     resetFeedbackPanelState();
+    // Always drop whatever job state belonged to a previously loaded
+    // trip first -- `resumeExistingJobIfAny` below then seeds this
+    // trip's own job, if any, from scratch.
+    clearJob();
 
     try {
+      await resumeExistingJobIfAny(tripId);
+      // Attempted regardless of the resumed job's outcome: a failed/
+      // cancelled *regenerate* job never invalidates an already-existing
+      // successful plan, and a trip with no successful generation at all
+      // yields loadPlanResult's own honest "not been generated yet"
+      // error, shown via the catch block below exactly as before.
       setResult(await loadPlanResult(tripId));
     } catch (err) {
+      if (err instanceof JobPollingCancelledError) {
+        // Abandoned (unmount/logout) -- nothing to show.
+        return;
+      }
       setError(
         describeTripApiError(
           err,
@@ -5791,12 +6237,19 @@ export default function Home() {
     setError(null);
     setResult(null);
     setBackendProgress(null);
+    setGenerationPhase("creating_trip");
+    clearJob();
     resetFeedbackPanelState();
 
     // Real backend pipeline stage-progress polling (Step 163C). This is
     // additive to the decorative animation, never a replacement for
     // generation itself: exactly one POST /generate call still happens
-    // below, and loadPlanResult still runs exactly once at the end.
+    // below, and loadPlanResult still runs exactly once at the end. Kept
+    // running for the entire wait in async mode too (Step 186D) -- it's
+    // the same PlanningOrchestrator writing PlanningState.generation_progress
+    // either way, so this is still the real, gradual, stage-by-stage
+    // signal driving the plane animation; the job poll below only adds
+    // job identity/terminal-outcome/error detail on top of it.
     let pollTimer: ReturnType<typeof setInterval> | null = null;
     let pollingStopped = false;
 
@@ -5816,6 +6269,7 @@ export default function Home() {
         constraints: parseCommaList(constraintsText),
       };
       const { trip_id: tripId } = await createTrip(requestBody);
+      setGenerationPhase("starting_generation");
 
       // Poll while POST /generate (below) is in flight. A transient poll
       // failure never fails generation or surfaces an error -- it's
@@ -5833,8 +6287,30 @@ export default function Home() {
           });
       }, 700);
 
-      await generatePlan(tripId);
+      const response = await generatePlan(tripId);
+
+      if (isStartJobResponseData(response)) {
+        // Async mode (Step 186C): a job was created, not completed --
+        // never treat "request accepted" as "itinerary ready." Poll the
+        // job until it reaches a terminal status, alongside the
+        // generation-progress poll already running above for real,
+        // gradual stage labels.
+        setGenerationPhase("generating");
+        const finalJob = await waitForJob(tripId, response.job_id);
+        if (finalJob.status !== "succeeded") {
+          throw new ApiRequestError(
+            finalJob.error_message ??
+              (finalJob.status === "cancelled"
+                ? "Trip plan generation was cancelled."
+                : "Trip plan generation failed unexpectedly."),
+            500,
+            finalJob.error_code,
+          );
+        }
+      }
+
       stopPolling();
+      setGenerationPhase("loading_itinerary");
 
       // Briefly show the completed/100% backend state before switching to
       // the rendered result.
@@ -5848,7 +6324,13 @@ export default function Home() {
 
       setResult(await loadPlanResult(tripId));
       void refreshMyTrips();
+      clearJob();
     } catch (err) {
+      if (err instanceof JobPollingCancelledError) {
+        // Abandoned (unmount/logout) -- nothing to show, state is already
+        // being cleared by whatever triggered the cancellation.
+        return;
+      }
       setError(
         describeTripApiError(
           err,
@@ -5859,6 +6341,7 @@ export default function Home() {
       stopPolling();
       setIsLoading(false);
       setBackendProgress(null);
+      setGenerationPhase("idle");
     }
   }
 
@@ -5873,10 +6356,17 @@ export default function Home() {
     setError(null);
     setResult(null);
     resetFeedbackPanelState();
+    // See handleSelectMyTrip's identical comments -- same resume
+    // behavior for the "load a trip by ID" power-user fallback.
+    clearJob();
 
     try {
+      await resumeExistingJobIfAny(tripId);
       setResult(await loadPlanResult(tripId));
     } catch (err) {
+      if (err instanceof JobPollingCancelledError) {
+        return;
+      }
       setError(
         describeTripApiError(
           err,
@@ -6672,7 +7162,7 @@ PY`}
             disabled={isLoading || isLoadingExisting}
             className="col-span-full mt-2 rounded-lg bg-cyan-400 px-4 py-2 font-semibold text-slate-950 transition focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-200 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950 disabled:cursor-not-allowed disabled:opacity-50"
           >
-            {isLoading ? "Planning..." : "Create trip and generate plan"}
+            {generateButtonLabel(generationPhase)}
           </button>
         </form>
 
@@ -6721,8 +7211,21 @@ PY`}
           stageLabel={backendProgress?.current_stage_label ?? undefined}
           progressMessage={backendProgress?.message}
           isRealBackendStageProgress={backendProgress?.is_real_backend_stage_progress}
-          isCompleted={backendProgress?.status === "completed"}
+          // Step 186E: belt-and-suspenders guard alongside the existing
+          // `backendProgress?.status === "completed"` check (which
+          // already never reports "completed" for a run the backend
+          // itself marked failed -- see PlanningOrchestrator._fail_
+          // generation_progress) -- the plane must never show its
+          // "landed" state while the real async job it's tracking is
+          // failed/interrupted/cancelled.
+          isCompleted={
+            backendProgress?.status === "completed" &&
+            activeJob?.status !== "failed" &&
+            activeJob?.status !== "cancelled"
+          }
         />
+
+        <JobStatusCard job={activeJob} pollingError={jobPollingError} mode={mode} />
 
         {error && (
           <div className="mt-6 break-words rounded-2xl border border-red-400/30 bg-red-400/10 p-5 text-sm text-red-100">
@@ -6859,6 +7362,8 @@ PY`}
                   tripId={result.summary.trip_id}
                   readiness={result.regenerationReadiness}
                   compact={false}
+                  mode="developer"
+                  onAuthenticationRequired={handleAuthenticationRequired}
                   onRegenerationAttemptsChange={(regenerationAttempts) =>
                     setResult((previous) =>
                       previous ? { ...previous, regenerationAttempts } : previous,
@@ -7060,6 +7565,8 @@ PY`}
                     tripId={result.summary.trip_id}
                     readiness={result.regenerationReadiness}
                     compact={true}
+                    mode="user"
+                    onAuthenticationRequired={handleAuthenticationRequired}
                     onRegenerationAttemptsChange={(regenerationAttempts) =>
                       setResult((previous) =>
                         previous ? { ...previous, regenerationAttempts } : previous,

@@ -3,8 +3,8 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
-import app.api.routes.trips as trips_module
 import app.services.itinerary_narrative_service as narrative_service_module
+import app.services.regeneration_mutation_service as regeneration_mutation_service_module
 from app.core.config import Settings
 from app.models.itinerary_narrative import (
     ItineraryNarrativeDayOutput,
@@ -54,7 +54,14 @@ def _enable_narrator_with_provider(monkeypatch: pytest.MonkeyPatch, provider) ->
     )
     fake_service = ItineraryNarrativeService(provider=provider)
     monkeypatch.setattr(planning_orchestrator, "itinerary_narrative_service", fake_service)
-    monkeypatch.setattr(trips_module, "itinerary_narrative_service", fake_service)
+    # Step 186C: the regeneration path's own itinerary-narrator refresh
+    # call was relocated from app.api.routes.trips into
+    # app.services.regeneration_mutation_service.apply_regeneration_
+    # mutation (unchanged logic, just moved so the async job runner can
+    # share it) -- patch the module that actually calls it now.
+    monkeypatch.setattr(
+        regeneration_mutation_service_module, "itinerary_narrative_service", fake_service
+    )
 
 
 def test_generation_succeeds_when_narrator_disabled_by_default(

@@ -103,3 +103,25 @@ def test_postgres_api_smoke_test_skips_by_default() -> None:
     result = _run_pytest_with_clean_env("app/tests/api/test_postgres_api_smoke.py")
     assert result.returncode == 0, result.stdout + result.stderr
     assert "1 skipped" in result.stdout
+
+
+def test_postgres_job_repository_integration_tests_skip_by_default() -> None:
+    """Step 186F: the gated Postgres job-repository tests must never run
+    against a real database as part of the default suite either."""
+    result = _run_pytest_with_clean_env(
+        "app/tests/repositories/test_postgres_job_repository_integration.py"
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "skipped" in result.stdout
+    assert "passed" not in result.stdout
+
+
+def test_postgres_async_job_api_integration_tests_skip_by_default() -> None:
+    """Step 186F: the gated Postgres async-job API tests must never run
+    against a real database as part of the default suite either."""
+    result = _run_pytest_with_clean_env(
+        "app/tests/api/test_postgres_async_job_api_integration.py"
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "skipped" in result.stdout
+    assert "passed" not in result.stdout

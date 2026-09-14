@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, BackgroundTasks, Depends, status
+from fastapi.responses import JSONResponse
 
 from app.auth.dependencies import get_current_user
 from app.auth.ownership import require_trip_owner
@@ -13,6 +13,7 @@ from app.core.errors import (
     REGENERATION_NO_PENDING_FEEDBACK_MESSAGE,
     REGENERATION_NOT_AVAILABLE_MESSAGE,
     AppError,
+    job_not_found_error,
     lock_not_found_error,
     regeneration_blocked_by_locks_error,
     regeneration_no_pending_feedback_error,
@@ -21,7 +22,7 @@ from app.core.errors import (
 )
 from app.core.response import success_response
 from app.models.common import ReadinessStatus
-from app.models.itinerary_narrative import ItineraryNarrativeStatus
+from app.models.generation_job import GenerationJob
 from app.models.planning_state import GenerationProgress, TripRequest
 from app.models.user import PublicUser
 from app.repositories.factory import get_planning_state_repository, get_trip_repository
@@ -32,6 +33,7 @@ from app.schemas.candidate_quality import CandidateQualityResponseData
 from app.schemas.destination_context import DestinationContextResponseData
 from app.schemas.errors import ErrorCode
 from app.schemas.experience_plan import ExperiencePlanResponseData
+from app.schemas.generation_job import JobListResponseData, JobResponseData, StartJobResponseData
 from app.schemas.generation_progress import GenerationProgressResponseData
 from app.schemas.langgraph_shadow_run import LangGraphShadowRunResponseData
 from app.schemas.provider_coverage import ProviderCoverageResponseData
@@ -48,23 +50,39 @@ from app.schemas.trips import (
     TripResponseData,
 )
 from app.schemas.validation_report import ValidationReportResponseData
+from app.services import generation_job_service
 from app.services.ai_candidate_promotion_service import ai_candidate_promotion_service
 from app.services.ai_candidate_review_service import ai_candidate_review_service
-from app.services.feedback_service import (
-    derive_pending_affected_stages,
-    feedback_service,
-    pending_feedback_events,
-)
-from app.services.itinerary_narrative_service import itinerary_narrative_service
+from app.services.feedback_service import derive_pending_affected_stages, pending_feedback_events
 from app.services.langgraph_planning_service import LangGraphPlanningService
 from app.services.plan_diff_preview_service import plan_diff_preview_service
 from app.services.planning_orchestrator import planning_orchestrator
 from app.services.regeneration_attempt_service import regeneration_attempt_service
+from app.services.regeneration_mutation_service import (
+    RegenerationMutationError,
+    apply_regeneration_mutation,
+)
 from app.services.regeneration_readiness_service import regeneration_readiness_service
 from app.services.user_lock_service import user_lock_service
-from app.services.versioning_service import versioning_service
 
 logger = logging.getLogger(__name__)
+
+
+def _job_started_response(job: GenerationJob) -> JSONResponse:
+    """Builds the `202 Accepted` job envelope both async `/generate` and
+    `/regenerate` return. A raw `JSONResponse` is used deliberately --
+    returning a `Response` subclass directly bypasses FastAPI's
+    `response_model` validation for this one call, so the same route can
+    keep declaring its default (`ASYNC_GENERATION_ENABLED=false`)
+    synchronous response shape for documentation purposes without that
+    declaration ever being (mis)applied to this differently-shaped async
+    payload.
+    """
+    data = StartJobResponseData.from_job(job)
+    envelope = success_response(data)
+    return JSONResponse(
+        content=envelope.model_dump(mode="json"), status_code=status.HTTP_202_ACCEPTED
+    )
 
 router = APIRouter(prefix="/trips", tags=["trips"])
 
@@ -142,16 +160,38 @@ def get_trip(
     response_model=ApiResponse[TripResponseData],
 )
 def generate_trip_plan(
-    trip_id: str, current_user: PublicUser = Depends(require_trip_owner)
-) -> ApiResponse[TripResponseData]:
-    # Step 171D: config-gated engine selection; Step 171E made "langgraph"
-    # the default once it reached stage parity with the legacy path (see
-    # PlanningOrchestrator.generate_full_plan_via_langgraph's docstring).
-    # An explicit "legacy", or any unrecognized value, always calls
-    # generate_full_plan instead -- the original hand-written orchestrator
-    # loop, completely unmodified by this branch. Either way, this route
-    # only ever reaches a method already owned by the planning_orchestrator
-    # singleton, never the underlying planning service directly.
+    trip_id: str,
+    background_tasks: BackgroundTasks,
+    current_user: PublicUser = Depends(require_trip_owner),
+):
+    """Step 171D: config-gated engine selection; Step 171E made "langgraph"
+    the default once it reached stage parity with the legacy path (see
+    PlanningOrchestrator.generate_full_plan_via_langgraph's docstring).
+    An explicit "legacy", or any unrecognized value, always calls
+    generate_full_plan instead -- the original hand-written orchestrator
+    loop, completely unmodified by this branch. Either way, this route
+    only ever reaches a method already owned by the planning_orchestrator
+    singleton, never the underlying planning service directly.
+
+    Step 186C: when `Settings.async_generation_enabled` is `True` (default
+    `False` -- the branch below is never reached otherwise), this instead
+    creates a queued `GenerationJob` and returns `202 Accepted` with a job
+    envelope (`StartJobResponseData`) -- the full `PlanningState` is not
+    returned by this call in that mode, and no itinerary should be shown
+    until the job succeeds (poll `GET /trips/{trip_id}/jobs/{job_id}`, or
+    the pre-existing `GET /trips/{trip_id}/generation-progress` for
+    stage-level detail; frontend wiring for either is Step 186D's job, not
+    this one). A queued/running job already existing for this trip is
+    rejected with `JOB_ALREADY_RUNNING` (409) rather than starting a
+    second one. The default, synchronous behavior below is completely
+    unchanged either way.
+    """
+    if get_settings().async_generation_enabled:
+        job = generation_job_service.start_generate_job(
+            trip_id=trip_id, owner_id=current_user.user_id, background_tasks=background_tasks
+        )
+        return _job_started_response(job)
+
     if get_settings().planning_engine_mode == "langgraph":
         planning_state = planning_orchestrator.generate_full_plan_via_langgraph(trip_id)
     else:
@@ -182,9 +222,10 @@ def submit_trip_feedback(
 )
 def regenerate_trip_plan(
     trip_id: str,
+    background_tasks: BackgroundTasks,
     regenerate_request: RegenerateRequest | None = None,
     current_user: PublicUser = Depends(require_trip_owner),
-) -> ApiResponse[RegenerateResponseData]:
+):
     """Feedback-driven regeneration (Step 138 hard refusal; Step 174B added
     the real request contract and guardrails; Step 174C added the one
     real mutation path for Section 174's audited MVP scope; Step 174D
@@ -203,7 +244,8 @@ def regenerate_trip_plan(
     An event a previous successful regeneration already applied is never
     reconsidered.
 
-    Five outcomes, in order:
+    Five outcomes, in order -- outcomes 1-4 are always synchronous,
+    regardless of `Settings.async_generation_enabled`:
 
     1. `confirm` missing or `false` -- original blanket refusal.
     2. `confirm=true` with at least one active lock -- distinct
@@ -220,19 +262,30 @@ def regenerate_trip_plan(
        `REGENERATION_NOT_AVAILABLE` refusal rather than rerunning nothing
        or regenerating a trip that was never generated.
     5. `confirm=true`, pending feedback exists, zero active locks, and at
-       least one real affected stage -- Section 174's MVP scope. Reruns
-       exactly those stages via the existing, unmodified
-       `PlanningOrchestrator.rerun_affected_stages` (never
-       `LangGraphPlanningService`, never a fresh `generate_full_plan`),
-       records a new `VersionHistoryItem`
-       (`VersioningService.create_version_after_feedback`), marks exactly
-       the pending feedback events used as applied (`applied_at`/
-       `applied_in_version`/`handling_status="applied"`), recomputes
-       `pending_feedback_summary`/`plan_diff_preview`/
-       `regeneration_readiness`, and returns `200` with a minimal
-       `RegenerateResponseData`. If the rerun itself raises unexpectedly,
-       no version is created, no feedback is marked applied, and a
-       `status="failed"` audit attempt is recorded instead of a `200`.
+       least one real affected stage -- Section 174's MVP scope.
+
+       With `Settings.async_generation_enabled=False` (the default):
+       reruns exactly those stages synchronously via
+       `app.services.regeneration_mutation_service.apply_regeneration_
+       mutation` (unchanged from Step 174C/174D, just relocated out of
+       this function in Step 186C so the async path below can reuse it),
+       records a new `VersionHistoryItem`, marks exactly the pending
+       feedback events used as applied, recomputes `pending_feedback_
+       summary`/`plan_diff_preview`/`regeneration_readiness`, and returns
+       `200` with a minimal `RegenerateResponseData`. If the rerun itself
+       raises unexpectedly, no version is created, no feedback is marked
+       applied, and a `status="failed"` audit attempt is recorded instead
+       of a `200`.
+
+       With `Settings.async_generation_enabled=True` (Step 186C): a
+       queued/running job already existing for this trip is rejected with
+       `JOB_ALREADY_RUNNING` (409); otherwise a queued `GenerationJob` is
+       created and `202 Accepted` is returned immediately with a job
+       envelope -- the actual mutation above runs in the background via
+       `app.services.generation_job_service.run_regenerate_job`, which
+       calls the exact same `apply_regeneration_mutation` helper and
+       preserves the exact same failed-attempt/no-fake-version/no-feedback-
+       marked-applied behavior on failure.
 
     Every outcome appends exactly one `RegenerationAttempt` with a
     `reason_code`/`status` matching what actually happened, so the audit
@@ -285,14 +338,21 @@ def regenerate_trip_plan(
         get_planning_state_repository().save(planning_state)
         raise regeneration_not_available_error()
 
-    previous_version = planning_state.metadata.current_version
     applied_feedback_event_ids = [event.feedback_event_id for event in pending_events]
 
-    try:
-        planning_state = planning_orchestrator.rerun_affected_stages(
-            planning_state, affected_stages
+    if get_settings().async_generation_enabled:
+        job = generation_job_service.start_regenerate_job(
+            trip_id=trip_id,
+            owner_id=current_user.user_id,
+            affected_stages=affected_stages,
+            applied_feedback_event_ids=applied_feedback_event_ids,
+            background_tasks=background_tasks,
         )
-    except Exception:
+        return _job_started_response(job)
+
+    try:
+        result = apply_regeneration_mutation(planning_state, affected_stages, pending_events)
+    except RegenerationMutationError as exc:
         logger.warning(
             "PlanningOrchestrator.rerun_affected_stages failed unexpectedly during "
             "POST /trips/%s/regenerate; recording a failed attempt instead of "
@@ -301,89 +361,28 @@ def regenerate_trip_plan(
             exc_info=True,
         )
         planning_state = regeneration_attempt_service.record_blocked_attempt(
-            planning_state,
+            exc.planning_state,
             message=REGENERATION_NOT_AVAILABLE_MESSAGE,
             status="failed",
         )
         get_planning_state_repository().save(planning_state)
         raise regeneration_not_available_error()
 
-    changed_sections = [stage.value for stage in affected_stages]
-
-    # Step 182F: refresh the optional, read-only LLM narrator after the
-    # real affected-stage rerun above -- ItineraryNarrativeService.generate
-    # never raises, so a disabled or failing narrator never blocks
-    # regeneration. Only reported in changed_sections when it actually
-    # produced a new narrative (status == success); a disabled/
-    # not_connected/failed refresh changes no other field, so it isn't
-    # reported as a changed section either.
-    planning_state = itinerary_narrative_service.generate(planning_state)
-    if (
-        planning_state.itinerary_narrative_report is not None
-        and planning_state.itinerary_narrative_report.status == ItineraryNarrativeStatus.SUCCESS
-    ):
-        changed_sections.append("itinerary_narrative")
-
-    # Locks are disallowed entirely for this MVP scope (guarded above), so
-    # there is never a locked item for this regeneration to have preserved.
-    preserved_sections: list[str] = []
-
-    planning_state = versioning_service.create_version_after_feedback(
-        planning_state,
-        # VersionHistoryItem.feedback_event_id is a single reference field;
-        # the most recent pending event is recorded there as the one that
-        # most directly triggered this regeneration, while every pending
-        # event's id is still reported in the response's
-        # applied_feedback_event_ids (all of them were considered, since
-        # this MVP scope has no per-event partial selection).
-        feedback_event_id=applied_feedback_event_ids[-1],
-        changed_sections=changed_sections,
-        preserved_sections=preserved_sections,
-        summary=(
-            "Plan regenerated from pending feedback. Rerun stages: "
-            f"{', '.join(changed_sections)}."
-        ),
-    )
-
-    # Step 174D: mark exactly the feedback events used in this run as
-    # applied, using the version just created -- re-looked-up by id on the
-    # `planning_state` returned by the calls above rather than relying on
-    # object identity surviving `rerun_affected_stages`/
-    # `create_version_after_feedback`. This is the only place
-    # `FeedbackEvent.applied_at`/`applied_in_version` are ever set; a
-    # blocked or failed attempt never reaches here, so those fields stay
-    # `None` on every event any refusal path touched.
-    new_version_label = planning_state.metadata.current_version
-    applied_at = datetime.now(timezone.utc)
-    applied_event_id_set = set(applied_feedback_event_ids)
-    for event in planning_state.feedback_history:
-        if event.feedback_event_id in applied_event_id_set:
-            event.applied_at = applied_at
-            event.applied_in_version = new_version_label
-            event.handling_status = "applied"
-
-    # Recomputed from scratch, in this order, so each reflects the
-    # just-created version and the feedback just marked applied -- same
-    # recompute-from-scratch pattern every other write path in this
-    # router already follows.
-    planning_state = feedback_service.recompute_pending_feedback_summary(planning_state)
-    planning_state = plan_diff_preview_service.recompute(planning_state)
-    planning_state = regeneration_readiness_service.recompute(planning_state)
-    planning_state = regeneration_attempt_service.record_applied_attempt(planning_state)
-    get_planning_state_repository().save(planning_state)
+    final_state = regeneration_attempt_service.record_applied_attempt(result.planning_state)
+    get_planning_state_repository().save(final_state)
 
     data = RegenerateResponseData(
         trip_id=trip_id,
         status="applied",
-        previous_version=previous_version,
-        current_version=new_version_label,
-        changed_sections=changed_sections,
-        preserved_sections=preserved_sections,
-        applied_feedback_event_ids=applied_feedback_event_ids,
+        previous_version=result.previous_version,
+        current_version=result.new_version_label,
+        changed_sections=result.changed_sections,
+        preserved_sections=result.preserved_sections,
+        applied_feedback_event_ids=result.applied_feedback_event_ids,
         active_lock_count=active_lock_count,
         message=(
             "Regeneration applied. Rerun stages: "
-            f"{', '.join(changed_sections)}."
+            f"{', '.join(result.changed_sections)}."
         ),
     )
     return success_response(data)
@@ -863,4 +862,60 @@ def run_langgraph_shadow(
         warnings=result.warnings,
         persisted=False,
     )
+    return success_response(data)
+
+
+@router.get(
+    "/{trip_id}/jobs",
+    response_model=ApiResponse[JobListResponseData],
+)
+def list_trip_jobs(
+    trip_id: str, current_user: PublicUser = Depends(require_trip_owner)
+) -> ApiResponse[JobListResponseData]:
+    """Async job foundation (Step 186C, docs/14_backend_architecture.md
+    section 117). Read-only: returns every `GenerationJob` ever created
+    for `trip_id`, oldest first (matching `JobRepository.list_by_trip_id`'s
+    own documented ordering) -- never another trip's jobs, and this
+    endpoint itself never creates, mutates, or cancels a job. Jobs only
+    exist at all once `POST /trips/{trip_id}/generate`/`.../regenerate`
+    has actually created one, which only happens when
+    `Settings.async_generation_enabled=True` -- with the default `False`,
+    this always returns an empty list.
+    """
+    planning_state = get_planning_state_repository().get_by_trip_id(trip_id)
+    if planning_state is None:
+        raise trip_not_found_error(trip_id)
+
+    jobs = generation_job_service.list_jobs(trip_id)
+    data = JobListResponseData(
+        trip_id=trip_id, jobs=[JobResponseData.from_job(job) for job in jobs]
+    )
+    return success_response(data)
+
+
+@router.get(
+    "/{trip_id}/jobs/{job_id}",
+    response_model=ApiResponse[JobResponseData],
+)
+def get_trip_job(
+    trip_id: str, job_id: str, current_user: PublicUser = Depends(require_trip_owner)
+) -> ApiResponse[JobResponseData]:
+    """Async job foundation (Step 186C). Read-only: returns one
+    `GenerationJob`'s current status -- `queued`/`running`/`succeeded`/
+    `failed`/`cancelled`, plus `progress_stage`/`error_code`/
+    `error_message`/`result_version`/`changed_sections` as applicable. A
+    `job_id` that exists but belongs to a *different* trip is reported as
+    `JOB_NOT_FOUND` (404), identically to a `job_id` that doesn't exist at
+    all -- this never leaks that the job exists under some other trip.
+    Never mutates or re-triggers anything itself.
+    """
+    planning_state = get_planning_state_repository().get_by_trip_id(trip_id)
+    if planning_state is None:
+        raise trip_not_found_error(trip_id)
+
+    job = generation_job_service.get_job(trip_id, job_id)
+    if job is None:
+        raise job_not_found_error(job_id)
+
+    data = JobResponseData.from_job(job)
     return success_response(data)
