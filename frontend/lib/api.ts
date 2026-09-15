@@ -35,6 +35,16 @@ export class ApiRequestError extends Error {
     // distinguish refusal reasons (not just show a message) read this
     // instead of parsing the message text.
     public code: string | null = null,
+    // Step 187G: the backend's own `metadata.request_id` for this failed
+    // call (falling back to the `X-Request-Id` response header if the body
+    // was unreadable), or null when neither was available -- e.g. a
+    // network-level failure with no response at all, or a call site that
+    // constructs this error itself from job-poll state rather than a raw
+    // fetch response. A correlation label only, safe to show in the UI
+    // ("Request ID: req_...") to help match up a Developer Mode diagnostic
+    // entry with the matching backend structured log line -- never a
+    // session token, never proof of identity.
+    public requestId: string | null = null,
   ) {
     super(message);
     this.name = "ApiRequestError";
@@ -66,7 +76,20 @@ async function request<T>(
   ) {
     const message =
       body.errors[0]?.message ?? body.message ?? "The request failed.";
-    throw new ApiRequestError(message, response.status, body.errors[0]?.code ?? null);
+    // Step 187G: prefer the body's own `metadata.request_id` (always
+    // present on a real backend response) and fall back to the
+    // `X-Request-Id` response header (readable cross-origin only because
+    // `app.main` now exposes it via CORS `expose_headers`) -- covers the
+    // rare case of a response body that parsed but happened to omit
+    // metadata (e.g. a hand-built test fixture).
+    const requestId =
+      body.metadata?.request_id ?? response.headers.get("X-Request-Id");
+    throw new ApiRequestError(
+      message,
+      response.status,
+      body.errors[0]?.code ?? null,
+      requestId,
+    );
   }
 
   return body.data as T;

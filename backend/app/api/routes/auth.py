@@ -9,6 +9,8 @@ anywhere in this router.
 
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, Depends, Response, status
 
 from app.auth.dependencies import get_current_user
@@ -19,6 +21,8 @@ from app.core.errors import auth_not_configured_error
 from app.core.response import success_response
 from app.models.user import AuthResponse, LoginRequest, PublicUser, SignupRequest
 from app.schemas.api_responses import ApiResponse
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -68,6 +72,16 @@ def logout_route(response: Response) -> ApiResponse[None]:
     # plain expired Set-Cookie header, nothing is signed/verified here --
     # so logout always works, even if auth is otherwise unconfigured.
     clear_session_cookie(response, get_settings())
+    # Step 187E: deliberately no `user_id` here -- this route takes no
+    # `Depends(get_current_user)` by design (see the comment above: logout
+    # must always succeed even with an invalid/expired/absent cookie or an
+    # unconfigured secret), so there is no already-verified identity to
+    # attach without adding a session-verification step this route has
+    # never had and must not gain now.
+    logger.info(
+        "Logout succeeded.",
+        extra={"auth_event": "logout", "status": "succeeded"},
+    )
     return success_response(None, message="Logged out.")
 
 

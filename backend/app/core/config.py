@@ -40,6 +40,12 @@ _ALLOWED_HOTEL_RATINGS_MANUAL_HTML_SOURCES = frozenset(
 # repository swap has a config surface to gate on.
 _ALLOWED_PERSISTENCE_BACKENDS = frozenset({"local_json", "postgres"})
 
+# Step 187B: allowed values for the structured-logging foundation's log
+# level. An unrecognized value normalizes to "INFO" rather than raising
+# or crashing -- same convention as every other constrained-value field
+# in this file.
+_ALLOWED_LOG_LEVELS = frozenset({"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"})
+
 # Step 184B: allowed values for the session cookie's SameSite attribute.
 # An unrecognized value clamps to "lax" (a safe, standard default) rather
 # than raising -- same convention as every other constrained-value field
@@ -919,6 +925,28 @@ class Settings(BaseSettings):
     session_cookie_samesite: str = Field(default="lax", alias="SESSION_COOKIE_SAMESITE")
     session_cookie_httponly: bool = Field(default=True, alias="SESSION_COOKIE_HTTPONLY")
 
+    # Structured logging foundation (Step 187B, docs/14_backend_architecture.md
+    # section 121, following Step 187A's read-only audit). Stdlib-only --
+    # no OpenTelemetry/Elastic APM/Sentry/Datadog/structlog dependency
+    # exists in this codebase, and neither of these two fields adds one.
+    # `log_level` controls the dedicated `"app"` logger's effective level
+    # (see `app/core/logging_config.py`) -- an unrecognized value
+    # normalizes to `"INFO"` rather than raising, matching every other
+    # constrained-value field's fallback convention in this file (e.g.
+    # `persistence_backend` above).
+    log_level: str = Field(default="INFO", alias="LOG_LEVEL")
+
+    # `True` (default) renders every existing `logger.*` call as one JSON
+    # object per stdout line via `JsonFormatter`; `False` falls back to a
+    # plain, single-line, human-readable formatter instead. Neither value
+    # changes what is logged (no new logging call site exists yet), adds
+    # a request-scoped correlation id (Step 187C's job), or ships a log
+    # line anywhere outside this process's own stdout -- no log
+    # aggregator/APM/network destination is configured by this field.
+    structured_logging_enabled: bool = Field(
+        default=True, alias="STRUCTURED_LOGGING_ENABLED"
+    )
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
@@ -957,6 +985,12 @@ class Settings(BaseSettings):
     def _normalize_session_cookie_samesite(cls, value: str) -> str:
         lowered = value.strip().lower()
         return lowered if lowered in _ALLOWED_SESSION_COOKIE_SAMESITE_VALUES else "lax"
+
+    @field_validator("log_level", mode="after")
+    @classmethod
+    def _normalize_log_level(cls, value: str) -> str:
+        normalized = value.strip().upper() if value else "INFO"
+        return normalized if normalized in _ALLOWED_LOG_LEVELS else "INFO"
 
     def resolved_local_storage_path(self) -> Path:
         """Local development storage path, not a production database.

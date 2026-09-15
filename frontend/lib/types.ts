@@ -9,11 +9,26 @@ export type ApiError = {
   message: string;
 };
 
+// Step 187G: mirrors backend `app.schemas.api_responses.ResponseMetadata`
+// exactly -- only the fields that model actually declares. `request_id`
+// (Step 187C) is a correlation label only, safe to show in the UI for
+// debugging ("Request ID: req_..."); it is never a session token, never
+// proof of identity, and carries no user/trip/request-body data. Every
+// real backend response includes this object; declared optional on
+// `ApiResponse` below only so a hand-built object without it (a test
+// fixture, say) still type-checks -- not because a real response omits it.
+export type ResponseMetadata = {
+  request_id: string;
+  timestamp: string;
+  environment: string;
+};
+
 export type ApiResponse<T> = {
   success: boolean;
   data: T | null;
   message: string | null;
   errors: ApiError[];
+  metadata?: ResponseMetadata;
 };
 
 // Auth types (Step 184E; backend: app.models.user.PublicUser/AuthResponse).

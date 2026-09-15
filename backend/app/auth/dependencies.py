@@ -5,14 +5,26 @@ Step 184C now that a user repository exists).
 `user_id` string; `get_current_user` goes one step further and loads the
 full `PublicUser` record via `app/auth/service.py`.
 
-Not applied to `app/api/routes/trips.py` in this step -- every `/trips/*`
-route keeps its current zero-authentication behavior exactly as before.
-Wiring this dependency (plus a per-trip owner check) into those routes is
-Step 184D's job. `app/api/routes/auth.py`'s `GET /auth/me` is the first
-and only route that uses `get_current_user` as of this step.
+Used by every `/trips/*` route (via `app.auth.ownership.require_trip_owner`,
+Step 184D) as well as `GET /auth/me` -- a tampered/expired/invalid
+session is exactly as observable regardless of which route triggered
+the check.
+
+Step 187E (docs/14_backend_architecture.md section 124), noise-level
+decision: a *missing* cookie is never logged here -- it is the normal,
+extremely common "not logged in yet" state hit on every unauthenticated
+page load (most obviously `GET /auth/me`, called once on every fresh
+page load to check session status), and logging it would make that
+completely ordinary case noisy for no operational benefit.
+`app.auth.sessions.verify_session_token` already logs a real, distinct
+warning for every case where a cookie *was* presented but failed
+verification (expired/tampered/malformed) -- that is the genuinely
+actionable signal this step adds observability for.
 """
 
 from __future__ import annotations
+
+import logging
 
 from fastapi import Request
 
@@ -21,6 +33,8 @@ from app.auth.sessions import AuthNotConfiguredError, verify_session_token
 from app.core.config import Settings, get_settings
 from app.core.errors import auth_not_configured_error, authentication_required_error
 from app.models.user import PublicUser
+
+logger = logging.getLogger(__name__)
 
 
 def get_session_token_from_request(request: Request, settings: Settings) -> str | None:
@@ -69,10 +83,26 @@ def get_current_user(request: Request) -> PublicUser:
     itself verifies but no user with that id exists any more -- a stale
     session must never resolve to a phantom user. No test-only bypass
     exists anywhere in this dependency.
+
+    Step 187E: that last case (a real, correctly-signed session for a
+    since-deleted user) is genuinely rare and worth a distinct warning
+    -- unlike a simply-missing cookie, this means a token that once
+    belonged to a real account no longer does, which is worth knowing
+    about server-side even though the client still only ever sees the
+    same generic 401 `authentication_required_error()` either way.
     """
     user_id = get_current_user_id(request)
     user = get_current_user_by_id(user_id)
     if user is None:
+        logger.warning(
+            "Session verified but no matching user exists.",
+            extra={
+                "auth_event": "session_verify",
+                "status": "invalid",
+                "error_code": "USER_NOT_FOUND",
+                "user_id": user_id,
+            },
+        )
         raise authentication_required_error()
 
     return user

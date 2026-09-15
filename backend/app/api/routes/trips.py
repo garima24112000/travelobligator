@@ -353,12 +353,25 @@ def regenerate_trip_plan(
     try:
         result = apply_regeneration_mutation(planning_state, affected_stages, pending_events)
     except RegenerationMutationError as exc:
+        # Step 187D: structured fields for the synchronous (non-async-job)
+        # regeneration failure path -- no job exists here at all (this
+        # branch only runs when Settings.async_generation_enabled is
+        # False), so there is no job_id/job_type to attach, only the
+        # trip/outcome this request itself produced. Never the exception
+        # message itself, never feedback text, never a diff/changed-
+        # sections payload -- exc.planning_state below is read only for
+        # `record_blocked_attempt`, never logged.
         logger.warning(
             "PlanningOrchestrator.rerun_affected_stages failed unexpectedly during "
             "POST /trips/%s/regenerate; recording a failed attempt instead of "
             "creating a new version or marking any feedback applied.",
             trip_id,
             exc_info=True,
+            extra={
+                "trip_id": trip_id,
+                "status": "failed",
+                "error_code": ErrorCode.REGENERATION_NOT_AVAILABLE.value,
+            },
         )
         planning_state = regeneration_attempt_service.record_blocked_attempt(
             exc.planning_state,

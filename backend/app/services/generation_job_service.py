@@ -31,10 +31,11 @@ logger = logging.getLogger(__name__)
 
 # Async job orchestration (Step 186C, docs/14_backend_architecture.md
 # section 117; duplicate/failure/restart hardening in Step 186E, section
-# 118), gated entirely by `Settings.async_generation_enabled` (default
-# False -- nothing in this module is ever called while it's off). Uses
-# FastAPI's own `BackgroundTasks` (Starlette runs a sync callable via its
-# thread pool, so a real ASGI server's event loop is never blocked by the
+# 118; structured lifecycle logging in Step 187D, section 123), gated
+# entirely by `Settings.async_generation_enabled` (default False --
+# nothing in this module is ever called while it's off). Uses FastAPI's
+# own `BackgroundTasks` (Starlette runs a sync callable via its thread
+# pool, so a real ASGI server's event loop is never blocked by the
 # synchronous `PlanningOrchestrator` calls below) -- no Redis, Celery,
 # RQ, or separate worker process. Every job runner here calls the exact
 # same `PlanningOrchestrator`/regeneration-mutation entry points the
@@ -42,6 +43,18 @@ logger = logging.getLogger(__name__)
 # provider call added, and `PlanningState.generation_progress` keeps
 # being updated by the orchestrator exactly as before; `GenerationJob` is
 # job *control* state layered on top, never a replacement for it.
+#
+# Step 187D: every real, persisted lifecycle transition below now also
+# emits one structured log line via `_job_log_fields` -- job_id/trip_id/
+# owner_id/job_type/status/stage/error_code/duration_ms only (the exact
+# `app.core.logging_config.ALLOWED_EXTRA_FIELDS` names already reserved
+# for this since Step 187B), all derived from the already-persisted
+# `GenerationJob` fields this module was already computing -- never a
+# raw exception string, a `GenerationJob`/`PlanningState` model dump, a
+# request/response body, or provider data. No job/duplicate/startup-
+# recovery *behavior* changed by this step -- every log line is placed
+# immediately after the state transition it describes already happened
+# and was already persisted.
 
 _GENERATE_JOB_FAILED_ERROR_CODE = "STAGE_FAILED"
 _GENERATE_JOB_FAILED_MESSAGE = (
@@ -88,6 +101,49 @@ def safe_job_error_message(exc: BaseException, *, fallback: str) -> str:
     """
     del exc  # deliberately unused -- see docstring
     return fallback
+
+
+def _job_log_fields(
+    job: GenerationJob, *, status: str | None = None, error_code: str | None = None
+) -> dict[str, object]:
+    """Builds a safe, allowlisted `extra=` dict describing `job`'s
+    current identity/lifecycle fields (Step 187D) -- job_id/trip_id/
+    owner_id/job_type always; `status`/`stage`/`error_code`/`duration_ms`
+    only when a real value exists. Never a raw exception message, never
+    a `GenerationJob.model_dump()`, never `PlanningState`/provider data.
+
+    `status`/`error_code` default to `job.status.value`/`job.error_code`
+    -- the caller only needs to pass them explicitly for the one case
+    (a background job's own exception-handling `except` block) where the
+    log call happens *before* `mark_job_failed` has updated `job` in
+    place, so `job.status` is still `"running"` at that exact line.
+
+    `duration_ms` is never passed in -- it is always derived here, from
+    `job.started_at`/`job.finished_at` (both real, already-persisted
+    timestamps), and only included once both exist (i.e. only on a
+    terminal job); this is never a fabricated or estimated duration.
+
+    A field whose value is `None`/absent is omitted from the returned
+    dict entirely, never included as `null` -- matches this app's
+    existing "omit an absent field" convention (see
+    `app.core.logging_config`'s own `request_id` handling, Step 187C).
+    """
+    fields: dict[str, object] = {
+        "trip_id": job.trip_id,
+        "owner_id": job.owner_id,
+        "job_id": job.job_id,
+        "job_type": job.job_type.value,
+        "status": status if status is not None else job.status.value,
+    }
+    if job.progress_stage is not None:
+        fields["stage"] = job.progress_stage
+    resolved_error_code = error_code if error_code is not None else job.error_code
+    if resolved_error_code is not None:
+        fields["error_code"] = resolved_error_code
+    if job.started_at is not None and job.finished_at is not None:
+        duration = (job.finished_at - job.started_at).total_seconds() * 1000
+        fields["duration_ms"] = round(duration, 3)
+    return fields
 
 
 # --- Step 186E: duplicate-job race hardening (single-process only) ---
@@ -144,6 +200,7 @@ def _reconcile_stale_jobs(trip_id: str) -> None:
         reference_time = job.started_at or job.created_at
         age_seconds = (now - reference_time).total_seconds()
         if age_seconds > stale_after_seconds:
+            interrupted_job = mark_job_interrupted(job)
             logger.warning(
                 "Marking stale %s job %s for trip %s as interrupted "
                 "(queued/running for %.0fs, past the %ds staleness window).",
@@ -152,11 +209,14 @@ def _reconcile_stale_jobs(trip_id: str) -> None:
                 trip_id,
                 age_seconds,
                 stale_after_seconds,
+                extra=_job_log_fields(interrupted_job),
             )
-            job_repo.save(mark_job_interrupted(job))
+            job_repo.save(interrupted_job)
 
 
-def check_no_duplicate_running_job(trip_id: str) -> None:
+def check_no_duplicate_running_job(
+    trip_id: str, *, attempted_job_type: GenerationJobType | None = None
+) -> None:
     """Reconciles any stale `queued`/`running` job for `trip_id` first
     (see `_reconcile_stale_jobs`), then raises
     `job_already_running_error(trip_id)` (409) when
@@ -167,10 +227,43 @@ def check_no_duplicate_running_job(trip_id: str) -> None:
     `trip_id` only. Local_json single-process is sufficient for this MVP
     guard; true cross-process locking is deferred (see this module's own
     `_trip_lock_registry` comment and docs/14_backend_architecture.md
-    section 118)."""
+    section 118).
+
+    `attempted_job_type` (Step 187D, optional, defaults to `None`) is
+    only used to enrich the structured log line emitted on rejection --
+    it never changes which trip/jobs are checked or whether this raises.
+    The rejection log's `job_id`/`status`/`owner_id` describe the
+    *blocking* job, not the rejected attempt (no job is ever created for
+    a rejected attempt) -- safe to log here because that blocking job
+    always belongs to the same `trip_id`/owner this call was already
+    scoped to (both callers, `start_generate_job`/`start_regenerate_job`,
+    are only ever reached through an owner-protected route), never a
+    different user's job.
+    """
     _reconcile_stale_jobs(trip_id)
     running = get_job_repository().list_running_by_trip_id(trip_id)
     if len(running) >= get_settings().generation_job_max_running_per_trip:
+        blocking_job = running[0]
+        logger.warning(
+            "Rejected a new %s job for trip %s: job %s is already %s "
+            "(JOB_ALREADY_RUNNING).",
+            attempted_job_type.value if attempted_job_type is not None else "generate/regenerate",
+            trip_id,
+            blocking_job.job_id,
+            blocking_job.status.value,
+            extra={
+                "trip_id": trip_id,
+                "owner_id": blocking_job.owner_id,
+                "job_id": blocking_job.job_id,
+                "job_type": (
+                    attempted_job_type.value
+                    if attempted_job_type is not None
+                    else blocking_job.job_type.value
+                ),
+                "status": blocking_job.status.value,
+                "error_code": "JOB_ALREADY_RUNNING",
+            },
+        )
         raise job_already_running_error(trip_id)
 
 
@@ -186,11 +279,17 @@ def start_generate_job(
     the check before either creates a job.
     """
     with _lock_for_trip(trip_id):
-        check_no_duplicate_running_job(trip_id)
+        check_no_duplicate_running_job(trip_id, attempted_job_type=GenerationJobType.GENERATE)
         job = create_queued_job(
             trip_id=trip_id, owner_id=owner_id, job_type=GenerationJobType.GENERATE
         )
         get_job_repository().create(job)
+        logger.info(
+            "Generate job %s queued for trip %s.",
+            job.job_id,
+            trip_id,
+            extra=_job_log_fields(job),
+        )
     background_tasks.add_task(run_generate_job, job.job_id)
     return job
 
@@ -221,7 +320,7 @@ def start_regenerate_job(
     returned.
     """
     with _lock_for_trip(trip_id):
-        check_no_duplicate_running_job(trip_id)
+        check_no_duplicate_running_job(trip_id, attempted_job_type=GenerationJobType.REGENERATE)
         job = create_queued_job(
             trip_id=trip_id, owner_id=owner_id, job_type=GenerationJobType.REGENERATE
         )
@@ -234,6 +333,12 @@ def start_regenerate_job(
             # updates it again.
             job.progress_stage = affected_stages[0].value
         get_job_repository().create(job)
+        logger.info(
+            "Regenerate job %s queued for trip %s.",
+            job.job_id,
+            trip_id,
+            extra=_job_log_fields(job),
+        )
     background_tasks.add_task(
         run_regenerate_job,
         job.job_id,
@@ -302,7 +407,18 @@ def recover_interrupted_jobs() -> int:
     job_repo = get_job_repository()
     non_terminal = job_repo.list_non_terminal()
     for job in non_terminal:
-        job_repo.save(mark_job_interrupted(job))
+        interrupted_job = mark_job_interrupted(job)
+        job_repo.save(interrupted_job)
+        # Step 187D: per-job structured line -- the aggregate warning
+        # below only ever carried a count, with no way to trace which
+        # specific trip/job was affected; this fills that gap without
+        # changing the aggregate warning's own existing text/level.
+        logger.info(
+            "Job %s for trip %s marked interrupted at startup.",
+            interrupted_job.job_id,
+            interrupted_job.trip_id,
+            extra=_job_log_fields(interrupted_job),
+        )
     if non_terminal:
         logger.warning(
             "Marked %d job(s) left queued/running by a previous process "
@@ -330,6 +446,12 @@ def run_generate_job(job_id: str) -> None:
 
     job = mark_job_running(job)
     job_repo.save(job)
+    logger.info(
+        "Generate job %s started for trip %s.",
+        job_id,
+        job.trip_id,
+        extra=_job_log_fields(job),
+    )
 
     try:
         if get_settings().planning_engine_mode == "langgraph":
@@ -337,16 +459,25 @@ def run_generate_job(job_id: str) -> None:
         else:
             planning_state = planning_orchestrator.generate_full_plan(job.trip_id)
     except Exception as exc:
+        error_code = safe_job_error_code(exc)
+        job = mark_job_failed(
+            job,
+            error_code=error_code,
+            error_message=safe_job_error_message(exc, fallback=_GENERATE_JOB_FAILED_MESSAGE),
+        )
+        # Logged *after* mark_job_failed (Step 187D) so `_job_log_fields`
+        # can read the now-final `finished_at` and include a real
+        # `duration_ms` -- this only reorders when the log line is
+        # emitted relative to an in-memory mutation that was already
+        # about to happen either way; `job_repo.save(job)` below still
+        # persists exactly once, with the exact same final job state as
+        # before this step.
         logger.warning(
             "Background generate job %s failed unexpectedly for trip %s.",
             job_id,
             job.trip_id,
             exc_info=True,
-        )
-        job = mark_job_failed(
-            job,
-            error_code=safe_job_error_code(exc),
-            error_message=safe_job_error_message(exc, fallback=_GENERATE_JOB_FAILED_MESSAGE),
+            extra=_job_log_fields(job),
         )
         job_repo.save(job)
         return
@@ -367,6 +498,12 @@ def run_generate_job(job_id: str) -> None:
     if planning_state.generation_progress is not None:
         job.progress_stage = planning_state.generation_progress.current_stage
     job_repo.save(job)
+    logger.info(
+        "Generate job %s succeeded for trip %s.",
+        job_id,
+        job.trip_id,
+        extra=_job_log_fields(job),
+    )
 
 
 def run_regenerate_job(
@@ -389,6 +526,12 @@ def run_regenerate_job(
 
     job = mark_job_running(job, progress_stage=job.progress_stage)
     job_repo.save(job)
+    logger.info(
+        "Regenerate job %s started for trip %s.",
+        job_id,
+        job.trip_id,
+        extra=_job_log_fields(job),
+    )
 
     # Step 186E: everything below is wrapped in one top-level guard --
     # before this, only `apply_regeneration_mutation`'s own
@@ -410,6 +553,17 @@ def run_regenerate_job(
                 error_message=f"Trip '{job.trip_id}' no longer exists.",
             )
             job_repo.save(job)
+            # Step 187D: a real, clean (non-exception) failure -- the
+            # trip was deleted/never existed by the time this background
+            # task ran. `info`, not `warning`: this is an honest,
+            # expected outcome of the freshly-reloaded-state check this
+            # function's own docstring describes, not an anomaly.
+            logger.info(
+                "Regenerate job %s failed for trip %s: trip no longer exists.",
+                job_id,
+                job.trip_id,
+                extra=_job_log_fields(job),
+            )
             return
 
         try:
@@ -431,17 +585,21 @@ def run_regenerate_job(
                 error_message=_REGENERATE_JOB_NO_LONGER_ELIGIBLE_MESSAGE,
             )
             job_repo.save(job)
+            # Step 187D: same reasoning as above -- a clean, expected
+            # refusal (the trip's pending feedback/affected stages
+            # changed between request time and this background run), not
+            # an unexpected exception.
+            logger.info(
+                "Regenerate job %s failed for trip %s: no longer eligible.",
+                job_id,
+                job.trip_id,
+                extra=_job_log_fields(job),
+            )
             return
 
         try:
             result = apply_regeneration_mutation(planning_state, affected_stages, pending_events)
         except RegenerationMutationError as exc:
-            logger.warning(
-                "Background regenerate job %s failed unexpectedly for trip %s.",
-                job_id,
-                job.trip_id,
-                exc_info=True,
-            )
             failed_state = regeneration_attempt_service.record_blocked_attempt(
                 exc.planning_state,
                 message=REGENERATION_NOT_AVAILABLE_MESSAGE,
@@ -452,6 +610,16 @@ def run_regenerate_job(
                 job,
                 error_code=ErrorCode.REGENERATION_NOT_AVAILABLE.value,
                 error_message=REGENERATION_NOT_AVAILABLE_MESSAGE,
+            )
+            # Logged after mark_job_failed (Step 187D) so `_job_log_fields`
+            # can include a real `duration_ms` -- see run_generate_job's
+            # equivalent comment; no side effect above was reordered.
+            logger.warning(
+                "Background regenerate job %s failed unexpectedly for trip %s.",
+                job_id,
+                job.trip_id,
+                exc_info=True,
+                extra=_job_log_fields(job),
             )
             job_repo.save(job)
             return
@@ -465,19 +633,27 @@ def run_regenerate_job(
             changed_sections=result.changed_sections,
         )
         job_repo.save(job)
+        logger.info(
+            "Regenerate job %s succeeded for trip %s.",
+            job_id,
+            job.trip_id,
+            extra=_job_log_fields(job),
+        )
     except Exception as exc:
+        error_code = safe_job_error_code(exc)
+        job = mark_job_failed(
+            job,
+            error_code=error_code,
+            error_message=safe_job_error_message(
+                exc, fallback=_REGENERATE_JOB_UNEXPECTED_FAILURE_MESSAGE
+            ),
+        )
         logger.warning(
             "Background regenerate job %s failed unexpectedly for trip %s "
             "(escaped the inner guards).",
             job_id,
             job.trip_id,
             exc_info=True,
-        )
-        job = mark_job_failed(
-            job,
-            error_code=safe_job_error_code(exc),
-            error_message=safe_job_error_message(
-                exc, fallback=_REGENERATE_JOB_UNEXPECTED_FAILURE_MESSAGE
-            ),
+            extra=_job_log_fields(job),
         )
         job_repo.save(job)

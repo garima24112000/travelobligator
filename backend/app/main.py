@@ -10,11 +10,25 @@ from app.api.routes.auth import router as auth_router
 from app.api.routes.trips import router as trips_router
 from app.core.config import get_settings
 from app.core.errors import AppError
+from app.core.logging_config import configure_logging
+from app.core.request_id_middleware import RequestIdMiddleware
 from app.core.response import error_response
 from app.schemas.errors import ApiError, ErrorCode
 from app.services import generation_job_service
 
 settings = get_settings()
+
+# Step 187B (docs/14_backend_architecture.md section 121): configure the
+# stdlib-only structured-logging foundation once, at import time, before
+# any route below can run. `configure_logging()` is idempotent -- see its
+# own docstring -- so this is safe even if `app.main` is imported more
+# than once in a single process (it never is in real usage; Python's
+# module cache guarantees that; some test-collection scenarios can still
+# re-run module-level code via `importlib.reload`, which this guards
+# against). Adds no new logging call site and changes no route/response
+# behavior -- only how the process's *existing* `logger.*` calls are
+# rendered.
+configure_logging()
 
 
 @asynccontextmanager
@@ -62,7 +76,28 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    # Step 187G (docs/14_backend_architecture.md section 126): browsers
+    # hide every response header from cross-origin `fetch` code by default
+    # except a small always-safe allowlist -- `X-Request-Id` is not on
+    # it, so without this the frontend could only ever read a failed
+    # call's request_id from the JSON body's own `metadata.request_id`
+    # (which every response already carries -- see `ResponseMetadata`),
+    # never from `response.headers`. Exposing just this one header changes
+    # nothing about which origins/credentials/methods/request headers are
+    # allowed -- it only makes an already-public, non-sensitive response
+    # header (a correlation label, never a token/cookie/secret) readable
+    # from frontend JavaScript.
+    expose_headers=["X-Request-Id"],
 )
+
+# Step 187C (docs/14_backend_architecture.md section 122): added *after*
+# CORSMiddleware so it nests inside CORS but outside Starlette's own
+# ExceptionMiddleware -- see RequestIdMiddleware's own docstring for why
+# that ordering is what lets AppError/RequestValidationError responses
+# (not just fully successful ones) carry the same X-Request-Id header
+# and share the same id with ResponseMetadata.request_id/every
+# structured log line emitted while the route ran.
+app.add_middleware(RequestIdMiddleware)
 
 
 @app.exception_handler(AppError)

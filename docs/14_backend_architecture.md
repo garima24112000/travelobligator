@@ -6692,3 +6692,847 @@ exposed by it.
 `compileall`/`tsc`/`lint`/`build` all clean. `git check-ignore` clean.
 **Section 186 (186A-186G) is verified ready to commit as a single
 stack.** Nothing committed by this step.
+
+## 121. Structured Logging Foundation (Step 187B)
+
+Following Step 187A's read-only audit (which found no central logging
+config anywhere, ~15 modules calling bare `logging.getLogger(__name__)`
+with only `logger.warning(...)`, no request-id correlation, and no
+APM/tracing dependency of any kind), this step adds a stdlib-only
+structured-logging *foundation* -- it renders the codebase's existing
+log calls as JSON, without adding a single new logging call site or
+changing any request/response/provider/auth/persistence/async-job
+behavior. **No OpenTelemetry, Elastic APM, Sentry, Datadog, or
+structlog dependency was added** -- `backend/requirements.txt`/
+`requirements-dev.txt` are untouched. **No external log shipping
+exists** -- every log line still only ever reaches this process's own
+stdout. **No request-id correlation exists yet** -- that is Step 187C's
+job; `ResponseMetadata.request_id` is completely unchanged by this step.
+
+**New module** (`backend/app/core/logging_config.py`):
+- `JsonFormatter(logging.Formatter)` renders one JSON object per log
+  line: always the safe default fields (`timestamp`/`level`/`logger`/
+  `message`/`module`/`function`/`line`), plus any name present on the
+  record from a fixed `ALLOWED_EXTRA_FIELDS` allowlist (`request_id`
+  reserved for 187C, `trip_id`/`user_id`/`owner_id`/`job_id`/`job_type`/
+  `status`/`stage`/`provider`/`error_code`/`duration_ms`), plus a
+  bounded (4000-char-capped) rendering of `record.exc_info` *only* when
+  an existing call site already passed `exc_info=True` -- this module
+  never sets `exc_info` itself and adds no new exception-logging call
+  site. Never touches `record.__dict__` wholesale; only the named
+  allowlist fields are ever read off a record, so any other attribute
+  (standard `LogRecord` internals like `process`/`thread`/`args`, or an
+  arbitrary `extra=` key a call site might pass) is silently dropped.
+- `SENSITIVE_LOG_FIELD_NAMES` (`password`, `password_hash`, `session`,
+  `session_cookie`, `cookie`, `authorization`, `token`, `secret`,
+  `api_key`, `request_body`, `response_body`, `provider_payload`,
+  `planning_state`, `itinerary`) plus `_is_sensitive_field_name`'s
+  `*_secret_key`/`*_api_key` suffix matching are a defense-in-depth
+  denylist -- the primary guard is that `ALLOWED_EXTRA_FIELDS` simply
+  never contains a sensitive name to begin with, enforced by a
+  module-load-time `assert` that fails loudly (at import time, not
+  silently at runtime) if the two sets ever overlap.
+- `configure_logging(*, log_level=None, structured_logging_enabled=None)`
+  attaches one `StreamHandler(stdout)` to the shared `"app"` logger
+  namespace (every module's `logging.getLogger(__name__)` call, e.g.
+  `"app.services.generation_job_service"`, is a dotted child of `"app"`,
+  so this one handler captures all of them) with `propagate=False` --
+  deliberately never touching the root logger or Uvicorn's own
+  independently-configured `"uvicorn"`/`"uvicorn.error"`/
+  `"uvicorn.access"` loggers, so Uvicorn's own startup/access logging is
+  completely unaffected either way. Idempotent: a repeated call finds
+  its own previously-attached handler by name (`_HANDLER_NAME`) and
+  reconfigures it in place (level/formatter) rather than adding a
+  second one, so no log record is ever emitted twice regardless of how
+  many times this is called. With no arguments, reads
+  `Settings.log_level`/`Settings.structured_logging_enabled` (imported
+  lazily inside the function to avoid a config/logging import cycle).
+
+**Config** (`backend/app/core/config.py`): `log_level` (default
+`"INFO"`, alias `LOG_LEVEL`, normalizes any unrecognized value to
+`"INFO"` rather than raising -- same fallback convention as
+`persistence_backend`/`session_cookie_samesite` elsewhere in this file)
+and `structured_logging_enabled` (default `True`, alias
+`STRUCTURED_LOGGING_ENABLED` -- `False` swaps in a plain, single-line,
+human-readable formatter instead of JSON; neither value changes *what*
+is logged, only *how* it is rendered).
+
+**Startup wiring** (`backend/app/main.py`): `configure_logging()` is
+called once, at module import time, immediately after `settings =
+get_settings()` and before the `FastAPI(...)` app object or any
+exception handler/route is constructed -- so structured logging is
+active before the app can ever handle a request. No route body, no
+exception handler, and no async-job code path was edited to add a new
+`logger.*` call; only the *rendering* of calls that already existed
+before this step changed.
+
+**Tests** (`backend/app/tests/core/test_logging_config.py`, 45 new):
+`JsonFormatter` emits valid JSON with every default field present;
+every `ALLOWED_EXTRA_FIELDS` name round-trips when present and is
+absent (never crashes) when not; an arbitrary unallowlisted field name
+is dropped; every `SENSITIVE_LOG_FIELD_NAMES` name plus
+`session_secret_key`/`groq_api_key`/`anthropic_api_key` (suffix-matched)
+is dropped, and the secret *value* never appears anywhere in the
+rendered JSON either; `request_body`/`response_body`/`provider_payload`/
+`planning_state`/`itinerary` are dropped; standard `LogRecord`
+attributes (`process`/`thread`/`pathname`/`args`/`msg`) never leak
+through; a real exception's `exc_info=True` rendering is bounded and
+never exposes an unallowlisted extra field set alongside it on the same
+record; the allowlist/denylist can never overlap (asserted both at
+import time and re-checked by a dedicated test); `Settings.log_level`
+defaults to `"INFO"`, accepts every valid level (case-insensitive), and
+normalizes an invalid value to `"INFO"` without raising;
+`Settings.structured_logging_enabled` defaults to `True`;
+`configure_logging()` is idempotent (repeated calls never produce more
+than one matching handler, and never emit a duplicate log line for the
+same `logger.warning(...)` call, confirmed via `capsys`); the plain-text
+fallback (`structured_logging_enabled=False`) is genuinely not valid
+JSON; log-level filtering genuinely suppresses a below-threshold call;
+and importing `app.main` (which now also runs `configure_logging()`)
+prints no password/secret/cookie/API-key-shaped string to stdout or
+stderr.
+
+**Regression**: full suite 3314 passed + 18 skipped (up from 3269 + 18
+-- the 45 new tests, zero change to any pre-existing test's outcome).
+`compileall`/`tsc`/`lint`/`build` all clean. No frontend file touched.
+`ResponseMetadata.request_id` generation, every provider adapter's
+return value, every auth/persistence code path, and the entire
+async-job model/service/repository stack are all byte-for-byte
+unchanged -- confirmed by the full suite passing unmodified and by
+`git diff --stat` touching only `backend/app/core/config.py` (two new
+fields plus a validator), the new `backend/app/core/logging_config.py`,
+`backend/app/main.py` (the one new `configure_logging()` call), this
+test file, and docs/`.env.example`.
+
+## 122. Request-Scoped Correlation ID (Step 187C)
+
+Step 187A found `ResponseMetadata.request_id` generated fresh,
+independently, at response-serialization time -- never threaded into
+any log line. This step makes one id shared by the response body's
+`metadata.request_id`, the response's `X-Request-Id` header, and every
+structured log line emitted while that request's route ran. **No
+OpenTelemetry/Elastic APM/Sentry/Datadog dependency was added**
+(`requirements.txt` untouched); **no external log shipping exists**
+(still only this process's own stdout); **a request id is a
+correlation label for reading logs next to a response, never a
+security token, never proof of identity, and an incoming header is
+never trusted as an authorization signal** -- see the safety notes
+below. Provider/gateway logging and auth-event logging remain
+un-added -- still deferred to later steps.
+
+**New module** (`backend/app/core/request_context.py`): one
+`contextvars.ContextVar` (`_current_request_id`), holding exactly one
+short id string and nothing else -- the module's own docstring is
+explicit that it must never be extended to also carry a user id,
+cookie, token, secret, or request body. `new_request_id()` generates
+`req_<uuid4 hex>`, the exact format `ResponseMetadata.request_id`
+already used before this step. `is_safe_request_id(value)` accepts
+only a non-empty string, at most `MAX_REQUEST_ID_LENGTH` (128)
+characters, matching `^[A-Za-z0-9_.:-]+$` -- no whitespace, no
+newlines, no control characters, no characters that could inject an
+extra field/line into a log line or corrupt the response header.
+`normalize_request_id(value)` returns `value` unchanged if safe,
+otherwise a fresh `new_request_id()` -- an unsafe or missing incoming
+value is always silently replaced, never rejected with an error (a
+malformed correlation header must never break a request). `get_
+current_request_id()`/`set_current_request_id()`/`reset_current_
+request_id()` mirror `ContextVar.get`/`.set`/`.reset` exactly;
+`request_id_scope(value)` is a convenience context manager wrapping
+the same set/reset pair with a guaranteed reset on exception.
+
+**New middleware** (`backend/app/core/request_id_middleware.py`):
+`RequestIdMiddleware.dispatch` reads the incoming `X-Request-Id`
+header (nothing else -- never a cookie, never `Authorization`, never
+the request body), calls `normalize_request_id` on it, sets the
+context var for the duration of `call_next(request)` inside a
+`try`/`finally` (so the context is always reset, even on an
+exception, even though the exception itself is never swallowed), and
+sets the same id as the response's `X-Request-Id` header (`Mutable
+Headers.__setitem__` replaces rather than duplicates, so a response
+never carries two `X-Request-Id` lines). Wired into `app.main` via
+`app.add_middleware(RequestIdMiddleware)` **after**
+`app.add_middleware(CORSMiddleware, ...)` -- Starlette's middleware
+stack wraps in reverse-of-add order, so this ordering nests
+`RequestIdMiddleware` inside CORS but *outside* Starlette's own
+`ExceptionMiddleware`, meaning the same id is active while `AppError`/
+`RequestValidationError`'s registered handlers run too, not just for a
+fully successful route body. A truly unhandled exception (no
+registered handler) still propagates past this middleware exactly as
+before this step -- `RequestIdMiddleware` never catches or converts an
+exception, only ensures the context resets either way.
+
+**Logging integration** (`backend/app/core/logging_config.py`): a new
+`RequestIdLogFilter(logging.Filter)` reads `get_current_request_id()`
+and sets `record.request_id` *only* when the record doesn't already
+carry one (an explicit `extra={"request_id": ...}` from a future call
+site is never overridden) and *only* when a value exists (outside any
+request -- a background job, a startup log, a plain script -- the
+record is left alone, so `JsonFormatter`'s existing `hasattr` check
+simply omits `request_id` from that line rather than inventing or
+reusing a stale one). `configure_logging()` attaches this filter to
+its own handler exactly once, idempotently, the same way it already
+guards against attaching a duplicate handler. No existing `logger.
+warning(...)` call site needed to change -- every one of them now
+automatically carries the current request's id when one exists, with
+zero code change at the call site itself.
+
+**Response metadata integration**
+(`backend/app/schemas/api_responses.py`): `ResponseMetadata.
+request_id`'s `default_factory` is now `get_current_request_id() or
+new_request_id()` -- inside a request, reuses the exact id
+`RequestIdMiddleware` already set (and already echoed as the response
+header); outside a request (a test/utility constructing
+`ResponseMetadata`/`ApiResponse` directly, exactly as before this
+step) falls back to generating a fresh one, so nothing that worked
+before this step can break. `success_response()`/`error_response()`
+(`core/response.py`) both construct `ApiResponse[...]` without passing
+`metadata` explicitly, so this `default_factory` runs for every
+response built through either path -- success, `AppError`, and
+`RequestValidationError` responses alike all pick up the same
+request-scoped id automatically, with no change needed in `app.main`'s
+two exception handlers themselves.
+
+**Tests**: `test_request_context.py` (new, 36 tests) -- id generation/
+uniqueness/format; `is_safe_request_id` accepting valid ids and
+rejecting `None`/empty/too-long/every tested whitespace-or-control-
+character shape; `normalize_request_id` honoring a safe value and
+replacing every unsafe one (always with a fresh, safe, `req_`-prefixed
+id); get/set/reset round-tripping; `request_id_scope` setting,
+resetting, resetting-on-exception, and correctly restoring an outer
+value after a nested scope exits. `test_logging_config.py` (extended,
+7 new tests) -- the filter injects the current id, leaves a record
+alone outside any request, never overrides an explicit `extra` value;
+`JsonFormatter` omits `request_id` entirely (never `null`, never a
+stale value) when none is active; a real `configure_logging()` +
+`capsys` round trip confirms the JSON line does/doesn't carry
+`request_id` inside/outside a scope respectively; the filter is never
+attached twice across repeated `configure_logging()` calls.
+`test_request_id_correlation.py` (new, `backend/app/tests/api/`, 14
+tests, real `TestClient` requests) -- no incoming header still yields
+a matching generated id on both the header and (implicitly, via later
+tests) metadata; a safe incoming header is echoed back verbatim;
+every tested unsafe shape (spaces, newlines, null bytes, over-length)
+is replaced, and the original unsafe value never reaches the response
+header or body in any form; a response never carries two
+`X-Request-Id` header lines; a real 200 success response, a real 404
+`AppError` response, and a real 422 validation-error response all have
+`metadata.request_id == X-Request-Id header`; a real pre-existing
+`logger.warning` call's captured `LogRecord` carries the exact id of
+the one request under test (isolated from the create/generate setup
+calls before it, which each correctly carry their *own*, different
+ids -- an early draft of this test conflated three separate requests'
+ids and correctly failed on itself, since each request must always
+get its own id); two sequential requests never share an id; an
+`Authorization` header sent alongside a safe `X-Request-Id` never
+leaks into the response.
+
+**Regression**: full suite 3371 passed + 18 skipped (up from 3314 +
+18 -- the 57 new tests, zero change to any pre-existing test's
+outcome). `compileall`/`tsc`/`lint`/`build` all clean. No frontend
+file touched. Every provider/auth/persistence/async-job code path is
+completely unchanged -- confirmed by the full suite passing unmodified
+and by `git diff --stat` touching only the two new core modules above,
+`api_responses.py`'s one `default_factory` line, `main.py`'s one new
+`add_middleware` call, the three test files, and docs/README/
+`.env.example` (`.env.example` needed no change -- no new config
+surface was added).
+
+## 123. Structured Async-Job Lifecycle Logs (Step 187D)
+
+Makes the async generate/regenerate job path (Step 186B-186F) fully
+observable through the structured logging foundation (Step 187B) and
+request-correlation (Step 187C) already in place -- no job/duplicate/
+startup-recovery *behavior*, response shape, or frontend behavior
+changed. Every log line added or enriched by this step uses only
+`app.core.logging_config.ALLOWED_EXTRA_FIELDS` names already reserved
+since Step 187B (`trip_id`/`owner_id`/`job_id`/`job_type`/`status`/
+`stage`/`error_code`/`duration_ms`) -- the allowlist itself needed no
+change. Nothing here logs a raw exception string into a structured
+field, a `GenerationJob`/`PlanningState` model dump, a request/response
+body, feedback text, or provider data.
+
+**New helper** (`backend/app/services/generation_job_service.py`):
+`_job_log_fields(job, *, status=None, error_code=None)` builds the
+allowlisted `extra=` dict from a `GenerationJob`'s already-persisted
+fields -- `status`/`error_code` default to `job.status.value`/
+`job.error_code` (a caller only overrides them for the log line that
+fires immediately before `mark_job_failed`/etc. would otherwise update
+`job` in place); `stage` is included only when `job.progress_stage` is
+set (never a fabricated phase); `duration_ms` is derived from
+`job.started_at`/`job.finished_at` and included only once both are
+real, persisted timestamps (i.e. only for a terminal job) -- never
+estimated or fabricated. A field with no real value is omitted from
+the dict entirely, never emitted as `null`, matching `JsonFormatter`'s
+own `request_id`-omission convention from Step 187C.
+
+**Lifecycle logs added** (all `logger.info`, all placed immediately
+after the state transition they describe was already persisted):
+`start_generate_job`/`start_regenerate_job` log `"...queued..."` right
+after `get_job_repository().create(job)`; `run_generate_job`/
+`run_regenerate_job` log `"...started..."` right after
+`mark_job_running`+save, and `"...succeeded..."` right after
+`mark_job_succeeded`+save. Two previously-silent clean-refusal paths in
+`run_regenerate_job` (the trip no longer existing, or the trip's
+pending feedback/affected stages having changed by the time the
+background task ran -- both legitimate, expected outcomes, never an
+exception) now also log `info` on failure, closing a real observability
+gap Step 187A's audit found (these two paths previously logged
+*nothing at all*).
+
+**Failure logs preserved, enriched** (`logger.warning(...,
+exc_info=True)`, unchanged level/message/semantics from Steps 186C/
+186E): all three exception-triggered failure sites (`run_generate_job`'s
+`except Exception`, `run_regenerate_job`'s `except
+RegenerationMutationError` and its outer `except Exception`) were
+reordered to call `mark_job_failed(...)` *before* logging, purely so
+`_job_log_fields` can read the now-final `finished_at` and include a
+real `duration_ms` -- every other side effect (which repository save
+happens, what `error_code`/`error_message` get persisted, the response
+the caller ultimately sees) is byte-for-byte unchanged; only the
+relative order of an in-memory mutation and its own log line moved.
+`safe_job_error_code`/`safe_job_error_message` (Step 186E, unchanged)
+still guarantee the raw exception text never reaches `job.error_message`
+-- and now, verified by a new test, never reaches the *structured* log
+fields either (the real traceback still legitimately reaches
+`exc_info`, server-side stdout only, exactly as before this step --
+see `docs/14_backend_architecture.md` section 118's own note on this
+being standard, intentional practice, not a leak).
+
+**Duplicate-job rejection** (`check_no_duplicate_running_job`): gained
+an optional `attempted_job_type: GenerationJobType | None = None`
+keyword-only parameter (both callers now pass it; existing tests
+calling it with just `trip_id` keep working unchanged) purely to enrich
+the new `logger.warning` emitted on rejection -- never changes which
+trip/jobs are checked or whether the call raises. The rejection log's
+`job_id`/`status`/`owner_id` describe the *blocking* job (the one
+already `queued`/`running`), which is always safe to log here because
+`start_generate_job`/`start_regenerate_job` are only ever reached
+through an owner-protected route, so that blocking job necessarily
+belongs to the same trip/owner already gating this request -- never a
+different user's job. `error_code="JOB_ALREADY_RUNNING"` on the log
+line matches the response's own `ApiError.code` exactly.
+
+**Interrupted/stale recovery, enriched, no new call site count
+change**: `_reconcile_stale_jobs`'s existing warning (Step 186E)
+gained structured `extra` fields describing the now-interrupted job.
+`recover_interrupted_jobs`'s existing aggregate warning (a job *count*,
+with no way to trace which specific job/trip it covered) is unchanged;
+a new per-job `logger.info` inside its loop closes that gap with real
+`job_id`/`trip_id`/`error_code="JOB_INTERRUPTED"` fields, without
+touching the aggregate line's own text or level.
+
+**Route-level failure log enriched**
+(`backend/app/api/routes/trips.py`): the one pre-existing
+`logger.warning(..., exc_info=True)` on the *synchronous* regenerate
+failure path (Step 174C, reached only when
+`Settings.async_generation_enabled=False` -- no `GenerationJob` exists
+in this branch at all) gained `extra={"trip_id": ..., "status":
+"failed", "error_code": "REGENERATION_NOT_AVAILABLE"}` -- same
+message/level/`exc_info` behavior as before. `exc.planning_state` is
+still read (unchanged) only to build the `RegenerationAttempt` audit
+record, never logged itself.
+
+**Request correlation, verified empirically, not assumed** (Step 187C
+integration -- the task's own explicit instruction here was "test
+honestly," so this was checked against a real running `uvicorn`
+process, not just reasoned about): a request-time log (e.g. the
+`"...queued..."` line, emitted synchronously inside the route) carries
+the same `request_id` as the response's `X-Request-Id` header, as
+expected. **More surprisingly, so does a background job's own log
+line** (the `"...started..."`/`"...succeeded..."` lines, which run
+inside `run_generate_job`/`run_regenerate_job` via
+`BackgroundTasks.add_task`, scheduled on Starlette's own thread pool) --
+confirmed both via `TestClient` and via a real `uvicorn` process
+(request and matching log lines captured directly from stdout,
+matching `request_id` values byte-for-byte). This works because
+`RequestIdMiddleware`'s `set_current_request_id` call happens *before*
+`BaseHTTPMiddleware` spawns the inner app as its own anyio task (which
+copies the current `contextvars.Context`), and `anyio.to_thread.
+run_sync` (what both a sync FastAPI route and a sync `BackgroundTask`
+callable run through) itself copies that same context into the worker
+thread -- not a guarantee this step invented, just an accurate
+description of how Starlette/anyio's existing context-propagation
+already behaves, verified rather than assumed. Startup recovery
+(`recover_interrupted_jobs`, called from `app.main`'s `lifespan` before
+any request) and stale-job reconciliation triggered by an unrelated
+later request both correctly show *no* `request_id` field at all on
+their log lines (never `null`, never a stale value from an earlier
+request) -- confirmed live and by a dedicated test. The job model
+itself was **not** expanded to carry a request id (the task's own
+"prefer not to" default) -- it was never needed, since the existing
+context-propagation mechanism already makes background logs correctly
+correlated without it; every background log line remains independently
+traceable via `job_id`/`trip_id`/`job_type`/`status` regardless.
+
+**Tests** (`backend/app/tests/services/test_generation_job_logging.py`,
+new, 11 tests, plus `trips.py`'s regenerate-refusal warning covered in
+the same file): queued/running/succeeded logs for both job types carry
+the expected fields (verified as real, allowlist-only JSON via
+`JsonFormatter`); a triggered background failure carries `error_code=
+"STAGE_FAILED"` and a real `duration_ms`, with the secret-looking
+exception text confirmed absent from the *structured* field set
+specifically (not from `exc_info`, which legitimately still carries it
+server-side); duplicate rejection carries `JOB_ALREADY_RUNNING` plus
+the blocking job's own identity; startup recovery and stale
+reconciliation both carry `JOB_INTERRUPTED` with real job/trip
+identity; the synchronous regenerate-route failure path carries
+`REGENERATION_NOT_AVAILABLE` with no `job_id` (none exists in that
+branch); the empirical request-correlation checks described above
+(both the full HTTP-driven case and a minimal direct
+`request_id_scope` case); and a dedicated check that none of
+`password`/`session`/`cookie`/`authorization`/`token`/`secret`/
+`api_key`/`request_body`/`response_body`/`provider_payload`/
+`planning_state`/`itinerary` is ever set as an attribute on any
+job-lifecycle `LogRecord` this step produces.
+
+**Regression**: full suite 3382 passed + 18 skipped (up from 3371 + 18
+-- the 11 new tests, zero change to any pre-existing test's outcome,
+including every pre-existing async-job/duplicate/hardening/regenerate
+test, confirming the `mark_job_failed`-before-`logger.warning`
+reordering changed no observable job behavior). `compileall`/`tsc`/
+`lint`/`build` all clean. No frontend file touched. No new dependency,
+no `ALLOWED_EXTRA_FIELDS`/`SENSITIVE_LOG_FIELD_NAMES` change, no
+request/response shape change, no duplicate-job/startup-recovery/
+provider/auth/persistence behavior change -- confirmed by `git diff
+--stat` touching only `generation_job_service.py`, `trips.py`'s one
+warning call, `logging_config.py`'s docstring (no code change), the
+one new test file, and docs.
+
+## 124. Secret-Safe Auth Event Logs (Step 187E)
+
+Makes signup/login/logout/session-verification observable through the
+same structured logging foundation (Step 187B) and request-correlation
+(Step 187C) already used for async jobs (Step 187D) -- no auth
+behavior, password hashing, session signing, cookie setting, user
+repository behavior, or response shape changed. Auth had almost no
+deliberate logging before this step (confirmed by Step 187A's audit).
+
+**New allowlisted field**: `app.core.logging_config.ALLOWED_EXTRA_FIELDS`
+gained exactly one new name, `auth_event` (`"signup"`/`"login"`/
+`"logout"`/`"session_verify"` only) -- never an email address; `email`
+is deliberately never added to the allowlist anywhere in this codebase.
+Every other field this step logs (`user_id`, `status`, `error_code`,
+`request_id`) was already allowlisted since Step 187B/187C. `error_code`
+values used here (`USER_ALREADY_EXISTS`, `INVALID_CREDENTIALS`,
+`SESSION_INVALID`, `SESSION_EXPIRED`, `USER_NOT_FOUND`) are plain,
+short, controlled strings -- not new members of the response-facing
+`schemas.errors.ErrorCode` enum (mirrors Step 187D's own
+`JOB_INTERRUPTED_ERROR_CODE` precedent: a log-level error code and an
+API-response error code are deliberately separate vocabularies, so
+adding or renaming one never risks changing the other).
+
+**Signup** (`app.auth.service.signup`): `logger.info` on success
+(`status="succeeded"`, `user_id` from the newly-created account) and
+`logger.warning` on `UserAlreadyExistsError` (`status="rejected"`,
+`error_code="USER_ALREADY_EXISTS"`, no `user_id` -- none is created).
+Neither line ever includes `request.email`, `request.password`, or a
+password hash; `email_already_registered_error()`'s own response
+behavior (409, generic "already exists" message, field="email") is
+completely unchanged.
+
+**Login** (`app.auth.service.login`): `logger.info` on success
+(`user_id` from the matched account) and `logger.warning` on rejection
+(`error_code="INVALID_CREDENTIALS"`). The rejection log fires from the
+exact same `if existing is None or not verify_password(...)` branch
+`invalid_credentials_error()` already raised from before this step --
+there is no separate code path for "unknown email" vs. "wrong
+password" for a log line to accidentally diverge from, so the log
+layer inherits the same non-distinguishing guarantee the response
+already had, by construction, not by a separate check. Verified live
+and by a dedicated test that both cases produce byte-identical
+structured log field sets (minus `request_id`, which differs per
+request as designed).
+
+**Logout** (`app.api.routes.auth.logout_route`): `logger.info`,
+`status="succeeded"`, deliberately **no** `user_id` -- this route takes
+no `Depends(get_current_user)` by design (logout must always succeed
+even with an invalid/expired/missing cookie or an unconfigured
+secret), and adding a session-verification step purely to attach a
+`user_id` to a log line would change that guarantee. No cookie value,
+no session token, no signed payload logged.
+
+**Session verification** (`app.auth.sessions.verify_session_token`,
+`app.auth.dependencies.get_current_user`): `verify_session_token`'s
+*return-value contract is completely unchanged* (`str | None`, `None`
+for missing/malformed/tampered/expired alike -- the response a caller
+sends back, via `authentication_required_error()`, still never
+distinguishes any of these, exactly as that function's own docstring
+requires). Internally, `itsdangerous.SignatureExpired` (a subclass of
+`BadSignature`/`BadData`) is now caught before the broader `BadData`
+catch, purely so a server-side log line can tell "expired"
+(`status="expired"`, `error_code="SESSION_EXPIRED"`) apart from
+"tampered/malformed" (`status="invalid"`,
+`error_code="SESSION_INVALID"`) -- the token value and signed payload
+are never logged either way. `get_current_user` additionally logs a
+`status="invalid"`/`error_code="USER_NOT_FOUND"` warning (with
+`user_id`, since it's the one piece of real information this case
+reveals) for the rare case where a session verifies but the account no
+longer exists (a deleted user's still-valid cookie) -- the response
+stays the same generic 401 either way. Because `get_current_user`
+backs `app.auth.ownership.require_trip_owner` (used by every
+`/trips/*` route, Step 184D) as well as `GET /auth/me`, a
+tampered/expired/phantom-user session is exactly as observable
+regardless of which route triggered the check.
+
+**Noise-level decision, documented explicitly in code**: a *missing*
+cookie is never logged anywhere in this step -- it is the normal,
+extremely common "not logged in yet" state (hit on every
+unauthenticated page load, most visibly `GET /auth/me`'s own
+once-per-page-load session check), and logging it would make that
+completely ordinary case noisy for no operational benefit. This is a
+deliberate choice, not an oversight -- `app.auth.dependencies`' own
+module docstring and `verify_session_token`'s docstring both explain
+it, and a dedicated test confirms zero log lines are produced for a
+missing-cookie request.
+
+**Tests** (`backend/app/tests/auth/test_auth_logging.py`, new, 11
+tests; `test_logging_config.py` gained 1 more confirming `auth_event`
+is allowlisted and `email` is not): signup success/duplicate-rejection
+fields (via a real `TestClient` round trip, confirming `request_id`
+matches the response's `X-Request-Id` header); login success/rejection
+fields, including the dedicated no-distinction check described above;
+logout fields, confirming no `user_id` and that the response's
+`Set-Cookie` header value never appears anywhere in the rendered log
+line; a tampered-token case (reusing `test_sessions.py`'s own
+multi-character-corruption technique) confirming `SESSION_INVALID`; a
+real-TTL-expiry case (short `session_ttl_seconds` + `time.sleep`,
+matching `test_sessions.py`'s existing convention) confirming
+`SESSION_EXPIRED`; a missing-cookie case confirming *zero* log records;
+an unauthenticated `GET /auth/me` case (via a bare, never-signed-up
+`TestClient` -- the shared `client` fixture used everywhere else in
+this file already performs a real signup, so it can't exercise a
+genuinely unauthenticated request) confirming both the 401 response
+body and the zero-noise log outcome are unchanged; a deleted-user
+session case confirming `USER_NOT_FOUND`; and a real-user/valid-session
+case confirming *no* `session_verify` warning fires for the normal,
+healthy path. Every test also asserts none of
+`email`/`password`/`password_hash`/`session`/`session_cookie`/
+`cookie`/`authorization`/`token`/`secret`/`api_key`/`request_body`/
+`response_body`/`provider_payload`/`planning_state`/`itinerary` is
+ever set as an attribute on any auth `LogRecord`.
+
+**Regression**: full suite 3394 passed + 18 skipped (up from 3382 + 18
+-- the 12 new tests, zero change to any pre-existing test's outcome,
+including every pre-existing `test_auth_routes.py`/`test_service.py`/
+`test_dependencies.py`/`test_sessions.py` test). `compileall`/`tsc`/
+`lint`/`build` all clean. No frontend file touched. No new dependency;
+`SENSITIVE_LOG_FIELD_NAMES`/the allowlist-denylist non-overlap
+invariant both unchanged and re-verified; no response shape, cookie
+setting, password-hashing, session-signing, or user-repository behavior
+changed -- confirmed by the full suite passing unmodified and by live
+verification against a real running backend (signup/duplicate-signup/
+login/invalid-login/logout/tampered-session, log output inspected
+directly, zero secrets found by grep across the entire log file).
+
+## 125. Provider/Gateway Observability (Step 187F)
+
+Makes provider calls observable from one central location using the
+same structured logging foundation (Step 187B) and request-correlation
+(Step 187C) already used for async jobs (Step 187D) and auth (Step
+187E) -- no provider behavior, provider result models, response shapes,
+or scraping/regeneration semantics changed anywhere in this step.
+
+**Gateway dispatch methods** (`backend/app/providers/gateway.py`):
+`ProviderGateway` has exactly three real *central dispatch* methods
+that services actually call -- `get_route` (used by
+`route_feasibility_service.py`/`travel_time_buffer_service.py`/
+`route_aware_sequencing_service.py`), `search_accommodations` (used by
+`accommodation_inventory_service.py`), and `search_flights` (used by
+`flight_inventory_service.py`). All three now measure a
+`time.monotonic()`-based `duration_ms` around the existing delegate
+call and emit one structured log line via a new `_log_provider_call`
+helper: `provider` (the underlying adapter's own `provider_name` class
+attribute, e.g. `"osrm"`/`"scraped_accommodation_provider"`/
+`"routing_provider"` for not_connected -- normalized to `"unknown"` by
+`_safe_provider_name` if it's ever missing, over-length, or contains
+anything outside `[A-Za-z0-9_:.-]`), `stage` (`"routing"`/
+`"accommodations"`/`"flights"` -- a fixed, bounded string per method,
+never derived from the request), `status` (the result's own `.status.
+value`, via `_provider_status` -- `"returned"` as a fallback for any
+shape without a recognizable `.status`), and `error_code` (via
+`_provider_error_code`, mapping `"failed"`/`"not_connected"`/
+`"unavailable"` to the *already-existing* `PROVIDER_FAILED`/
+`PROVIDER_NOT_CONNECTED`/`DATA_UNAVAILABLE` `ErrorCode` values --
+omitted, never invented, for a genuine success). `"success"`/
+`"returned"` log at `info`; every other status (`not_connected`/
+`unavailable`/`failed`/`partial`/`retrying`/`fallback_used`/
+`not_requested`) logs at `warning` -- a real, honest non-success
+outcome is never disguised as a completion. **No new exception boundary
+was added**: none of the three methods caught exceptions before this
+step, and none does now -- a raising provider still raises, completely
+unchanged, unlogged by the gateway (confirmed by a dedicated test).
+Never logs the request (destination/dates/traveler counts/coordinates),
+the result's `offers`/`geometry`/`message`/`warnings`, a
+`PlanningState`, or any file path.
+
+**Deliberate, documented scope decision**: `places`/`weather`/
+`holiday`/`currency` are reached via direct attribute access from
+`destination_context_service.py` (e.g. `self.gateway.places.
+search_attractions(...)`) -- there is no central dispatch *method* on
+the gateway to wrap for these four, unlike the three above. Rather than
+retrofitting new pass-through gateway methods nothing currently calls,
+or touching `destination_context_service.py`'s six call sites (a much
+larger surface for this one step), this step leaves them covered only
+by their own pre-existing adapter-level `logger.warning(...)` calls
+(OSM/Open-Meteo/Nager/Frankfurter, confirmed still present and
+untouched -- see Step 187A's audit) -- an honest limitation, not an
+oversight, and consistent with this step's own "preferably at the
+central dispatch methods already used by services" instruction.
+
+**LLM-backed subsystems** (item 4's own explicit fallback): neither
+`ItineraryNarrativeService` nor `AICandidateDiscoveryService` calls
+`ProviderGateway` at all -- both resolve their provider directly from
+their own factory (`get_itinerary_narrator_provider()`/
+`get_ai_candidate_proposal_provider()`) and call it directly. Per this
+step's own scope, logging was added at each one's existing service
+boundary instead, never inside a prompt/response:
+
+- `ItineraryNarrativeService.generate`
+  (`backend/app/services/itinerary_narrative_service.py`): logs
+  `stage="itinerary_narrator"` around the existing `provider.narrate(...)`
+  call -- `info` on `status="success"`, `warning` otherwise (including
+  the existing `except Exception` branch, which already existed before
+  this step and keeps its exact level/message/`exc_info` behavior,
+  just gains structured `extra` fields). The disabled short-circuit
+  (`ITINERARY_NARRATOR_ENABLED=false`, the default) is deliberately
+  never logged -- no provider is even resolved in that branch, and
+  logging "disabled" on every single generation would just repeat this
+  app's own well-documented default, mirroring Step 187E's identical
+  reasoning for a simply-missing auth cookie. Never logs the built
+  request (which embeds real scheduled-experience/restaurant names),
+  `report.message`, or the narrator's own generated prose.
+- `PlanningOrchestrator._run_ai_candidate_discovery_shadow_stage`
+  (`backend/app/services/planning_orchestrator.py`): logs
+  `stage="ai_candidate_proposal"` around the existing `dry_run(...)`
+  call, at the exact pre-existing `try`/`except Exception: return
+  planning_state` boundary (Step 161B) -- the swallow-and-continue
+  behavior is completely unchanged; a new `logger.warning(...,
+  exc_info=True, ...)` line was added *inside* that already-existing
+  except block, not a new boundary. On a non-exception return,
+  `status="completed"` (`AICandidateProposalStatus.COMPLETED`) logs
+  `info`; `"not_connected"`/`"skipped"`/`"rejected"` all log `warning`
+  (mirroring the gateway's own info/warning split). Provider name is
+  read defensively (`getattr(..., "proposal_provider", None)` before
+  `getattr(..., "provider_name", ...)`) so an injected test double
+  standing in for the whole service never crashes this log line. Never
+  logs the built proposal request (which embeds real destination-context
+  text), a proposal's own title/description, or the raw exception
+  message.
+
+**Existing adapter warnings preserved, untouched**: no adapter-level
+`logger.warning(...)` call (OSM/Open-Meteo/Nager/Frankfurter/OSRM/
+scraped accommodation/scraped flight/Kiwi MCP/scraped hotel-ratings)
+was removed, renamed, or had its message/level changed by this step --
+they remain the detailed, per-adapter failure diagnostics they always
+were; the new gateway/service-boundary logs are a separate, central
+*summary* layer on top, not a replacement.
+
+**Tests**: `test_provider_gateway_logging.py`
+(`backend/app/tests/providers/`, new, 13 tests) -- success logs `info`
+with real `provider`/`duration_ms`/`request_id` (when inside a request
+scope) and no `error_code`; non-success results (`not_connected`/
+`unavailable`/`failed`, across all three methods) log `warning` with
+the correct mapped `error_code`; an unsafe provider name (containing a
+newline/control character) normalizes to `"unknown"`; no request
+parameter (destination/check-in dates) or result content (offers,
+`message`) ever appears in the rendered JSON; `duration_ms` is numeric
+and non-negative; a call outside any request context carries no
+`request_id`; a raising provider still raises unchanged, and the
+gateway logs nothing for it. `test_provider_llm_logging.py`
+(`backend/app/tests/services/`, new, 6 tests) -- the narrator's
+disabled-by-default path produces no log; enabled success/failure both
+log safe fields, with a dedicated check that a deliberately
+secret-looking exception string never reaches the *structured* fields
+(the real traceback still legitimately reaches `exc_info`, matching
+Step 187D's precedent); the AI candidate proposal shadow stage's
+disabled-by-default path produces no log; its default (`not_connected`)
+outcome and an injected-exception outcome both log safe fields with no
+secret leak. One genuine test-authoring bug was found and fixed while
+writing these: an early draft constructed `Settings(_env_file=None,
+ai_candidate_discovery_shadow_mode_enabled=True)` using the field name
+rather than the alias (`AI_CANDIDATE_DISCOVERY_SHADOW_MODE_ENABLED=True`)
+-- a known, already-documented `pydantic-settings` precedence quirk
+(`populate_by_name=True` means an ambient env var beats a field-name
+kwarg but loses to an alias kwarg) silently left shadow mode `False`,
+causing two tests to fail with zero log lines; fixed by switching to
+the alias kwarg, matching `test_ai_candidate_discovery_shadow_mode.py`'s
+own established convention. This was a test bug, not a product bug --
+the underlying logging code was already correct, confirmed by a direct
+script reproduction before the test fix.
+
+**Regression**: full suite 3413 passed + 18 skipped (up from 3394 + 18
+-- the 19 new tests, zero change to any pre-existing test's outcome,
+including every pre-existing gateway/accommodation/flight/routing/
+narrator/AI-candidate-discovery test). `compileall`/`tsc`/`lint`/
+`build` all clean. No frontend file touched. Live-verified against a
+real running backend: a real generate call produced two gateway log
+lines (`accommodations`/`flights`, both honestly `unavailable` with the
+default no-local-HTML-file state) sharing the response's own
+`request_id`; a second run with the narrator and AI-candidate shadow
+stage both explicitly enabled produced both LLM service-boundary logs,
+correctly `not_connected`/`PROVIDER_NOT_CONNECTED`; a full grep across
+both live log files found zero secrets, prompts, HTML, or destination
+text. No provider/API/scraping/auth/persistence/async-job behavior
+changed -- confirmed by the full suite passing unmodified and by `git
+diff --stat` touching only `gateway.py`, `itinerary_narrative_service.py`,
+`planning_orchestrator.py`'s one method, the two new test files, and
+docs.
+
+## 126. Frontend Request-ID Visibility & Safe Client Diagnostics (Step 187G, final Section 187 step)
+
+Steps 187B-F built the entire backend-side structured-logging/
+correlation-id foundation but never touched the frontend -- a failed
+API call in the browser had no way to show its `request_id`, and
+nothing recorded a caught error anywhere for later inspection. This
+step closes exactly that one gap and nothing else: it is a **frontend
+visibility layer over data the backend already produces**, not a new
+logging system, not a new backend behavior, and not an external
+error-reporting integration. **No OpenTelemetry/Elastic APM/Sentry/
+Datadog/structlog dependency was added** (`package.json`/
+`requirements.txt` both untouched); **no frontend error is ever sent
+to any external service** -- every new frontend behavior described
+below is 100% local to the browser tab; **no provider/API/scraping/
+auth/persistence/async-job behavior changed** anywhere.
+
+**Backend change (the only one this step makes): CORS header
+exposure.** Browsers hide every response header from cross-origin
+`fetch` code except a small always-safe allowlist -- `X-Request-Id` is
+not on it. Without exposing it, the frontend could only ever read a
+failed call's request_id from the JSON body's own
+`metadata.request_id` (already present on every real response since
+Step 187C), never from `response.headers`. `app.main` now passes
+`expose_headers=["X-Request-Id"]` to its existing `CORSMiddleware`
+call -- `allow_origins`/`allow_credentials`/`allow_methods`/
+`allow_headers` are all unchanged, so no origin, credential mode, or
+request method/header that was allowed before is allowed any
+differently now. This exposes exactly one already-public,
+non-sensitive response header (a correlation label, never a token,
+cookie, or secret) -- confirmed by a new test that the exposed-headers
+list contains `X-Request-Id` and nothing else.
+
+**Frontend type/client changes** (`frontend/lib/types.ts`,
+`frontend/lib/api.ts`): a new `ResponseMetadata` type mirrors the
+backend's real `app.schemas.api_responses.ResponseMetadata` model
+field-for-field (`request_id`/`timestamp`/`environment` -- no
+invented field), and `ApiResponse<T>.metadata` is now typed as an
+optional `ResponseMetadata` (optional only so a hand-built test
+fixture without it still type-checks; every real response already
+carries it). `ApiRequestError` gained a fourth constructor parameter,
+`requestId: string | null`, populated in the shared `request()`
+helper from `body.metadata?.request_id`, falling back to
+`response.headers.get("X-Request-Id")` for the rare case of a parsed
+body that happened to omit metadata. Every existing call site
+constructing `ApiRequestError` directly (the two job-terminal-failure
+synthetic errors in `frontend/app/page.tsx`) still compiles unchanged
+-- the new parameter defaults to `null`. The success path is
+completely untouched: `request<T>()` still resolves with exactly
+`body.data`, so every one of the ~20 existing exported API functions
+in `lib/api.ts` needed zero changes and every existing call site
+across `page.tsx` keeps working exactly as before. `credentials:
+"include"` is unchanged; no `Authorization` header was added; no
+token is stored in `localStorage`.
+
+**Frontend diagnostics ring buffer** (`frontend/app/page.tsx`, module
+level, not React state): `recordApiError(operation, err)` appends an
+`ApiErrorLogEntry` (`id`/`timestamp`/`requestId`/`status`/`code`/
+`message`/`operation`) to an in-memory array capped at 20 entries,
+newest first; `clearApiErrorLog()` empties it. Both are plain
+module-level functions (not `useState`) specifically so a component
+nested far from the top-level `Home` component -- an experience card's
+"keep this place" button, a lock-removal row, the AI-candidate-
+promotion refresh button -- can record an error without threading a
+callback down through every intermediate layer; `useSyncExternalStore`
+(called once, in `Home`) is the one place the buffer is actually read
+for rendering, via `subscribeApiErrorLog`/`getApiErrorLogSnapshot`.
+`entry.message` is never new content -- it is exactly the same
+`ApiRequestError.message` this file already showed directly in
+on-screen error banners throughout (lock/feedback/regenerate/auth
+error text, all pre-existing) -- so this buffer introduces no new
+value that wasn't already considered safe to show a signed-in user
+about their own action. It never reads a request/response body,
+cookie, `Authorization` header, password, email, provider payload, or
+any `PlanningState`/itinerary content -- there is no code path by
+which it could, since `ApiRequestError` itself never carries any of
+those. Wired into every catch block in this file that already handled
+an `ApiRequestError` (auth signup/login, "My trips" load, trip
+load/select, generate, feedback, lock create/remove x3, regenerate
+refusal, AI-candidate-promotion refresh, and a job-poll's *terminal*
+failure only -- deliberately not its "keep polling, transient failure"
+branch, which fires on every ordinary network blip and would flood the
+buffer with noise rather than real errors) using the operation labels
+`login`/`signup`/`create`/`generate`/`load`/`feedback`/`lock`/
+`promote`/`regenerate`/`job_poll`. `checkAuth`'s own routine 401 (the
+normal "not logged in yet" state hit on every page load by a
+signed-out visitor) is deliberately never recorded -- recording it
+would clutter Developer Mode with a routine, expected entry before the
+visitor ever logs in, echoing Step 187E's own "never log a simply-
+missing cookie" noise-reduction precedent. `clearApiErrorLog()` is
+called from `handleLogout()` and from `handleAuthenticationRequired()`
+(a session found to have expired/been revoked mid-use) -- either could
+be followed by a different person signing in on the same browser tab,
+so a previous user's caught errors must never still be visible to
+them; nothing here is ever written to `localStorage`/`sessionStorage`,
+and nothing is logged to the browser console by default.
+
+**Developer Mode UI** (`ApiDiagnosticsPanel`, `frontend/app/page.tsx`):
+a compact "Recent API errors (diagnostics)" card listing each entry's
+operation/HTTP status/error code/safe message/timestamp, and, when
+present, "Request ID: req_..." in a monospace, `break-all` line so a
+long id wraps instead of causing horizontal overflow at narrow
+viewports (375px/390px). Renders `null` (nothing at all) whenever the
+buffer is empty, so a traveler with a clean session sees no trace of
+it. Mounted once, in the signed-in shell right below the "Signed in
+as / Log out" row, gated on `mode === "developer"` by its one caller --
+it is structurally impossible to reach before `currentUser` is set,
+so it never appears on the login screen, matching the existing
+`if (!currentUser) { return ...login screen... }` early-return this
+file already used before this step. It never shows a password, email,
+request body, or session-cookie value -- none of those fields exist
+anywhere in an `ApiErrorLogEntry`.
+
+**Tests**: no frontend test framework exists in this repo (per
+`CLAUDE.md`/`frontend/package.json` -- `npm run lint` is the only
+frontend CI check), so per this step's own scope this relied on
+`tsc --noEmit`/`lint`/`build` plus live manual verification instead of
+new frontend test files -- exactly the documented fallback for a
+frontend change here. One new backend test was added,
+`test_cors_exposes_only_x_request_id_header_to_cross_origin_frontend`
+(`backend/app/tests/api/test_request_id_correlation.py`): sends a
+real cross-origin-shaped request (an `Origin` header) at
+`GET /trips/{trip_id}`, asserts the `Access-Control-Expose-Headers`
+response header is present and equals exactly `{"x-request-id"}` (no
+other header exposed), and asserts the actual `X-Request-Id` header
+value still matches the response body's `metadata.request_id` --
+extending, not replacing, this file's existing same-origin
+request-id/metadata-matching tests. Every pre-existing logging/
+request-id/auth/job/provider-logging test in the suite still passes
+unmodified.
+
+**Regression**: full suite 3414 passed + 18 skipped (up from 3413 +
+18 -- the one new CORS test, zero change to any pre-existing test's
+outcome). `compileall` clean. `tsc --noEmit`/`lint`/`build` all clean
+on the frontend. Manual verification against a real running backend
++ frontend confirmed: signup/login/create/generate behave identically
+to before this step; a normal response's body `metadata.request_id`
+still matches its own `X-Request-Id` header; a safe incoming
+`X-Request-Id` is still honored and an unsafe one still replaced
+(both pre-existing Step 187C behavior, re-confirmed unchanged); backend
+JSON logs still share the same request_id as the response that
+produced them; a deliberately-triggered failed frontend API call shows
+up in the Developer Mode diagnostics panel with its real request_id,
+status, error code, and safe message, and that panel disappears after
+logout; no email/password/cookie/session-token/API-key/request-body/
+full-itinerary/`PlanningState` content appeared anywhere in the UI or
+browser console; provider/job/auth logs still emit the exact same safe
+structured fields as Step 187F/187E/187D left them; unavailable
+providers are still logged honestly as `unavailable`/`not_connected`,
+never as a fabricated success; the diagnostics panel and its
+monospace request-id text showed no horizontal overflow at 375px/
+390px viewport widths. No provider/API/scraping/auth/persistence/
+async-job behavior changed -- confirmed by the full suite passing
+unmodified and by `git diff --stat` touching only
+`backend/app/main.py` (one `expose_headers` line),
+`backend/app/tests/api/test_request_id_correlation.py` (one new test),
+`frontend/lib/types.ts`, `frontend/lib/api.ts`, `frontend/app/page.tsx`,
+and docs. **This is the final step of Section 187** -- the full
+187A-187G stack is now ready for a single combined review/commit.

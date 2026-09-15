@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from datetime import date, datetime, timezone
 
 from app.core.config import get_settings
@@ -550,6 +551,19 @@ class PlanningOrchestrator:
         reason, this fails safe: the exception is swallowed, nothing is
         stored, and generation continues completely unaffected -- never a
         fabricated proposal or grounded candidate.
+
+        Step 187F (docs/14_backend_architecture.md section 125): this
+        LLM-backed subsystem calls its proposal provider directly
+        (`AICandidateDiscoveryService.dry_run` -> `proposal_provider.
+        propose(...)`), never through `ProviderGateway` -- so one safe
+        structured summary log line is emitted here instead, at this
+        exact pre-existing `try`/`except` boundary (no new exception
+        boundary added; the swallow-and-continue behavior above is
+        completely unchanged). Deliberately logs only `provider`/
+        `stage="ai_candidate_proposal"`/`status`/`error_code`/
+        `duration_ms` -- never the built proposal request (which embeds
+        real destination-context text), never a proposal's own title/
+        description, and never the raw exception message.
         """
         if not get_settings().ai_candidate_discovery_shadow_mode_enabled:
             return planning_state
@@ -557,10 +571,49 @@ class PlanningOrchestrator:
         if planning_state.destination_context is None:
             return planning_state
 
+        # `getattr(..., None)` on the service itself first -- a test
+        # double standing in for the whole `AICandidateDiscoveryService`
+        # (not just its provider) may not expose `.proposal_provider` at
+        # all, and this log line must never be the reason that fails.
+        proposal_provider = getattr(self.ai_candidate_discovery_service, "proposal_provider", None)
+        provider_name = getattr(proposal_provider, "provider_name", "ai_candidate_proposal_provider")
+        started_at = time.monotonic()
         try:
             dry_run_result = self.ai_candidate_discovery_service.dry_run(planning_state)
         except Exception:
+            duration_ms = (time.monotonic() - started_at) * 1000
+            logger.warning(
+                "AICandidateDiscoveryService.dry_run failed unexpectedly during the shadow "
+                "stage; leaving the plan otherwise unaffected.",
+                exc_info=True,
+                extra={
+                    "provider": provider_name,
+                    "stage": "ai_candidate_proposal",
+                    "status": "failed",
+                    "error_code": "PROVIDER_FAILED",
+                    "duration_ms": round(duration_ms, 3),
+                },
+            )
             return planning_state
+
+        duration_ms = (time.monotonic() - started_at) * 1000
+        proposal_status = dry_run_result.proposal_result.status.value
+        log_fields: dict[str, object] = {
+            "provider": provider_name,
+            "stage": "ai_candidate_proposal",
+            "status": proposal_status,
+            "duration_ms": round(duration_ms, 3),
+        }
+        # Only "completed" (AICandidateProposalStatus.COMPLETED) is a
+        # real success -- "not_connected"/"skipped"/"rejected" are all
+        # real, honest non-success outcomes and logged at warning,
+        # mirroring ProviderGateway's own info/warning split.
+        if proposal_status == "completed":
+            logger.info("AI candidate proposal call completed.", extra=log_fields)
+        else:
+            if proposal_status == "not_connected":
+                log_fields["error_code"] = "PROVIDER_NOT_CONNECTED"
+            logger.warning("AI candidate proposal call did not succeed.", extra=log_fields)
 
         planning_state.ai_candidate_proposal_batch = AICandidateProposalBatch(
             request=dry_run_result.proposal_request,

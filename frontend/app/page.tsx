@@ -1,6 +1,13 @@
 "use client";
 
-import { Fragment, useCallback, useEffect, useRef, useState } from "react";
+import {
+  Fragment,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import type * as Leaflet from "leaflet";
 import {
   ApiRequestError,
@@ -1847,6 +1854,7 @@ function ScheduledExperienceCard({
         "Place marked to keep. Regeneration is not implemented yet.",
       );
     } catch (err) {
+      recordApiError("lock", err);
       setLockErrorMessage(
         err instanceof ApiRequestError
           ? err.message
@@ -1871,6 +1879,7 @@ function ScheduledExperienceCard({
       );
       setLockSuccessMessage("Keep marker removed.");
     } catch (err) {
+      recordApiError("lock", err);
       setLockErrorMessage(
         err instanceof ApiRequestError
           ? err.message
@@ -3496,6 +3505,7 @@ function AICandidateReviewSection({
       const data = await promoteAiCandidates(tripId);
       onPromotionReportChange(data.ai_candidate_promotion_report);
     } catch (err) {
+      recordApiError("promote", err);
       setRefreshError(
         err instanceof ApiRequestError
           ? err.message
@@ -4269,6 +4279,7 @@ function RegenerationReadinessSection({
   const { activeJob, jobPollingError, waitForJob, clearJob } = useJobPolling();
 
   async function handleRegenerationRefusal(err: unknown) {
+    recordApiError("regenerate", err);
     setRegenerateError(
       err instanceof ApiRequestError
         ? { code: err.code ?? "UNKNOWN_ERROR", message: err.message }
@@ -4874,6 +4885,66 @@ function ModeToggle({
   );
 }
 
+/**
+ * Step 187G (docs/14_backend_architecture.md section 126): Developer-Mode-
+ * only, signed-in-only diagnostics panel over the in-memory
+ * `recordApiError` ring buffer defined above. Purely a local read of
+ * `ApiErrorLogEntry` objects this browser tab already caught -- it never
+ * fetches anything itself, never persists anything (no localStorage/
+ * sessionStorage), and never ships anything to an external service.
+ * Rendered only inside the signed-in shell, gated on Developer Mode by
+ * its one caller -- never shown on the login screen, and hidden entirely
+ * (renders nothing) whenever the buffer is empty, so a traveler with a
+ * clean session never sees it and User Mode never becomes noisy.
+ */
+function ApiDiagnosticsPanel({ entries }: { entries: ApiErrorLogEntry[] }) {
+  if (entries.length === 0) return null;
+
+  return (
+    <div className="mt-4 rounded-2xl border border-amber-400/20 bg-amber-400/[0.03] p-4">
+      <p className="text-xs font-semibold uppercase tracking-wide text-amber-300/80">
+        Recent API errors (diagnostics)
+      </p>
+      <p className="mt-1 text-xs text-slate-500">
+        Local to this browser tab only -- never sent anywhere else. Use the
+        request ID to find the matching backend log line.
+      </p>
+      <ul className="mt-3 flex flex-col gap-2">
+        {entries.map((entry) => (
+          <li
+            key={entry.id}
+            className="rounded-lg border border-white/10 bg-slate-900/60 p-3 text-xs"
+          >
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-slate-400">
+              <span className="font-semibold text-slate-200">
+                {entry.operation}
+              </span>
+              <span aria-hidden="true">·</span>
+              <span>{entry.status ?? "—"}</span>
+              {entry.code && (
+                <>
+                  <span aria-hidden="true">·</span>
+                  <span className="break-all">{entry.code}</span>
+                </>
+              )}
+              <span aria-hidden="true">·</span>
+              <time dateTime={entry.timestamp}>
+                {new Date(entry.timestamp).toLocaleTimeString()}
+              </time>
+            </div>
+            <p className="mt-1 break-words text-slate-300">{entry.message}</p>
+            {entry.requestId && (
+              <p className="mt-1 break-all font-mono text-[11px] text-slate-500">
+                Request ID: {entry.requestId}
+              </p>
+            )}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 // Step 182C: User Mode's single, short readiness banner. It only ever
 // restates `validation_status` (a real backend field) in plain language
 // and points to Developer Mode for detail -- it never claims the plan is
@@ -5316,6 +5387,7 @@ function LockedItemsSummarySection({
         },
       }));
     } catch (err) {
+      recordApiError("lock", err);
       setActionState((previous) => ({
         ...previous,
         [lockId]: {
@@ -5633,6 +5705,87 @@ class JobPollingCancelledError extends Error {
   }
 }
 
+// Step 187G (docs/14_backend_architecture.md section 126): a minimal,
+// in-memory-only diagnostics ring buffer for Developer Mode. Records
+// recent *caught* `ApiRequestError`s so a signed-in developer can see the
+// backend's own request_id/status/error code/safe message for a failed
+// call -- letting them correlate it with the matching backend structured
+// log line -- without shipping anything to an external service, writing
+// anything to localStorage/sessionStorage, or logging to the browser
+// console by default. `message` here is never new content: it is exactly
+// the same `ApiRequestError.message` this file already shows directly in
+// on-screen error banners throughout (lock/feedback/regenerate/auth
+// errors, etc.) -- this buffer never reads a request/response body,
+// cookie, header other than the request id, password, email, or any
+// provider payload/PlanningState/itinerary content. Module-level (not
+// React state) so a component nested far from the top-level `Home`
+// component (an experience card's "keep this place" button, say) can
+// record an error without threading a callback down through every layer;
+// `useSyncExternalStore` (used once, in `Home`) is the one place this is
+// actually read for rendering.
+type ApiErrorLogEntry = {
+  id: string;
+  timestamp: string;
+  requestId: string | null;
+  status: number | null;
+  code: string | null;
+  message: string;
+  operation: string;
+};
+
+const API_ERROR_LOG_MAX_ENTRIES = 20;
+let apiErrorLog: ApiErrorLogEntry[] = [];
+const apiErrorLogListeners = new Set<() => void>();
+
+function notifyApiErrorLogListeners(): void {
+  for (const listener of apiErrorLogListeners) listener();
+}
+
+// Called from a `catch` block with a short, stable operation label (e.g.
+// "login"/"generate"/"load"/"regenerate"/"job_poll") and the caught error.
+// A no-op for anything that isn't a real `ApiRequestError` (e.g. a
+// deliberately-swallowed `JobPollingCancelledError`, which callers filter
+// out before ever reaching this) -- there is nothing safe/useful to show
+// for those, so this records a generic fallback message with no
+// identifying fields rather than guessing at the underlying cause.
+function recordApiError(operation: string, err: unknown): void {
+  const entry: ApiErrorLogEntry = {
+    id: `apierr_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
+    timestamp: new Date().toISOString(),
+    requestId: err instanceof ApiRequestError ? err.requestId : null,
+    status: err instanceof ApiRequestError ? err.status : null,
+    code: err instanceof ApiRequestError ? err.code : null,
+    message:
+      err instanceof ApiRequestError
+        ? err.message
+        : "Something went wrong while talking to the backend.",
+    operation,
+  };
+  apiErrorLog = [entry, ...apiErrorLog].slice(0, API_ERROR_LOG_MAX_ENTRIES);
+  notifyApiErrorLogListeners();
+}
+
+// Called on logout and whenever a session is discovered to have ended
+// (`AUTHENTICATION_REQUIRED`) -- a diagnostic entry from one signed-in
+// user must never still be visible after a different user signs in on
+// the same browser tab.
+function clearApiErrorLog(): void {
+  if (apiErrorLog.length === 0) return;
+  apiErrorLog = [];
+  notifyApiErrorLogListeners();
+}
+
+function subscribeApiErrorLog(listener: () => void): () => void {
+  apiErrorLogListeners.add(listener);
+  return () => {
+    apiErrorLogListeners.delete(listener);
+  };
+}
+
+function getApiErrorLogSnapshot(): ApiErrorLogEntry[] {
+  return apiErrorLog;
+}
+
 const JOB_POLL_INTERVAL_MS = 1500;
 
 /**
@@ -5710,6 +5863,12 @@ function useJobPolling() {
                   err.code === "FORBIDDEN" ||
                   err.code === "JOB_NOT_FOUND")
               ) {
+                // A genuine, terminal polling failure -- worth a diagnostic
+                // entry. The "keep polling" transient-failure path below is
+                // deliberately not recorded here: it fires on every
+                // ordinary network blip during normal polling and would
+                // flood the buffer with noise, not real errors.
+                recordApiError("job_poll", err);
                 stopTimer();
                 cancelRef.current = null; // rejecting directly below, not via cancel()
                 reject(err);
@@ -5919,6 +6078,17 @@ export default function Home() {
   // (see lib/api.ts's `credentials: "include"`); nothing here stores a
   // token.
   const [currentUser, setCurrentUser] = useState<PublicUser | null>(null);
+  // Step 187G: the Developer Mode diagnostics panel's read of the
+  // module-level `apiErrorLog` ring buffer -- `useSyncExternalStore` (not
+  // `useState`) because the buffer is written to from many places outside
+  // React's own state updates (including components nested far from this
+  // one), and this is React's own supported way to subscribe a component
+  // to state that lives outside it.
+  const apiErrorLogEntries = useSyncExternalStore(
+    subscribeApiErrorLog,
+    getApiErrorLogSnapshot,
+    getApiErrorLogSnapshot,
+  );
   const [authLoading, setAuthLoading] = useState(true);
   const [authNotConfigured, setAuthNotConfigured] = useState(false);
   const [authMode, setAuthMode] = useState<"login" | "signup">("login");
@@ -5943,6 +6113,7 @@ export default function Home() {
       const data = await listTrips();
       setMyTrips(data.trips);
     } catch (err) {
+      recordApiError("load", err);
       setMyTripsError(
         err instanceof ApiRequestError
           ? err.message
@@ -5961,6 +6132,11 @@ export default function Home() {
       setCurrentUser(data.user);
       void refreshMyTrips();
     } catch (err) {
+      // Not recorded in the diagnostics ring buffer: this fires on every
+      // normal page load for a signed-out visitor (an expected 401, not a
+      // real error to surface) -- recording it would immediately clutter
+      // Developer Mode with a routine entry before the visitor ever logs
+      // in, for every single page load.
       if (err instanceof ApiRequestError && err.code === "AUTH_NOT_CONFIGURED") {
         setAuthNotConfigured(true);
       }
@@ -5998,9 +6174,18 @@ export default function Home() {
     setMyTrips([]);
     setResult(null);
     clearJob();
+    // Step 187G: a session ending means whoever logs in next on this tab
+    // could be a different person -- never leave a previous user's caught
+    // API errors visible to them.
+    clearApiErrorLog();
   }
 
-  function describeTripApiError(err: unknown, fallback: string): string {
+  function describeTripApiError(
+    err: unknown,
+    fallback: string,
+    operation: string,
+  ): string {
+    recordApiError(operation, err);
     if (err instanceof ApiRequestError) {
       if (err.code === "AUTHENTICATION_REQUIRED") {
         handleAuthenticationRequired();
@@ -6044,6 +6229,7 @@ export default function Home() {
       if (err instanceof ApiRequestError && err.code === "AUTH_NOT_CONFIGURED") {
         setAuthNotConfigured(true);
       } else {
+        recordApiError(authMode === "signup" ? "signup" : "login", err);
         setAuthError(
           err instanceof ApiRequestError
             ? err.message
@@ -6081,6 +6267,9 @@ export default function Home() {
     // render a job that belonged to whoever was just signed in.
     clearJob();
     setGenerationPhase("idle");
+    // Step 187G: the next sign-in on this tab could be a different user --
+    // never leave a previous user's caught API errors visible to them.
+    clearApiErrorLog();
   }
 
   // Step 186E: called by both `handleSelectMyTrip`/`handleLoadExistingTrip`
@@ -6133,6 +6322,7 @@ export default function Home() {
         describeTripApiError(
           err,
           "Something went wrong while talking to the backend.",
+          "load",
         ),
       );
     } finally {
@@ -6225,6 +6415,7 @@ export default function Home() {
         describeTripApiError(
           err,
           "Something went wrong while saving feedback.",
+          "feedback",
         ),
       );
     } finally {
@@ -6335,6 +6526,12 @@ export default function Home() {
         describeTripApiError(
           err,
           "Something went wrong while talking to the backend.",
+          // Step 187G: `generationPhase` still holds its last-set value
+          // here (the `finally` block below resets it to "idle" only
+          // after this catch runs), so a failure while `createTrip` was
+          // still in flight is distinguished from one during/after
+          // `generatePlan`/job polling -- an accurate label, not a guess.
+          generationPhase === "creating_trip" ? "create" : "generate",
         ),
       );
     } finally {
@@ -6371,6 +6568,7 @@ export default function Home() {
         describeTripApiError(
           err,
           "Something went wrong while talking to the backend.",
+          "load",
         ),
       );
     } finally {
@@ -6886,6 +7084,10 @@ PY`}
             Log out
           </button>
         </div>
+
+        {mode === "developer" && (
+          <ApiDiagnosticsPanel entries={apiErrorLogEntries} />
+        )}
 
         <div className="mt-6 rounded-2xl border border-cyan-300/15 bg-cyan-400/[0.03] p-5">
           <div className="flex items-center justify-between">

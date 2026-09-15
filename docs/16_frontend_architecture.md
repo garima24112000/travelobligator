@@ -4802,3 +4802,152 @@ This closes Section 186 (186A-186G) from the frontend side -- see
 `docs/CODEBASE_OVERVIEW.md`'s Section 186G entry for the equivalent
 backend-side final review and `docs/14_backend_architecture.md` section
 120 for the full backend confirmation list.
+
+## 49. Section 187B: No Frontend Change -- Backend Structured Logging Foundation Only
+
+Step 187B (`docs/14_backend_architecture.md` section 121) adds a
+stdlib-only structured-logging *foundation* on the backend --
+`backend/app/core/logging_config.py` plus two new `Settings` fields --
+and touches zero frontend files. `frontend/app/page.tsx`/`lib/api.ts`
+still have no `console.error`/`console.warn`/`console.log` call and no
+client-side error-reporting integration of any kind, exactly as Step
+187A's audit found; frontend error observability remains purely
+UI-state-based (banner text from a caught `ApiRequestError`) until Step
+187G. `ApiResponse<T>`'s frontend type still does not declare
+`metadata`, so the backend's `request_id` still cannot reach the
+browser today -- that gap is Step 187C's (backend correlation) and
+187G's (frontend wiring) job, neither of which exists yet. `tsc`/
+`lint`/`build` were re-run and are unaffected, as expected for a step
+that changed no frontend file.
+
+## 50. Section 187C: No Frontend Change -- Backend Request-Correlation Only
+
+Step 187C (`docs/14_backend_architecture.md` section 122) makes one
+request-scoped id shared by the backend's response `metadata.
+request_id`, its `X-Request-Id` response header, and its structured
+logs -- and touches zero frontend files. Every backend response
+already carried a `metadata.request_id` value before this step; the
+only change is that it is now the *same* value as the response's new
+`X-Request-Id` header, and the same value a backend log line carries.
+The frontend still does not read, store, or display either -- `fetch`
+calls in `lib/api.ts` don't inspect response headers beyond what
+`request()` already does (status + JSON body), and `ApiResponse<T>`
+still has no `metadata` field. Frontend error reporting still does not
+exist (Step 187G's job); this step adds no `console.*` call, no error-
+reporting SDK, and no new fetch. `tsc`/`lint`/`build` were re-run and
+are unaffected, as expected for a step that changed no frontend file.
+
+## 51. Section 187D: No Frontend Change -- Backend Async-Job Log Fields Only
+
+Step 187D (`docs/14_backend_architecture.md` section 123) makes
+Section 186's async generate/regenerate job path emit structured
+`queued`/`running`/`succeeded`/`failed`/`interrupted` log lines and
+touches zero frontend files. The job status the frontend already polls
+via `GET /trips/{tripId}/jobs/{jobId}` (`JobResponseData` -- `status`/
+`progress_stage`/`error_code`/`error_message`/etc., Step 186D) is
+completely unchanged in shape and content; this step only adds
+server-side log lines describing transitions the frontend was already
+observing through that same polling response. The frontend still has
+no visibility into backend logs, still sends no request id anywhere,
+and still cannot read `metadata.request_id`/`X-Request-Id` (both
+remain Step 187G's job, same as noted in section 50 above). `tsc`/
+`lint`/`build` were re-run and are unaffected, as expected for a step
+that changed no frontend file.
+
+## 52. Section 187E: No Frontend Change -- Secret-Safe Backend Auth Logs Only
+
+Step 187E (`docs/14_backend_architecture.md` section 124) adds
+structured, secret-safe logs for signup/login/logout/session
+verification and touches zero frontend files. `frontend/lib/api.ts`'s
+`signup`/`login`/`logout`/`getCurrentUser` wrappers and the
+`AuthResponse`/`PublicUser` shapes they return are completely
+unchanged -- the frontend's own auth UX (login/signup form, the
+"Signed in as `<email>`" banner, session-expiry handling via
+`AUTHENTICATION_REQUIRED`) behaves identically before and after this
+step, since only server-side log lines were added, never a response
+field. The frontend still sends no request id, still cannot read
+`metadata.request_id`/`X-Request-Id`, and still has no visibility into
+backend logs of any kind -- unchanged from sections 49-51. `tsc`/
+`lint`/`build` were re-run and are unaffected, as expected for a step
+that changed no frontend file.
+
+## 53. Section 187F: No Frontend Change -- Backend Provider/Gateway Logs Only
+
+Step 187F (`docs/14_backend_architecture.md` section 125) adds
+structured summary logs around `ProviderGateway`'s dispatch methods
+and the two LLM-backed subsystems (itinerary narrator, AI candidate
+proposal shadow stage), and touches zero frontend files. Every provider
+result field the frontend already renders -- `ProviderCoverage`,
+`AccommodationSearchResult`/`FlightSearchResult`'s `offers`/`status`/
+`message`, `ItineraryNarrativeReport`, the AI candidate review/
+promotion screens -- is completely unchanged in shape and content;
+this step only adds server-side log lines describing provider calls
+the frontend was already observing through those same response fields.
+The frontend still has no visibility into backend logs and no request
+id of any kind -- unchanged from sections 49-52. `tsc`/`lint`/`build`
+were re-run and are unaffected, as expected for a step that changed no
+frontend file.
+
+## 54. Section 187G: Request-ID Visibility & Safe Client Diagnostics (final Section 187 step)
+
+Unlike sections 49-53, this step *does* touch the frontend -- it is the
+one Section 187 step whose whole job is closing the frontend side of
+the correlation loop those backend-only steps built up to. Full detail
+lives in `docs/14_backend_architecture.md` section 126; this section
+covers the frontend-specific pieces only.
+
+**Types** (`frontend/lib/types.ts`): a new `ResponseMetadata` type
+(`request_id`/`timestamp`/`environment`) mirrors the backend's real
+`ResponseMetadata` model field-for-field, and `ApiResponse<T>` gained
+an optional `metadata` field of that type -- optional only so a
+hand-built object without it (a test fixture) still type-checks; every
+real backend response already carries it. No other response shape
+changed.
+
+**API client** (`frontend/lib/api.ts`): `ApiRequestError` gained a
+fourth constructor field, `requestId: string | null`, read from the
+failed response's own `metadata.request_id` (falling back to the
+`X-Request-Id` response header). The success path is untouched --
+`request<T>()` still resolves with exactly `body.data`, so every
+existing exported function in this file and every existing call site
+in `page.tsx` needed zero changes. `credentials: "include"` is
+unchanged; still no `Authorization` header, still no token in
+`localStorage`.
+
+**Diagnostics ring buffer & Developer Mode panel**
+(`frontend/app/page.tsx`): a module-level, in-memory-only ring buffer
+(`recordApiError`/`clearApiErrorLog`, read via `useSyncExternalStore`)
+records up to 20 recent caught `ApiRequestError`s (request_id/status/
+error code/the same safe message already shown in this file's existing
+error banners/an operation label/timestamp), rendered only in a new
+`ApiDiagnosticsPanel` component -- Developer-Mode-only, signed-in-only,
+hidden whenever the buffer is empty, never reachable from the login
+screen. Cleared on logout and on session-expiry
+(`handleAuthenticationRequired`), so one signed-in user's caught
+errors never carry over to the next person who signs in on the same
+browser tab. Nothing here touches `localStorage`/`sessionStorage`, no
+`console.log`/`console.error` was added, and nothing is ever sent to
+an external service -- this is strictly a same-tab, in-memory,
+Developer-Mode-only surface. The single-file, no-`components/`-
+directory, plain-`useState` architecture described at the top of this
+document is preserved -- the ring buffer and panel are just more
+module-level functions/components inside the same `page.tsx`, the same
+pattern this file already used for e.g. `JobPollingCancelledError`/
+`useJobPolling`.
+
+**Verified responsive at 375px/390px**: the diagnostics panel and its
+monospace "Request ID: req_..." line use `break-words`/`break-all` and
+`flex-wrap`, matching this file's existing narrow-viewport conventions
+elsewhere -- no horizontal overflow.
+
+**Backend-side dependency this step needed**: `app.main`'s
+`CORSMiddleware` now sets `expose_headers=["X-Request-Id"]` so the
+header fallback above can actually read the header cross-origin (the
+body's `metadata.request_id` alone would otherwise have been the only
+readable source) -- no origin/credential/method/request-header
+allowance changed. See `docs/14_backend_architecture.md` section 126
+for the full detail and the dedicated CORS test.
+
+No provider/API/scraping/auth/persistence/async-job behavior changed
+by this step. `tsc --noEmit`/`lint`/`build` all pass; see section 126
+for the full verification record.

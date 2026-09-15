@@ -1,8 +1,5 @@
-"""Signed, expiring session-cookie utilities (Step 184B).
-
-Not imported by any route yet -- foundation only (see
-`app/auth/passwords.py`'s docstring for why this codebase adds
-dependencies/utilities before they're wired in).
+"""Signed, expiring session-cookie utilities (Step 184B; wired into
+`app.auth.dependencies` since Step 184C).
 
 `itsdangerous`'s `URLSafeTimedSerializer` signs and timestamps a small
 payload (`{"user_id": ...}` ONLY -- never a password, email, or API key)
@@ -11,16 +8,34 @@ cookie's HMAC signature plus its embedded issue timestamp are the only
 state needed. If `Settings.session_secret_key` is unset (the default),
 signing/verifying is refused outright via `AuthNotConfiguredError` --
 never silently falls back to a shared/predictable key.
+
+Step 187E (docs/14_backend_architecture.md section 124):
+`verify_session_token`'s *return value contract is completely
+unchanged* (`str | None`, `None` for missing/malformed/tampered/
+expired alike -- the response a caller ultimately sends back to a
+client, via `authentication_required_error()`, still never
+distinguishes any of these from one another, exactly as
+`app.core.errors.authentication_required_error`'s own docstring
+requires). What changed is purely internal: `SignatureExpired` (an
+`itsdangerous` subclass of `BadSignature`/`BadData`) is now caught
+before the broader `BadData` catch, purely so the two cases can be
+told apart in a *server-side log line* -- `auth_event="session_verify"`,
+`status="expired"`/`"invalid"`, `error_code="SESSION_EXPIRED"`/
+`"SESSION_INVALID"`. Never the token value, never the signed payload,
+never a raw `itsdangerous` exception string.
 """
 
 from __future__ import annotations
 
+import logging
 from typing import Literal
 
 from fastapi import Response
-from itsdangerous import BadData, URLSafeTimedSerializer
+from itsdangerous import BadData, SignatureExpired, URLSafeTimedSerializer
 
 from app.core.config import Settings
+
+logger = logging.getLogger(__name__)
 
 # A fixed, non-secret "salt" for itsdangerous's own key-derivation --
 # distinct from `Settings.session_secret_key` (the actual secret). Its
@@ -65,7 +80,16 @@ def verify_session_token(token: str, settings: Settings) -> str | None:
     unset -- that is a distinct, controlled condition from "bad token"
     and callers should surface it as "auth not configured," not silently
     treat it as "not logged in." Never raises for a merely bad/expired
-    token; never prints or logs the token contents.
+    token; never prints or logs the token contents or signed payload.
+
+    Step 187E: an empty/missing `token` is deliberately never logged
+    here -- that case is a normal, extremely common "not logged in yet"
+    state (hit on every unauthenticated page load), and this function
+    has no way to tell "genuinely missing" apart from "caller passed an
+    empty string on purpose" anyway; the caller
+    (`app.auth.dependencies.get_current_user_id`) is the one place that
+    knows a cookie was truly absent, and deliberately does not log that
+    either -- see that function's own docstring for why.
     """
     if not token:
         return None
@@ -73,13 +97,38 @@ def verify_session_token(token: str, settings: Settings) -> str | None:
     serializer = _serializer(settings)
     try:
         payload = serializer.loads(token, max_age=settings.session_ttl_seconds)
+    except SignatureExpired:
+        logger.warning(
+            "Session token expired.",
+            extra={
+                "auth_event": "session_verify",
+                "status": "expired",
+                "error_code": "SESSION_EXPIRED",
+            },
+        )
+        return None
     except BadData:
+        logger.warning(
+            "Session token failed verification.",
+            extra={
+                "auth_event": "session_verify",
+                "status": "invalid",
+                "error_code": "SESSION_INVALID",
+            },
+        )
         return None
 
-    if not isinstance(payload, dict):
+    if not isinstance(payload, dict) or not isinstance(payload.get("user_id"), str):
+        logger.warning(
+            "Session token payload malformed.",
+            extra={
+                "auth_event": "session_verify",
+                "status": "invalid",
+                "error_code": "SESSION_INVALID",
+            },
+        )
         return None
-    user_id = payload.get("user_id")
-    return user_id if isinstance(user_id, str) else None
+    return payload["user_id"]
 
 
 def _samesite(settings: Settings) -> Literal["lax", "strict", "none"]:

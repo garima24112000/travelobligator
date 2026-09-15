@@ -1584,7 +1584,129 @@ separately from MVP feature work):
   `npm run dev`, not a production build; the compose `redis` service
   exists but nothing in the app talks to it; `postgres` is now real and
   opt-in per the point above, but still not the default deployment path)
-- observability / structured logging
+- observability / structured logging (today: Step 187A audited the gap
+  read-only — no central logging config, no request-id correlation, no
+  APM/tracing dependency of any kind. Step 187B then added a
+  stdlib-only structured-logging *foundation*, still not a full
+  observability stack: `backend/app/core/logging_config.py`'s
+  `JsonFormatter` renders every already-existing `logger.warning(...)`
+  call (provider adapters, a few services, `trips.py`) as one JSON
+  object per stdout line — no new logging call site was added, no
+  request/response/provider/auth/persistence/async-job behavior
+  changed, and no OpenTelemetry/Elastic APM/Sentry/Datadog/structlog
+  dependency exists. `LOG_LEVEL` (default `INFO`) and
+  `STRUCTURED_LOGGING_ENABLED` (default `true`) are the only new
+  settings; disabling the latter falls back to plain-text logs, never
+  to no logs at all. Only an explicit allowlist of field names
+  (`trip_id`/`job_id`/`status`/etc.) is ever rendered — passwords,
+  session cookies, tokens, API keys, request/response bodies, provider
+  payloads, full `PlanningState`, and full itinerary content are never
+  logged, enforced by construction (the allowlist and the sensitive-name
+  denylist can never overlap). Step 187C then added request-scoped
+  correlation: a new `RequestIdMiddleware` reads a safe incoming
+  `X-Request-Id` header (or generates a fresh `req_<uuid4>` when it's
+  missing or unsafe — over-length, containing whitespace/newlines/
+  control characters, an unsafe value is always silently replaced,
+  never trusted or rejected with an error) and makes that one id the
+  response's `X-Request-Id` header, the response body's
+  `metadata.request_id`, and every structured log line emitted while
+  that request's route ran — all the same value, with zero change to
+  any existing `logger.warning(...)` call site. A request id is a
+  correlation label for reading logs next to a response, nothing more
+  — never a security token, never proof of identity, and an incoming
+  header is never treated as an authorization signal. (Frontend error
+  reporting/request-id visibility was still missing at this point in
+  Section 187 — that gap was closed later, by Step 187G below.) Step
+  187D then made Section
+  186's async generate/regenerate job path observable: real
+  `queued`/`running`/`succeeded`/`failed`/`interrupted` transitions
+  each emit one structured log line (job_id/trip_id/owner_id/job_type/
+  status/stage/error_code/duration_ms only — `duration_ms` derived from
+  real, already-persisted timestamps, never estimated), including two
+  background-regenerate refusal paths that previously logged nothing at
+  all. A duplicate-job rejection now logs `JOB_ALREADY_RUNNING` with the
+  blocking job's own identity (always the same trip/owner already
+  gating that request). The three existing exception-triggered failure
+  logs keep their exact level/message/`exc_info` behavior — the real
+  traceback still legitimately reaches server-side stdout only, same as
+  always — just reordered internally so the structured fields can
+  include a real `duration_ms` too. Verified against a real running
+  backend, not assumed: a background job's own log lines (run via
+  `BackgroundTasks.add_task`) carry the *same* `request_id` as the
+  triggering request's response header, thanks to how Starlette/anyio
+  already propagate context through its thread pool — no job-model
+  change was needed for this to work, and every background log line
+  stays independently traceable via job_id/trip_id/job_type/status
+  regardless. Step 187E then added secret-safe structured logs for
+  signup/login/logout/session verification — one new allowlisted field,
+  `auth_event` (`"signup"`/`"login"`/`"logout"`/`"session_verify"`;
+  `email` is deliberately never allowlisted, anywhere). Signup/login
+  each log a success line (`user_id`, once an account is known) and a
+  rejection line (`error_code="USER_ALREADY_EXISTS"`/
+  `"INVALID_CREDENTIALS"`) — the login rejection fires from the exact
+  same branch that already raised the identical, generic
+  `invalid_credentials_error()` for both an unknown email and a wrong
+  password, so a log line can never leak which one happened either
+  (verified live and by a dedicated test: byte-identical structured
+  fields for both cases). Logout logs success with deliberately no
+  `user_id` — that route takes no auth dependency by design (logout
+  must always work even with an invalid/missing cookie), and adding one
+  just to log an id would change that guarantee. Session verification
+  now distinguishes `SESSION_EXPIRED` from `SESSION_INVALID`
+  (tampered/malformed) in the log only — the response `verify_session_
+  token` produces is completely unchanged (`None` either way, never
+  revealing which, exactly as before). A simply-missing cookie is
+  deliberately never logged — the normal "not logged in yet" state hit
+  on every unauthenticated page load — confirmed by a dedicated test
+  showing zero log lines for that case, including a genuinely-
+  unauthenticated `GET /auth/me`. Step 187F then added provider/gateway
+  observability: `ProviderGateway`'s three real central dispatch
+  methods (`get_route`/`search_accommodations`/`search_flights` — the
+  only ones any service actually calls) each log one structured summary
+  line (`provider`/`stage`/`status`/`error_code`/`duration_ms`) around
+  the existing delegate call — `info` for a real success, `warning` for
+  any honest non-success outcome (not_connected/unavailable/failed/
+  etc.), with no new exception boundary added (a raising provider still
+  raises, completely unchanged, unlogged by the gateway — confirmed by
+  a dedicated test). `places`/`weather`/`holiday`/`currency` have no
+  central dispatch point to wrap (they're reached via direct attribute
+  access) and stay covered only by their own existing adapter-level
+  warnings — a documented scope decision, not an oversight. The two
+  LLM-backed subsystems that don't go through the gateway at all (the
+  itinerary narrator, the AI-candidate-proposal shadow stage) gained
+  the same style of logging at their own existing service/exception
+  boundaries instead — never a prompt, generated narrative text, or
+  proposal detail, only the same safe identifier/status/timing fields;
+  live-verified with both explicitly enabled, producing honest
+  `not_connected`/`PROVIDER_NOT_CONNECTED` logs with no leaked content.
+  Every existing per-adapter `logger.warning` call (OSM/OSRM/scraped
+  accommodation/scraped flight/etc.) is completely untouched — the new
+  logs are a separate, central summary layer on top. Step 187G — the
+  final Section 187 step — then closed the frontend-to-backend
+  correlation loop: `ApiResponse<T>.metadata` (frontend type) now mirrors
+  the backend's real `ResponseMetadata` shape, and `ApiRequestError`
+  gained a `requestId` field, read from the failed response's own
+  `metadata.request_id` (falling back to the `X-Request-Id` response
+  header). Reading that header cross-origin needed one small backend
+  change: `app.main`'s `CORSMiddleware` now sets
+  `expose_headers=["X-Request-Id"]` — no origin/credential/method/request-
+  header allowance changed, only which single, already-public response
+  header a cross-origin `fetch` may read (verified live and by a
+  dedicated test that the exposed-headers list contains nothing else). A
+  new in-memory-only ring buffer in `frontend/app/page.tsx`
+  (`recordApiError`, read via `useSyncExternalStore`) records recent
+  *caught* `ApiRequestError`s — request_id/status/error code/the exact
+  same safe message already shown in on-screen error banners/operation
+  label/timestamp — for a Developer-Mode-only, signed-in-only
+  "Recent API errors" diagnostics panel; hidden on the login screen,
+  hidden whenever empty, and explicitly cleared on logout/session-expiry
+  so one user's caught errors can never carry over to the next signed-in
+  session on the same tab. Nothing here is persisted (no localStorage/
+  sessionStorage), nothing is logged to the browser console by default,
+  and nothing is ever sent to an external service — nothing resembling
+  Sentry/Datadog/a frontend error-shipping pipeline exists. See
+  `docs/14_backend_architecture.md` sections 121-126 and
+  `docs/16_frontend_architecture.md` sections 49-54)
 
 This is a working MVP with real integrations, not a finished production
 system — the list above is what that gap actually consists of.

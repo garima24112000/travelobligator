@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import time
 
 from app.core.config import get_settings
 from app.models.itinerary_narrative import ItineraryNarrativeReport, ItineraryNarrativeStatus
@@ -42,6 +43,45 @@ logger = logging.getLogger(__name__)
 _DISABLED_MESSAGE = "Itinerary narrator is disabled (ITINERARY_NARRATOR_ENABLED=false)."
 _UNEXPECTED_FAILURE_MESSAGE = "The itinerary narrator failed unexpectedly."
 
+# Step 187F (docs/14_backend_architecture.md section 125): this LLM-backed
+# subsystem calls its provider directly (via `get_itinerary_narrator_
+# provider()`), never through `ProviderGateway` -- so, per that step's
+# own scope, one safe structured summary log line is added here instead,
+# at the exact service boundary that already calls the provider and
+# already catches its exceptions (the `except Exception` block below
+# existed before this step; no new exception boundary is added).
+# Deliberately logs only `provider`/`stage="itinerary_narrator"`/
+# `status`/`error_code`/`duration_ms` -- never the built `request`
+# (which embeds real scheduled-experience/restaurant names from the
+# plan), never `report.message`, and never the narrator's own generated
+# prose. The disabled short-circuit above (the default) is never logged
+# here -- no provider is even resolved in that branch, and logging
+# "disabled" on every single generation would just repeat this app's own
+# well-documented default, adding noise without new information (same
+# reasoning Step 187E applied to a simply-missing auth cookie).
+_ITINERARY_NARRATOR_STAGE = "itinerary_narrator"
+
+_NARRATOR_STATUS_TO_ERROR_CODE = {
+    "failed": "PROVIDER_FAILED",
+    "not_connected": "PROVIDER_NOT_CONNECTED",
+    "unavailable": "DATA_UNAVAILABLE",
+}
+
+
+def _narrator_log_fields(
+    *, provider_name: str, status: str, duration_ms: float
+) -> dict[str, object]:
+    fields: dict[str, object] = {
+        "provider": provider_name,
+        "stage": _ITINERARY_NARRATOR_STAGE,
+        "status": status,
+        "duration_ms": round(duration_ms, 3),
+    }
+    error_code = _NARRATOR_STATUS_TO_ERROR_CODE.get(status)
+    if error_code is not None:
+        fields["error_code"] = error_code
+    return fields
+
 
 class ItineraryNarrativeService:
     def __init__(
@@ -67,21 +107,40 @@ class ItineraryNarrativeService:
             return planning_state
 
         provider = self._provider_override or get_itinerary_narrator_provider()
+        provider_name = getattr(provider, "provider_name", "itinerary_narrator_provider")
 
+        started_at = time.monotonic()
         try:
             request = self.request_builder.build_request(planning_state)
             report = provider.narrate(request)
         except Exception:
+            duration_ms = (time.monotonic() - started_at) * 1000
             logger.warning(
                 "ItineraryNarrativeService.generate failed unexpectedly; leaving the plan "
                 "otherwise unaffected.",
                 exc_info=True,
+                extra=_narrator_log_fields(
+                    provider_name=provider_name, status="failed", duration_ms=duration_ms
+                ),
             )
             report = ItineraryNarrativeReport(
                 status=ItineraryNarrativeStatus.FAILED,
                 message=_UNEXPECTED_FAILURE_MESSAGE,
             )
+            planning_state.itinerary_narrative_report = report
+            return planning_state
 
+        duration_ms = (time.monotonic() - started_at) * 1000
+        fields = _narrator_log_fields(
+            provider_name=provider_name, status=report.status.value, duration_ms=duration_ms
+        )
+        if report.status == ItineraryNarrativeStatus.SUCCESS:
+            logger.info("ItineraryNarrativeService.generate completed.", extra=fields)
+        else:
+            # A real, honest non-success outcome returned without an
+            # exception (e.g. not_connected/unavailable) -- never logged
+            # as if it were a success.
+            logger.warning("ItineraryNarrativeService.generate did not succeed.", extra=fields)
         planning_state.itinerary_narrative_report = report
         return planning_state
 
