@@ -1851,7 +1851,9 @@ function ScheduledExperienceCard({
         tripData.planning_state.regeneration_readiness,
       );
       setLockSuccessMessage(
-        "Place marked to keep. Regeneration is not implemented yet.",
+        tripData.planning_state.regeneration_readiness.can_regenerate
+          ? "Place marked to keep. Regeneration is available in the Regeneration readiness section below."
+          : "Place marked to keep. See the Regeneration readiness section below for whether regeneration can run yet.",
       );
     } catch (err) {
       recordApiError("lock", err);
@@ -4643,7 +4645,8 @@ function FeedbackPanel({
     <div className="rounded-2xl border border-white/10 bg-white/5 p-5">
       <h2 className="text-lg font-semibold">Request changes</h2>
       <p className="mt-1 text-xs text-slate-500">
-        Feedback is captured for now. Plan regeneration will be added later.
+        Feedback is captured and classified automatically. See Regeneration
+        readiness below to check whether regeneration can run on it yet.
       </p>
 
       <textarea
@@ -6408,7 +6411,9 @@ export default function Home() {
       );
       setFeedbackText("");
       setFeedbackSuccessMessage(
-        "Feedback saved. Regeneration is not implemented yet.",
+        tripData.planning_state.regeneration_readiness.can_regenerate
+          ? "Feedback saved. Regeneration is available below."
+          : "Feedback saved. See Regeneration readiness below for whether regeneration can run yet.",
       );
     } catch (err) {
       setFeedbackErrorMessage(
