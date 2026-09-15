@@ -10,15 +10,39 @@ services:
       - "8000:8000"
     volumes:
       - ./backend:/app
+    # Step 188C: long-form conditions instead of the plain service-name
+    # list this used before -- Compose previously only waited for each
+    # container to *start*, never for Postgres to actually accept
+    # connections (even though `postgres` below already had a real
+    # `pg_isready` healthcheck that nothing referenced). This is a
+    # startup-ordering cleanup only: the app still defaults to
+    # `PERSISTENCE_BACKEND=local_json` and does not require Postgres at
+    # runtime -- see `.env.example`/docs/14_backend_architecture.md
+    # section 102. `redis` has no healthcheck (see that service's own
+    # comment below for why) so `service_started` is the only condition
+    # available for it, matching its previous (implicit) behavior exactly.
     depends_on:
-      - postgres
-      - redis
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 
   frontend:
     build:
       context: ./frontend
       dockerfile: Dockerfile
+      # Step 188E: `frontend/Dockerfile` is now multi-stage and defaults
+      # to its LAST stage (`production`, a real `next build`+`next
+      # start` path) when no target is given. Pinning `target: dev`
+      # here keeps local `docker compose up`/`docker compose build
+      # frontend` building/running the exact same `npm run dev`
+      # behavior as before this step -- this line is what prevents
+      # adding a production Docker path from silently changing local
+      # dev. See docs/16_frontend_architecture.md section 57 for the
+      # full story, including how to build/run the `production` target
+      # manually (never done by this compose file).
+      target: dev
     container_name: travelobligator_frontend
     env_file:
       - .env
@@ -28,8 +52,20 @@ services:
       - ./frontend:/app
       - /app/node_modules
       - /app/.next
+    # Step 188C: waits for the backend's own Dockerfile `HEALTHCHECK`
+    # (`/health`, liveness-only -- see backend/Dockerfile's comment) to
+    # report healthy, not just for the backend container to start.
+    # `/health` still never checks Postgres/Redis/any provider, so this
+    # is not a claim that the backend's data dependencies are ready --
+    # only that the FastAPI process itself is up and answering requests
+    # before the frontend container starts. Does not itself change the
+    # frontend's own command, env, or image -- see backend/Dockerfile
+    # and (as of Step 188E) this service's own `target: dev` comment
+    # above plus docs/16_frontend_architecture.md section 57 for the
+    # frontend's own Docker production-path story.
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
     command: npm run dev
 
   postgres:
@@ -61,6 +97,16 @@ services:
   redis:
     image: redis:7
     container_name: travelobligator_redis
+    # Step 188C: no healthcheck added here -- nothing in backend/app/
+    # reads REDIS_URL or talks to Redis at all today (see
+    # `Settings.redis_url`'s own comment in backend/app/core/config.py),
+    # so `backend`'s `depends_on` above only waits for this container to
+    # *start* (`condition: service_started`), matching this service's
+    # actual role: present in this compose file for future use, not
+    # because the app needs it. Not added purely to keep this step's
+    # diff small and because a genuinely unused dependency doesn't need
+    # a health contract yet -- add one if/when the app actually starts
+    # reading REDIS_URL.
     ports:
       - "6379:6379"
     volumes:

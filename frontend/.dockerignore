@@ -1,10 +1,28 @@
+# Step 188E: reviewed alongside adding a production Docker target
+# (docs/16_frontend_architecture.md section 57). None of these are a
+# claim that the resulting image is "production-ready" -- they only
+# keep local/dev artifacts and rebuildable output out of the Docker
+# build context and every image built from this file (`dev` and
+# `production` alike).
 node_modules/
 .next/
 out/
 dist/
 build/
+coverage/
+.turbo/
+.DS_Store
+
+# Real secrets -- never committed to this repo, excluded defensively.
+# See .env.example's own NEXT_PUBLIC_API_BASE_URL note: even the one
+# frontend env var this app reads is never a secret, since it's
+# compiled into the browser-visible bundle either way.
 .env
 .env.*
+
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+pnpm-debug.log*
+logs/
+*.log

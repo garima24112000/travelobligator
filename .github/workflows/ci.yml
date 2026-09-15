@@ -56,3 +56,31 @@ jobs:
 
       - name: Run lint
         run: npm run lint
+
+  docker-build:
+    runs-on: ubuntu-latest
+    # Step 188G (docs/14_backend_architecture.md section 132): a safe,
+    # build-only Docker regression gate for Section 188 -- confirms the
+    # backend image and both frontend Docker targets (`dev`/
+    # `production`) still build cleanly on every push/PR. Deliberately
+    # BUILD ONLY: no image is ever pushed anywhere, no registry login,
+    # cloud credential, or GitHub secret is used or required anywhere
+    # in this job, no container from any of these images is ever run
+    # here, no migration is applied, and no real provider/API call is
+    # ever made (nothing here starts a process, so nothing here could
+    # reach a live provider even if it wanted to). A green run here
+    # means "these three Dockerfiles still build" -- nothing more; it
+    # is not a deployment, not an image push, and not a claim that any
+    # resulting image is production-ready. Runs independently of the
+    # `backend`/`frontend` jobs above (both unchanged by this step).
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build backend image (build-only, no push)
+        run: docker build -t travelobligator-backend:ci ./backend
+
+      - name: Build frontend dev target (build-only, no push)
+        run: docker build --target dev -t travelobligator-frontend:ci-dev ./frontend
+
+      - name: Build frontend production target (build-only, no push)
+        run: docker build --target production -t travelobligator-frontend:ci-production ./frontend

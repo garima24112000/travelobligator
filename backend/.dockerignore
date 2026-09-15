@@ -1,9 +1,70 @@
-__pycache__/
-*.py[cod]
+# Step 188D: backend Docker build-context cleanup
+# (docs/14_backend_architecture.md section 129). Every pattern below
+# keeps a local/dev/runtime artifact out of both the Docker build
+# context sent to the daemon and the final image -- none of this
+# removes the file from the real backend/ directory on disk, and none
+# of it is a claim that the resulting image is "production-ready".
+# `alembic/`, `alembic.ini`, and `requirements.txt` are deliberately
+# NEVER excluded here -- see the `app/tests/` note below and
+# docs/14_backend_architecture.md section 129 for the full reasoning.
+
+# Local persisted state / caches (backend/.data/ -- the gitignored
+# LocalJsonStore JSON file, provider_cache.sqlite3, manual-scrape HTML
+# fixtures, and any in-progress atomic-write .tmp file). Never safe to
+# bake into an image: it's per-developer/per-machine local state, not
+# application code, and baking it in would make every build
+# non-reproducible and could leak one developer's local trip data into
+# an image built from their machine.
+.data/
+
+# Python bytecode/caches
+**/__pycache__/
+**/*.py[cod]
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.coverage
+htmlcov/
+
+# Build artifacts -- no backend build step produces these today;
+# excluded defensively for consistency with common Python project
+# layouts, not because any of them currently exist here.
+dist/
+build/
+*.egg-info/
+
+# OS/editor cruft
+.DS_Store
+
+# Virtualenvs -- never needed inside the image; the Dockerfile installs
+# requirements.txt directly into the image's own Python interpreter.
 .venv/
 venv/
+
+# Logs -- this app logs to stdout only (see
+# docs/14_backend_architecture.md section 121); nothing writes a log
+# file today, excluded defensively.
+logs/
+*.log
+
+# Real secrets -- never committed to this repo, excluded defensively.
+# See .env.example for the safe, secret-free template that IS meant to
+# be read (by a human, not copied into a Docker build).
 .env
 .env.*
+
+# Step 188D: the backend test suite. Excluded from the build context/
+# image because nothing in this runtime image ever runs pytest --
+# requirements-dev.txt (the only place pytest is declared) is already
+# never installed into this image (see backend/Dockerfile), and no
+# runtime code path imports anything under app/tests/ (confirmed by
+# grep across app/ and scripts/ before adding this line). Tests still
+# run exactly as before -- on the host (`pytest` from the repo root)
+# and in CI (`.github/workflows/ci.yml`) -- neither of which reads this
+# file or runs inside a container's built image. If a later step adds
+# a CI job that runs tests *inside* a container, that job would need
+# its own build (or a bind-mounted source tree, the way
+# docker-compose.yml's dev `backend` service already mounts
+# `./backend:/app`) rather than relying on this runtime image
+# containing app/tests/.
+app/tests/

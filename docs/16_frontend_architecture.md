@@ -4951,3 +4951,187 @@ for the full detail and the dedicated CORS test.
 No provider/API/scraping/auth/persistence/async-job behavior changed
 by this step. `tsc --noEmit`/`lint`/`build` all pass; see section 126
 for the full verification record.
+
+## 55. Section 188B: Document NEXT_PUBLIC_API_BASE_URL (docs/config only, no code change)
+
+Section 188A's audit found that `frontend/lib/api.ts`'s
+`process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000"`
+(unchanged since before Section 188, and unchanged by this step) was
+real, working code with no matching entry in `.env.example` -- the one
+place a developer or deployer would actually look to see the full
+config surface. This step is pure documentation/config-template
+work: it adds an annotated `NEXT_PUBLIC_API_BASE_URL=http://
+localhost:8000` entry to `.env.example` and a new README subsection
+("Frontend ↔ backend URL and CORS"), and touches zero frontend or
+backend source. `frontend/lib/api.ts`, every other frontend file, and
+every backend file are byte-for-byte unchanged.
+
+**Why the existing default already works locally, in both modes** (not
+new behavior -- restating what 188A found, now written down where a
+reader will actually find it): `NEXT_PUBLIC_API_BASE_URL` is compiled
+into the client-side bundle and read by the **browser**, not by
+whichever process/container is running the frontend. In bare
+`npm run dev` + `uvicorn` on one machine, `http://localhost:8000` is
+just where the backend is running. Under `docker compose up`, it still
+works, because `docker-compose.yml` publishes the backend container's
+port 8000 to `localhost:8000` on the host -- the browser reaching
+`http://localhost:8000` reaches the backend container. This is
+different from container-to-container calls, which use Compose's
+internal service-name DNS (`backend`, `postgres`, etc.) -- that
+internal hostname is never a valid value for this particular variable,
+since a browser (not another container) is what sends this request.
+
+**What a real, non-local deployment would additionally need** (Section
+188B does not set this up, verify it, or claim any deployment target
+exists): the deployed frontend sets `NEXT_PUBLIC_API_BASE_URL` to the
+deployed backend's real, browser-routable HTTPS origin, and the
+deployed backend adds the deployed frontend's own real origin to
+`BACKEND_CORS_ORIGINS` -- both sides, or the browser's cross-origin
+request is correctly rejected by the backend's existing `CORSMiddleware`
+(`backend/app/main.py`, unchanged since Step 187G — see
+`docs/14_backend_architecture.md`'s CORS notes there). Neither value
+is a secret: `NEXT_PUBLIC_*` variables are compiled directly into the
+JavaScript bundle sent to every visitor's browser, so putting a real
+API key, session key, or credential in one would expose it publicly --
+this step's own `.env.example` comment says so explicitly, and nothing
+added by this step ever puts a secret in a `NEXT_PUBLIC_*` value.
+
+**No behavior changed**: no frontend or backend source file was
+touched; `frontend/lib/api.ts`'s fallback logic, `docker-compose.yml`,
+both Dockerfiles, CORS behavior, migrations, and every provider/auth/
+persistence/async-job/observability code path from Sections 184-187
+are all unchanged -- confirmed by the full backend suite and frontend
+`tsc`/`lint`/`build` all passing unmodified, and by `git diff --stat`
+touching only `.env.example`, `README.md`, this file, and
+`docs/CODEBASE_OVERVIEW.md`.
+
+## 56. Section 188C: No Frontend Source/Dockerfile Change -- Compose Now Waits for Backend Health
+
+Section 188C (`docs/14_backend_architecture.md` section 128) added a
+Docker `HEALTHCHECK` to `backend/Dockerfile` and aligned its Python
+version to 3.13 -- `frontend/Dockerfile` was **not** touched, and its
+own production-Docker-path status is unchanged from section 54/188A:
+it still only runs `npm run dev`, there is still no multi-stage/
+production build path in the image, and this step does not add one.
+The one frontend-adjacent change is in `docker-compose.yml`: the
+`frontend` service's `depends_on` changed from a plain `- backend`
+(wait for the container to start) to `backend: condition:
+service_healthy` (wait for the backend's own `/health`-based
+healthcheck to report healthy) -- verified live that this ordering
+actually holds, not just declared in YAML (see section 128). This
+changes only *when* the frontend container starts relative to the
+backend inside `docker compose up`; it does not change the frontend's
+own image, command, environment variables, or any frontend source
+file, and it is not a claim that the backend's Postgres/Redis/provider
+dependencies are ready -- `/health` remains liveness-only.
+
+## 57. Section 188E: Frontend Production Docker Target
+
+Section 188A's audit found `frontend/Dockerfile` had no production
+path at all -- its single stage always ran `npm run dev`, even for a
+built image, which docs/16 section 54 and README's own "Current
+Status" section had already flagged honestly rather than silently.
+This step adds a real one, without changing local dev behavior at all
+and without touching any frontend application source file
+(`frontend/lib/api.ts`, `frontend/app/page.tsx`, `frontend/lib/
+types.ts` are all byte-for-byte unchanged).
+
+**`frontend/Dockerfile` is now multi-stage**, with two independent,
+explicitly-named targets:
+
+- **`dev`** -- unchanged behavior from before this step: `npm install`
+  + real `next dev` (Turbopack). Verified live, not assumed: a
+  container built with `--target dev` and run standalone showed the
+  exact same `next dev`/Turbopack startup banner in its logs as
+  before, and served `GET /` `200`.
+- **`production`** -- new: a separate `builder` stage runs `npm ci`
+  (full install, including devDependencies -- `typescript`/
+  `tailwindcss`/`@tailwindcss/postcss` are all needed to compile) then
+  a real `npm run build` (`next build`); the final `production` stage
+  is a fresh `node:20-alpine` layer that installs only production
+  dependencies (`npm ci --omit=dev`) and copies over just the
+  `builder` stage's `.next/`, `public/`, and `next.config.ts` output,
+  then runs `npm run start` (`next start`) -- never `next dev`.
+  Verified live: the container's own logs showed the real `next start`
+  banner (no Turbopack dev banner, `Ready in 84ms` -- markedly faster
+  than `next dev`'s cold-compile startup), served `GET /` `200`
+  immediately, and returned real page HTML (`<title>TravelObligator
+  </title>`, ~7.4KB of real markup, not a stub). The `production`
+  image was also smaller than the `dev` image (332MB vs. 389MB
+  compressed) -- consistent with excluding devDependencies, not just a
+  config difference with no observable effect. `next.config.ts` was
+  **not** modified by this step -- it still declares no `output:
+  "standalone"` option, so this step never claims or relies on
+  Next.js's standalone-output mode; the `production` stage instead
+  copies the full `.next/` build directory plus a production
+  `node_modules` install, a heavier but honest approach matching what
+  `next.config.ts` actually supports today.
+
+**`NEXT_PUBLIC_API_BASE_URL` is build-time-only for the `production`
+target.** Next.js's build step statically replaces every
+`process.env.NEXT_PUBLIC_*` reference in client code with its value at
+`next build` time -- the `builder` stage now accepts it as a Docker
+`ARG`/`ENV` (defaulting to the same safe `http://localhost:8000`
+`frontend/lib/api.ts` already falls back to), so it's honestly
+configurable via `docker build --build-arg
+NEXT_PUBLIC_API_BASE_URL=...`, but setting it as a container
+environment variable at `docker run`/`docker compose up` time has
+**zero effect** on an already-built image -- this is explicitly
+documented in the Dockerfile's own comment, in README's new "Frontend
+Docker: dev vs. production build" section, and here, so no one is
+misled into thinking a runtime env var will retarget a pre-built
+production image. This remains public, browser-visible configuration
+either way (see section 55) -- never a secret, and none is baked into
+either image beyond this one, already-public value.
+
+**docker-compose.yml preserves dev behavior explicitly.** Because a
+multi-stage Dockerfile defaults to its *last* stage
+(`production`) when no `--target` is given, `docker-compose.yml`'s
+`frontend` service now sets `build.target: dev` -- without this, a
+bare `docker compose build frontend` would have started building the
+production image instead, a silent behavior change this step
+specifically avoids. Verified live: `POSTGRES_HOST_PORT=15432 docker
+compose up -d postgres backend frontend` produced the same
+health-gated startup order Section 188C already established
+(`postgres` -> healthy -> `backend` -> healthy -> `frontend`), and
+`docker compose logs frontend` showed the real `next dev`/Turbopack
+banner -- confirming `docker compose up frontend` still builds and
+runs the `dev` target, not the new `production` one, after this step.
+
+**`frontend/.dockerignore`** gained `coverage/`, `.turbo/`,
+`.DS_Store`, `pnpm-debug.log*`, `logs/`, and `*.log` (all defensive --
+none of these currently exist in this project) alongside its
+already-present `node_modules/`/`.next/`/`.env`/`.env.*`/etc.
+exclusions, applying identically to both the `dev` and `production`
+build contexts.
+
+**No frontend error shipping, APM, or telemetry dependency was
+added.** No backend file was touched by this step. No provider/API/
+scraping/auth/persistence/async-job/observability behavior changed --
+confirmed by the full backend suite passing unmodified and by `git
+diff --stat` touching only `frontend/Dockerfile`,
+`frontend/.dockerignore`, `docker-compose.yml`, `README.md`,
+`docs/CODEBASE_OVERVIEW.md`, and this file. **This step does not claim
+a production-ready deployment, an external hosting/deployment platform,
+or CI Docker validation exist** -- it verifies a real, compiled Next.js
+production server builds and serves traffic, nothing more.
+
+## 58. Section 188G: No Frontend Source Change -- Final Verification + CI Build Gate Only
+
+The final step of Section 188 (full writeup:
+`docs/14_backend_architecture.md` section 132). No frontend
+application source file was touched -- `frontend/lib/api.ts`,
+`frontend/app/page.tsx`, `frontend/lib/types.ts`, `frontend/
+Dockerfile`, and `frontend/.dockerignore` are all byte-for-byte
+unchanged from Step 188E. This step's two frontend-adjacent
+contributions were: (1) `.github/workflows/ci.yml` gained a `docker-
+build` job that rebuilds both the `dev` and `production` frontend
+Docker targets on every push/PR -- build-only, no push, no run, no
+secret; and (2) a final live re-verification that both targets still
+build and behave correctly (the `production` target's container logs
+showing a real `next start` banner and serving real page HTML at
+`200`; the `dev` target's logs showing the real `next dev`/Turbopack
+banner) -- re-confirming Step 188E's own claims still hold, not
+re-testing anything new. Section 188 as a whole (188A-188G) never
+implies a full production deployment, a hosting platform, or CI/CD
+beyond this one build-only gate exists.

@@ -133,6 +133,70 @@ not because the app needs them today (see "Current Status" below). This
 is a convenience for running both services together locally, not a
 production deployment path.
 
+**CI Docker build gate (Step 188G)**: `.github/workflows/ci.yml` now
+has a third job, `docker-build`, alongside the existing `backend`/
+`frontend` test jobs (both unchanged). It builds the backend image and
+both frontend Docker targets (`dev`/`production`) on every push/PR —
+**build-only**: no image is ever pushed anywhere, no registry login/
+cloud credential/GitHub secret is used or required, no container from
+any of these images is ever run in CI, no migration is applied, and no
+real provider/API call is made. A green `docker-build` job means these
+three Dockerfiles still build — nothing more; it does not deploy
+anything and is not a claim that CI has verified a production-ready
+deployment.
+
+**Startup ordering (Step 188C)**: `backend`'s image now runs
+`python:3.13-slim` (aligned with this project's actual tested Python
+target — see `.github/workflows/ci.yml`/`CLAUDE.md` — previously it was
+`3.11-slim`, a version the test suite never actually ran under) and
+carries a Docker `HEALTHCHECK` that polls its own existing `/health`
+route. `docker-compose.yml`'s `backend` service now waits for
+`postgres`'s existing `pg_isready` healthcheck to report healthy (not
+just for the container to start, which is all it waited for before this
+step) before starting, and the `frontend` service in turn waits for
+`backend`'s new healthcheck before it starts. **`/health` is a liveness
+check only** — it confirms the FastAPI process itself is up and
+answering requests, never that Postgres, Redis, or any external
+provider is reachable or ready; nothing about this implies the overall
+stack is "production-ready," and `redis` still has no healthcheck
+(nothing in the app talks to it, so `backend` only waits for it to
+*start*, matching its previous behavior). Verified live: a real
+`docker compose up -d postgres backend` shows `postgres` reach
+`healthy` before `backend` even starts, and `backend` itself then
+reaches `(healthy)` in `docker compose ps`, serving `GET /health` `200`
+through the published host port throughout. This step does not add
+automatic migrations — `alembic upgrade head` (below) is still a manual
+step whenever you opt into `PERSISTENCE_BACKEND=postgres` — and does not
+change the frontend's own Docker image/command at all (still
+`npm run dev`, still not a production build; see "Current Status"
+below).
+
+**Build-context cleanup (Step 188D)**: `backend/.dockerignore` now
+excludes local/dev/runtime artifacts from both the Docker build context
+and the built image — `.data/` (the gitignored local JSON store,
+provider cache, and manual-scrape HTML files — genuinely 3MB+ of
+per-machine local state that was previously copied into every build
+from a machine that had run the app locally), Python bytecode/caches,
+`.venv/`/`venv/`, logs, and `app/tests/` (the backend test suite; see
+below). `.env`/`.env.*` were already excluded and remain excluded.
+**`backend/alembic/` and `alembic.ini` are deliberately never
+excluded** — every migration file still ships in the image for the
+same manual, opt-in Postgres workflow described below; this step was
+verified live to confirm all three migrations remain present and
+`alembic upgrade head` still has what it needs. Excluding `app/tests/`
+means **pytest is not, and was never, run inside this runtime image**
+— tests already only ever ran on the host (`pytest` from the repo
+root) and in CI (`.github/workflows/ci.yml`); `requirements-dev.txt`
+(the only place `pytest` itself is declared) was already never
+installed into this image, unchanged by this step. Verified live: a
+fresh `docker build --no-cache` produced a smaller image (432MB vs.
+455MB before this step), and inside the running container
+`/app/.data` and `/app/app/tests` are both absent while `/app/alembic`
+(all 3 migration files) and `/app/alembic.ini` are both present,
+`import app.main` still succeeds, and `/health` still returns `200`.
+None of this changes application behavior, adds automatic migrations,
+or makes any part of this stack "production-ready."
+
 A `SQLAlchemy`/`psycopg`-based connection foundation (`backend/app/db/`)
 and an Alembic migrations setup (`backend/alembic/`) now exist — but no
 route or service talks to Postgres unless you explicitly opt in, and
@@ -164,6 +228,36 @@ cd backend
 DATABASE_URL=postgresql://travelobligator_user:change_me@localhost:15432/travelobligator alembic upgrade head
 ```
 
+**Or, equivalently (Step 188E — same operation, wrapped in one script):**
+
+```bash
+DATABASE_URL=postgresql://travelobligator_user:change_me@localhost:15432/travelobligator \
+  python backend/scripts/run_migrations.py
+```
+
+`backend/scripts/run_migrations.py` runs the exact same `alembic
+upgrade head` shown above via Alembic's own Python API — never
+`downgrade`, never SQLAlchemy's `Base.metadata.create_all` shortcut,
+never anything beyond that one operation. It's purely a convenience
+for typing one command instead of two (`cd backend` + `alembic upgrade
+head`), documented here as an equally valid option, not a replacement.
+**This script is never run automatically** — not by `backend/
+Dockerfile`'s `CMD`/`HEALTHCHECK`, not by `docker-compose.yml`'s
+`command:` for any service, not on app startup. It is always a
+deliberate, manual operator action, exactly like typing `alembic
+upgrade head` directly always was. It never prints `DATABASE_URL` or
+any other config value/secret — only fixed, generic status lines (see
+`docs/14_backend_architecture.md` section 131 for the full safety
+contract) — and it never creates the database, role, or user
+themselves; `DATABASE_URL` must already point at a real, already-
+provisioned Postgres database (e.g. the one `docker compose up -d
+postgres` already creates via `POSTGRES_DB`/`POSTGRES_USER`/
+`POSTGRES_PASSWORD`). Live-verified end to end: run against a real
+local Postgres, it applied all 3 migrations cleanly, `alembic current`
+confirmed head, `\dt` showed the expected `trips`/`planning_states`/
+`users`/`generation_jobs`/`alembic_version` tables, and re-running it
+against an already-migrated database was a safe no-op.
+
 Then set `PERSISTENCE_BACKEND=postgres` (and the matching `DATABASE_URL`)
 in `.env` to have the real app use it, or run the opt-in test suites
 directly (`TRAVELOB_RUN_POSTGRES_TESTS=1 PERSISTENCE_BACKEND=postgres
@@ -178,6 +272,97 @@ stays SQLite regardless of `PERSISTENCE_BACKEND` — it's deliberately
 decoupled from trip/plan persistence (losing it is always safe, just a
 re-fetch) and migrating it isn't required for real MVP persistence; see
 `docs/14_backend_architecture.md` section 106.
+
+### Frontend Docker: dev vs. production build (Step 188E)
+
+`frontend/Dockerfile` is now multi-stage, with two independent,
+explicitly-named targets:
+
+- **`dev`** — unchanged from before this step: `npm install` + real
+  `next dev`. This is still exactly what local `docker compose up`
+  builds/runs — `docker-compose.yml`'s `frontend` service now sets
+  `build.target: dev` explicitly, specifically so adding a production
+  path below never silently changes local dev behavior.
+- **`production`** — new in this step: a real `next build` (in a
+  separate `builder` stage) followed by `next start` against that
+  compiled output, never `next dev`. It's the *last* stage in the
+  Dockerfile, so a bare `docker build ./frontend` with no `--target`
+  builds this one by default; `docker compose` never builds it unless
+  you explicitly override the target yourself.
+
+Build and run the production target directly (not part of
+`docker compose up`):
+
+```bash
+docker build --target production -t travelobligator-frontend:prod ./frontend
+docker run --rm -p 3000:3000 travelobligator-frontend:prod
+```
+
+This is a **verified build/run path, not a "production-ready
+deployment" claim** — it confirms a real, compiled Next.js production
+server builds and serves traffic; it says nothing about a reverse
+proxy, TLS, process supervision, autoscaling, log shipping, or any
+external hosting platform, none of which this step adds.
+
+**`NEXT_PUBLIC_API_BASE_URL` is build-time-only for this path.** Next.js
+compiles every `process.env.NEXT_PUBLIC_*` reference directly into the
+client-side JavaScript bundle during `next build` (the `builder`
+stage) — setting it as a container environment variable at `docker
+run`/`docker compose up` time has **no effect** on an already-built
+`production` image. To point a built image at a different backend, pass
+it as a build arg instead:
+
+```bash
+docker build --target production \
+  --build-arg NEXT_PUBLIC_API_BASE_URL=https://api.example.com \
+  -t travelobligator-frontend:prod ./frontend
+```
+
+The default (`http://localhost:8000`, used when no build-arg is given)
+matches `frontend/lib/api.ts`'s own existing fallback — never a real
+deployed URL. As always, `NEXT_PUBLIC_*` values are compiled into the
+browser-visible bundle and are never a safe place for a secret (see
+"Frontend ↔ backend URL and CORS" below), and a non-local deployment
+still needs the backend's own `BACKEND_CORS_ORIGINS` to include
+whatever origin serves this built frontend. No frontend error
+shipping, APM, or telemetry dependency was added by this step.
+
+### Frontend ↔ backend URL and CORS (Step 188B)
+
+`frontend/lib/api.ts` sends every API call to
+`process.env.NEXT_PUBLIC_API_BASE_URL`, falling back to
+`http://localhost:8000` when that's unset. This one setting is what
+tells the frontend where the backend actually is, in every mode:
+
+- **Local dev** (`npm run dev` + `uvicorn` directly on your machine):
+  the default `http://localhost:8000` already matches where the backend
+  is really running — nothing to configure.
+- **Local `docker compose up`**: still just the default. The request is
+  made by your **browser**, not by the frontend container internally —
+  and `docker-compose.yml` publishes the backend container's port 8000
+  to `localhost:8000` on your host, so your browser reaching
+  `http://localhost:8000` really does reach the backend container.
+  `frontend`/`backend` (the container-internal service names/hostnames
+  Compose's own network resolves) are never the right value here; those
+  only work for one container calling another, not for your browser.
+- **A real, non-local deployment** (frontend and backend each hosted
+  somewhere reachable over the internet — not something Section 188 sets
+  up or verifies): the deployed frontend must set
+  `NEXT_PUBLIC_API_BASE_URL` to the deployed backend's real,
+  browser-routable HTTPS origin (e.g. `https://api.example.com`), and
+  the deployed backend must add the deployed frontend's own real origin
+  to `BACKEND_CORS_ORIGINS` (comma-separated if more than one) — without
+  both sides matching, the browser's cross-origin request is correctly
+  refused by CORS, not a bug to work around.
+
+**`NEXT_PUBLIC_*` variables are public browser configuration, not
+secrets.** Next.js compiles anything prefixed `NEXT_PUBLIC_` directly
+into the client-side JavaScript bundle it sends to every visitor's
+browser — never put an API key, session key, password, or any other
+credential in one. See `.env.example`'s own `NEXT_PUBLIC_API_BASE_URL`
+entry and `docs/16_frontend_architecture.md` section 55 for more detail.
+This section documents an existing, already-working config surface —
+it does not add, verify, or claim any actual deployment target.
 
 ---
 
@@ -437,7 +622,11 @@ never fabricate or mock up a screenshot to stand in for one.
   `requirements.txt`/`requirements-dev.txt` installed is active.
 - **Frontend can't reach the backend** — confirm the backend is running
   on port 8000; the frontend defaults to `http://localhost:8000` via
-  `NEXT_PUBLIC_API_BASE_URL`.
+  `NEXT_PUBLIC_API_BASE_URL` (see "Frontend ↔ backend URL and CORS"
+  above for local vs. deployed values, and check for a CORS-rejection
+  message in the browser console if the frontend and backend are on
+  different origins — that means `BACKEND_CORS_ORIGINS` needs updating,
+  not `NEXT_PUBLIC_API_BASE_URL`).
 - **A trip shows `blocked`/`not_connected`/`unavailable` everywhere** —
   expected with no provider configuration changes; see "Expected Default
   Behavior" above.
@@ -1580,10 +1769,63 @@ separately from MVP feature work):
   -- a documented limitation, not a bug. `SESSION_SECRET_KEY` must be
   set in your local `.env` for any of this to work locally -- see the
   note under "Demo Walkthrough")
-- Docker/deployment hardening (the committed frontend Dockerfile runs
-  `npm run dev`, not a production build; the compose `redis` service
-  exists but nothing in the app talks to it; `postgres` is now real and
-  opt-in per the point above, but still not the default deployment path)
+- Docker/deployment hardening (Step 188A audited this gap read-only.
+  Step 188B documented `NEXT_PUBLIC_API_BASE_URL`/`BACKEND_CORS_ORIGINS`
+  for a real, non-local deployment without setting one up. Step 188C
+  aligned the backend image with this project's actual Python 3.13
+  target (previously `3.11-slim`) and added a liveness-only `/health`
+  Docker `HEALTHCHECK`, plus real Postgres-health-gated Compose startup
+  ordering (`backend` waits for `postgres` to report healthy,
+  `frontend` waits for `backend`'s own healthcheck) — none of this is a
+  readiness guarantee for Postgres/Redis/any provider, and none of it
+  makes this stack "production-ready." Step 188D narrowed the backend
+  Docker build context: `backend/.dockerignore` now excludes
+  `.data/`/caches/bytecode/`.venv`/logs/`app/tests/` from both the
+  build context and the built image (`.env`/`.env.*` were already
+  excluded) — Alembic migrations remain fully present in the image for
+  the manual opt-in Postgres workflow, and excluding `app/tests/` is
+  safe precisely because this runtime image never ran pytest anyway
+  (`requirements-dev.txt` was already never installed here). Still true
+  after 188D: the committed frontend Dockerfile runs `npm run dev`, not
+  a production build; the compose `redis` service exists but nothing in
+  the app talks to it; migrations remain a manual `alembic upgrade
+  head` step, never automatic; `postgres` is real and opt-in per the
+  point above, but still not the default deployment path. Step 188E
+  added a real, verified `production` Docker target for the frontend
+  (`next build` + `next start`, built via `docker build --target
+  production`) alongside the unchanged `dev` target local
+  `docker compose up` still builds/runs by default (`build.target: dev`
+  in `docker-compose.yml`) — a verified build/run path, not a claim
+  that a full production deployment, reverse proxy, TLS, or hosting
+  platform exists. `NEXT_PUBLIC_API_BASE_URL` is build-time-only for
+  that production image; see "Frontend Docker: dev vs. production
+  build" above. Step 188F added `backend/scripts/run_migrations.py`, a
+  small, manual/operator-invoked wrapper around the exact same `alembic
+  upgrade head` already documented above — still never run
+  automatically by the Dockerfile/Compose/app startup, still never
+  prints `DATABASE_URL`/any secret, still never creates a database/
+  role/user itself, and still never touches `PERSISTENCE_BACKEND`
+  (which remains `local_json` by default); live-verified end to end
+  against a real local Postgres, including a safe idempotent re-run.
+  **Step 188G (final Section 188 step)** added a build-only CI Docker
+  gate (see "Running with Docker Compose instead" above) and did one
+  final, full live re-verification pass of everything 188A-188F built:
+  a fresh backend image (Python 3.13, `/health` healthy, `.data`/
+  `.env*`/`app/tests` confirmed absent, `alembic.ini`/`alembic/
+  versions`/`run_migrations.py` confirmed present, `pytest` confirmed
+  not installed), fresh frontend `dev` and `production` images (the
+  latter's logs confirmed real `next start`, not `next dev`), a full
+  `docker compose up -d postgres backend frontend` (confirmed
+  `postgres` healthy before `backend` starts, `backend` healthy before
+  `frontend` starts, both `/health` and `/` serving `200`), and the
+  migration helper run against that same compose Postgres (all 3
+  migrations applied, `alembic current` at head, a safe idempotent
+  re-run). **Section 188 (188A-188G) adds Docker/deployment cleanup and
+  verification, not a full production deployment** — no Kubernetes/
+  cloud/CD config exists, no image was ever pushed anywhere, no
+  external deployment platform is configured, Postgres/migrations
+  remain entirely opt-in/manual, and nothing here claims any part of
+  this stack is "production-ready")
 - observability / structured logging (today: Step 187A audited the gap
   read-only — no central logging config, no request-id correlation, no
   APM/tracing dependency of any kind. Step 187B then added a
