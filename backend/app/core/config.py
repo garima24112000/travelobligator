@@ -59,6 +59,25 @@ _ALLOWED_SESSION_COOKIE_SAMESITE_VALUES = frozenset({"lax", "strict", "none"})
 # started from backend/ (local dev, Docker WORKDIR) or from the repo root.
 _BACKEND_ROOT = Path(__file__).resolve().parents[2]
 
+# Step 190D.1: the repo-root parent of _BACKEND_ROOT, used only to anchor
+# `.env` resolution (see `model_config` below) -- README's own documented
+# setup (`cp .env.example .env` at the repo root, *then* `cd backend` before
+# `uvicorn app.main:app --reload`) means the real `.env` a developer creates
+# always lives one level above `_BACKEND_ROOT`, never inside it. Before this
+# fix, `SettingsConfigDict(env_file=".env")` resolved that bare relative
+# string against the process's current working directory at `Settings()`
+# construction time -- so a backend launched exactly as documented (from
+# `backend/`) silently found no dotenv file at all (pydantic-settings never
+# raises for a missing one) and every field silently fell back to its
+# class-level default, real local `.env` values like
+# `AI_CANDIDATE_PROPOSAL_PROVIDER=groq`/`ITINERARY_NARRATOR_ENABLED=true`/
+# `ROUTING_PROVIDER=osrm` included. Docker was never affected by this bug --
+# `docker-compose.yml`'s own `env_file: - .env` directive already injects
+# the repo-root `.env` as real process environment variables before
+# `Settings()` ever runs, and real OS environment variables always take
+# priority over anything a dotenv file would set regardless of this anchor.
+_REPO_ROOT_ENV_FILE = _BACKEND_ROOT.parent / ".env"
+
 
 class Settings(BaseSettings):
     app_name: str = Field(default="TravelObligator", alias="APP_NAME")
@@ -948,7 +967,7 @@ class Settings(BaseSettings):
     )
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=_REPO_ROOT_ENV_FILE,
         env_file_encoding="utf-8",
         extra="ignore",
         # Lets `Settings(...)` be constructed with plain field names
