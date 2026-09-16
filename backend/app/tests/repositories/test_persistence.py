@@ -340,7 +340,8 @@ def test_feedback_history_is_persisted_and_reloadable(client: TestClient) -> Non
         "route_feasibility_context",
     ]
     assert change_preview["blocked_by"] == [
-        "Feedback regeneration is not implemented yet.",
+        "Submitting feedback does not itself trigger regeneration -- see "
+        "regeneration readiness for whether a real regeneration can run now.",
         "No AI interpretation provider is connected.",
         "No plan sections are modified by the feedback capture endpoint.",
     ]

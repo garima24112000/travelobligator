@@ -8061,3 +8061,109 @@ began) and by every step's own `git diff --stat` touching only Docker/
 CI/config/docs/test files, never `backend/app/`'s or `frontend/app/`'s
 actual application logic. **Section 188 (188A-188G) is ready for a
 single combined commit**, pending the user's own review.
+
+## 133. Section 189C: Fix Backend-Sourced Stale Regeneration Copy
+
+Section 189B's real browser smoke test surfaced a genuine, user-visible
+bug: `"Feedback regeneration is not implemented yet."`, rendered
+inside the pending-feedback/change-preview `blocked_by` list on every
+feedback submission. Real, deterministic, feedback-driven regeneration
+has existed since Step 174C/174D (`POST /trips/{trip_id}/regenerate`)
+-- this string predates that and was never updated. This step is a
+pure copy fix: **no `can_regenerate` condition, feedback
+classification rule, `change_preview`/`pending_feedback_summary`
+structure, `RegenerationReadiness`/`PlanDiffPreview` model field, or
+API status code changed anywhere.** The frontend already renders every
+`blocked_by` list generically (`.map((reason) => ...)` in four places
+in `frontend/app/page.tsx`, none of which special-case any specific
+string) -- so fixing the backend string required, and needed, zero
+frontend code change.
+
+**The same stale pattern existed in four places, not the two
+originally suspected** -- found by reading every real call site, not
+assumed:
+
+1. `backend/app/services/feedback_service.py`'s `_BLOCKED_BY` tuple
+   (used in both `apply_feedback`'s per-event `change_preview.
+   blocked_by` and `_compute_pending_feedback_summary`'s
+   `PendingFeedbackSummary.blocked_by`) -- `"Feedback regeneration is
+   not implemented yet."` replaced with `"Submitting feedback does not
+   itself trigger regeneration -- see regeneration readiness for
+   whether a real regeneration can run now."` This wording is
+   deliberately availability/state-based, not implementation-based,
+   and is true regardless of the *current* value of `can_regenerate`
+   (unlike a blanket "regeneration is unavailable" claim would be) --
+   it only describes what this one endpoint itself does (nothing to
+   the plan), which is unconditionally true.
+2. `backend/app/services/regeneration_readiness_service.py`'s
+   `recompute`, `not version_history` branch -- `"Regeneration engine
+   is not implemented yet."` (the second of two `blocked_by` entries,
+   redundant with and contradicting the first, already-accurate entry
+   "No plan has been generated for this trip yet.") replaced with
+   `"Regeneration is unavailable for the current planning state."`
+3. `backend/app/services/plan_diff_preview_service.py`'s
+   `_NO_PLAN_BLOCKED_BY` -- the sibling service `PlanDiffPreviewService`
+   mirrors `RegenerationReadinessService`'s branch structure exactly
+   and had the exact same bug (`"Regeneration engine is not
+   implemented for an ungenerated trip."`), found by checking this
+   service too even though it wasn't in this step's originally-named
+   file list -- fixed with the same replacement wording as (2), for
+   consistency.
+4. `backend/app/models/planning_state.py` -- both `PlanDiffPreview.
+   blocked_by` and `RegenerationReadiness.blocked_by`'s
+   `default_factory` values (the model's own pre-recompute defaults,
+   kept in sync with (2)/(3)'s real recompute branches by convention)
+   carried the identical stale text and were fixed identically.
+   `RegenerationReadiness`'s own class docstring also falsely claimed
+   `status`/`can_regenerate` default to "blocked"/`False` "because no
+   real regeneration engine is connected" -- reworded to correctly
+   attribute that default to being the model's pre-recompute value,
+   not a statement about the engine's existence (a real one has
+   existed since Step 174C). `FeedbackService`'s own class docstring
+   similarly overclaimed that "any regeneration" requires an
+   `AIReasoningProvider` -- corrected to state plainly that real
+   regeneration is deterministic and requires no AI provider at all;
+   an AI provider would only ever improve the *interpretation* step
+   this class already does with keyword matching.
+
+**What deliberately did not change**: `required_inputs`/
+`available_inputs`/`missing_capabilities` still use the symbolic
+capability-name token `"regeneration_engine"` (alongside
+`"generated_plan"`/`"pending_feedback"`/`"version_history"`/
+`"plan_diff_preview"`) -- this is a machine-readable identifier list,
+not English prose claiming something is unimplemented, and changing
+its content would touch the readiness computation itself, out of this
+step's pure-copy-fix scope. `_compute_pending_feedback_summary`'s own
+`note` field ("Feedback has been captured and interpreted, but no plan
+sections have been regenerated.") was already accurate (state-based,
+never claims regeneration is impossible) and was left untouched.
+
+**Tests**: updated the 4 existing tests that asserted the exact old
+string (`backend/app/tests/repositories/test_persistence.py`, one
+round-trip assertion; `backend/app/tests/api/test_trips_smoke.py`,
+three assertions across the change-preview and pending-summary
+endpoints) to the new wording -- confirmed via full-file grep that no
+other existing test anywhere asserted any of the other three fixed
+strings verbatim. Added a new, dedicated regression-guard file,
+`backend/app/tests/services/test_regeneration_copy_accuracy.py` (8
+tests): a static source-text scan across all four fixed files (catches
+a reintroduced stale phrase even in a docstring no runtime test would
+ever exercise) plus one runtime test per fixed call site confirming
+the new wording is present, `blocked_by`'s length/existence is
+unchanged, and every readiness/eligibility field
+(`can_regenerate`/`status`/`preview_status`/`regeneration_available`/
+`required_inputs`/`missing_capabilities`) is byte-for-byte identical
+to before this step.
+
+**Verification**: full suite **3436 passed + 18 skipped** (3428 + 8
+new tests, zero change to any pre-existing test's outcome).
+`compileall`/`tsc`/`lint`/`build` all clean. No frontend file changed.
+No provider/API/scraping/auth/persistence/async-job/observability
+behavior changed -- confirmed by the full suite passing unmodified and
+by `git diff --stat` touching only the four backend source files named
+above, two existing backend test files, one new backend test file,
+and docs. This step does not claim regeneration always works, and
+does not claim a generated or regenerated plan is final, guaranteed,
+booking-ready, or travel-ready -- it only makes the copy describing
+regeneration's *current availability* accurate, matching what Step
+174C/174D actually built.

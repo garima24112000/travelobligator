@@ -977,7 +977,7 @@ class PlanDiffPreview(BaseModel):
     would_preserve_locked_items: list[PreservedLockedItem] = Field(default_factory=list)
     blocked_by: list[str] = Field(
         default_factory=lambda: [
-            "Feedback-driven regeneration is not implemented yet.",
+            "Regeneration is unavailable for the current planning state.",
             "No AI planning/diff provider is connected.",
             "No new plan version has been generated.",
         ]
@@ -989,14 +989,19 @@ class PlanDiffPreview(BaseModel):
 
 class RegenerationReadiness(BaseModel):
     """Deterministic, honest gate explaining whether feedback-driven
-    regeneration can run right now (Step 135). Recomputed from scratch by
-    `RegenerationReadinessService` from `version_history`, `feedback_history`,
-    and `user_locks` -- never incrementally patched. `status` stays
-    "blocked" and `can_regenerate` stays False today because no real
-    regeneration engine is connected; this model never regenerates the
-    plan, never creates a new plan version, never calls an AI/provider, and
-    never claims a change was applied or that a locked item will
-    definitely be preserved.
+    regeneration can run right now (Step 135; rewired to the real,
+    deterministic regeneration engine Step 174C connected, in Step 174D).
+    Recomputed from scratch by `RegenerationReadinessService` from
+    `version_history`, `feedback_history`, and `user_locks` -- never
+    incrementally patched. `status`/`can_regenerate` default to
+    "blocked"/`False` here only as this model's own pre-recompute default
+    (e.g. a freshly created `PlanningState` before any stage has run) --
+    `RegenerationReadinessService.recompute` is what actually determines
+    the real value from the current planning state on every call, and a
+    real regeneration engine has existed since Step 174C. This model
+    never regenerates the plan itself, never creates a new plan version,
+    never calls an AI/provider, and never claims a change was applied or
+    that a locked item will definitely be preserved.
     """
 
     status: str = "blocked"
@@ -1015,7 +1020,7 @@ class RegenerationReadiness(BaseModel):
     blocked_by: list[str] = Field(
         default_factory=lambda: [
             "No plan has been generated for this trip yet.",
-            "Regeneration engine is not implemented yet.",
+            "Regeneration is unavailable for the current planning state.",
         ]
     )
     next_step: str = "Generate the initial plan first."

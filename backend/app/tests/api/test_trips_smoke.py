@@ -6130,7 +6130,8 @@ def test_submit_feedback_appends_feedback_history(
         "route_feasibility_context",
     ]
     assert change_preview["blocked_by"] == [
-        "Feedback regeneration is not implemented yet.",
+        "Submitting feedback does not itself trigger regeneration -- see "
+        "regeneration readiness for whether a real regeneration can run now.",
         "No AI interpretation provider is connected.",
         "No plan sections are modified by the feedback capture endpoint.",
     ]
@@ -6335,7 +6336,8 @@ def test_submit_feedback_unmatched_maps_to_general_feedback(
         "route_feasibility_context",
     ]
     assert change_preview["blocked_by"] == [
-        "Feedback regeneration is not implemented yet.",
+        "Submitting feedback does not itself trigger regeneration -- see "
+        "regeneration readiness for whether a real regeneration can run now.",
         "No AI interpretation provider is connected.",
         "No plan sections are modified by the feedback capture endpoint.",
     ]
@@ -6548,7 +6550,8 @@ def test_pending_feedback_summary_after_one_feedback_item(
     ]
 
     assert summary["blocked_by"] == [
-        "Feedback regeneration is not implemented yet.",
+        "Submitting feedback does not itself trigger regeneration -- see "
+        "regeneration readiness for whether a real regeneration can run now.",
         "No AI interpretation provider is connected.",
         "No plan sections are modified by the feedback capture endpoint.",
     ]

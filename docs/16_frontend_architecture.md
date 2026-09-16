@@ -5135,3 +5135,22 @@ banner) -- re-confirming Step 188E's own claims still hold, not
 re-testing anything new. Section 188 as a whole (188A-188G) never
 implies a full production deployment, a hosting platform, or CI/CD
 beyond this one build-only gate exists.
+
+## 59. Section 189C: No Frontend Change -- Backend `blocked_by` Copy Fix Only
+
+Section 189B's real browser smoke test found a stale, user-visible
+string ("Feedback regeneration is not implemented yet.") rendered
+inside a `blocked_by` list -- but the bug lived entirely on the
+backend (`backend/app/services/feedback_service.py` and three sibling
+files; full writeup: `docs/14_backend_architecture.md` section 133).
+**No frontend file was touched by this fix, and none needed to be**:
+`frontend/app/page.tsx` already renders every `blocked_by` array
+generically, in all four places it appears
+(`changePreview.blocked_by`/`summary.blocked_by`/
+`preview.blocked_by`/`readiness.blocked_by`, each a plain
+`.map((reason, index) => ...)`) -- none of them special-case, filter,
+or hardcode any specific string. Once the backend started returning
+accurate strings, the frontend displays them correctly with zero code
+change, exactly as it already displayed the (formerly stale) ones.
+`tsc --noEmit`/`lint`/`build` were re-run and are unaffected, as
+expected for a step that changed no frontend file.

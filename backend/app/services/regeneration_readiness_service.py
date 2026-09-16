@@ -50,7 +50,7 @@ class RegenerationReadinessService:
                 missing_capabilities=["generated_plan", "regeneration_engine"],
                 blocked_by=[
                     "No plan has been generated for this trip yet.",
-                    "Regeneration engine is not implemented yet.",
+                    "Regeneration is unavailable for the current planning state.",
                 ],
                 next_step="Generate the initial plan first.",
             )

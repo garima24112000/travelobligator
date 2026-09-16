@@ -163,10 +163,18 @@ _UNCHANGED_SECTIONS: tuple[str, ...] = (
     "route_feasibility_context",
 )
 
-# Honest blockers preventing this preview from ever becoming a real
-# regeneration today.
+# Honest blockers explaining why THIS preview/summary never becomes a
+# real regeneration by itself -- real, deterministic regeneration has
+# existed since Step 174C/174D via a separate endpoint
+# (POST /trips/{trip_id}/regenerate); these blockers describe what the
+# feedback-capture endpoint itself does and doesn't do, not whether
+# regeneration exists. Whether a real regeneration can actually run
+# right now is a state question, answered by
+# `RegenerationReadinessService`/`RegenerationReadiness.can_regenerate`
+# -- never duplicated or guessed at here.
 _BLOCKED_BY: tuple[str, ...] = (
-    "Feedback regeneration is not implemented yet.",
+    "Submitting feedback does not itself trigger regeneration -- see "
+    "regeneration readiness for whether a real regeneration can run now.",
     "No AI interpretation provider is connected.",
     "No plan sections are modified by the feedback capture endpoint.",
 )
@@ -211,11 +219,17 @@ class FeedbackService:
 
     Classifying feedback text into a `feedback_type`/`affected_stages` is
     currently deterministic keyword matching only (see
-    `_FEEDBACK_TYPE_RULES`) -- a preliminary label, not an AI interpretation
-    and not something applied to the plan. Real interpretation (and any
-    regeneration) requires an AIReasoningProvider; until one is connected,
-    feedback is recorded honestly as `explanation_only` (no section is
-    regenerated).
+    `_FEEDBACK_TYPE_RULES`) -- a preliminary label, not an AI interpretation,
+    and this endpoint itself never applies anything to the plan (feedback
+    is always recorded as `explanation_only` here). Real, deterministic
+    regeneration exists as a separate action
+    (`POST /trips/{trip_id}/regenerate`, Step 174C/174D) and requires no
+    AI provider at all -- it reruns the same deterministic stage services
+    `affected_stages` already names, gated by
+    `RegenerationReadinessService`/`RegenerationReadiness.can_regenerate`.
+    An AI reasoning provider would only ever improve the *interpretation*
+    step above (turning free-text feedback into a richer label than
+    keyword matching), never regeneration itself.
     """
 
     def apply_feedback(self, planning_state: PlanningState, feedback_text: str) -> PlanningState:

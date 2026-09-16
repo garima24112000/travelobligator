@@ -13,7 +13,7 @@ from app.services.feedback_service import derive_pending_affected_stages, pendin
 # `recompute`'s branches).
 _NO_PLAN_BLOCKED_BY: tuple[str, ...] = (
     "No plan has been generated for this trip yet.",
-    "Regeneration engine is not implemented for an ungenerated trip.",
+    "Regeneration is unavailable for the current planning state.",
 )
 _NO_PENDING_FEEDBACK_BLOCKED_BY: tuple[str, ...] = (
     "No pending feedback exists yet to preview a regeneration diff.",
