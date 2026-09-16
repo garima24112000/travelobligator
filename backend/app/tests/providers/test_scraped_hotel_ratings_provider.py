@@ -89,7 +89,10 @@ def test_missing_file_message_is_honest(monkeypatch: pytest.MonkeyPatch, tmp_pat
 
     assert result.status == HotelRatingsStatus.UNAVAILABLE
     assert result.items == []
-    assert "does not exist" in (result.message or "")
+    assert "was not found" in (result.message or "")
+    # Step 190C: the real absolute local filesystem path (here, a real
+    # pytest tmp_path) must never appear in a user-facing message.
+    assert missing_path not in (result.message or "")
 
 
 def test_returns_unavailable_when_path_unset(monkeypatch: pytest.MonkeyPatch) -> None:

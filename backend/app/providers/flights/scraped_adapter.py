@@ -363,6 +363,13 @@ class ScrapedLocalFlightProvider(FlightInventoryProvider):
         # multi-source "checked: a, b, c" summary -- this is what keeps
         # every pre-185D single-source message assertion accurate.
         checked_slot_messages: list[str] = []
+        # Step 190C: parallel to `checked_paths`, but the safe,
+        # low-cardinality `source_id` for each slot rather than its real
+        # absolute local filesystem path -- `checked_paths` itself stays
+        # internal-only from here on (used only for `if`/`len()` checks
+        # below), never joined into a user-facing message; see
+        # docs/14_backend_architecture.md section 134.
+        checked_source_ids: list[str] = []
 
         for slot in slots:
             state = file_states[slot]
@@ -372,12 +379,10 @@ class ScrapedLocalFlightProvider(FlightInventoryProvider):
                 continue
 
             checked_paths.append(str(slot.path))
+            checked_source_ids.append(slot.source_id)
 
             if not state.exists:
-                reason = (
-                    f"{slot.source_id}: configured scraped-flight HTML path does not "
-                    f"exist: {slot.path}."
-                )
+                reason = f"{slot.source_id}: configured local manual scrape file was not found."
                 warnings.append(reason)
                 checked_slot_messages.append(reason)
                 continue
@@ -489,8 +494,9 @@ class ScrapedLocalFlightProvider(FlightInventoryProvider):
             message = checked_slot_messages[0]
         else:
             message = (
-                "No local scraped-flight HTML files were found. Checked: "
-                + ", ".join(checked_paths)
+                "No local scraped-flight HTML files were found. Checked "
+                "configured source(s): "
+                + ", ".join(checked_source_ids)
                 + "."
             )
 

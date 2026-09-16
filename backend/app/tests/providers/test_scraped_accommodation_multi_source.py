@@ -93,7 +93,15 @@ def test_all_missing_files_returns_unavailable_with_clear_message(
     assert result.status == AccommodationSearchStatus.UNAVAILABLE
     assert result.offers == []
     assert result.message is not None
-    assert "booking.html" in result.message or len(result.warnings) >= 6
+    assert len(result.warnings) >= 6
+    # Step 190C: the message names which configured *sources* were
+    # checked (a safe, low-cardinality label), never the real absolute
+    # local filesystem path each one resolved to.
+    assert "booking" in result.message
+    assert str(tmp_path) not in result.message
+    assert "booking.html" not in result.message
+    for warning in result.warnings:
+        assert str(tmp_path) not in warning
 
 
 # ---------------------------------------------------------------------------

@@ -8167,3 +8167,97 @@ does not claim a generated or regenerated plan is final, guaranteed,
 booking-ready, or travel-ready -- it only makes the copy describing
 regeneration's *current availability* accurate, matching what Step
 174C/174D actually built.
+
+## 134. Section 190C: Redact Local Filesystem Paths From User-Facing Provider Warnings
+
+Section 190B's real browser screenshots surfaced a real, portfolio-
+visible cosmetic bug: `ScrapedAccommodationProvider`/
+`ScrapedLocalFlightProvider`/`ScrapedLocalHotelRatingsProvider` (Steps
+168C/169B/185E, extended to multi-source in 185C/185D/185E) each
+included the real, absolute local machine filesystem path (e.g.
+`/Users/apple/Project/travelobligator/backend/.data/manual_scrapes/
+accommodations.html`) in their `message`/`warnings` output whenever a
+configured local manual-scrape file didn't exist -- surfaced to the
+frontend's Trust Dashboard, Validation Report, and Provider Coverage
+sections verbatim. **Not a secret** (no credential, token, session
+value, or `.env` content was ever involved), but unpolished and
+unnecessary to expose; the safe `source_id` label each adapter already
+used elsewhere (`success_labels`/`failed_labels`) says everything a
+user or portfolio viewer needs to know.
+
+**Exactly six leak points across three files**, found by reading every
+`f"...{slot.path}..."`/`str(slot.path)`-into-a-user-facing-field call
+site directly, not assumed: each of the three adapters had (1) a
+per-slot "file does not exist" warning embedding the raw path, and (2)
+a multi-source summary `message` joining the raw path list
+(`checked_paths`) directly with `", ".join(...)`. Fixed identically in
+all three:
+
+- **Per-slot warning**: `f"{slot.source_id}: no local file found at
+  {slot.path}."` (accommodation) / `f"{slot.source_id}: configured
+  scraped-<type> HTML path does not exist: {slot.path}."` (flights,
+  hotel-ratings) -> `f"{slot.source_id}: no local manual scrape file
+  found for this source."` / `f"{slot.source_id}: configured local
+  manual scrape file was not found."`
+- **Multi-source summary**: `"No local scraped-<type> HTML files were
+  found. Checked: " + ", ".join(checked_paths)` -> `"... Checked
+  configured source(s): " + ", ".join(checked_source_ids)`. Each
+  adapter gained one new parallel list, `checked_source_ids: list[str]`,
+  populated alongside the pre-existing `checked_paths` in the same loop
+  iteration -- `checked_paths` itself is **never removed and never
+  changes its internal role** (still exactly what
+  `if checked_paths:`/`len(checked_paths) == 1`/`if not checked_paths:`
+  branch on), it simply stops being the thing joined into a
+  user-facing string.
+
+**What deliberately did not change**: the `"path": str(slot.path)`
+entries inside `make_query_hash(...)`'s input dict (flights/hotel-
+ratings adapters) -- these feed a cache-key hash, are never returned to
+a caller or exposed via any API field, and changing them would touch
+real cache-invalidation behavior, out of this step's pure-copy-fix
+scope. No `AccommodationSearchResult`/`FlightSearchResult`/
+`HotelRatingsResult` field was added, removed, or retyped -- `message`/
+`warnings` remain exactly the same `str | None`/`list[str]` shapes.
+`AccommodationSearchStatus.UNAVAILABLE`/`FlightSearchStatus.UNAVAILABLE`/
+`HotelRatingsStatus.UNAVAILABLE` are still returned in exactly the same
+branches as before -- **no provider ever reports available/success
+when it isn't**, and no `not_connected`/`unavailable`/`failed` status
+was hidden or softened anywhere. `backend/app/core/config.py`'s
+resolved path fields (`resolved_scraped_accommodation_html_path()` and
+siblings) are completely untouched -- the real configured local paths
+still work exactly as before; only what gets *displayed* about them
+changed.
+
+**Tests**: two pre-existing tests
+(`test_scraped_flight_provider.py::test_missing_file_message_is_honest`,
+`test_scraped_hotel_ratings_provider.py::test_missing_file_message_is_honest`)
+asserted the old `"does not exist"` substring -- updated to assert the
+new `"was not found"` wording plus an explicit "the real tmp_path never
+appears" guard. One pre-existing test
+(`test_scraped_accommodation_multi_source.py::
+test_all_missing_files_returns_unavailable_with_clear_message`) had an
+`assert "booking.html" in result.message or len(result.warnings) >= 6`
+that would have kept silently passing via its own `or` fallback even
+after this fix (`"booking.html"` no longer appears) -- tightened to
+assert the real absolute path is absent and the safe `"booking"`
+source-id label is still present, so the test's own intent stays
+accurate rather than accidentally-still-green. Added a new dedicated
+regression-guard file,
+`backend/app/tests/providers/test_scraped_adapters_no_path_leak.py` (7
+tests): single-source and multi-source missing-file scenarios for all
+three adapters, each using a real pytest `tmp_path` (a genuinely
+absolute path, the same shape as a real machine's) so "the path never
+appears in `message`/`warnings`" is a real, specific assertion rather
+than a vacuous one, plus one test confirming a real, present file still
+produces a real `SUCCESS` result (proving availability logic itself is
+untouched).
+
+**Verification**: full suite **3443 passed + 18 skipped** (3436 + 7
+new tests, zero change to any pre-existing test's outcome).
+`compileall`/`tsc`/`lint`/`build` all clean. No frontend file changed
+-- confirmed unnecessary, since the frontend already renders every
+provider `message`/`warnings` field generically (no path-specific
+frontend logic ever existed to update). No provider/parsing/caching/
+availability behavior changed anywhere -- confirmed by the full suite
+passing unmodified and by `git diff --stat` touching only the three
+adapter files, three existing test files, one new test file, and docs.

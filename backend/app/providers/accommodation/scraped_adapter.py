@@ -333,7 +333,17 @@ class ScrapedAccommodationProvider(AccommodationInventoryProvider):
         success_labels: list[str] = []
         warnings: list[str] = []
         failed_labels: list[str] = []
+        # Step 190C: `checked_paths` holds the real, absolute local
+        # filesystem path per configured slot -- used only for the
+        # internal `if checked_paths:`/length checks below, NEVER for
+        # display. `checked_source_ids` is the parallel, safe,
+        # low-cardinality identifier list (the same `source_id` vocabulary
+        # already used in `success_labels`/`failed_labels`) that the
+        # user-facing summary message actually joins -- see
+        # docs/14_backend_architecture.md section 134 for why an absolute
+        # local machine path must never reach a frontend-visible field.
         checked_paths: list[str] = []
+        checked_source_ids: list[str] = []
 
         for slot in slots:
             state = file_states[slot]
@@ -343,9 +353,12 @@ class ScrapedAccommodationProvider(AccommodationInventoryProvider):
                 continue
 
             checked_paths.append(str(slot.path))
+            checked_source_ids.append(slot.source_id)
 
             if not state.exists:
-                warnings.append(f"{slot.source_id}: no local file found at {slot.path}.")
+                warnings.append(
+                    f"{slot.source_id}: no local manual scrape file found for this source."
+                )
                 continue
 
             try:
@@ -434,8 +447,9 @@ class ScrapedAccommodationProvider(AccommodationInventoryProvider):
 
         if checked_paths:
             message = (
-                "No local scraped-accommodation HTML files were found. Checked: "
-                + ", ".join(checked_paths)
+                "No local scraped-accommodation HTML files were found. Checked "
+                "configured source(s): "
+                + ", ".join(checked_source_ids)
                 + "."
             )
         else:
