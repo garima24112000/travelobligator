@@ -566,31 +566,55 @@ view.
 
 With the backend and frontend both running:
 
-1. Open `http://localhost:3000` and fill in the trip form (destination,
-   dates, travelers, pace) to create and generate a trip.
-2. Read the **Trust Dashboard** first — it summarizes what's available,
+1. **Sign up** (or log in) on the screen the app shows first. Trips are
+   private to your account — "My Trips" only ever lists your own.
+2. Fill in the trip form (destination, dates, travelers, pace) and click
+   **Create trip and generate plan**. Watch the staged button copy
+   ("Creating trip…" → "Starting generation…" → "Generating
+   itinerary…") and, if `ASYNC_GENERATION_ENABLED=true`, the job-status
+   card tracking a real backend job through `queued`/`running`/
+   `succeeded`.
+3. Read the **Trust Dashboard** first — it summarizes what's available,
    missing, or needs review across the whole plan.
-3. Check the **Validation Report** for the plan's readiness status
+4. Check the **Validation Report** for the plan's readiness status
    (`ready`/`needs_review`/`blocked`) and any critical issues or warnings.
-4. Check **Provider Coverage** to see exactly which data sources were
+5. Check **Provider Coverage** to see exactly which data sources were
    connected, not connected, or returned nothing for this trip.
-5. Scroll the day-by-day **itinerary**: numbered stops, movement rows
+6. Scroll the day-by-day **itinerary**: numbered stops, movement rows
    (shown only when provider-backed movement data exists), and the map
    view (a route path renders only when real route geometry exists for
    that leg).
-6. If accommodation/flight providers are connected (see "Optional
+7. If accommodation/flight providers are connected (see "Optional
    Provider-Backed Demos" above), check the **Accommodation/Flight
    Inventory** sections for their labeled source (bookable-provider,
    scraped/manual, or Kiwi MCP).
-7. Submit feedback in the **Request changes** box.
-8. Check **Regeneration Readiness** — it only allows regeneration when
+8. Submit feedback in the **Request changes** box.
+9. Check **Regeneration Readiness** — it only allows regeneration when
    your feedback maps to a real affected stage and no lock is active;
-   otherwise it explains exactly why not.
-9. If the itinerary narrator is enabled (see "Optional Provider-Backed
-   Demos" E above), check the **Itinerary narrative (AI)** section —
-   status/provider/model and which `PlanningState` fields were used.
-   Disabled (the default) shows a calm `not_connected`/disabled reason,
-   never a fabricated narrative.
+   otherwise it explains exactly why not (never a stale "not implemented"
+   claim — see `docs/14_backend_architecture.md` section 133). If
+   eligible, click **Regenerate from feedback** and watch the version
+   bump (`v1` → `v2`) and changed-sections list.
+10. If the itinerary narrator is enabled (see "Optional Provider-Backed
+    Demos" E above), check the **Itinerary narrative (AI)** section —
+    status/provider/model and which `PlanningState` fields were used.
+    Disabled (the default) shows a calm `not_connected`/disabled reason,
+    never a fabricated narrative.
+11. Toggle to **Developer view** and, in the top-level signed-in shell,
+    look for the **"Recent API errors (diagnostics)"** panel — it's
+    hidden by default and only appears once a real API call fails,
+    showing the operation, HTTP status, error code, safe message, and a
+    `request_id` you can grep for in the backend's own structured JSON
+    logs. A quick way to see it populated: try "Load existing trip"
+    with a made-up `trip_id`.
+12. Optional, for the deployment/DevOps side of the story: `docker
+    compose up` brings up backend + frontend + Postgres + Redis with
+    real Docker healthchecks gating startup order (`postgres` →
+    healthy → `backend` → healthy → `frontend`); `docker build --target
+    production ./frontend` builds a real `next build`/`next start`
+    image; `.github/workflows/ci.yml`'s `docker-build` job build-checks
+    all three images on every push. None of this is a claim of a hosted
+    production deployment — see "Current Status" below.
 
 Real output depends entirely on which providers you've connected — a
 default, unconfigured run will show mostly `not_connected`/`unavailable`
@@ -602,12 +626,15 @@ failure of the demo.
 This repository does not yet include screenshots. If you're preparing a
 demo or portfolio writeup, useful captures would be:
 
-- [ ] the create-trip form
+- [ ] the login/signup screen
 - [ ] the trust dashboard
-- [ ] the validation report
 - [ ] the day-by-day itinerary with the map/route-path view
-- [ ] Kiwi MCP flight inventory (with `FLIGHT_PROVIDER=kiwi_mcp` enabled)
-- [ ] the regeneration diff preview / version history
+- [ ] provider coverage + validation report (Developer view)
+- [ ] a regeneration before/after (version history + changed sections)
+- [ ] the Developer Mode "Recent API errors (diagnostics)" panel with a
+      real captured error
+- [ ] `docker compose ps` showing backend/postgres `(healthy)` and
+      frontend `Up` together (the Docker/deployment story)
 
 Capture these from your own real local run once you have one going —
 never fabricate or mock up a screenshot to stand in for one.
