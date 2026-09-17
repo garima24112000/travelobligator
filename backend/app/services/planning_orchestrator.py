@@ -1,14 +1,11 @@
 from __future__ import annotations
 
 import logging
-import time
 from datetime import date, datetime, timezone
 
 from app.core.config import get_settings
 from app.core.errors import trip_not_found_error
 from app.models.accommodation import AccommodationSearchResult, AccommodationSearchStatus
-from app.models.ai_candidate_proposal import AICandidateProposalBatch
-from app.models.candidate_grounding import CandidateGroundingBatch
 from app.models.common import ProviderStatus
 from app.models.hotel_ratings import HotelRatingsStatus
 from app.models.flight import FlightSearchResult, FlightSearchStatus
@@ -32,8 +29,14 @@ from app.repositories.factory import get_planning_state_repository, get_trip_rep
 from app.repositories.planning_state_repository import PlanningStateRepository
 from app.repositories.trip_repository import TripRepository
 from app.services.accommodation_inventory_service import AccommodationInventoryService
-from app.services.ai_candidate_discovery_service import AICandidateDiscoveryService
-from app.services.ai_candidate_promotion_service import AICandidatePromotionService
+from app.services.ai_candidate_discovery_service import (
+    AICandidateDiscoveryService,
+    apply_discovery_to_state,
+)
+from app.services.ai_candidate_promotion_service import (
+    AICandidatePromotionService,
+    apply_promotion_safely,
+)
 from app.services.candidate_quality_service import CandidateQualityService
 from app.services.destination_context_service import DestinationContextService
 from app.services.experience_planner_service import ExperiencePlannerService
@@ -358,15 +361,28 @@ class PlanningOrchestrator:
         # share identical service/gateway state -- a test (or operator)
         # that reconfigures/monkeypatches `self.<stage>_service` affects
         # both `generate_full_plan` and `generate_full_plan_via_langgraph`
-        # identically. `ai_candidate_promotion_service` is deliberately
-        # left at its default (`None`, a pure no-op) -- see
-        # `build_ai_candidate_node`'s docstring for why the AI candidate
-        # discovery/promotion integration stays a
-        # `generate_full_plan`-specific (legacy engine) feature.
+        # identically.
+        #
+        # Step 191A: `ai_candidate_discovery_service` is now passed through
+        # too (reusing this orchestrator's own instance, same as every
+        # other stage service above) -- the LangGraph `ai_candidate` node
+        # only actually calls it when `Settings.ai_candidate_discovery_enabled`
+        # is `True` (default `False`); with the flag off, passing it
+        # through changes nothing observable. `ai_candidate_promotion_service`
+        # is deliberately still left at its default (`None`) here -- the
+        # node lazily default-constructs its own real
+        # `AICandidatePromotionService` only when the live flag is on (see
+        # `build_ai_candidate_node`'s docstring); passing a real one
+        # through unconditionally would make the node call
+        # `apply_promotion` even with live discovery disabled, which would
+        # be an observable behavior change (`ai_candidate_promotion_report`
+        # would flip from `None` to an empty report on every default
+        # generation instead of staying `None`).
         self.langgraph_planning_service = langgraph_planning_service or LangGraphPlanningService(
             traveler_profile_service=self.traveler_profile_service,
             destination_context_service=self.destination_context_service,
             candidate_quality_service=self.candidate_quality_service,
+            ai_candidate_discovery_service=self.ai_candidate_discovery_service,
             trip_strategy_service=self.trip_strategy_service,
             stay_transport_service=self.stay_transport_service,
             accommodation_inventory_service=self.accommodation_inventory_service,
@@ -536,30 +552,36 @@ class PlanningOrchestrator:
         docs/14_backend_architecture.md section 26).
 
         Gated by `Settings.ai_candidate_discovery_shadow_mode_enabled`
-        (default False). When disabled, this is a pure no-op:
+        (default False) -- a separate, legacy-engine-only flag from Step
+        191A's `Settings.ai_candidate_discovery_enabled`, which the
+        LangGraph engine's `ai_candidate` node reads instead (see
+        `build_ai_candidate_node`'s docstring); this method is never
+        called by that node. When disabled, this is a pure no-op:
         `planning_state.ai_candidate_proposal_batch` and
-        `.candidate_grounding_batch` stay `None`, exactly as before this
-        step. When enabled and `destination_context` already exists, it
-        runs `AICandidateDiscoveryService.dry_run` and stores the validated
-        request/result pairs it returns, for inspection only.
+        `.candidate_grounding_batch` stay `None`, exactly as before Step
+        161B. When enabled, this delegates to
+        `app.services.ai_candidate_discovery_service.
+        apply_discovery_to_state` (Step 191A) -- the exact same fail-safe,
+        state-mutating implementation the live LangGraph stage also uses,
+        so this method and that one never duplicate the same
+        orchestration logic.
 
         It never mutates `destination_context` candidates, never feeds
         proposals or `GroundedCandidate`s into `ExperiencePlannerService` or
         `CandidateQualityService`, never changes `validation_report`
         readiness or regeneration, and never touches
         `provider_coverage`/`data_sources_used`. If `dry_run` raises for any
-        reason, this fails safe: the exception is swallowed, nothing is
-        stored, and generation continues completely unaffected -- never a
-        fabricated proposal or grounded candidate.
+        reason, this fails safe: the exception is caught inside
+        `apply_discovery_to_state`, nothing is stored, and generation
+        continues completely unaffected -- never a fabricated proposal or
+        grounded candidate.
 
         Step 187F (docs/14_backend_architecture.md section 125): this
         LLM-backed subsystem calls its proposal provider directly
         (`AICandidateDiscoveryService.dry_run` -> `proposal_provider.
         propose(...)`), never through `ProviderGateway` -- so one safe
-        structured summary log line is emitted here instead, at this
-        exact pre-existing `try`/`except` boundary (no new exception
-        boundary added; the swallow-and-continue behavior above is
-        completely unchanged). Deliberately logs only `provider`/
+        structured summary log line is emitted by `apply_discovery_to_state`
+        instead. Deliberately logs only `provider`/
         `stage="ai_candidate_proposal"`/`status`/`error_code`/
         `duration_ms` -- never the built proposal request (which embeds
         real destination-context text), never a proposal's own title/
@@ -568,62 +590,11 @@ class PlanningOrchestrator:
         if not get_settings().ai_candidate_discovery_shadow_mode_enabled:
             return planning_state
 
-        if planning_state.destination_context is None:
-            return planning_state
-
-        # `getattr(..., None)` on the service itself first -- a test
-        # double standing in for the whole `AICandidateDiscoveryService`
-        # (not just its provider) may not expose `.proposal_provider` at
-        # all, and this log line must never be the reason that fails.
-        proposal_provider = getattr(self.ai_candidate_discovery_service, "proposal_provider", None)
-        provider_name = getattr(proposal_provider, "provider_name", "ai_candidate_proposal_provider")
-        started_at = time.monotonic()
-        try:
-            dry_run_result = self.ai_candidate_discovery_service.dry_run(planning_state)
-        except Exception:
-            duration_ms = (time.monotonic() - started_at) * 1000
-            logger.warning(
-                "AICandidateDiscoveryService.dry_run failed unexpectedly during the shadow "
-                "stage; leaving the plan otherwise unaffected.",
-                exc_info=True,
-                extra={
-                    "provider": provider_name,
-                    "stage": "ai_candidate_proposal",
-                    "status": "failed",
-                    "error_code": "PROVIDER_FAILED",
-                    "duration_ms": round(duration_ms, 3),
-                },
-            )
-            return planning_state
-
-        duration_ms = (time.monotonic() - started_at) * 1000
-        proposal_status = dry_run_result.proposal_result.status.value
-        log_fields: dict[str, object] = {
-            "provider": provider_name,
-            "stage": "ai_candidate_proposal",
-            "status": proposal_status,
-            "duration_ms": round(duration_ms, 3),
-        }
-        # Only "completed" (AICandidateProposalStatus.COMPLETED) is a
-        # real success -- "not_connected"/"skipped"/"rejected" are all
-        # real, honest non-success outcomes and logged at warning,
-        # mirroring ProviderGateway's own info/warning split.
-        if proposal_status == "completed":
-            logger.info("AI candidate proposal call completed.", extra=log_fields)
-        else:
-            if proposal_status == "not_connected":
-                log_fields["error_code"] = "PROVIDER_NOT_CONNECTED"
-            logger.warning("AI candidate proposal call did not succeed.", extra=log_fields)
-
-        planning_state.ai_candidate_proposal_batch = AICandidateProposalBatch(
-            request=dry_run_result.proposal_request,
-            result=dry_run_result.proposal_result,
+        return apply_discovery_to_state(
+            planning_state,
+            self.ai_candidate_discovery_service,
+            stage_label="ai_candidate_proposal",
         )
-        planning_state.candidate_grounding_batch = CandidateGroundingBatch(
-            request=dry_run_result.grounding_request,
-            result=dry_run_result.grounding_result,
-        )
-        return planning_state
 
     def _run_ai_candidate_promotion_stage(self, planning_state: PlanningState) -> PlanningState:
         """Auto-computes and stores `ai_candidate_promotion_report` (Step
@@ -655,20 +626,16 @@ class PlanningOrchestrator:
         swallowed and `ai_candidate_promotion_report` stays whatever it
         already was, never crashing generation for an unrelated reason --
         mirroring every other Step 166D-style fail-safe stage in this
-        orchestrator.
+        orchestrator. As of Step 191A, this fail-safe wrapping is
+        `app.services.ai_candidate_promotion_service.apply_promotion_safely`
+        -- the exact same implementation the live LangGraph `ai_candidate`
+        node also calls, so this method and that node never duplicate the
+        same orchestration logic.
         """
         if planning_state.ai_candidate_proposal_batch is None:
             return planning_state
 
-        try:
-            planning_state = self.ai_candidate_promotion_service.apply_promotion(planning_state)
-        except Exception:
-            logger.warning(
-                "AICandidatePromotionService.apply_promotion failed unexpectedly during "
-                "generation; leaving ai_candidate_promotion_report unchanged.",
-                exc_info=True,
-            )
-        return planning_state
+        return apply_promotion_safely(planning_state, self.ai_candidate_promotion_service)
 
     def run_trip_strategy_stage(self, planning_state: PlanningState) -> PlanningState:
         planning_state = self.trip_strategy_service.run(planning_state)

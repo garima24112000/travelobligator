@@ -237,20 +237,27 @@ def test_graph_continues_past_a_failed_node() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 8-10. No Groq/Anthropic/OpenAI, AI candidate discovery, or live-network
-#       imports anywhere in this graph skeleton. As of Step 171E, this
-#       graph legitimately imports `AccommodationInventoryService`/
-#       `FlightInventoryService` (for stage parity with legacy
-#       generation's bookable-inventory reports, docs/13_llm_reasoning_
-#       pipeline.md, docs/14_backend_architecture.md) -- both call a
-#       provider only through the same `ProviderGateway` every other
-#       service here already used, never a live scraper/network call of
-#       their own, so they are removed from this disallowed list.
-#       `ai_candidate_discovery_service` stays banned: the AI candidate
-#       discovery *shadow* stage remains an intentionally
-#       `PlanningOrchestrator.generate_full_plan`-specific (legacy engine)
-#       integration -- see `build_ai_candidate_node`'s docstring in
-#       `planning_graph_nodes.py`.
+# 8-10. No Groq/Anthropic/OpenAI or live-network client imports anywhere
+#       in this graph skeleton. As of Step 171E, this graph legitimately
+#       imports `AccommodationInventoryService`/`FlightInventoryService`
+#       (for stage parity with legacy generation's bookable-inventory
+#       reports, docs/13_llm_reasoning_pipeline.md,
+#       docs/14_backend_architecture.md) -- both call a provider only
+#       through the same `ProviderGateway` every other service here
+#       already used, never a live scraper/network call of their own, so
+#       they are removed from this disallowed list. As of Step 191A
+#       (docs/14_backend_architecture.md section 135),
+#       `ai_candidate_discovery_service` is *also* removed from this list
+#       -- it is now a legitimate, intentional import (`build_planning_graph`
+#       threads a real `AICandidateDiscoveryService` through to the
+#       `ai_candidate` node, gated by `Settings.ai_candidate_discovery_
+#       enabled`). This module still never imports Groq/Anthropic/OpenAI/
+#       LangSmith or `app.providers.*` directly -- the node's only path to
+#       a real LLM stays the layered `AICandidateDiscoveryService` ->
+#       `AICandidateProposalProvider` -> adapter abstraction, never a
+#       direct client import here. See `build_ai_candidate_node`'s
+#       docstring in `planning_graph_nodes.py` for the full gated
+#       behavior.
 # ---------------------------------------------------------------------------
 
 
@@ -269,8 +276,8 @@ def test_planning_graph_module_has_no_disallowed_imports() -> None:
         "groq",
         "openai",
         "langsmith",
-        "ai_candidate_discovery_service",
         "ai_candidate_proposal_provider",
+        "app.providers",
         "requests",
         "httpx",
     )
@@ -278,6 +285,11 @@ def test_planning_graph_module_has_no_disallowed_imports() -> None:
         lowered = name.lower()
         for disallowed in disallowed_substrings:
             assert disallowed not in lowered, f"Disallowed import found: {name}"
+
+    # Step 191A: the discovery service IS now imported (see comment above)
+    # -- assert that explicitly rather than just removing it from the
+    # banned list, so a future accidental removal of this wiring is caught.
+    assert any("ai_candidate_discovery_service" in name for name in imported_names)
 
 
 def test_default_graph_run_makes_no_real_network_call(monkeypatch: pytest.MonkeyPatch) -> None:

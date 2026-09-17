@@ -13,6 +13,7 @@ from app.models.planning_state import (
 )
 from app.providers.gateway import provider_gateway
 from app.services.accommodation_inventory_service import AccommodationInventoryService
+from app.services.ai_candidate_discovery_service import AICandidateDiscoveryService
 from app.services.ai_candidate_promotion_service import AICandidatePromotionService
 from app.services.candidate_quality_service import CandidateQualityService
 from app.services.destination_context_service import DestinationContextService
@@ -55,9 +56,14 @@ logger = logging.getLogger(__name__)
 #   generate_full_plan_via_langgraph` calls it, keeping persistence and
 #   pipeline-status/version bookkeeping the orchestrator's own
 #   responsibility (see that method's docstring). It never calls Groq/
-#   Anthropic/OpenAI or any other LLM, never calls an AI candidate
-#   proposal provider directly, and never calls Kiwi/MCP or a live
-#   scraper.
+#   Anthropic/OpenAI or any other LLM directly, and never calls Kiwi/MCP
+#   or a live scraper. As of Step 191A (docs/14_backend_architecture.md
+#   section 135), it does accept and pass through an
+#   `ai_candidate_discovery_service` -- itself still LLM-free at this
+#   layer, delegating any real provider call to the injected
+#   `AICandidateProposalProvider` two layers down, exactly like every
+#   other stage service here already delegates its own provider calls to
+#   `ProviderGateway`.
 # - It never persists anything: no `PlanningStateRepository`/
 #   `TripRepository` call anywhere in this module. Persistence remains the
 #   exclusive responsibility of the route/orchestrator layer that decides
@@ -96,11 +102,15 @@ class LangGraphPlanningService:
     in any environment since their provider calls go through
     `ProviderGateway`'s existing safe defaults -- tests should still
     inject fakes to keep runs fully deterministic and network-free.
-    `ai_candidate_promotion_service` defaults to `None`, which keeps the
-    `ai_candidate` graph node a pure no-op (see
-    `build_ai_candidate_node`'s docstring) -- this service never calls
-    `AICandidateDiscoveryService`/an AI candidate proposal provider on its
-    own.
+    With no `promotion_service`/`discovery_service` injected and
+    `Settings.ai_candidate_discovery_enabled` at its default `False`, the
+    `ai_candidate` graph node stays the exact pure no-op checkpoint it was
+    before Step 191A -- this service never calls `AICandidateDiscoveryService`/
+    an AI candidate proposal provider on its own. `ai_candidate_discovery_service`
+    is threaded through to `PlanningGraphRunner` (and, from there, into the
+    `ai_candidate` node) only so the node can call it *when the live flag
+    is explicitly enabled* -- see `build_ai_candidate_node`'s docstring for
+    the exact dual-gate behavior.
     """
 
     def __init__(
@@ -108,6 +118,7 @@ class LangGraphPlanningService:
         traveler_profile_service: TravelerProfileService | None = None,
         destination_context_service: DestinationContextService | None = None,
         candidate_quality_service: CandidateQualityService | None = None,
+        ai_candidate_discovery_service: AICandidateDiscoveryService | None = None,
         ai_candidate_promotion_service: AICandidatePromotionService | None = None,
         trip_strategy_service: TripStrategyService | None = None,
         stay_transport_service: StayTransportService | None = None,
@@ -124,6 +135,7 @@ class LangGraphPlanningService:
             traveler_profile_service=traveler_profile_service,
             destination_context_service=destination_context_service,
             candidate_quality_service=candidate_quality_service,
+            ai_candidate_discovery_service=ai_candidate_discovery_service,
             ai_candidate_promotion_service=ai_candidate_promotion_service,
             trip_strategy_service=trip_strategy_service,
             stay_transport_service=stay_transport_service,

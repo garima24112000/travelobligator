@@ -605,32 +605,46 @@ def test_ai_candidate_review_and_promotion_endpoints_unaffected_by_engine_mode(
 # ---------------------------------------------------------------------------
 
 
-def test_langgraph_mode_generate_does_not_call_anthropic_or_groq(
+def test_langgraph_mode_generate_does_not_call_anthropic_or_groq_when_discovery_disabled(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """As of Step 191A (docs/14_backend_architecture.md section 135), this
+    is no longer a universal truth -- it now holds only while
+    `Settings.ai_candidate_discovery_enabled` is at its default `False`.
+    See test_langgraph_live_ai_candidate_discovery.py for the counterpart
+    proving Groq/Anthropic *is* reachable once that flag is explicitly
+    enabled."""
+
     def _fail(*args: object, **kwargs: object) -> None:
         raise AssertionError("Anthropic/Groq provider must never be called by langgraph-mode /generate.")
 
     monkeypatch.setattr(AnthropicAICandidateProposalProvider, "propose", _fail)
     monkeypatch.setattr(GroqAICandidateProposalProvider, "propose", _fail)
     _set_engine_mode(monkeypatch, "langgraph")
+    assert get_settings().ai_candidate_discovery_enabled is False
 
     trip_id = _create_trip(client)
     response = client.post(f"/trips/{trip_id}/generate")
     assert response.status_code == 200
 
 
-def test_langgraph_mode_generate_does_not_call_ai_candidate_discovery_service(
+def test_langgraph_mode_generate_does_not_call_ai_candidate_discovery_service_when_disabled(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """As of Step 191A, no longer a universal truth -- holds only while
+    `Settings.ai_candidate_discovery_enabled` is at its default `False`.
+    See test_langgraph_live_ai_candidate_discovery.py for the counterpart
+    proving `dry_run` *is* called once that flag is explicitly enabled."""
+
     def _fail(self: Any, *args: object, **kwargs: object) -> None:
         raise AssertionError(
             "AICandidateDiscoveryService.dry_run must never be called by langgraph-mode "
-            "/generate's default ai_candidate node."
+            "/generate's default (live-discovery-disabled) ai_candidate node."
         )
 
     monkeypatch.setattr(AICandidateDiscoveryService, "dry_run", _fail)
     _set_engine_mode(monkeypatch, "langgraph")
+    assert get_settings().ai_candidate_discovery_enabled is False
 
     trip_id = _create_trip(client)
     response = client.post(f"/trips/{trip_id}/generate")

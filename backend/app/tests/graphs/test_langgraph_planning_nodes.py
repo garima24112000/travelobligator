@@ -220,7 +220,15 @@ def test_ai_candidate_node_failure_records_failed_node_and_safe_error() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 8-10. No LLM/provider/network calls from any node in this module.
+# 8-10. No direct LLM client/provider/network-library imports from any
+#       node in this module. As of Step 191A
+#       (docs/14_backend_architecture.md section 135),
+#       `ai_candidate_discovery_service` is a legitimate, intentional
+#       import (the live `ai_candidate` node's only path to
+#       `AICandidateDiscoveryService`) -- `app.providers`/Groq/Anthropic/
+#       OpenAI/LangSmith stay fully banned: the node reaches a real LLM
+#       only through that service's own layered provider abstraction,
+#       never a direct import here.
 # ---------------------------------------------------------------------------
 
 
@@ -244,7 +252,6 @@ def test_nodes_module_has_no_llm_or_network_imports() -> None:
         "groq",
         "openai",
         "langsmith",
-        "ai_candidate_discovery_service",
         "ai_candidate_proposal_provider",
         "app.providers",
         "requests",
@@ -254,3 +261,209 @@ def test_nodes_module_has_no_llm_or_network_imports() -> None:
         lowered = name.lower()
         for disallowed in disallowed_substrings:
             assert disallowed not in lowered, f"Disallowed import found: {name}"
+
+    assert any("ai_candidate_discovery_service" in name for name in imported_names)
+
+
+# ---------------------------------------------------------------------------
+# Step 191A: live AI candidate discovery, gated by
+# Settings.ai_candidate_discovery_enabled (default False). These tests
+# exercise build_ai_candidate_node directly with deterministic fakes --
+# never a real Groq/Anthropic/OpenAI call.
+# ---------------------------------------------------------------------------
+
+
+class _FakeAICandidateDiscoveryService:
+    """Deterministic test double standing in for the whole
+    `AICandidateDiscoveryService` -- exposes only `dry_run`, matching
+    every other pre-191A fake built for the shadow-stage tests.
+    """
+
+    def __init__(
+        self,
+        result: Any = None,
+        *,
+        raises: bool = False,
+    ) -> None:
+        self._result = result
+        self.raises = raises
+        self.call_count = 0
+
+    def dry_run(self, planning_state: PlanningState, **kwargs: Any) -> Any:
+        self.call_count += 1
+        if self.raises:
+            raise RuntimeError("simulated discovery failure")
+        return self._result
+
+
+class _FakeAICandidateProposalProviderForNodeTest:
+    """Deterministic fake `AICandidateProposalProvider` -- never a real
+    Groq/Anthropic/OpenAI call. Proposes exactly the candidate
+    `_state_with_destination_context` also seeds as a real destination-
+    context provider candidate, so grounding actually completes end to
+    end (mirrors the proven pattern in
+    test_planning_orchestrator_ai_candidate_promotion.py).
+    """
+
+    provider_name = "fake_node_test_provider"
+
+    def propose(self, request: Any) -> Any:
+        from app.models.ai_candidate_proposal import (
+            AICandidateProposal,
+            AICandidateProposalGuardrailReport,
+            AICandidateProposalResult,
+            AICandidateProposalStatus,
+            AICandidateType,
+            AICandidateVerificationRequirement,
+        )
+
+        proposal = AICandidateProposal(
+            proposal_id="proposal_001",
+            candidate_name="Test Fixture Attraction One",
+            candidate_type=AICandidateType.ATTRACTION,
+            why_consider="Locally known landmark that may be under-tagged in provider data.",
+            verification_requirements=[
+                AICandidateVerificationRequirement.MUST_GROUND_BY_NAME_AND_LOCATION
+            ],
+            confidence=0.5,
+        )
+        return AICandidateProposalResult(
+            task=request.task,
+            status=AICandidateProposalStatus.COMPLETED,
+            proposals=[proposal],
+            guardrail_report=AICandidateProposalGuardrailReport(passed=True),
+            provider_name=self.provider_name,
+            confidence=0.6,
+        )
+
+
+def _state_with_destination_context() -> Any:
+    from app.models.planning_state import DestinationContext
+
+    state = _initial_state()
+    state["planning_state"].destination_context = DestinationContext(
+        destination_name="Testville, Testland",
+        candidate_pois=[
+            {
+                "name": "Test Fixture Attraction One",
+                "coordinates": {"lat": 1.0, "lng": 2.0},
+                "category": "attraction",
+                "provider_name": "test_places_provider",
+                "provider_place_id": "test/attraction/1",
+                "data_status": "live",
+                "confidence": 0.9,
+            }
+        ],
+        candidate_restaurants=[],
+        candidate_accommodation_pois=[],
+    )
+    return state
+
+
+def test_ai_candidate_node_live_disabled_by_default_never_calls_discovery_service(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.core.config import Settings
+
+    import app.graphs.planning_graph_nodes as nodes_module
+
+    monkeypatch.setattr(nodes_module, "get_settings", lambda: Settings(_env_file=None))
+    fake_discovery = _FakeAICandidateDiscoveryService()
+    node = build_ai_candidate_node(discovery_service=fake_discovery)
+    state = _state_with_destination_context()
+    before = state["planning_state"].model_copy(deep=True)
+
+    result = node(state)
+
+    assert result == {"completed_nodes": ["ai_candidate"]}
+    assert fake_discovery.call_count == 0
+    assert state["planning_state"] == before
+
+
+def test_ai_candidate_node_live_enabled_calls_discovery_and_promotion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """End-to-end at the node level: a fake (but structurally real)
+    proposal provider proposes a candidate that matches a real
+    destination-context provider candidate by name, so grounding actually
+    completes and the candidate is actually promoted -- proving
+    proposal -> grounding -> promotion all really run, not just that
+    dry_run was called once."""
+    from app.core.config import Settings
+    from app.services.ai_candidate_discovery_service import AICandidateDiscoveryService
+    from app.services.ai_candidate_promotion_service import AICandidatePromotionService
+
+    import app.graphs.planning_graph_nodes as nodes_module
+
+    monkeypatch.setattr(
+        nodes_module, "get_settings", lambda: Settings(_env_file=None, AI_CANDIDATE_DISCOVERY_ENABLED=True)
+    )
+    real_discovery = AICandidateDiscoveryService(
+        proposal_provider=_FakeAICandidateProposalProviderForNodeTest()
+    )
+    real_promotion = AICandidatePromotionService()
+    node = build_ai_candidate_node(real_promotion, real_discovery)
+    state = _state_with_destination_context()
+    # candidate_quality_report is required for promotion eligibility (Rule
+    # 4) -- populate it the same way CandidateQualityService's own output
+    # shape would, with an accepted tier for the matching candidate.
+    from datetime import datetime, timezone
+
+    from app.models.candidate_quality import (
+        CandidateQualityReport,
+        CandidateQualityScore,
+        CandidateQualityTier,
+        CandidateUseCase,
+    )
+
+    state["planning_state"].candidate_quality_report = CandidateQualityReport(
+        destination_name="Testville, Testland",
+        generated_at=datetime.now(timezone.utc),
+        attraction_scores=[
+            CandidateQualityScore(
+                candidate_id="test/attraction/1",
+                candidate_name="Test Fixture Attraction One",
+                use_case=CandidateUseCase.ATTRACTION,
+                quality_tier=CandidateQualityTier.PRIMARY_ANCHOR,
+                total_score=0.9,
+            )
+        ],
+        restaurant_scores=[],
+        accommodation_poi_scores=[],
+    )
+
+    result = node(state)
+
+    assert result["completed_nodes"] == ["ai_candidate"]
+    planning_state = result["planning_state"]
+    assert planning_state.ai_candidate_proposal_batch is not None
+    assert planning_state.ai_candidate_proposal_batch.result.status.value == "completed"
+    assert planning_state.candidate_grounding_batch is not None
+    assert planning_state.candidate_grounding_batch.result.status.value == "completed"
+    assert planning_state.ai_candidate_promotion_report is not None
+    assert planning_state.ai_candidate_promotion_report.promoted_count == 1
+
+
+def test_ai_candidate_node_live_enabled_discovery_failure_is_safe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.core.config import Settings
+
+    import app.graphs.planning_graph_nodes as nodes_module
+
+    monkeypatch.setattr(
+        nodes_module, "get_settings", lambda: Settings(_env_file=None, AI_CANDIDATE_DISCOVERY_ENABLED=True)
+    )
+    fake_discovery = _FakeAICandidateDiscoveryService(raises=True)
+    fake_promotion = _FakeAICandidatePromotionService()
+    node = build_ai_candidate_node(fake_promotion, fake_discovery)
+    state = _state_with_destination_context()
+
+    result = node(state)
+
+    # apply_discovery_to_state swallows the exception -- node still
+    # "succeeds" (it never crashes generation), but no batch is stored and
+    # promotion has nothing to promote (ai_candidate_proposal_batch stays
+    # None so apply_promotion still runs but reports "no_candidate_data").
+    assert "failed_nodes" not in result
+    assert result["planning_state"].ai_candidate_proposal_batch is None

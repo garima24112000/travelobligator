@@ -9,7 +9,14 @@ from app.models.common import ProviderStatus
 from app.models.flight import FlightSearchResult, FlightSearchStatus
 from app.models.hotel_ratings import HotelRatingsStatus
 from app.services.accommodation_inventory_service import AccommodationInventoryService
-from app.services.ai_candidate_promotion_service import AICandidatePromotionService
+from app.services.ai_candidate_discovery_service import (
+    AICandidateDiscoveryService,
+    apply_discovery_to_state,
+)
+from app.services.ai_candidate_promotion_service import (
+    AICandidatePromotionService,
+    apply_promotion_safely,
+)
 from app.services.candidate_quality_service import CandidateQualityService
 from app.services.destination_context_service import DestinationContextService
 from app.services.experience_planner_service import ExperiencePlannerService
@@ -27,9 +34,18 @@ from app.services.trip_strategy_service import TripStrategyService
 # in Step 171E -- docs/13_llm_reasoning_pipeline.md,
 # docs/14_backend_architecture.md).
 #
-# Every node here is a thin wrapper around exactly one already-existing,
-# already-deterministic service call -- no node duplicates a service's own
-# logic, and no node calls Groq/Anthropic/OpenAI or any other LLM directly.
+# Every node here is a thin wrapper around exactly one already-existing
+# service call -- no node duplicates a service's own logic, and no node
+# imports/calls Groq/Anthropic/OpenAI or any other LLM client directly
+# (enforced by this module's own `test_nodes_module_has_no_llm_or_network_
+# imports`). As of Step 191A (docs/14_backend_architecture.md section
+# 135), `build_ai_candidate_node`'s node is the one exception to "already-
+# deterministic": when `Settings.ai_candidate_discovery_enabled` is
+# explicitly `True` (default `False`), it can reach a real LLM -- but only
+# through the same layered `AICandidateDiscoveryService` ->
+# `AICandidateProposalProvider` -> Groq/Anthropic adapter abstraction the
+# legacy engine already used, never a direct client import here. See that
+# node's own docstring for the full gated behavior.
 # `PlanningState` remains the single source of truth: a node either calls
 # a service's `run`/`build_report`/`apply_promotion` (which mutates and
 # returns `PlanningState`, or returns a report this node stores on
@@ -231,50 +247,112 @@ def build_candidate_quality_node(
 
 
 def build_ai_candidate_node(
-    service: AICandidatePromotionService | None = None,
+    promotion_service: AICandidatePromotionService | None = None,
+    discovery_service: AICandidateDiscoveryService | None = None,
 ) -> PlanningGraphNode:
-    """AI candidate review/promotion checkpoint (Section 170).
+    """AI candidate discovery/grounding/promotion checkpoint (Section 170,
+    made a real live LangGraph dependency in Step 191A,
+    docs/14_backend_architecture.md section 135).
 
-    Deliberately conservative: with no service injected (the default),
-    this is a pure no-op checkpoint -- it never calls
-    `AICandidateDiscoveryService`/an AI candidate proposal provider, and
-    therefore never calls Groq/Anthropic/OpenAI or any other LLM, and
-    never mutates `planning_state`. If a caller explicitly injects an
-    `AICandidatePromotionService` (itself fully deterministic -- it only
-    reads `ai_candidate_proposal_batch`/`candidate_grounding_batch`/
-    `candidate_quality_report`, already computed elsewhere, never calls a
-    provider or LLM), this node calls its `apply_promotion` to materialize
-    an already-eligible candidate into `ai_candidate_promotion_report`
-    (Step 170C/170D) -- never anything more than that.
+    Dual-gated, and the two gates are independent:
 
-    Step 171E scope note: the optional, off-by-default Step 161B AI
-    candidate *discovery* shadow stage
-    (`PlanningOrchestrator._run_ai_candidate_discovery_shadow_stage`,
-    gated by `Settings.ai_candidate_discovery_shadow_mode_enabled`,
-    default `False`) is intentionally *not* wrapped by this or any other
-    graph node. That stage is a separate, explicitly opt-in shadow-mode
-    subsystem (CLAUDE.md: "Don't wire it into the real pipeline unless
-    explicitly asked to") whose only effect is populating
-    `ai_candidate_proposal_batch`/`candidate_grounding_batch` for
-    inspection -- with shadow mode off (the default, and the only
-    supported configuration for the LangGraph engine today), it is already
-    a complete no-op in the legacy path too, so this is not a parity gap
-    for the default configuration this step makes the new default engine.
+    1. `Settings.ai_candidate_discovery_enabled` (default `False`) is the
+       Step 191A production switch this node itself reads at call time
+       (never at graph-build time, so a config change takes effect on the
+       next generation without restarting the process). It is a separate
+       flag from the legacy-engine-only
+       `Settings.ai_candidate_discovery_shadow_mode_enabled` -- this node
+       never reads that one, and this flag never reinterprets it.
+
+    2. Whether `promotion_service`/`discovery_service` were explicitly
+       injected at graph-build time.
+
+    With the live flag **off** (the default): if no `promotion_service`
+    was injected either, this stays the exact pure no-op checkpoint it
+    was before Step 191A -- never calls a provider/LLM, never mutates
+    `planning_state`. If a `promotion_service` *was* explicitly injected
+    (test-only, used by `test_langgraph_planning_graph.py`/
+    `test_langgraph_planning_service.py` to prove graph-node ordering),
+    this still calls its `apply_promotion` directly, exactly as it always
+    has -- this specific pre-191A behavior is unchanged.
+
+    With the live flag **on**: this node composes
+    `app.services.ai_candidate_discovery_service.apply_discovery_to_state`
+    (proposal -> grounding, stored onto
+    `ai_candidate_proposal_batch`/`candidate_grounding_batch`) followed by
+    `app.services.ai_candidate_promotion_service.apply_promotion_safely`
+    (eligibility review -> promotion, stored onto
+    `ai_candidate_promotion_report`) -- the exact same shared, fail-safe
+    implementations `PlanningOrchestrator`'s legacy shadow stage also
+    calls, so this node never duplicates that orchestration logic.
+    `discovery_service`/`promotion_service` default to constructing the
+    real service only in this branch, at call time -- never eagerly, and
+    never a second, separate AI candidate pipeline.
+
+    This node never imports `app.providers.*`/Groq/Anthropic/OpenAI
+    directly (enforced by this module's own
+    `test_nodes_module_has_no_llm_or_network_imports`) -- its only path to
+    a real LLM is `AICandidateDiscoveryService` -> the injected/factory-
+    resolved `AICandidateProposalProvider` -> a Groq/Anthropic adapter,
+    preserving the same layered "node -> service -> provider abstraction
+    -> adapter" structure every other node in this file already uses.
+
+    Fails safe end to end: `apply_discovery_to_state`/
+    `apply_promotion_safely` never raise -- a provider timeout, missing
+    API key, invalid/malformed LLM output, or any other unexpected
+    failure is caught inside them and logged safely (never a fabricated
+    proposal, grounded, or promoted candidate). This node's own
+    `try`/`except` below is defense-in-depth only, mirroring every other
+    node in this file.
+
+    Grounding stays mandatory regardless of this flag: only candidates
+    `CandidateGroundingService.ground` actually matched against real
+    `PlanningState.destination_context` provider candidates can ever reach
+    `ai_candidate_promotion_report.promoted_candidates` -- an AI proposal
+    naming a place with no real-world provider match is rejected, never
+    promoted, and never reaches `ExperiencePlannerService` (which, since
+    Step 170D and unchanged by this step, already merges any already-
+    promoted candidates it finds on `ai_candidate_promotion_report` into
+    scheduling -- this node only has to populate that report early enough,
+    which its position before `trip_strategy`/`experience_planning` in the
+    graph already guarantees).
+
     `POST /trips/{trip_id}/ai-candidate-review` and
     `POST /trips/{trip_id}/ai-candidate-promotions` remain fully available
-    and unaffected regardless of which engine generated the plan --
-    running either engine, then calling the promotion endpoint, is an
-    equivalent way to reach the same `ai_candidate_promotion_report`
-    output as long as shadow mode was enabled and a real AI candidate
-    proposal provider is connected. See
-    `test_langgraph_generate_mode.py` for the tests documenting this.
+    and unaffected regardless of which engine generated the plan or
+    whether the live flag is on.
     """
 
     def ai_candidate_node(state: PlanningGraphState) -> dict[str, Any]:
-        if service is None:
-            return {"completed_nodes": ["ai_candidate"]}
+        planning_state = state["planning_state"]
+
+        if not get_settings().ai_candidate_discovery_enabled:
+            if promotion_service is None:
+                return {"completed_nodes": ["ai_candidate"]}
+            try:
+                planning_state = promotion_service.apply_promotion(planning_state)
+            except Exception:
+                return {
+                    "failed_nodes": ["ai_candidate"],
+                    "errors": [_safe_error("ai_candidate")],
+                }
+            return {"planning_state": planning_state, "completed_nodes": ["ai_candidate"]}
+
+        resolved_discovery_service = discovery_service or AICandidateDiscoveryService()
+        resolved_promotion_service = promotion_service or AICandidatePromotionService()
         try:
-            planning_state = service.apply_promotion(state["planning_state"])
+            planning_state = apply_discovery_to_state(
+                planning_state,
+                resolved_discovery_service,
+                stage_label="ai_candidate_discovery",
+            )
+            # Mirrors PlanningOrchestrator._run_ai_candidate_promotion_stage's
+            # own guard exactly: no proposal batch means there is nothing
+            # real to review/promote, so ai_candidate_promotion_report stays
+            # whatever it already was (None on a fresh generation) instead
+            # of storing a technically-honest-but-pointless empty report.
+            if planning_state.ai_candidate_proposal_batch is not None:
+                planning_state = apply_promotion_safely(planning_state, resolved_promotion_service)
         except Exception:
             return {
                 "failed_nodes": ["ai_candidate"],

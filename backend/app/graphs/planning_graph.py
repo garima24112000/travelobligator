@@ -23,6 +23,7 @@ from app.graphs.planning_graph_nodes import (
 from app.graphs.planning_graph_state import PlanningGraphState, build_initial_planning_graph_state
 from app.models.planning_state import PlanningState, TripRequest
 from app.services.accommodation_inventory_service import AccommodationInventoryService
+from app.services.ai_candidate_discovery_service import AICandidateDiscoveryService
 from app.services.ai_candidate_promotion_service import AICandidatePromotionService
 from app.services.candidate_quality_service import CandidateQualityService
 from app.services.destination_context_service import DestinationContextService
@@ -54,19 +55,30 @@ from app.services.trip_strategy_service import TripStrategyService
 #   -> route_feasibility -> route_aware_sequencing -> travel_time_buffer
 #   -> validation -> provider_coverage -> final_state -> END
 #
-# One documented, intentional gap remains: the optional, off-by-default
-# Step 161B AI candidate *discovery* shadow stage is not wrapped by any
-# node here -- see `build_ai_candidate_node`'s docstring for why that is
-# not a parity gap for the default (and only supported) LangGraph
-# configuration.
+# Step 191A (docs/14_backend_architecture.md section 135) made the
+# `ai_candidate` node a real, config-gated live stage: when
+# `Settings.ai_candidate_discovery_enabled` is `True` (default `False`),
+# it runs proposal -> grounding -> promotion through the same already-
+# existing `AICandidateDiscoveryService`/`AICandidatePromotionService`
+# machinery the legacy engine's Step 161B shadow stage uses (a separate,
+# still-supported, still-off-by-default flag -- see `build_ai_candidate_
+# node`'s docstring for the exact dual-gate behavior and why this is not
+# a "reinterpretation" of the shadow flag). With the live flag at its
+# default `False`, this node remains the exact pure no-op checkpoint it
+# always was.
 #
 # - `PlanningState` remains the single source of truth. Every node
 #   (`planning_graph_nodes.py`) calls exactly one existing deterministic
 #   service's own method (`run`/`build_report`/`apply_report`/
-#   `apply_promotion`) -- no node duplicates any service's logic, and no
-#   node calls Groq/Anthropic/OpenAI or any other LLM. LangGraph here
-#   orchestrates existing deterministic services; it does not replace them
-#   with LLM reasoning.
+#   `apply_promotion`/`apply_discovery_to_state`) -- no node duplicates
+#   any service's logic, and no node in this module or
+#   `planning_graph_nodes.py` imports Groq/Anthropic/OpenAI/LangSmith or
+#   any other LLM client directly (enforced by each module's own static
+#   import-ban test). The `ai_candidate` node's only path to a real LLM is
+#   through the same layered `AICandidateDiscoveryService` ->
+#   `AICandidateProposalProvider` -> Groq/Anthropic adapter abstraction the
+#   legacy engine already used -- LangGraph here orchestrates existing
+#   services; it does not replace them with LLM reasoning of its own.
 #   `ProviderGateway` (which defaults to safe not_connected
 #   adapters, exactly like `PlanningOrchestrator` today), does not call
 #   Kiwi/MCP or a scraper, and does not persist anything (no
@@ -80,6 +92,7 @@ def build_planning_graph(
     traveler_profile_service: TravelerProfileService | None = None,
     destination_context_service: DestinationContextService | None = None,
     candidate_quality_service: CandidateQualityService | None = None,
+    ai_candidate_discovery_service: AICandidateDiscoveryService | None = None,
     ai_candidate_promotion_service: AICandidatePromotionService | None = None,
     trip_strategy_service: TripStrategyService | None = None,
     stay_transport_service: StayTransportService | None = None,
@@ -96,10 +109,20 @@ def build_planning_graph(
     exactly one of these services' existing method -- no stage logic is
     duplicated here.
 
-    `ai_candidate_promotion_service` defaults to `None`, which keeps
-    `ai_candidate` a pure no-op (see `build_ai_candidate_node`'s
-    docstring) -- passing a real `AICandidatePromotionService` is
-    deterministic and still never calls an LLM.
+    As of Step 191A (docs/14_backend_architecture.md section 135), the
+    `ai_candidate` node's behavior is gated by
+    `Settings.ai_candidate_discovery_enabled` (default `False`), read at
+    call time -- not by which services are injected here. With the flag
+    off (the default), the node stays a pure no-op unless
+    `ai_candidate_promotion_service` is explicitly injected (test-only,
+    for graph-ordering assertions -- see `build_ai_candidate_node`'s
+    docstring). `ai_candidate_discovery_service` and
+    `ai_candidate_promotion_service` both default to constructing the real
+    service, mirroring every other parameter below -- constructing either
+    one is itself always deterministic and never calls an LLM; only
+    actually *calling* the discovery service's `dry_run` (which the node
+    only does when the live flag is on) can reach a real
+    `AICandidateProposalProvider`.
 
     Every other service defaults to constructing the real one (mirroring
     `PlanningOrchestrator.__init__`'s own default-construction pattern),
@@ -141,7 +164,10 @@ def build_planning_graph(
     graph.add_node(
         "candidate_quality", build_candidate_quality_node(resolved_candidate_quality_service)
     )
-    graph.add_node("ai_candidate", build_ai_candidate_node(ai_candidate_promotion_service))
+    graph.add_node(
+        "ai_candidate",
+        build_ai_candidate_node(ai_candidate_promotion_service, ai_candidate_discovery_service),
+    )
     graph.add_node("trip_strategy", build_trip_strategy_node(resolved_trip_strategy_service))
     graph.add_node("stay_transport", build_stay_transport_node(resolved_stay_transport_service))
     graph.add_node(
@@ -207,6 +233,7 @@ class PlanningGraphRunner:
         traveler_profile_service: TravelerProfileService | None = None,
         destination_context_service: DestinationContextService | None = None,
         candidate_quality_service: CandidateQualityService | None = None,
+        ai_candidate_discovery_service: AICandidateDiscoveryService | None = None,
         ai_candidate_promotion_service: AICandidatePromotionService | None = None,
         trip_strategy_service: TripStrategyService | None = None,
         stay_transport_service: StayTransportService | None = None,
@@ -223,8 +250,15 @@ class PlanningGraphRunner:
             destination_context_service or DestinationContextService()
         )
         self.candidate_quality_service = candidate_quality_service or CandidateQualityService()
-        # None (the default) keeps ai_candidate a pure no-op -- see
-        # build_ai_candidate_node's docstring.
+        # Step 191A: `None` (the default) still means "resolve the real
+        # AICandidateDiscoveryService lazily, only if/when the live flag
+        # is actually on" (see build_ai_candidate_node's docstring) --
+        # kept raw here (not default-constructed) so the node can still
+        # detect "nothing was explicitly injected" the same way it always
+        # has for ai_candidate_promotion_service below.
+        self.ai_candidate_discovery_service = ai_candidate_discovery_service
+        # None (the default) keeps ai_candidate a pure no-op when the live
+        # flag is off -- see build_ai_candidate_node's docstring.
         self.ai_candidate_promotion_service = ai_candidate_promotion_service
         self.trip_strategy_service = trip_strategy_service or TripStrategyService()
         self.stay_transport_service = stay_transport_service or StayTransportService()
@@ -248,6 +282,7 @@ class PlanningGraphRunner:
             self.traveler_profile_service,
             self.destination_context_service,
             self.candidate_quality_service,
+            self.ai_candidate_discovery_service,
             self.ai_candidate_promotion_service,
             self.trip_strategy_service,
             self.stay_transport_service,

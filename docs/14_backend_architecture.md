@@ -8261,3 +8261,337 @@ frontend logic ever existed to update). No provider/parsing/caching/
 availability behavior changed anywhere -- confirmed by the full suite
 passing unmodified and by `git diff --stat` touching only the three
 adapter files, three existing test files, one new test file, and docs.
+## 135. Section 191A: Live AI Candidate Discovery in LangGraph Generation
+
+Section 190D established the exact current LangGraph node order and
+found one concrete gap: the `ai_candidate` node was a pure no-op in the
+LangGraph engine, and the legacy engine's Step 161B AI candidate
+discovery shadow stage had no LangGraph equivalent at all -- shadow mode
+only ever ran under `PLANNING_ENGINE_MODE=legacy`, regardless of its own
+flag's value, because the LangGraph `destination_context`/
+`candidate_quality` nodes call `DestinationContextService.run`/
+`CandidateQualityService.build_report` directly, bypassing
+`PlanningOrchestrator.run_destination_context_stage`'s wrapping (which is
+where the shadow stage call lived) entirely. Section 191A closes that gap
+for the LangGraph engine specifically, without touching the legacy
+engine's own behavior.
+
+**New, separate production flag.** `Settings.ai_candidate_discovery_enabled`
+(alias `AI_CANDIDATE_DISCOVERY_ENABLED`, default `False`) is the real
+production switch for the LangGraph `ai_candidate` node -- deliberately
+not a reinterpretation of `Settings.ai_candidate_discovery_shadow_mode_enabled`
+(Step 161B), which stays a separate, legacy-engine-only observation/
+testing path, unread by the LangGraph node. Both flags default to
+`False`; setting one never implicitly enables the other. Added to
+`.env.example` alongside the existing shadow flag with a comment
+explaining the distinction.
+
+**Shared implementation, not a second pipeline.** Rather than duplicate
+`PlanningOrchestrator._run_ai_candidate_discovery_shadow_stage`'s/
+`_run_ai_candidate_promotion_stage`'s orchestration logic for the
+LangGraph node, both were refactored to delegate to two new shared,
+fail-safe, plain functions:
+
+- `app.services.ai_candidate_discovery_service.apply_discovery_to_state(planning_state, discovery_service, *, stage_label=...)`
+  -- extracted from the shadow stage's pre-191A body verbatim (same
+  `destination_context is None` no-op guard, same try/except around
+  `discovery_service.dry_run(...)`, same safe structured logging fields).
+  `stage_label` defaults to `"ai_candidate_discovery"` for the new live
+  call site; the legacy shadow stage passes `"ai_candidate_proposal"`
+  explicitly to preserve its own pre-existing log-field contract exactly
+  (`backend/app/tests/services/test_provider_llm_logging.py` asserts this
+  literal string).
+- `app.services.ai_candidate_promotion_service.apply_promotion_safely(planning_state, promotion_service)`
+  -- extracted from the promotion stage's pre-191A try/except verbatim.
+
+`PlanningOrchestrator._run_ai_candidate_discovery_shadow_stage`/
+`_run_ai_candidate_promotion_stage` now call these two functions instead
+of duplicating their bodies -- both methods' own observable behavior,
+including every existing shadow-mode test's exact assertions (log fields,
+fail-safe-on-raise, idempotency), is completely unchanged.
+
+**The live `ai_candidate` node** (`build_ai_candidate_node` in
+`backend/app/graphs/planning_graph_nodes.py`) reads
+`Settings.ai_candidate_discovery_enabled` at call time (never at graph-
+build time, so a config change takes effect on the next generation
+without restarting the process):
+
+```text
+if not ai_candidate_discovery_enabled:
+    if promotion_service was explicitly injected (test-only, DI ordering
+      proofs): call apply_promotion on it -- unchanged pre-191A behavior.
+    else: pure no-op, exactly as before Step 191A.
+else:
+    resolve real (or injected fake) AICandidateDiscoveryService/
+      AICandidatePromotionService
+    planning_state = apply_discovery_to_state(planning_state, discovery_service,
+                                               stage_label="ai_candidate_discovery")
+    if planning_state.ai_candidate_proposal_batch is not None:
+        planning_state = apply_promotion_safely(planning_state, promotion_service)
+```
+
+The inner `if ai_candidate_proposal_batch is not None` guard mirrors
+`_run_ai_candidate_promotion_stage`'s own guard exactly: a discovery
+failure/no-op leaves `ai_candidate_promotion_report` at `None` rather
+than storing a technically-honest-but-pointless empty report -- so both
+engines report absence identically.
+
+`AICandidateDiscoveryService`/`AICandidateProposalRequestBuilder`/
+`CandidateGroundingRequestBuilder`/`CandidateGroundingService`/
+`AICandidateReviewService`/`AICandidatePromotionEligibilityService`/
+`AICandidatePromotionService` are all reused completely unmodified except
+for the two new shared wrapper functions above -- no new AI-candidate
+domain logic, no new grounding rule, no new quality tier, no new
+eligibility rule was added or changed. `ai_candidate_discovery_service`
+is threaded through `LangGraphPlanningService.__init__` ->
+`PlanningGraphRunner.__init__` -> `build_planning_graph` -> the node,
+mirroring exactly how every other stage service already flows through
+that same chain; `PlanningOrchestrator.__init__` passes its own
+already-constructed `self.ai_candidate_discovery_service` through (reused
+identically by both engines, same as every other stage service),
+`ai_candidate_promotion_service` is deliberately still left unpassed
+(`None`) there so a default production LangGraph run with the live flag
+off stays a byte-for-byte no-op.
+
+**Grounding stays mandatory.** An AI proposal reaches
+`ai_candidate_promotion_report.promoted_candidates` only through the
+exact same unmodified `CandidateGroundingService.ground` deterministic
+name-matching (exact/normalized, against real
+`PlanningState.destination_context` provider candidates only) and the
+exact same unmodified 8-rule `AICandidatePromotionEligibilityService`
+gate (grounding required, accepted match type/confidence tier, accepted
+quality tier via `CandidateQualityReport`, not an accommodation/transport-
+category match). Nothing in Step 191A weakens, bypasses, or duplicates
+any of these rules -- the live LangGraph stage is a new *caller* of this
+machinery, not a new implementation of it.
+
+**Reaching the itinerary required no experience-planner change.**
+`ExperiencePlannerService` has read `planning_state.ai_candidate_promotion_report`
+and merged any promoted candidates into scheduling since Step 170D,
+completely independent of which engine produced the plan -- it is a pure
+`PlanningState` read, not an engine-specific integration. Since the
+`ai_candidate` node already runs before `trip_strategy`/
+`accommodation_inventory`/`flight_inventory`/`experience_planning` in the
+existing graph order (unchanged by this step), a promoted candidate is
+already available in time; no wiring fix was needed here at all --
+confirmed both by a dedicated node-level test
+(`test_ai_candidate_node_live_enabled_calls_discovery_and_promotion` in
+`backend/app/tests/graphs/test_langgraph_planning_nodes.py`) and by a
+real end-to-end `/generate` test proving a promoted candidate reaches a
+scheduled `ExperienceItem` with `promoted_from_ai=True`
+(`test_live_discovery_enabled_promoted_candidate_reaches_experience_plan`
+in the new `backend/app/tests/api/test_langgraph_live_ai_candidate_discovery.py`).
+
+**Fail-safe end to end.** `apply_discovery_to_state`/
+`apply_promotion_safely` never raise: a provider timeout, missing API
+key, malformed/invalid structured output (a real
+`pydantic.ValidationError` while building the result -- the same shape
+`test_ai_candidate_discovery_safety.py`'s pre-existing
+`_BrokenSchemaAICandidateProposalProvider` fixture already established),
+or any other unexpected failure is caught and logged with safe,
+secret-free structured fields (`provider`/`stage`/`status`/`error_code`/
+`duration_ms` -- never a prompt, raw exception text, or an API key), and
+`planning_state` is returned unchanged for that call. The node's own
+`try`/`except` is defense-in-depth on top of that, mirroring every other
+node in this file.
+
+**Tests.** Import-ban tests in `test_langgraph_planning_graph.py`/
+`test_langgraph_planning_nodes.py`/`test_langgraph_planning_service.py`
+were updated: `ai_candidate_discovery_service` is now a legitimate,
+asserted-present import in all three modules (it was previously banned,
+back when the LangGraph engine had no path to it at all); Groq/Anthropic/
+OpenAI/LangSmith/`app.providers.*`/`ai_candidate_proposal_provider`
+direct imports remain fully banned in all three, preserving the "node/
+graph/service -> AICandidateDiscoveryService -> AICandidateProposalProvider
+-> adapter" layering (no direct LLM client import ever added to
+orchestration code). `test_langgraph_mode_generate_does_not_call_anthropic_or_groq`/
+`test_langgraph_mode_generate_does_not_call_ai_candidate_discovery_service`
+in `test_langgraph_generate_mode.py` were renamed to make explicit that
+they hold only while the live flag is at its default `False` (per this
+step's own instruction, since that assertion is no longer universally
+true). A new dedicated file,
+`backend/app/tests/api/test_langgraph_live_ai_candidate_discovery.py` (10
+tests), covers: proposal/grounding batches stored when enabled; a
+grounded, quality-eligible candidate actually promoted; the promoted
+candidate reaching a real scheduled `ExperienceItem`; an ungrounded
+proposal recorded but never promoted or scheduled; a raising provider
+never breaking generation; a `pydantic.ValidationError`-raising (invalid
+schema) provider never breaking generation or fabricating a candidate;
+the provider called exactly once per `/generate`; two structured-logging
+assertions (safe fields present, no secret/prompt leak on both success
+and failure); and the live flag having zero effect on the legacy engine.
+3 new node-level tests were also added to
+`test_langgraph_planning_nodes.py` (disabled-by-default, enabled-full-
+pipeline, enabled-with-discovery-failure).
+
+**Real local Groq verification.** Ran a genuine, non-mocked
+`POST /trips/{id}/generate` against a fresh local backend with
+`AI_CANDIDATE_DISCOVERY_ENABLED=true` passed as a process environment
+override (never written to the real `.env`) and the already-configured
+local `AI_CANDIDATE_PROPOSAL_PROVIDER=groq`/`GROQ_API_KEY` (value never
+printed), for a real Lisbon, Portugal / 3-night / balanced-pace trip.
+Groq was genuinely contacted (confirmed by `~6-14s` request latency and
+`provider_name: "groq_ai_candidate_proposal_provider"` in the stored
+`ai_candidate_proposal_batch`) on two separate real attempts. Both times,
+the configured model (`GROQ_MODEL=openai/gpt-oss-20b`) failed to invoke
+the required tool-call for structured output at the Groq API level
+(`"Tool choice is required, but model did not call a tool"`, HTTP 400) --
+a pre-existing, unmodified `GroqAICandidateProposalProvider` code path
+(untouched by this step) caught this and returned an honest `rejected`
+result with zero proposals, exactly per its own documented no-fabrication
+contract. `ai_candidate_promotion_report` correctly stayed absent-in-
+effect (`status="no_candidates_reviewed"`, `promoted_count=0`) rather
+than promoting anything. This is a real, live-verified demonstration of
+the fail-safe/no-fabrication half of the contract; the "successful
+promotion reaches the itinerary" half of the contract is conclusively
+proven instead by the deterministic fake-provider test suite above
+(`test_live_discovery_enabled_promoted_candidate_reaches_experience_plan`),
+since a real LLM's non-deterministic output is not a reliable basis for
+an assertion. The rest of the same real response was independently
+verified honest: `provider_coverage`/`accommodation_inventory_report`/
+`flight_inventory_report` all matched the same honest `unavailable`/
+`not_connected`/`success` values 190D already established for this local
+config (routing/narrator both genuinely `success`, both pre-existing,
+unaffected by this step); zero occurrences of any absolute filesystem
+path anywhere in the response (190C's fix remains intact); zero
+occurrences of any forbidden factual field name (`price`/`rating`/
+`opening_hours`/`route_time`/`booking_url`/`review_count`/`safety_score`)
+anywhere in the response.
+
+**Verification**: full suite **3456 passed + 18 skipped** (3443 + 13 new
+tests, zero change to any pre-existing test's outcome).
+`compileall`/`pytest` clean. No frontend/shared-contract file changed --
+frontend checks explicitly skipped for that reason.
+
+## 136. Section 191A.1: Real Groq Structured-Output Compatibility Fix
+
+Section 191A's own real local verification found the live Groq candidate-
+proposal call failing with a genuine HTTP 400 in 2/2 attempts against the
+configured `GROQ_MODEL=openai/gpt-oss-20b`. Section 191A.1 diagnosed and
+fixed the real, underlying cause without touching any of Section 191A's
+LangGraph wiring, grounding rules, promotion eligibility, quality
+thresholds, or the Anthropic/narrator paths.
+
+**Root cause 1 (fixed).** `GroqAICandidateProposalProvider._build_client`
+called `chat.with_structured_output(_GroqProposalBatchSchema)` with no
+explicit `method` -- `langchain_groq` (installed version 1.1.3) defaults
+`with_structured_output`'s `method` parameter to `"function_calling"`,
+which binds `_GroqProposalBatchSchema` as a fake tool and forces
+`tool_choice` (`bind_tools([schema], tool_choice=tool_name, ...)`,
+confirmed by reading the installed package's own source directly, not
+assumed). The real Groq API rejected this with HTTP 400: `"Tool choice
+is required, but model did not call a tool"` (`code: tool_use_failed`).
+Per Groq's own Structured Outputs documentation, Structured Outputs and
+tool use should never be combined in one request. **Fix:** pass
+`method="json_schema", strict=True` explicitly. Reading `langchain_groq`'s
+`json_schema` branch directly confirms it calls `.bind(response_format=...)`
+-- never `.bind_tools(...)` -- so no `tools`/`tool_choice` field is ever
+sent in this mode. `strict=True` is safe for the configured model:
+`langchain_groq` maintains its own allowlist
+(`_STRICT_STRUCTURED_OUTPUT_MODELS`), `openai/gpt-oss-20b` is on it, and
+an unsupported `strict=True` for any other model is silently downgraded
+by the library itself rather than raising.
+
+**Root cause 2 (fixed).** After fixing root cause 1, a second, distinct
+real HTTP 400 appeared: `code: json_validate_failed`,
+`"Failed to validate JSON. Please adjust your prompt."`. Groq's own
+Structured Outputs documentation lists only string/number/boolean/
+integer/object/array/enum as supported schema primitives and does not
+document `minItems`/`minimum`/`maximum` support for strict mode (checked
+directly against console.groq.com/docs/structured-outputs, not
+guessed) -- `_GroqProposalSchema.verification_requirements`
+(`min_length=1` -> `minItems: 1`) and both `confidence` fields
+(`ge=0.0, le=1.0` -> `minimum`/`maximum`) were the culprits. **Fix:**
+removed these three constraints from the Groq-specific wire schema only.
+Nothing about domain validation weakened: `AICandidateProposal.
+verification_requirements` (`app/models/ai_candidate_proposal.py`)
+already independently carries the same `min_length=1`, so a genuinely
+empty list from Groq still fails `AICandidateProposal(**raw_proposal)`
+construction and is still converted to an honest `rejected` result, same
+as before; `_build_result_from_output`'s existing
+`confidence = max(0.0, min(1.0, float(confidence)))` clamp (unchanged)
+still independently bounds the batch-level value, and
+`AICandidateProposal.confidence` (`ge=0.0, le=1.0`, unchanged) still
+independently bounds each proposal's value.
+
+**Root cause 3 (fixed).** After fixing roots 1-2, a third real response
+showed the model producing genuinely valid, correctly-shaped, on-topic
+JSON (visible in the error's own `failed_generation` field: real
+Lisbon-relevant candidates like "Alfama district"/"Belém Tower") but
+still hit HTTP 400 (`json_validate_failed`) because the response was
+truncated by `max_tokens=1200` before the required trailing
+`rejected_raw_items` key could be emitted. **Fix:** raised the adapter's
+default `max_tokens` from 1200 to 4000 -- comfortably covering up to
+`max_candidates=15` (the existing `dry_run` default) full proposals with
+headroom, diagnosed from the real truncated payload rather than guessed.
+
+**All three fixes are wire-schema/request-construction only.** The
+domain contract (`AICandidateProposal`, `AICandidateProposalRequest`,
+`AICandidateProposalResult`, `AICandidateProposalBatch`) is completely
+untouched; `AICandidateProposalProvider.propose(request) ->
+AICandidateProposalResult` stays the exact same interface every caller
+already used. `_coerce_output`/`_build_result_from_output`'s downstream
+parsing and validation logic is unchanged -- `PydanticOutputParser`
+(used in `json_schema` mode, confirmed by reading the library source)
+returns the same `_GroqProposalBatchSchema` Pydantic instance shape
+`PydanticToolsParser` (the old `function_calling` mode) did, so
+`_coerce_output`'s existing dict-or-`model_dump()` handling needed no
+change. `CandidateGroundingService`/`AICandidatePromotionEligibilityService`/
+`ExperiencePlannerService`/the itinerary narrator/OSRM routing/the
+Anthropic adapter are all completely unmodified.
+
+**Tests.** Two pre-existing tests were updated for the new method/schema
+shape (`test_successful_response_via_structured_output_schema_instance`'s
+fixture now includes the three previously-optional-but-now-always-
+present keys; `test_explicit_api_key_forwarded_to_real_client_builder`'s
+fake `ChatGroq.with_structured_output` now accepts `method`/`strict`
+kwargs and asserts their values). Five new tests were added:
+`test_build_client_uses_structured_outputs_not_tool_calling` (asserts
+`method="json_schema"`/`strict=True` reach the real client-construction
+call), `test_build_client_never_sends_tools_or_tool_choice` (asserts no
+`tools`/`tool_choice` keyword anywhere in that call, with a defensive
+`bind_tools`-raises fake to catch any future regression loudly),
+`test_build_client_does_not_leak_api_key_into_structured_output_call`,
+`test_real_groq_400_tool_choice_error_is_classified_and_sanitized`
+(reproduces the exact real HTTP 400 body from live verification as a
+fake-client exception, asserting an honest `rejected` result with no
+secret/header leak), and
+`test_valid_json_schema_response_still_goes_through_pydantic_validation`
+(a schema-constrained-shaped response still fails the existing forbidden-
+factual-claim guard, proving Groq's own schema constraint is never
+trusted as a substitute for application-level validation). All Section
+191A integration tests
+(`backend/app/tests/api/test_langgraph_live_ai_candidate_discovery.py`,
+the node/graph/service tests) continue to pass unmodified -- their fake-
+provider scenarios never depended on the real adapter's internal request
+mechanics.
+
+**Real Groq verification (2 real runs, same local `.env` `GROQ_API_KEY`,
+never printed).** Both runs used the same Lisbon/Portugal, 3-night,
+balanced-pace, food/history/walking trip shape as Section 191A's. Run 1:
+`proposal status: completed`, 10 real proposals (Alfama District, Belém
+Tower, Chiado, LX Factory, Miradouro da Senhora do Monte, Museu Nacional
+de Arte Antiga, Parque das Nações, Time Out Market Lisboa, Bairro Alto,
+Fado Museum -- all genuine, relevant Lisbon points of interest, not
+malformed or off-topic output). Run 2: `proposal status: completed`, 15
+proposals (a similar, equally relevant set, including Oceanário de
+Lisboa, Praça do Comércio, Santa Justa Lift). In both runs grounding
+correctly rejected all proposals (`no_provider_match` -- this local dev
+environment's real OSM-backed destination-context candidates for
+Lisbon/Testville-style trips don't happen to share an exact/normalized
+name with the LLM's free-text place names) and `ai_candidate_promotion_report`
+correctly reported `no_eligible_candidates`/`promoted_count: 0` -- an
+honest, expected outcome given this specific candidate pool, not a
+defect; Section 191A's fake-provider integration tests already
+conclusively prove the full grounding -> promotion -> scheduling chain
+works once a name does match. Both runs: zero absolute filesystem paths,
+zero forbidden factual field names, `route_feasibility_report.status`
+and `itinerary_narrative_report.status` both `success` (both pre-
+existing, confirming the narrator's separate Groq-backed path remains
+fully unaffected by this adapter change), and a real, provider-backed
+itinerary generated successfully both times.
+
+**Verification**: full suite **3461 passed + 18 skipped** (3456 + 5 new
+tests, zero change to any pre-existing test's outcome). `compileall`/
+`pytest` clean. No frontend/shared-contract file changed -- frontend
+checks explicitly skipped for that reason.

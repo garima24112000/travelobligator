@@ -353,14 +353,25 @@ def test_planning_orchestrator_pipeline_status_flow_still_reaches_validated_stat
 
 
 # ---------------------------------------------------------------------------
-# 11-13. No LLM/AI-candidate-discovery/live-provider imports anywhere in
-#        this module. As of Step 171E, `AccommodationInventoryService`/
-#        `FlightInventoryService` are legitimately imported (for stage
-#        parity with legacy generation) -- see the equivalent, updated
-#        comment in test_langgraph_planning_graph.py's
-#        test_planning_graph_module_has_no_disallowed_imports for why.
-#        `ai_candidate_discovery_service`/`ai_candidate_proposal_provider`
-#        stay banned.
+# 11-13. No LLM/live-provider imports anywhere in this module. As of Step
+#        171E, `AccommodationInventoryService`/`FlightInventoryService`
+#        are legitimately imported (for stage parity with legacy
+#        generation) -- see the equivalent, updated comment in
+#        test_langgraph_planning_graph.py's
+#        test_planning_graph_module_has_no_disallowed_imports for why. As
+#        of Step 191A (docs/14_backend_architecture.md section 135),
+#        `ai_candidate_discovery_service` is also now a legitimate,
+#        intentional import (threaded through to `PlanningGraphRunner` so
+#        the live LangGraph `ai_candidate` node can use it) --
+#        `ai_candidate_proposal_provider`/`app.providers`/Groq/Anthropic/
+#        OpenAI/LangSmith stay fully banned: this module's only path to a
+#        real LLM stays the layered service/provider abstraction, never a
+#        direct import here. `app.providers.gateway` (for
+#        `provider_gateway`, used by `_build_new_planning_state`) is a
+#        pre-existing, legitimate import -- unlike `planning_graph.py`/
+#        `planning_graph_nodes.py`, this module was never banned from
+#        `app.providers` broadly, only from the AI-candidate-specific
+#        provider boundary.
 # ---------------------------------------------------------------------------
 
 
@@ -381,7 +392,6 @@ def test_service_module_has_no_disallowed_imports() -> None:
         "groq",
         "openai",
         "langsmith",
-        "ai_candidate_discovery_service",
         "ai_candidate_proposal_provider",
         "requests",
         "httpx",
@@ -390,6 +400,8 @@ def test_service_module_has_no_disallowed_imports() -> None:
         lowered = name.lower()
         for disallowed in disallowed_substrings:
             assert disallowed not in lowered, f"Disallowed import found: {name}"
+
+    assert any("ai_candidate_discovery_service" in name for name in imported_names)
 
 
 # ---------------------------------------------------------------------------

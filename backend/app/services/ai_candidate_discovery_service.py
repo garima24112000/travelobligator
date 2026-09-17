@@ -1,13 +1,21 @@
 from __future__ import annotations
 
+import logging
+import time
+
 from pydantic import BaseModel
 
 from app.models.ai_candidate_proposal import (
+    AICandidateProposalBatch,
     AICandidateProposalRequest,
     AICandidateProposalResult,
     AICandidateProposalTask,
 )
-from app.models.candidate_grounding import CandidateGroundingRequest, CandidateGroundingResult
+from app.models.candidate_grounding import (
+    CandidateGroundingBatch,
+    CandidateGroundingRequest,
+    CandidateGroundingResult,
+)
 from app.models.planning_state import PlanningState
 from app.providers.ai_candidate_proposal import (
     AICandidateProposalProvider,
@@ -17,6 +25,8 @@ from app.services.ai_candidate_proposal_request_builder import AICandidatePropos
 from app.services.candidate_grounding_request_builder import CandidateGroundingRequestBuilder
 from app.services.candidate_grounding_service import CandidateGroundingService
 
+logger = logging.getLogger(__name__)
+
 # Dry-run composition service for the candidate-discovery flow (Step 160B,
 # itinerary-generator-build-spec.md Stages 5-6, docs/13_llm_reasoning_
 # pipeline.md section 35, docs/14_backend_architecture.md section 25). This
@@ -25,24 +35,32 @@ from app.services.candidate_grounding_service import CandidateGroundingService
 # `CandidateGroundingRequestBuilder` -> `CandidateGroundingService` -- into
 # one deterministic call, without adding a real LLM.
 #
+# `dry_run` (pure/read-only) has two production callers as of Step 191A
+# (docs/14_backend_architecture.md section 135):
 # `PlanningOrchestrator._run_ai_candidate_discovery_shadow_stage` (Step
-# 161B, docs/13_llm_reasoning_pipeline.md section 40) is the only production
-# caller of this service, and only when
-# `Settings.ai_candidate_discovery_shadow_mode_enabled` is explicitly set --
-# default app/generation behavior is unaffected by that wiring.
+# 161B, legacy-engine-only, gated by
+# `Settings.ai_candidate_discovery_shadow_mode_enabled`) and the LangGraph
+# `ai_candidate` node (Step 191A, gated by the separate
+# `Settings.ai_candidate_discovery_enabled`) -- both reach it only through
+# `apply_discovery_to_state` below, the shared fail-safe wrapper that
+# actually stores the result onto `PlanningState`. With both flags at
+# their default `False`, default app/generation behavior is unaffected by
+# either wiring.
 #
 # The default `proposal_provider` is resolved through
 # `get_ai_candidate_proposal_provider` (Step 160E, docs/13_llm_reasoning_
-# pipeline.md section 38) -- a config-gated factory whose only supported
-# value today is `"not_connected"`, mapping to the Step 157B
+# pipeline.md section 38) -- a config-gated factory whose default value is
+# `"not_connected"`, mapping to the Step 157B
 # `NotConnectedAICandidateProposalProvider`. That adapter never calls a
 # network service and always returns an honest `not_connected` result with
 # an empty `proposals` list. Because `CandidateGroundingService.ground`
 # returns `skipped` for an empty `proposals` list, the default `dry_run`
 # call therefore produces no proposals and no grounded candidates -- this
 # module never fabricates a fallback proposal or grounded candidate to
-# compensate. A real LLM-backed `AICandidateProposalProvider` adapter can
-# be injected via the constructor (bypassing the factory entirely), but
+# compensate. A real LLM-backed `AICandidateProposalProvider` adapter
+# (`"anthropic"` or `"groq"`, Step 161A/162A) can be selected via
+# `AI_CANDIDATE_PROPOSAL_PROVIDER` or injected via the constructor
+# (bypassing the factory entirely), but
 # nothing in this module ever constructs or calls one itself.
 
 
@@ -106,3 +124,102 @@ class AICandidateDiscoveryService:
             grounding_request=grounding_request,
             grounding_result=grounding_result,
         )
+
+
+# Step 191A (docs/14_backend_architecture.md section 135): shared,
+# fail-safe, state-mutating composition of one `dry_run` call, extracted
+# from `PlanningOrchestrator._run_ai_candidate_discovery_shadow_stage`'s
+# own pre-191A body so the legacy shadow stage and the new live LangGraph
+# `ai_candidate` node call one implementation instead of two duplicated
+# ones. `discovery_service` is accepted as a plain parameter (not read off
+# `self`) so any object exposing a `dry_run(planning_state, task=...,
+# max_candidates=...)` method works -- including the real
+# `AICandidateDiscoveryService` and every existing test double built for
+# the pre-191A shadow-stage tests.
+def apply_discovery_to_state(
+    planning_state: PlanningState,
+    discovery_service: AICandidateDiscoveryService,
+    *,
+    task: AICandidateProposalTask = AICandidateProposalTask.DESTINATION_CANDIDATE_DISCOVERY,
+    max_candidates: int = 15,
+    stage_label: str = "ai_candidate_discovery",
+) -> PlanningState:
+    """Runs one `discovery_service.dry_run(...)` call and, on success,
+    stores its result onto `planning_state.ai_candidate_proposal_batch`/
+    `.candidate_grounding_batch` -- the real stage-runner equivalent of
+    every other stage service's own `run(planning_state)` method, except
+    this one never raises.
+
+    A no-op (returns `planning_state` completely unchanged, no log line)
+    whenever `planning_state.destination_context` is `None` -- grounding
+    has nothing real to match an AI proposal against yet.
+
+    Fails safe: an unexpected exception from `dry_run` (provider timeout,
+    missing API key surfaced as an exception rather than an honest
+    `not_connected` result, malformed response the provider adapter itself
+    didn't catch, or any other unexpected failure) is caught here, logged
+    with the same safe, secret-free structured fields Step 187F's shadow-
+    stage logging already used (`provider`/`stage`/`status`/`error_code`/
+    `duration_ms` -- never a prompt, a raw exception message, or an API
+    key), and `planning_state` is returned completely unchanged for that
+    call -- never a fabricated proposal or grounded candidate.
+
+    `stage_label` only changes the safe `stage` log field so a caller can
+    tell which integration produced a given log line (e.g.
+    `"ai_candidate_proposal"` for the legacy Step 161B shadow stage vs.
+    the default `"ai_candidate_discovery"` for the Step 191A live
+    LangGraph stage) -- both call sites reuse this exact same
+    implementation rather than duplicating it.
+    """
+    if planning_state.destination_context is None:
+        return planning_state
+
+    proposal_provider = getattr(discovery_service, "proposal_provider", None)
+    provider_name = getattr(proposal_provider, "provider_name", "ai_candidate_proposal_provider")
+    started_at = time.monotonic()
+    try:
+        dry_run_result = discovery_service.dry_run(planning_state, task=task, max_candidates=max_candidates)
+    except Exception:
+        duration_ms = (time.monotonic() - started_at) * 1000
+        logger.warning(
+            "AICandidateDiscoveryService.dry_run failed unexpectedly; leaving the plan "
+            "otherwise unaffected.",
+            exc_info=True,
+            extra={
+                "provider": provider_name,
+                "stage": stage_label,
+                "status": "failed",
+                "error_code": "PROVIDER_FAILED",
+                "duration_ms": round(duration_ms, 3),
+            },
+        )
+        return planning_state
+
+    duration_ms = (time.monotonic() - started_at) * 1000
+    proposal_status = dry_run_result.proposal_result.status.value
+    log_fields: dict[str, object] = {
+        "provider": provider_name,
+        "stage": stage_label,
+        "status": proposal_status,
+        "duration_ms": round(duration_ms, 3),
+    }
+    # Only "completed" (AICandidateProposalStatus.COMPLETED) is a real
+    # success -- "not_connected"/"skipped"/"rejected" are all real, honest
+    # non-success outcomes and logged at warning, mirroring
+    # ProviderGateway's own info/warning split.
+    if proposal_status == "completed":
+        logger.info("AI candidate proposal call completed.", extra=log_fields)
+    else:
+        if proposal_status == "not_connected":
+            log_fields["error_code"] = "PROVIDER_NOT_CONNECTED"
+        logger.warning("AI candidate proposal call did not succeed.", extra=log_fields)
+
+    planning_state.ai_candidate_proposal_batch = AICandidateProposalBatch(
+        request=dry_run_result.proposal_request,
+        result=dry_run_result.proposal_result,
+    )
+    planning_state.candidate_grounding_batch = CandidateGroundingBatch(
+        request=dry_run_result.grounding_request,
+        result=dry_run_result.grounding_result,
+    )
+    return planning_state

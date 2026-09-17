@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 
 from app.models.ai_candidate_promotion import AICandidatePromotionReport, PromotedAICandidate
 from app.models.candidate_grounding import GroundedCandidate
 from app.models.planning_state import PlanningState
 from app.services.ai_candidate_review_service import AICandidateReviewService
+
+logger = logging.getLogger(__name__)
 
 # AI candidate promotion service (Step 170C, docs/13_llm_reasoning_
 # pipeline.md, docs/14_backend_architecture.md). Materializes the
@@ -138,6 +141,37 @@ class AICandidatePromotionService:
         report = self.build_promotion_report(planning_state)
         planning_state.ai_candidate_promotion_report = report
         planning_state.touch()
+        return planning_state
+
+
+# Step 191A (docs/14_backend_architecture.md section 135): shared,
+# fail-safe wrapper extracted from
+# `PlanningOrchestrator._run_ai_candidate_promotion_stage`'s own pre-191A
+# body, so the legacy engine and the new live LangGraph `ai_candidate`
+# node share one implementation instead of two duplicated ones.
+# `promotion_service` is accepted as a plain parameter (not read off
+# `self`) so any object exposing an `apply_promotion(planning_state)`
+# method works -- including the real `AICandidatePromotionService` and
+# every existing fail-safe test double built for the pre-191A promotion
+# tests.
+def apply_promotion_safely(
+    planning_state: PlanningState,
+    promotion_service: AICandidatePromotionService,
+) -> PlanningState:
+    """Calls `promotion_service.apply_promotion(planning_state)`, catching
+    any unexpected exception so a promotion failure never crashes trip
+    generation. On failure, `planning_state` is returned exactly as it was
+    passed in -- `ai_candidate_promotion_report` stays whatever it already
+    was, never a fabricated report.
+    """
+    try:
+        return promotion_service.apply_promotion(planning_state)
+    except Exception:
+        logger.warning(
+            "AICandidatePromotionService.apply_promotion failed unexpectedly during "
+            "generation; leaving ai_candidate_promotion_report unchanged.",
+            exc_info=True,
+        )
         return planning_state
 
 

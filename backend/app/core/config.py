@@ -118,10 +118,11 @@ class Settings(BaseSettings):
     groq_model: str = Field(default="openai/gpt-oss-20b", alias="GROQ_MODEL")
 
     # Config gate for get_ai_candidate_proposal_provider (Step 160E,
-    # extended in Step 161A). "not_connected" (default) and "anthropic" are
-    # the only supported values today. An unsupported/unrecognized value
-    # falls back to "not_connected" rather than raising or fabricating
-    # output -- see backend/app/providers/ai_candidate_proposal/factory.py.
+    # extended in Step 161A, corrected in Step 191A). "not_connected"
+    # (default), "anthropic", and "groq" (Step 162A) are the only supported
+    # values today. An unsupported/unrecognized value falls back to
+    # "not_connected" rather than raising or fabricating output -- see
+    # backend/app/providers/ai_candidate_proposal/factory.py.
     ai_candidate_proposal_provider: str = Field(
         default="not_connected", alias="AI_CANDIDATE_PROPOSAL_PROVIDER"
     )
@@ -132,9 +133,40 @@ class Settings(BaseSettings):
     # AICandidateDiscoveryService.dry_run is never called during generation
     # and ai_candidate_proposal_batch/candidate_grounding_batch stay None,
     # exactly as before this step.
+    #
+    # This is a LEGACY-ENGINE-ONLY, observation/testing path: it populates
+    # ai_candidate_proposal_batch/candidate_grounding_batch for inspection,
+    # but (per build_ai_candidate_node's own docstring) the LangGraph engine
+    # never reads it and never runs this stage, regardless of its value.
+    # Kept for backward compatibility -- not the production live-discovery
+    # switch (see ai_candidate_discovery_enabled below).
     ai_candidate_discovery_shadow_mode_enabled: bool = Field(
         default=False,
         alias="AI_CANDIDATE_DISCOVERY_SHADOW_MODE_ENABLED",
+    )
+
+    # Config gate for the Step 191A LIVE AI candidate discovery LangGraph
+    # stage (docs/14_backend_architecture.md section 135) -- a real
+    # planning dependency, deliberately a separate flag from
+    # `ai_candidate_discovery_shadow_mode_enabled` above (which stays a
+    # legacy-engine-only observation path; this flag never reinterprets or
+    # is reinterpreted by it). Default is False so normal generation is
+    # completely unaffected: when disabled, the LangGraph `ai_candidate`
+    # node stays the exact pure no-op checkpoint it always was -- no
+    # provider/LLM call, no `PlanningState` mutation. When enabled, the
+    # node runs live proposal -> grounding -> promotion through the same
+    # already-existing, already-deterministic-except-for-the-LLM-call
+    # services the shadow stage above uses, gated by whichever
+    # `ai_candidate_proposal_provider` is configured (still safely
+    # `not_connected` with no provider/API key set). Grounding stays
+    # mandatory either way: an AI proposal only reaches
+    # `ai_candidate_promotion_report.promoted_candidates` (and, through the
+    # existing Step 170D `ExperiencePlannerService` merge, the itinerary
+    # itself) if `CandidateGroundingService` actually matched it against a
+    # real `PlanningState.destination_context` provider candidate.
+    ai_candidate_discovery_enabled: bool = Field(
+        default=False,
+        alias="AI_CANDIDATE_DISCOVERY_ENABLED",
     )
 
     google_places_api_key: str | None = Field(default=None, alias="GOOGLE_PLACES_API_KEY")

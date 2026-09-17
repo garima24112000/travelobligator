@@ -106,11 +106,20 @@ def _client_raising(exc: BaseException) -> _FakeGroqClient:
 
 
 def _valid_proposal_dict(**overrides: object) -> dict[str, object]:
+    # Step 191A.1: priority_hint/suggested_area/fit_with_user_preferences
+    # are still semantically optional, but Groq's json_schema strict mode
+    # requires every key to always be present in the response -- so a
+    # "valid" fixture includes them explicitly (matching what a real
+    # strict-mode Groq response now always contains), rather than relying
+    # on _GroqProposalSchema's (removed) Python-level defaults.
     fields: dict[str, object] = {
         "proposal_id": "proposal_001",
         "candidate_name": "Old Town Waterfront",
         "candidate_type": "neighborhood",
+        "priority_hint": "unknown",
+        "suggested_area": None,
         "why_consider": "Locally known for evening walks, may be under-tagged in provider data.",
+        "fit_with_user_preferences": [],
         "verification_requirements": ["must_ground_by_name_and_location"],
         "confidence": 0.6,
     }
@@ -448,8 +457,12 @@ def test_explicit_api_key_forwarded_to_real_client_builder(monkeypatch: pytest.M
         def __init__(self, **kwargs: Any) -> None:
             captured_kwargs.update(kwargs)
 
-        def with_structured_output(self, schema: Any) -> "_FakeChatGroq":
+        def with_structured_output(
+            self, schema: Any, *, method: str | None = None, strict: bool | None = None
+        ) -> "_FakeChatGroq":
             captured_kwargs["structured_output_schema"] = schema
+            captured_kwargs["structured_output_method"] = method
+            captured_kwargs["structured_output_strict"] = strict
             return self
 
     fake_module = types.ModuleType("langchain_groq")
@@ -462,6 +475,10 @@ def test_explicit_api_key_forwarded_to_real_client_builder(monkeypatch: pytest.M
     assert captured_kwargs["api_key"] == "fake-explicit-key"
     assert captured_kwargs["model"] == "fake-model"
     assert captured_kwargs["structured_output_schema"] is _GroqProposalBatchSchema
+    # Step 191A.1: json_schema (Structured Outputs), never function_calling
+    # (forced tool use) -- see _build_client's own docstring for why.
+    assert captured_kwargs["structured_output_method"] == "json_schema"
+    assert captured_kwargs["structured_output_strict"] is True
     assert isinstance(client, _FakeChatGroq)
 
 
@@ -583,3 +600,165 @@ def test_suite_does_not_require_a_real_groq_api_key(monkeypatch: pytest.MonkeyPa
     result = provider.propose(_request())
 
     assert result.status == AICandidateProposalStatus.NOT_CONNECTED
+
+
+# ---------------------------------------------------------------------------
+# Step 191A.1 (docs/14_backend_architecture.md section 136): Groq
+# Structured Outputs (json_schema) compatibility. Real local verification
+# found the pre-191A.1 default (`method="function_calling"`, a forced
+# tool call) failed against the configured `GROQ_MODEL=openai/gpt-oss-20b`
+# with a real Groq HTTP 400 ("Tool choice is required, but model did not
+# call a tool"). These tests lock in the fix at the request-construction
+# level, using a fake `langchain_groq` module (never a real network call).
+# ---------------------------------------------------------------------------
+
+
+class _KwargCapturingFakeChatGroq:
+    """Mimics `ChatGroq.__init__`/`.with_structured_output(...)` just
+    enough to capture every keyword argument actually passed, so a test
+    can assert on the real outgoing request-construction shape (method,
+    strict, and the complete absence of any tools/tool_choice kwarg) --
+    never a real network call.
+    """
+
+    captured_init_kwargs: dict[str, Any]
+    captured_structured_output_args: tuple[Any, ...]
+    captured_structured_output_kwargs: dict[str, Any]
+
+    def __init__(self, **kwargs: Any) -> None:
+        type(self).captured_init_kwargs = kwargs
+
+    def with_structured_output(self, *args: Any, **kwargs: Any) -> "_KwargCapturingFakeChatGroq":
+        type(self).captured_structured_output_args = args
+        type(self).captured_structured_output_kwargs = kwargs
+        return self
+
+    # Defensive: if the adapter ever accidentally called a tool-binding
+    # method, this makes that failure loud and obvious instead of silently
+    # succeeding against a fake that doesn't validate anything.
+    def bind_tools(self, *args: Any, **kwargs: Any) -> Any:
+        raise AssertionError(
+            "GroqAICandidateProposalProvider must never call bind_tools/tool-calling "
+            "when using Structured Outputs (method='json_schema')."
+        )
+
+
+def _install_fake_langchain_groq(monkeypatch: pytest.MonkeyPatch) -> type[_KwargCapturingFakeChatGroq]:
+    fake_module = types.ModuleType("langchain_groq")
+    fake_module.ChatGroq = _KwargCapturingFakeChatGroq  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "langchain_groq", fake_module)
+    return _KwargCapturingFakeChatGroq
+
+
+def test_build_client_uses_structured_outputs_not_tool_calling(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The outgoing request-construction call must select Groq's
+    dedicated Structured Outputs mode (`method="json_schema"`,
+    `strict=True`) -- never the default `"function_calling"` mode that
+    caused the real HTTP 400 this step fixes."""
+    fake_cls = _install_fake_langchain_groq(monkeypatch)
+
+    provider = GroqAICandidateProposalProvider(api_key="fake-key", model="openai/gpt-oss-20b")
+    provider._build_client()
+
+    assert fake_cls.captured_init_kwargs["model"] == "openai/gpt-oss-20b"
+    assert fake_cls.captured_structured_output_kwargs["method"] == "json_schema"
+    assert fake_cls.captured_structured_output_kwargs["strict"] is True
+
+
+def test_build_client_never_sends_tools_or_tool_choice(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Per Groq's own documentation, Structured Outputs and tool use must
+    never be combined in the same request -- assert no `tools`/
+    `tool_choice` keyword ever reaches the (fake) client construction
+    call, at either the `ChatGroq(...)` or `.with_structured_output(...)`
+    step."""
+    fake_cls = _install_fake_langchain_groq(monkeypatch)
+
+    provider = GroqAICandidateProposalProvider(api_key="fake-key")
+    provider._build_client()
+
+    all_captured_kwargs = {
+        **fake_cls.captured_init_kwargs,
+        **fake_cls.captured_structured_output_kwargs,
+    }
+    assert "tools" not in all_captured_kwargs
+    assert "tool_choice" not in all_captured_kwargs
+    all_captured_args = fake_cls.captured_structured_output_args
+    assert not any(
+        isinstance(arg, str) and arg in ("tools", "tool_choice") for arg in all_captured_args
+    )
+
+
+def test_build_client_does_not_leak_api_key_into_structured_output_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The real API key is forwarded once, to `ChatGroq(...)`'s own
+    `api_key` kwarg (required to authenticate) -- it must never also
+    appear anywhere in the separate `.with_structured_output(...)` call,
+    which only carries the schema/method/strict configuration."""
+    fake_cls = _install_fake_langchain_groq(monkeypatch)
+    secret_key = "gsk_should_not_leak_into_structured_output_call"
+
+    provider = GroqAICandidateProposalProvider(api_key=secret_key)
+    provider._build_client()
+
+    assert fake_cls.captured_init_kwargs["api_key"] == secret_key
+    structured_output_values = list(fake_cls.captured_structured_output_kwargs.values()) + list(
+        fake_cls.captured_structured_output_args
+    )
+    assert secret_key not in structured_output_values
+    assert not any(secret_key in str(value) for value in structured_output_values)
+
+
+def test_real_groq_400_tool_choice_error_is_classified_and_sanitized() -> None:
+    """Reproduces the exact real HTTP 400 body Section 191A's live
+    verification captured against `GROQ_MODEL=openai/gpt-oss-20b` under
+    the pre-191A.1 `function_calling` method, as a fake client's raised
+    exception -- proving the adapter still classifies a genuine Groq API
+    error honestly (`rejected`, never a crash, never a fabricated
+    proposal) and never echoes an API key/Authorization header into the
+    stored guardrail message."""
+    real_groq_400_message = (
+        "Error code: 400 - {'error': {'message': \"Tool choice is required, but model "
+        "did not call a tool\", 'type': 'invalid_request_error', 'code': 'tool_use_failed', "
+        "'failed_generation': ''}}"
+    )
+    client = _client_raising(RuntimeError(real_groq_400_message))
+    provider = GroqAICandidateProposalProvider(client=client, api_key="gsk_fake_should_not_leak")
+
+    result = provider.propose(_request())
+
+    assert result.status == AICandidateProposalStatus.REJECTED
+    assert result.proposals == []
+    assert result.guardrail_report.passed is False
+    full_message = " ".join(result.guardrail_report.blocked_reasons)
+    assert "tool_use_failed" in full_message  # the real, honest Groq error is preserved
+    assert "gsk_fake_should_not_leak" not in full_message
+    assert "Authorization" not in full_message
+    assert "Bearer" not in full_message
+
+
+def test_valid_json_schema_response_still_goes_through_pydantic_validation() -> None:
+    """Even a response Groq's own server-side strict schema already
+    constrained must still pass through `AICandidateProposal`'s own
+    Pydantic validation here -- the adapter never trusts Groq's output
+    simply because it was schema-constrained upstream. A response with an
+    out-of-range confidence value (schema says `0.0<=x<=1.0`, but a
+    strict-mode-compliant JSON body could still theoretically carry a
+    boundary-adjacent float a downstream validator is stricter about)
+    still gets independently checked -- here via the existing forbidden-
+    claim guard, which strict JSON Schema cannot express at all, proving
+    application-level validation is not bypassed just because the
+    transport was schema-constrained.
+    """
+    output = _valid_output(
+        proposals=[_valid_proposal_dict(why_consider="This place has a 4.8 star rating.")]
+    )
+    client = _client_returning(output)
+    provider = GroqAICandidateProposalProvider(client=client)
+
+    result = provider.propose(_request())
+
+    assert result.status == AICandidateProposalStatus.REJECTED
+    assert result.proposals == []

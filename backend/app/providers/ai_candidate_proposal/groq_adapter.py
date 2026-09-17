@@ -19,11 +19,22 @@ from app.providers.ai_candidate_proposal.base import AICandidateProposalProvider
 
 # Groq-backed AI candidate proposal adapter (Step 162A,
 # itinerary-generator-build-spec.md Stage 5, docs/13_llm_reasoning_
-# pipeline.md section 41, docs/14_backend_architecture.md section 25).
-# Groq is a cheap/dev-iteration LLM base for AI candidate proposals,
+# pipeline.md section 41, docs/14_backend_architecture.md sections 25 and
+# 136). Groq is a cheap/dev-iteration LLM base for AI candidate proposals,
 # alongside (not replacing) the Anthropic/Claude adapter (Step 161A) --
 # this adapter calls Groq through `langchain_groq.ChatGroq`'s structured
 # output support, never through any other SDK or CLI.
+#
+# Step 191A.1: uses Groq's dedicated Structured Outputs API
+# (`with_structured_output(..., method="json_schema", strict=True)`,
+# i.e. `response_format={"type": "json_schema", ...}`) rather than the
+# forced tool-use/function-calling method this previously defaulted to.
+# Per Groq's own documentation, Structured Outputs and tool use should
+# never be combined in one request; this adapter never sends `tools`/
+# `tool_choice` in `json_schema` mode (verified directly against the
+# installed `langchain_groq` package source). See `_build_client`'s
+# docstring for the full rationale and docs/14_backend_architecture.md
+# section 136 for the diagnosed HTTP 400 this replaced.
 #
 # This adapter still only ever produces `AICandidateProposal` objects,
 # which are not facts -- every proposal must still be independently
@@ -49,36 +60,88 @@ class _GroqProposalSchema(BaseModel):
     availability, booking-link, or safety-score field exists in this
     schema, matching the model's own contract (a proposal is a name and a
     one-line rationale, never a fact).
+
+    Step 191A.1 (docs/14_backend_architecture.md section 136): every field
+    is a required key with no Python-level default -- Groq's `json_schema`
+    strict-output mode (unlike the previous `function_calling`/tool-use
+    mode) requires every nested object's `required` list to name every one
+    of its own `properties`, not just the fields a plain Pydantic model
+    would itself consider mandatory. `AICandidateType`/`why_consider`/
+    `verification_requirements`/etc. were already effectively mandatory
+    for a useful proposal; `priority_hint`/`suggested_area`/
+    `fit_with_user_preferences` are the three fields that carried a
+    default before this step -- they stay semantically optional (the
+    model can still answer "unknown"/`null`/`[]`), only the *key itself*
+    is now always required in the response JSON. This is a wire-schema-
+    only change: the downstream domain model, `AICandidateProposal`
+    (`app/models/ai_candidate_proposal.py`), is completely untouched and
+    keeps its own real defaults for every caller that isn't this adapter.
+
+    `verification_requirements`/`confidence` also deliberately carry no
+    `min_length`/`ge`/`le` constraint here (real local verification hit a
+    second, distinct Groq HTTP 400 -- `json_validate_failed` -- the first
+    time this schema was sent with `min_length=1`/numeric bounds attached;
+    Groq's own Structured Outputs documentation lists only
+    string/number/boolean/integer/object/array/enum as supported schema
+    features and does not document `minItems`/`minimum`/`maximum` support
+    for strict mode). Both constraints are still fully enforced exactly as
+    before, just one layer down: `AICandidateProposal.verification_requirements`
+    already carries the same `min_length=1` (`app/models/ai_candidate_
+    proposal.py`), and `_build_result_from_output` below still clamps/
+    validates `confidence` before constructing the final result -- nothing
+    Groq returns is trusted merely because its own schema no longer states
+    the bound.
     """
 
     proposal_id: str = Field(description="A short unique id for this proposal, e.g. 'proposal_001'.")
     candidate_name: str = Field(description="The place or area name being proposed.")
     candidate_type: AICandidateType
-    priority_hint: AICandidatePriorityHint = AICandidatePriorityHint.UNKNOWN
-    suggested_area: str | None = Field(default=None, description="Optional neighborhood/area name, if known.")
+    priority_hint: AICandidatePriorityHint = Field(
+        description="How strongly to prioritize this idea -- use 'unknown' if unsure."
+    )
+    suggested_area: str | None = Field(
+        description="Neighborhood/area name if known, otherwise null. Always include this key."
+    )
     why_consider: str = Field(
         description="One-line rationale only -- no price, rating, hours, or route claims."
     )
     fit_with_user_preferences: list[str] = Field(
-        default_factory=list,
-        description="Short phrases explaining fit with the traveler's stated interests, if any.",
+        description=(
+            "Short phrases explaining fit with the traveler's stated interests. Always "
+            "include this key; use an empty list if there is no clear fit."
+        ),
     )
     verification_requirements: list[AICandidateVerificationRequirement] = Field(
-        min_length=1,
-        description="What grounding must still confirm before this idea can be used.",
+        description=(
+            "What grounding must still confirm before this idea can be used. Must "
+            "include at least one entry."
+        ),
     )
-    confidence: float = Field(ge=0.0, le=1.0)
+    confidence: float = Field(
+        description="Your confidence in this idea, from 0.0 (low) to 1.0 (high)."
+    )
 
 
 class _GroqProposalBatchSchema(BaseModel):
     """Structured-output schema for the full response: a list of proposals
-    plus a batch-level confidence. Mirrors the Anthropic adapter's forced
-    tool-use schema shape, adapted for `with_structured_output`.
+    plus a batch-level confidence. As of Step 191A.1, built for Groq's
+    `json_schema` strict-output mode (see `_GroqProposalSchema`'s
+    docstring) rather than the forced tool-use shape this previously
+    mirrored.
     """
 
-    proposals: list[_GroqProposalSchema] = Field(default_factory=list)
-    rejected_raw_items: list[str] = Field(default_factory=list)
-    confidence: float = Field(ge=0.0, le=1.0)
+    proposals: list[_GroqProposalSchema] = Field(
+        description="The proposed candidates. Use an empty list if none apply."
+    )
+    rejected_raw_items: list[str] = Field(
+        description=(
+            "Always include this key. Use an empty list unless you considered and "
+            "explicitly discarded a raw idea."
+        ),
+    )
+    confidence: float = Field(
+        description="Your overall confidence in this batch, from 0.0 (low) to 1.0 (high)."
+    )
 
 
 _SYSTEM_PROMPT = (
@@ -90,9 +153,12 @@ _SYSTEM_PROMPT = (
     "structured candidate proposals only, matching the required schema exactly.\n\n"
     "Use only the request fields given to you. Do not invent factual travel data. Do not "
     "claim ratings, prices, routes, availability, opening hours, or safety anywhere in "
-    "your output. If you do not know a fact, omit it entirely -- never guess or invent "
-    "one. Every idea you propose still requires independent grounding and verification "
-    "against real provider/open data before it can be scheduled."
+    "your output. If you do not know a fact, never guess or invent one -- every schema "
+    "key is required, so use null (for suggested_area), an empty list (for "
+    "fit_with_user_preferences), or \"unknown\" (for priority_hint) instead of omitting "
+    "the key or guessing a value. Every idea you propose still requires independent "
+    "grounding and verification against real provider/open data before it can be "
+    "scheduled."
 )
 
 
@@ -136,6 +202,16 @@ class GroqAICandidateProposalProvider(AICandidateProposalProvider):
     validation fails, the call raises, or no usable structured output comes
     back, this returns an honest `rejected`/`not_connected` result with no
     proposals -- never a fabricated one.
+
+    `max_tokens` defaults to 4000 (raised from the original 1200 in Step
+    191A.1): real local verification against `GROQ_MODEL=openai/gpt-oss-20b`
+    with `max_candidates=15` showed the model correctly producing valid,
+    on-schema JSON at 1200 tokens, but Groq itself rejected the response
+    with a real HTTP 400 (`json_validate_failed`) because the output was
+    truncated mid-document before the required trailing keys -- a token-
+    budget problem, not a schema/request-shape problem. 4000 comfortably
+    covers up to `max_candidates=15` real proposals; this is honest
+    capacity headroom, not a hidden guess at model behavior.
     """
 
     provider_name = "groq_ai_candidate_proposal_provider"
@@ -145,7 +221,7 @@ class GroqAICandidateProposalProvider(AICandidateProposalProvider):
         api_key: str | None = None,
         model: str | None = None,
         client: Any | None = None,
-        max_tokens: int = 1200,
+        max_tokens: int = 4000,
         temperature: float = 0.2,
     ) -> None:
         settings = get_settings()
@@ -196,6 +272,25 @@ class GroqAICandidateProposalProvider(AICandidateProposalProvider):
         installed either. `self._api_key`/`self._model` are forwarded
         explicitly rather than relying on ambient environment variables, so
         an explicitly constructed provider always uses its own config.
+
+        Step 191A.1 (docs/14_backend_architecture.md section 136):
+        `method="json_schema"` selects Groq's dedicated Structured Outputs
+        API (`response_format={"type": "json_schema", ...}`) instead of
+        `with_structured_output`'s pre-191A.1 default, `"function_calling"`
+        (which binds a fake tool and forces `tool_choice`). Per Groq's own
+        documentation, Structured Outputs and tool use should never be
+        combined in the same request -- `langchain_groq`'s `json_schema`
+        branch sends `response_format` via `.bind(...)` and never calls
+        `.bind_tools(...)`, so no `tools`/`tool_choice` field is ever sent
+        in this mode (verified directly against the installed
+        `langchain_groq` package source, not assumed). `strict=True`
+        additionally asks Groq to enforce the schema server-side; it's
+        only passed for models Groq/langchain_groq advertise strict
+        support for (`GROQ_MODEL=openai/gpt-oss-20b`, the configured
+        default, is one of them) -- `langchain_groq` itself silently
+        downgrades an unsupported `strict=True` to best-effort JSON-schema
+        mode for any other model, so this never raises for a model that
+        doesn't support it.
         """
         try:
             from langchain_groq import ChatGroq
@@ -208,7 +303,9 @@ class GroqAICandidateProposalProvider(AICandidateProposalProvider):
             temperature=self._temperature,
             max_tokens=self._max_tokens,
         )
-        return chat.with_structured_output(_GroqProposalBatchSchema)
+        return chat.with_structured_output(
+            _GroqProposalBatchSchema, method="json_schema", strict=True
+        )
 
     @staticmethod
     def _coerce_output(raw_output: Any) -> dict[str, Any] | None:
