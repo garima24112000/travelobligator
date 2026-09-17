@@ -11,6 +11,7 @@ from app.models.ai_candidate_proposal import (
     AICandidateProposalResult,
     AICandidateProposalStatus,
     AICandidateProposalTask,
+    AICandidateProposalType,
     AICandidatePriorityHint,
     AICandidateType,
     AICandidateVerificationRequirement,
@@ -444,6 +445,126 @@ def test_module_has_no_disallowed_imports() -> None:
 def test_planning_state_defaults_ai_candidate_proposal_batch_to_none() -> None:
     planning_state = PlanningState(trip_request=_trip_request())
     assert planning_state.ai_candidate_proposal_batch is None
+
+
+# ---------------------------------------------------------------------------
+# 17. Step 191B: named_place vs discovery_query proposal contract.
+# ---------------------------------------------------------------------------
+
+
+def test_named_place_proposal_defaults_to_named_place_type() -> None:
+    proposal = _valid_proposal()
+    assert proposal.proposal_type == AICandidateProposalType.NAMED_PLACE
+
+
+def test_named_place_proposal_search_query_defaults_to_candidate_name() -> None:
+    proposal = _valid_proposal(candidate_name="Old Town Waterfront")
+    assert proposal.search_query == "Old Town Waterfront"
+
+
+def test_named_place_proposal_can_set_explicit_search_query() -> None:
+    proposal = _valid_proposal(
+        candidate_name="Time Out Market Lisboa", search_query="Time Out Market Lisboa"
+    )
+    assert proposal.search_query == "Time Out Market Lisboa"
+
+
+def test_named_place_proposal_requires_candidate_name() -> None:
+    with pytest.raises(ValidationError):
+        _valid_proposal(candidate_name=None)
+
+
+def test_discovery_query_proposal_allows_null_candidate_name() -> None:
+    proposal = _valid_proposal(
+        proposal_type=AICandidateProposalType.DISCOVERY_QUERY,
+        candidate_name=None,
+        search_query="historic food market",
+    )
+    assert proposal.proposal_type == AICandidateProposalType.DISCOVERY_QUERY
+    assert proposal.candidate_name is None
+    assert proposal.search_query == "historic food market"
+    # Every field a provider-search-ready discovery intent needs (category
+    # via candidate_type, reason via why_consider, priority) is still
+    # present, without asserting a factual place.
+    assert proposal.candidate_type is not None
+    assert proposal.why_consider
+    assert proposal.priority_hint is not None
+    assert len(proposal.verification_requirements) >= 1
+
+
+def test_discovery_query_proposal_requires_search_query() -> None:
+    with pytest.raises(ValidationError):
+        _valid_proposal(
+            proposal_type=AICandidateProposalType.DISCOVERY_QUERY,
+            candidate_name=None,
+            search_query=None,
+        )
+
+
+def test_discovery_query_proposal_rejects_blank_search_query() -> None:
+    with pytest.raises(ValidationError):
+        _valid_proposal(
+            proposal_type=AICandidateProposalType.DISCOVERY_QUERY,
+            candidate_name=None,
+            search_query="   ",
+        )
+
+
+def test_discovery_query_proposal_search_query_still_forbids_factual_claims() -> None:
+    with pytest.raises(ValidationError):
+        _valid_proposal(
+            proposal_type=AICandidateProposalType.DISCOVERY_QUERY,
+            candidate_name=None,
+            search_query="a cheap food market",
+        )
+
+
+def test_search_query_forbids_factual_claims_for_named_place_too() -> None:
+    with pytest.raises(ValidationError):
+        _valid_proposal(search_query="This place has a great rating")
+
+
+# ---------------------------------------------------------------------------
+# 18. Step 191B: no authoritative provider-fact fields exist on the
+#     proposal contract itself.
+# ---------------------------------------------------------------------------
+
+_PROVIDER_FACT_FIELD_NAMES = {
+    "coordinates",
+    "lat",
+    "lng",
+    "latitude",
+    "longitude",
+    "price",
+    "rating",
+    "availability",
+    "booking_link",
+    "booking_url",
+    "opening_hours",
+    "travel_time",
+    "route_time",
+    "duration",
+}
+
+
+def test_proposal_model_carries_no_provider_fact_fields() -> None:
+    field_names = set(AICandidateProposal.model_fields.keys())
+    overlap = field_names & _PROVIDER_FACT_FIELD_NAMES
+    assert overlap == set(), f"AICandidateProposal has provider-fact field(s): {overlap}"
+
+
+def test_named_place_and_discovery_query_serialization_has_no_provider_facts() -> None:
+    named_place = _valid_proposal()
+    discovery_query = _valid_proposal(
+        proposal_id="proposal_002",
+        proposal_type=AICandidateProposalType.DISCOVERY_QUERY,
+        candidate_name=None,
+        search_query="historic food market",
+    )
+    for proposal in (named_place, discovery_query):
+        dumped = proposal.model_dump()
+        overlap = set(dumped.keys()) & _PROVIDER_FACT_FIELD_NAMES
+        assert overlap == set(), f"Proposal dump has provider-fact key(s): {overlap}"
 
 
 def test_planning_state_accepts_valid_ai_candidate_proposal_batch() -> None:

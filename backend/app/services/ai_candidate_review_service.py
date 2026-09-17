@@ -103,9 +103,14 @@ class AICandidateReviewService:
             items.append(
                 AICandidateReviewItem(
                     candidate_id=proposal.proposal_id,
-                    name=proposal.candidate_name,
+                    # Step 191B: a discovery_query proposal may have no
+                    # candidate_name (it's a search intent, not a named
+                    # place) -- fall back to search_query, which every
+                    # proposal is guaranteed to carry, purely for display.
+                    name=proposal.candidate_name or proposal.search_query,
                     category=proposal.candidate_type.value,
                     source=proposal.source,
+                    proposal_type=proposal.proposal_type.value,
                     ai_proposed=True,
                     provider_grounded=provider_grounded,
                     quality_bucket=eligibility.quality_bucket,

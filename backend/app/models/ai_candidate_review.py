@@ -37,6 +37,12 @@ class AICandidateReviewItem(BaseModel):
     name: str
     category: str | None = None
     source: str
+    # Step 191B: surfaces AICandidateProposal.proposal_type ("named_place"
+    # or "discovery_query") so a reviewer/future Section 192 caller can
+    # tell a lookup-hint name apart from a search intent without having to
+    # re-read the raw proposal batch. Defaults to "named_place" so a
+    # pre-191B review item constructed without this field still validates.
+    proposal_type: str = "named_place"
     ai_proposed: bool = True
     provider_grounded: bool = False
     quality_bucket: str | None = None

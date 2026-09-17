@@ -601,3 +601,92 @@ def test_suite_does_not_require_a_real_anthropic_api_key(monkeypatch: pytest.Mon
     result = provider.propose(_request())
 
     assert result.status == AICandidateProposalStatus.NOT_CONNECTED
+
+
+# ---------------------------------------------------------------------------
+# 23. Step 191B: discovery_query proposals and provider-search-ready
+#     contract compatibility.
+# ---------------------------------------------------------------------------
+
+
+def test_discovery_query_tool_output_produces_completed_result() -> None:
+    client = _client_returning(
+        _tool_use_response(
+            _valid_tool_input(
+                proposals=[
+                    _valid_proposal_dict(
+                        proposal_id="proposal_002",
+                        proposal_type="discovery_query",
+                        candidate_name=None,
+                        search_query="historic food market",
+                        candidate_type="food_area",
+                    )
+                ]
+            )
+        )
+    )
+    provider = AnthropicAICandidateProposalProvider(client=client)
+
+    result = provider.propose(_request())
+
+    assert result.status == AICandidateProposalStatus.COMPLETED
+    proposal = result.proposals[0]
+    assert proposal.proposal_type.value == "discovery_query"
+    assert proposal.candidate_name is None
+    assert proposal.search_query == "historic food market"
+
+
+def test_named_place_without_explicit_search_query_defaults_from_candidate_name() -> None:
+    client = _client_returning(_tool_use_response(_valid_tool_input()))
+    provider = AnthropicAICandidateProposalProvider(client=client)
+
+    result = provider.propose(_request())
+
+    proposal = result.proposals[0]
+    assert proposal.proposal_type.value == "named_place"
+    assert proposal.search_query == proposal.candidate_name
+
+
+def test_duplicate_named_place_proposals_are_deduplicated() -> None:
+    client = _client_returning(
+        _tool_use_response(
+            _valid_tool_input(
+                proposals=[
+                    _valid_proposal_dict(proposal_id="proposal_001", candidate_name="Belem Tower"),
+                    _valid_proposal_dict(proposal_id="proposal_002", candidate_name="Belem Tower!"),
+                ]
+            )
+        )
+    )
+    provider = AnthropicAICandidateProposalProvider(client=client)
+
+    result = provider.propose(_request())
+
+    assert len(result.proposals) == 1
+    assert result.proposals[0].proposal_id == "proposal_001"
+
+
+def test_tool_schema_marks_proposal_type_and_search_query_required() -> None:
+    from app.providers.ai_candidate_proposal.anthropic_adapter import _PROPOSAL_INPUT_SCHEMA
+
+    assert "proposal_type" in _PROPOSAL_INPUT_SCHEMA["required"]
+    assert "search_query" in _PROPOSAL_INPUT_SCHEMA["required"]
+    assert "candidate_name" not in _PROPOSAL_INPUT_SCHEMA["required"]
+
+
+def test_tool_schema_has_no_provider_fact_properties() -> None:
+    from app.providers.ai_candidate_proposal.anthropic_adapter import _PROPOSAL_INPUT_SCHEMA
+
+    forbidden_property_names = {
+        "coordinates",
+        "price",
+        "rating",
+        "availability",
+        "booking_link",
+        "booking_url",
+        "opening_hours",
+        "travel_time",
+        "route_time",
+    }
+    overlap = set(_PROPOSAL_INPUT_SCHEMA["properties"].keys()) & forbidden_property_names
+    assert overlap == set()

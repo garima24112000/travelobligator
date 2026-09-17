@@ -11,11 +11,13 @@ from app.models.ai_candidate_proposal import (
     AICandidateProposalRequest,
     AICandidateProposalResult,
     AICandidateProposalStatus,
+    AICandidateProposalType,
     AICandidatePriorityHint,
     AICandidateType,
     AICandidateVerificationRequirement,
 )
 from app.providers.ai_candidate_proposal.base import AICandidateProposalProvider
+from app.providers.ai_candidate_proposal.proposal_dedup import deduplicate_proposals
 
 # Groq-backed AI candidate proposal adapter (Step 162A,
 # itinerary-generator-build-spec.md Stage 5, docs/13_llm_reasoning_
@@ -58,8 +60,8 @@ class _GroqProposalSchema(BaseModel):
     `AICandidateProposal` fields -- deliberately no coordinate, provider id,
     price, rating, opening-hours, route-time, review-count, ticket-price,
     availability, booking-link, or safety-score field exists in this
-    schema, matching the model's own contract (a proposal is a name and a
-    one-line rationale, never a fact).
+    schema, matching the model's own contract (a proposal is a name/search
+    intent and a one-line rationale, never a fact).
 
     Step 191A.1 (docs/14_backend_architecture.md section 136): every field
     is a required key with no Python-level default -- Groq's `json_schema`
@@ -76,6 +78,17 @@ class _GroqProposalSchema(BaseModel):
     only change: the downstream domain model, `AICandidateProposal`
     (`app/models/ai_candidate_proposal.py`), is completely untouched and
     keeps its own real defaults for every caller that isn't this adapter.
+
+    Step 191B: `proposal_type` and `search_query` are new required keys
+    (same "always include the key, use null/empty when unsure" rule as
+    the pre-191B optional fields). `candidate_name` is now nullable --
+    required (non-null) whenever `proposal_type` is `"named_place"`, null
+    for a `"discovery_query"` proposal. Application-level validation of
+    that contract happens one layer down, in
+    `AICandidateProposal.validate_proposal_type_contract` -- this wire
+    schema only relaxes the JSON type; it does not itself enforce the
+    conditional requirement (Groq's strict `json_schema` mode has no
+    "required if" construct).
 
     `verification_requirements`/`confidence` also deliberately carry no
     `min_length`/`ge`/`le` constraint here (real local verification hit a
@@ -94,7 +107,29 @@ class _GroqProposalSchema(BaseModel):
     """
 
     proposal_id: str = Field(description="A short unique id for this proposal, e.g. 'proposal_001'.")
-    candidate_name: str = Field(description="The place or area name being proposed.")
+    proposal_type: AICandidateProposalType = Field(
+        description=(
+            "'named_place' if you have a specific place worth checking, otherwise "
+            "'discovery_query' if you are describing an experience/category need for a "
+            "provider search to resolve."
+        )
+    )
+    candidate_name: str | None = Field(
+        description=(
+            "The specific place/area name being proposed, required (non-null) when "
+            "proposal_type is 'named_place'. Always null when proposal_type is "
+            "'discovery_query' -- never invent a specific establishment name for a "
+            "generic need."
+        )
+    )
+    search_query: str = Field(
+        description=(
+            "A short, provider-search-friendly query. For 'named_place', this is "
+            "usually the same as candidate_name. For 'discovery_query', this is the "
+            "experience/category phrase a provider search should look up (e.g. "
+            "'historic food market')."
+        )
+    )
     candidate_type: AICandidateType
     priority_hint: AICandidatePriorityHint = Field(
         description="How strongly to prioritize this idea -- use 'unknown' if unsure."
@@ -145,19 +180,31 @@ class _GroqProposalBatchSchema(BaseModel):
 
 
 _SYSTEM_PROMPT = (
-    "You are a candidate-idea proposer for a travel planning system. You are a proposer, "
-    "never a source of truth: every idea you submit is a proposal only, not a verified "
-    "fact, and every proposal will be independently checked against real provider/open "
-    "data before it can be used or scheduled.\n\n"
-    "Propose candidate place/area ideas by name and a one-line rationale only. Return "
-    "structured candidate proposals only, matching the required schema exactly.\n\n"
-    "Use only the request fields given to you. Do not invent factual travel data. Do not "
-    "claim ratings, prices, routes, availability, opening hours, or safety anywhere in "
-    "your output. If you do not know a fact, never guess or invent one -- every schema "
-    "key is required, so use null (for suggested_area), an empty list (for "
-    "fit_with_user_preferences), or \"unknown\" (for priority_hint) instead of omitting "
-    "the key or guessing a value. Every idea you propose still requires independent "
-    "grounding and verification against real provider/open data before it can be "
+    "You are proposing things to investigate for a travel planning system. You are NOT "
+    "supplying verified travel facts -- every idea you submit is a proposal only, and a "
+    "later provider layer will verify or replace your suggestions before anything is "
+    "used or scheduled.\n\n"
+    "Each proposal is one of two kinds:\n"
+    "- named_place: you know a specific place that may be worth checking (e.g. "
+    "'Oceanario de Lisboa'). Still only a suggestion until a provider verifies it.\n"
+    "- discovery_query: you have an experience/category need rather than a specific "
+    "establishment (e.g. 'traditional food market', 'historic neighborhood walk', "
+    "'sunset viewpoint'). Prefer this whenever you don't have a genuinely useful named "
+    "place in mind -- do not invent an obscure or uncertain establishment name just to "
+    "produce a named_place proposal.\n\n"
+    "Reflect the traveler's stated interests, respect their explicit constraints and "
+    "trip length, and consider pace and destination. Provide a mixture of high-priority "
+    "anchors and supporting ideas; avoid excessive duplicates (do not propose near-"
+    "identical ideas under different names). Every search_query should be short and "
+    "provider-search-friendly. Keep why_consider concise.\n\n"
+    "Do not invent factual travel data. Do not claim ratings, prices, routes, "
+    "availability, opening hours, or safety anywhere in your output -- providers supply "
+    "those later, never you. If you do not know a fact, never guess or invent one -- "
+    "every schema key is required, so use null (for candidate_name/suggested_area), an "
+    "empty list (for fit_with_user_preferences), or \"unknown\" (for priority_hint) "
+    "instead of omitting the key or guessing a value. Every idea you propose still "
+    "requires independent verification -- a named_place against real provider/open "
+    "data, a discovery_query through a future provider search -- before it can be "
     "scheduled."
 )
 
@@ -345,6 +392,8 @@ class GroqAICandidateProposalProvider(AICandidateProposalProvider):
 
         if not proposals:
             return self._rejected_result(request, "Groq returned no candidate proposals.")
+
+        proposals = deduplicate_proposals(proposals)
 
         confidence = output.get("confidence", 0.0)
         if not isinstance(confidence, (int, float)) or isinstance(confidence, bool):

@@ -8595,3 +8595,167 @@ itinerary generated successfully both times.
 tests, zero change to any pre-existing test's outcome). `compileall`/
 `pytest` clean. No frontend/shared-contract file changed -- frontend
 checks explicitly skipped for that reason.
+
+## 137. Section 191B: Provider-Search-Ready AI Candidate Proposals
+
+Section 191A.1's real verification exposed the next architectural gap,
+not a bug: real Groq proposals were reasonable Lisbon places, but
+`CandidateGroundingService`'s deterministic exact/normalized name
+matching had nothing to match them against, because free-text LLM names
+essentially never share an exact/normalized string with the real
+provider candidate pool (`grounded: 0`, `promoted: 0` even with 10-15
+genuinely relevant proposals per run). Section 191B does **not** fix
+that by weakening grounding or adding fuzzy "trust the AI" matching --
+grounding is completely untouched. Instead it redesigns the *proposal
+contract* so a future provider-search layer (Section 192, not built
+here) has something real to search for.
+
+**An `AICandidateProposal` is not a verified place -- and now it is
+explicit about which of two things it is.**
+`AICandidateProposal.proposal_type` (new field,
+`app/models/ai_candidate_proposal.py`) is one of:
+
+- `named_place`: the LLM names a specific place worth checking
+  (`candidate_name` required, non-blank). Behaves exactly as every
+  pre-191B proposal did -- `CandidateGroundingService`'s existing exact/
+  normalized name matching still attempts to ground it, completely
+  unmodified.
+- `discovery_query`: the LLM expresses an experience/category need
+  (`candidate_name` may be `None`) rather than inventing a specific
+  establishment. `search_query` (new field, always present, provider-
+  search-friendly) is the only thing Section 192's future provider
+  search will have to go on. `CandidateGroundingService` now branches on
+  `proposal_type` first (`candidate_grounding_service.py::_ground_one`)
+  and rejects every `discovery_query` immediately with a new reason,
+  `CandidateGroundingRejectReason.DISCOVERY_QUERY_AWAITING_PROVIDER_SEARCH`
+  (`app/models/candidate_grounding.py`) -- proven even when a supplied
+  provider candidate's name is identical to the search phrase (a real
+  test case), so this is a `proposal_type` branch, not merely "was
+  `candidate_name` set."
+
+**Backward compatible by construction.** `proposal_type` defaults to
+`named_place`; `search_query` defaults to `candidate_name` when a
+`named_place` proposal doesn't set it explicitly
+(`AICandidateProposal.validate_proposal_type_contract`). Every pre-191B
+construction of this model (both LLM adapters' pre-191B raw output
+shape, every existing test fixture) keeps validating and behaving
+exactly as before with zero changes required.
+
+**Both LLM adapters carry the same domain semantics.** Groq's
+`_GroqProposalSchema` (`groq_adapter.py`) adds `proposal_type`/
+`search_query` as required keys under Groq's strict `json_schema` mode
+(unchanged: `response_format=json_schema`, `strict=True`, no
+`tools`/`tool_choice` -- Section 191A.1 is untouched); `candidate_name`'s
+*key* stays required (Groq strict mode requires every key present) but
+its *value* is now nullable, with the conditional "required when
+named_place" rule enforced one layer down by the domain model, not by
+the wire schema. Anthropic's tool `input_schema`
+(`anthropic_adapter.py`) mirrors the same two fields, but as ordinary
+optional/required JSON Schema (`candidate_name` genuinely omittable,
+`proposal_type`/`search_query` required) since Claude's tool use has no
+strict-mode key-presence requirement. Both system prompts were rewritten
+to explain the two proposal kinds, tell the model to prefer a
+`discovery_query` over inventing an obscure/uncertain place, and ask for
+provider-search-friendly `search_query` values, a mixture of high-
+priority anchors and supporting ideas, and non-duplicate coverage --
+without asking for any factual detail a provider must supply.
+
+**Deterministic, proposal-level deduplication** (new module,
+`app/providers/ai_candidate_proposal/proposal_dedup.py`,
+`deduplicate_proposals`, shared by both adapters so this logic exists
+exactly once). Collapses proposals whose normalized lookup key (accent-
+stripped, lowercased, punctuation-stripped, leading-article-stripped
+`candidate_name`/`search_query`) is identical, keeping the first
+occurrence -- e.g. "Belém Tower" / "Belem Tower!" collapse, but a
+translation like "Torre de Belém" deliberately does not (that is a
+semantic judgment, explicitly out of scope; only deterministic
+normalization is used). A `named_place` and a `discovery_query` sharing
+the same words never collapse into each other. This is unrelated to,
+and does not touch, `CandidateGroundingService`'s own matching.
+
+**`AICandidateReviewItem` gained one additive field**,
+`proposal_type: str` (`app/models/ai_candidate_review.py`, defaults to
+`"named_place"` for backward compatibility), and its `name` now falls
+back to `search_query` when `candidate_name` is `None`
+(`ai_candidate_review_service.py`) -- purely a display concern; a
+`discovery_query` item still can never be reported
+`eligible_for_promotion=True` (it never reaches `build_report` with
+`provider_grounded=True`, since grounding rejects it immediately).
+Promotion (`AICandidatePromotionService`) is completely unmodified and
+untouched by this step -- it already only ever promotes items the
+review report already marked eligible.
+
+**No new config.** `AI_CANDIDATE_DISCOVERY_ENABLED`,
+`AI_CANDIDATE_DISCOVERY_SHADOW_MODE_ENABLED`, and the LangGraph node
+order (`traveler_profile -> destination_context -> candidate_quality ->
+ai_candidate -> trip_strategy`) are all unchanged. Section 192, not this
+step, will change how AI proposals drive provider discovery.
+
+**Tests.** 33 new tests added across
+`tests/models/test_ai_candidate_proposal_models.py` (named_place/
+discovery_query contract, no-provider-fact-field serialization),
+`tests/services/test_candidate_grounding_service.py` (discovery_query
+always rejected with the new reason, even against a name-matching
+provider candidate; mixed named_place+discovery_query batches),
+`tests/services/test_ai_candidate_discovery_safety.py` (a
+`discovery_query` can never be grounded or promoted merely because the
+LLM emitted it, exercised through the real `AICandidateReviewService`/
+`AICandidatePromotionService`), a new
+`tests/providers/test_ai_candidate_proposal_dedup.py` (9 tests covering
+exact/accent/article variants, translation non-collapse, distinct-type
+non-collapse, order preservation), and both adapter test files (discovery-
+query wire-shape round-trips, adapter-level dedup, schema
+required/property assertions). One pre-existing Groq fixture
+(`_valid_proposal_dict` in `test_groq_ai_candidate_proposal_provider.py`)
+was updated to include the two new always-present strict-mode keys,
+matching the same pattern Section 191A.1 already used for that file's
+other always-present keys. Every Section 191A/191A.1 test continues to
+pass unmodified.
+
+**Real Groq verification (2 real runs, same local `.env`
+`GROQ_API_KEY`, never printed, `GROQ_MODEL=openai/gpt-oss-20b`,
+Lisbon/Portugal, 3-day, food/history/walking, mid-range budget).** Run
+1: `completed`, 10 proposals (2 `named_place`: Time Out Market Lisboa,
+LX Factory; 8 `discovery_query`: Alfama historic walk, Miradouro de
+Santa Catarina sunset view, National Tile Museum, traditional food
+market Lisbon, Parque Eduardo VII walk, Bairro Alto nightlife walk,
+Miradouro da Senhora do Monte, MAAT contemporary art museum), categories
+spanning neighborhood/viewpoint/museum/food_area/park/cultural_area, zero
+duplicates, zero malformed proposals, zero provider-fact-field
+violations. Run 2: `completed`, 10 proposals (6 `named_place`: Belém
+Tower, Jerónimos Monastery, Mercado da Ribeira, LX Factory, São Jorge
+Castle, Miradouro da Senhora do Monte; 4 `discovery_query`: historic
+neighborhood walk Lisbon, traditional food market Lisbon, sunset
+viewpoint Lisbon, historic neighborhood walk Alfama), same clean safety
+result. Both runs graded against a small synthetic `destination_context`
+(Belem Tower, Alfama) deliberately kept sparse/unrelated rather than
+hand-fitted to the LLM's output: grounding correctly rejected all 10
+proposals both times (`no_provider_match` for `named_place` proposals --
+none happened to share an exact/normalized string with the synthetic
+pool, including a real near-miss, "Belém Tower" vs "Belem Tower," that
+normalized matching intentionally does not collapse since it does not
+strip accents; `discovery_query_awaiting_provider_search` for every
+`discovery_query`), exactly the honest, expected `grounded: 0` outcome
+Section 191B's own scope explicitly allows -- Section 192 is what will
+give `named_place`/`discovery_query` proposals a real provider pool to
+resolve against.
+
+**Quality assessment of the real output**: proposals clearly reflect the
+stated interests (food/history/walking dominate both runs); every
+`search_query` is short and directly usable as a provider search string;
+no redundant near-duplicates survived (and the dedup helper is exercised
+by unit tests even though these two particular real runs happened not to
+produce raw duplicates); generic experience needs came back as
+`discovery_query` search phrases rather than invented establishments
+(more so in Run 1: 8 of 10); every `named_place` reads as a lookup hint,
+never as a claimed-verified fact, in both its own `why_consider` prose
+and its guaranteed `not_connected`/`rejected`-until-grounded status; both
+runs stayed within the diversity-without-forcing-every-category
+guidance (no accommodation/flight/transport proposals appeared, matching
+the existing category-keyword promotion-eligibility floor this step
+never touched).
+
+**Verification**: full suite **3494 passed + 18 skipped** (3461 + 33 new
+tests, zero change to any pre-existing test's outcome). `compileall`/
+`pytest` clean. No frontend file or shared API response shape changed --
+frontend checks explicitly skipped for that reason.

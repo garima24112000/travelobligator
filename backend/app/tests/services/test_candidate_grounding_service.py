@@ -7,6 +7,7 @@ from pydantic import ValidationError
 
 from app.models.ai_candidate_proposal import (
     AICandidateProposal,
+    AICandidateProposalType,
     AICandidateType,
     AICandidateVerificationRequirement,
 )
@@ -482,3 +483,84 @@ def test_ground_output_would_fail_validation_if_confidence_mismatched() -> None:
     dumped["confidence"] = 0.5
     with pytest.raises(ValidationError):
         CandidateGroundingResult.model_validate(dumped)
+
+
+# ---------------------------------------------------------------------------
+# 18. Step 191B: discovery_query proposals stay ungrounded, never
+#     name-matched against provider candidates.
+# ---------------------------------------------------------------------------
+
+
+def _discovery_query_proposal(**overrides: object) -> AICandidateProposal:
+    fields: dict[str, object] = {
+        "proposal_id": "proposal_003",
+        "proposal_type": AICandidateProposalType.DISCOVERY_QUERY,
+        "candidate_name": None,
+        "search_query": "historic food market",
+        "candidate_type": AICandidateType.FOOD_AREA,
+        "why_consider": "Traveler prioritizes food and history.",
+        "verification_requirements": [
+            AICandidateVerificationRequirement.MUST_NOT_USE_WITHOUT_PROVIDER_MATCH
+        ],
+        "confidence": 0.5,
+    }
+    fields.update(overrides)
+    return AICandidateProposal(**fields)
+
+
+def test_discovery_query_proposal_is_rejected_awaiting_provider_search() -> None:
+    service = CandidateGroundingService()
+    request = _request(
+        proposals=[_discovery_query_proposal()],
+        # Even a provider candidate whose name matches the search phrase
+        # exactly must never ground a discovery_query -- that would be
+        # exactly the "pretend the search phrase is a factual place"
+        # behavior Section 192 exists to avoid.
+        provider_candidates=[_provider_candidate(name="historic food market")],
+    )
+    result = service.ground(request)
+    assert result.status == CandidateGroundingStatus.REJECTED
+    assert result.grounded_candidates == []
+    assert len(result.rejected_proposals) == 1
+    rejected = result.rejected_proposals[0]
+    assert rejected.reject_reason == (
+        CandidateGroundingRejectReason.DISCOVERY_QUERY_AWAITING_PROVIDER_SEARCH
+    )
+    assert rejected.candidate_name == "historic food market"
+
+
+def test_discovery_query_proposal_never_matched_by_name_even_when_it_would_match() -> None:
+    """Even a provider candidate whose name is identical to search_query
+    must not ground a discovery_query proposal -- this proves the service
+    branches on proposal_type, not merely on whether candidate_name is
+    set.
+    """
+    service = CandidateGroundingService()
+    exact_name_match_candidate = _provider_candidate(name="historic food market")
+    request = _request(
+        proposals=[_discovery_query_proposal(search_query="Historic Food Market")],
+        provider_candidates=[exact_name_match_candidate],
+    )
+    result = service.ground(request)
+    assert result.grounded_candidates == []
+    assert result.rejected_proposals[0].reject_reason == (
+        CandidateGroundingRejectReason.DISCOVERY_QUERY_AWAITING_PROVIDER_SEARCH
+    )
+
+
+def test_mixed_named_place_and_discovery_query_produces_partial_result() -> None:
+    service = CandidateGroundingService()
+    request = _request(
+        proposals=[
+            _proposal(proposal_id="proposal_001", candidate_name="Old Town Waterfront"),
+            _discovery_query_proposal(proposal_id="proposal_003"),
+        ],
+        provider_candidates=[_provider_candidate(name="Old Town Waterfront")],
+    )
+    result = service.ground(request)
+    assert result.status == CandidateGroundingStatus.PARTIAL
+    assert len(result.grounded_candidates) == 1
+    assert len(result.rejected_proposals) == 1
+    assert result.rejected_proposals[0].reject_reason == (
+        CandidateGroundingRejectReason.DISCOVERY_QUERY_AWAITING_PROVIDER_SEARCH
+    )

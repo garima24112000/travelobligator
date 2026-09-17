@@ -11,11 +11,13 @@ from app.models.ai_candidate_proposal import (
     AICandidateProposalRequest,
     AICandidateProposalResult,
     AICandidateProposalStatus,
+    AICandidateProposalType,
     AICandidatePriorityHint,
     AICandidateType,
     AICandidateVerificationRequirement,
 )
 from app.providers.ai_candidate_proposal.base import AICandidateProposalProvider
+from app.providers.ai_candidate_proposal.proposal_dedup import deduplicate_proposals
 
 # Anthropic/Claude-backed AI candidate proposal adapter (Step 161A,
 # itinerary-generator-build-spec.md Stage 5, docs/13_llm_reasoning_
@@ -47,13 +49,48 @@ _TOOL_NAME = "submit_ai_candidate_proposals"
 # `AICandidateProposal` fields -- deliberately no coordinate, provider id,
 # price, rating, opening-hours, route-time, review-count, ticket-price,
 # availability, booking-link, or safety-score field exists in this schema,
-# matching the model's own contract (a proposal is a name and a one-line
-# rationale, never a fact).
+# matching the model's own contract (a proposal is a name/search intent and
+# a one-line rationale, never a fact).
+#
+# Step 191B: `proposal_type` distinguishes a `named_place` proposal (a
+# specific place worth checking) from a `discovery_query` proposal (an
+# experience/category need for a future provider search to resolve, Section
+# 192). `candidate_name` is optional here (required, non-null, only when
+# `proposal_type` is `named_place` -- Claude's tool-use JSON Schema has no
+# "required if" construct, so that conditional requirement is enforced one
+# layer down by `AICandidateProposal.validate_proposal_type_contract`).
+# `search_query` is always required -- the provider-search-friendly phrase
+# Section 192 will actually use.
 _PROPOSAL_INPUT_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
         "proposal_id": {"type": "string", "description": "A short unique id for this proposal, e.g. 'proposal_001'."},
-        "candidate_name": {"type": "string", "description": "The place or area name being proposed."},
+        "proposal_type": {
+            "type": "string",
+            "enum": [member.value for member in AICandidateProposalType],
+            "description": (
+                "'named_place' if you have a specific place worth checking, otherwise "
+                "'discovery_query' if you are describing an experience/category need for "
+                "a provider search to resolve."
+            ),
+        },
+        "candidate_name": {
+            "type": "string",
+            "description": (
+                "The specific place/area name being proposed. Required when proposal_type "
+                "is 'named_place'. Omit entirely when proposal_type is 'discovery_query' -- "
+                "never invent a specific establishment name for a generic need."
+            ),
+        },
+        "search_query": {
+            "type": "string",
+            "description": (
+                "A short, provider-search-friendly query. For 'named_place', this is "
+                "usually the same as candidate_name. For 'discovery_query', this is the "
+                "experience/category phrase a provider search should look up (e.g. "
+                "'historic food market')."
+            ),
+        },
         "candidate_type": {"type": "string", "enum": [member.value for member in AICandidateType]},
         "priority_hint": {"type": "string", "enum": [member.value for member in AICandidatePriorityHint]},
         "suggested_area": {"type": "string", "description": "Optional neighborhood/area name, if known."},
@@ -74,19 +111,29 @@ _PROPOSAL_INPUT_SCHEMA: dict[str, Any] = {
         },
         "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
     },
-    "required": ["proposal_id", "candidate_name", "candidate_type", "why_consider", "verification_requirements", "confidence"],
+    "required": [
+        "proposal_id",
+        "proposal_type",
+        "search_query",
+        "candidate_type",
+        "why_consider",
+        "verification_requirements",
+        "confidence",
+    ],
     "additionalProperties": False,
 }
 
 _TOOL_DEFINITION: dict[str, Any] = {
     "name": _TOOL_NAME,
     "description": (
-        "Submit candidate place/area ideas for a trip destination. Each idea is only a "
-        "proposal, never a verified fact -- every idea will be independently checked "
-        "against real provider/open data before it can be used or scheduled. Do not "
-        "include coordinates, provider ids, prices, ratings, opening hours, route times, "
-        "review counts, ticket prices, availability, booking links, or safety scores "
-        "anywhere in your output."
+        "Submit candidate ideas to investigate for a trip destination -- either a named "
+        "place worth checking, or a discovery-query search intent for a category/"
+        "experience need. Each idea is only a proposal, never a verified fact -- a "
+        "named_place will be checked against real provider/open data, and a "
+        "discovery_query will be resolved by a future provider search, before either can "
+        "be used or scheduled. Do not include coordinates, provider ids, prices, ratings, "
+        "opening hours, route times, review counts, ticket prices, availability, booking "
+        "links, or safety scores anywhere in your output."
     ),
     "input_schema": {
         "type": "object",
@@ -105,18 +152,30 @@ _TOOL_DEFINITION: dict[str, Any] = {
 }
 
 _SYSTEM_PROMPT = (
-    "You are a candidate-idea proposer for a travel planning system. You are a proposer, "
-    "never a source of truth: every idea you submit is a proposal only, not a verified "
-    "fact, and every proposal will be independently checked against real provider/open "
-    "data before it can be used or scheduled.\n\n"
-    "Propose candidate place/area ideas by name and a one-line rationale only. You MUST "
-    "call the submit_ai_candidate_proposals tool to respond, and your output must match "
-    "its schema exactly.\n\n"
+    "You are proposing things to investigate for a travel planning system. You are NOT "
+    "supplying verified travel facts -- every idea you submit is a proposal only, and a "
+    "later provider layer will verify or replace your suggestions before anything is "
+    "used or scheduled. You MUST call the submit_ai_candidate_proposals tool to respond, "
+    "and your output must match its schema exactly.\n\n"
+    "Each proposal is one of two kinds:\n"
+    "- named_place: you know a specific place that may be worth checking (e.g. "
+    "'Oceanario de Lisboa'). Still only a suggestion until a provider verifies it.\n"
+    "- discovery_query: you have an experience/category need rather than a specific "
+    "establishment (e.g. 'traditional food market', 'historic neighborhood walk', "
+    "'sunset viewpoint'). Prefer this whenever you don't have a genuinely useful named "
+    "place in mind -- do not invent an obscure or uncertain establishment name just to "
+    "produce a named_place proposal.\n\n"
+    "Reflect the traveler's stated interests, respect their explicit constraints and "
+    "trip length, and consider pace and destination. Provide a mixture of high-priority "
+    "anchors and supporting ideas; avoid excessive duplicates (do not propose near-"
+    "identical ideas under different names). Every search_query should be short and "
+    "provider-search-friendly. Keep why_consider concise.\n\n"
     "Do not include coordinates, provider ids, prices, ratings, opening hours, route "
     "times, review counts, ticket prices, availability, booking links, or safety scores "
     "anywhere in your output. If you do not know a fact, omit it entirely -- never guess "
-    "or invent one. Every idea you propose still requires independent grounding and "
-    "verification against real provider/open data before it can be scheduled."
+    "or invent one. Every idea you propose still requires independent verification -- a "
+    "named_place against real provider/open data, a discovery_query through a future "
+    "provider search -- before it can be scheduled."
 )
 
 
@@ -262,6 +321,8 @@ class AnthropicAICandidateProposalProvider(AICandidateProposalProvider):
 
         if not proposals:
             return self._rejected_result(request, "Claude returned no candidate proposals.")
+
+        proposals = deduplicate_proposals(proposals)
 
         confidence = tool_input.get("confidence", 0.0)
         if not isinstance(confidence, (int, float)) or isinstance(confidence, bool):

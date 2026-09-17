@@ -80,6 +80,20 @@ class AICandidateProposalStatus(str, Enum):
     REJECTED = "rejected"
 
 
+class AICandidateProposalType(str, Enum):
+    """Bounded distinction (Step 191B, itinerary-generator-build-spec.md
+    Stage 5, docs/13_llm_reasoning_pipeline.md section 42) between a
+    proposal that names a specific place to check (`NAMED_PLACE`) and one
+    that expresses an experience/category need for a future provider
+    search to resolve (`DISCOVERY_QUERY`). This is the only vocabulary a
+    proposal's `proposal_type` may use -- no arbitrary/free-text mode is
+    allowed.
+    """
+
+    NAMED_PLACE = "named_place"
+    DISCOVERY_QUERY = "discovery_query"
+
+
 class AICandidateType(str, Enum):
     ATTRACTION = "attraction"
     NEIGHBORHOOD = "neighborhood"
@@ -109,16 +123,41 @@ class AICandidateVerificationRequirement(str, Enum):
 
 
 class AICandidateProposal(BaseModel):
-    """One AI-proposed candidate idea (build spec Stage 5). Deliberately
+    """One AI-proposed candidate idea (build spec Stage 5, redesigned in
+    Step 191B into a provider-search-ready discovery intent). Deliberately
     carries no coordinate, provider source, rating, price, opening-hours,
-    booking/availability, or route/timing field -- it is a name and a
-    one-line rationale only, never a grounded or schedulable place. It must
-    be independently verified against provider/open data (Stage 6) before
-    it can be scheduled.
+    booking/availability, or route/timing field -- it is a name/search
+    intent and a one-line rationale only, never a grounded or schedulable
+    place. It must be independently verified against provider/open data
+    (Stage 6), or, for a `discovery_query` proposal, resolved by a future
+    provider search (Stage 6.5/Section 192) before it can be grounded or
+    scheduled.
+
+    `proposal_type` distinguishes two shapes (Step 191B):
+
+    - `named_place`: `candidate_name` names a specific place the LLM
+      thinks may be worth checking. It is still only a lookup hint, never
+      a verified fact -- `CandidateGroundingService`'s existing exact/
+      normalized matching continues to attempt to ground it against real
+      provider candidates, exactly as before this step.
+    - `discovery_query`: `candidate_name` may be `None` -- the LLM is
+      expressing an experience/category need (e.g. "historic food
+      market") rather than inventing a specific establishment.
+      `search_query` is the only thing a future provider search
+      (Section 192) has to go on; the current deterministic grounding
+      service does not attempt to match this against a factual place name
+      and always leaves it ungrounded until that provider search exists.
+
+    `search_query` is always present and provider-search-friendly. If not
+    supplied explicitly for a `named_place` proposal, it defaults to
+    `candidate_name` -- this keeps every pre-191B construction of this
+    model (adapters, tests) working unchanged.
     """
 
     proposal_id: str
-    candidate_name: str
+    proposal_type: AICandidateProposalType = AICandidateProposalType.NAMED_PLACE
+    candidate_name: str | None = None
+    search_query: str | None = None
     candidate_type: AICandidateType
     priority_hint: AICandidatePriorityHint = AICandidatePriorityHint.UNKNOWN
     suggested_area: str | None = None
@@ -128,12 +167,21 @@ class AICandidateProposal(BaseModel):
     source: str = "ai_candidate_proposal"
     confidence: float = Field(ge=0.0, le=1.0)
 
-    @field_validator("proposal_id", "candidate_name", "why_consider")
+    @field_validator("proposal_id", "why_consider")
     @classmethod
     def validate_not_blank(cls, value: str, info: ValidationInfo) -> str:
         return _require_non_blank(value, info.field_name)
 
-    @field_validator("candidate_name", "suggested_area", "why_consider")
+    @field_validator("candidate_name", "suggested_area", "search_query")
+    @classmethod
+    def validate_optional_text_not_blank(cls, value: str | None, info: ValidationInfo) -> str | None:
+        if value is None:
+            return value
+        if not value.strip():
+            raise ValueError(f"{info.field_name} must not be blank when provided.")
+        return value
+
+    @field_validator("candidate_name", "suggested_area", "why_consider", "search_query")
     @classmethod
     def validate_no_forbidden_claims(cls, value: str | None, info: ValidationInfo) -> str | None:
         if value is None:
@@ -146,6 +194,31 @@ class AICandidateProposal(BaseModel):
         for item in value:
             _check_forbidden(item, "fit_with_user_preferences")
         return value
+
+    @model_validator(mode="after")
+    def validate_proposal_type_contract(self) -> "AICandidateProposal":
+        """Step 191B's core contract check: a `named_place` proposal must
+        name a place; a `discovery_query` proposal must carry a real
+        search query since it may have no name at all. `search_query`
+        defaults to `candidate_name` for a `named_place` proposal that
+        didn't set it explicitly, so this never breaks a pre-191B
+        construction that only ever set `candidate_name`.
+        """
+        if self.proposal_type == AICandidateProposalType.NAMED_PLACE:
+            if not self.candidate_name or not self.candidate_name.strip():
+                raise ValueError(
+                    "AICandidateProposal.candidate_name is required and must be non-blank "
+                    "when proposal_type is 'named_place'."
+                )
+            if not self.search_query or not self.search_query.strip():
+                self.search_query = self.candidate_name
+        else:
+            if not self.search_query or not self.search_query.strip():
+                raise ValueError(
+                    "AICandidateProposal.search_query is required and must be non-blank "
+                    "when proposal_type is 'discovery_query'."
+                )
+        return self
 
 
 class AICandidateProposalRequest(BaseModel):

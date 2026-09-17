@@ -113,6 +113,13 @@ class CandidateGroundingRejectReason(str, Enum):
     UNSAFE_AI_CLAIM = "unsafe_ai_claim"
     DUPLICATE_CANDIDATE = "duplicate_candidate"
     UNSUPPORTED_CANDIDATE_TYPE = "unsupported_candidate_type"
+    # Step 191B: a `discovery_query` proposal (no factual candidate name,
+    # only a search intent) cannot be safely matched by this service's
+    # deterministic exact/normalized name matching -- it is not a "no
+    # match found" outcome (that implies a name was looked for and not
+    # found), it is "there is nothing here yet for a future provider
+    # search (Section 192) to resolve."
+    DISCOVERY_QUERY_AWAITING_PROVIDER_SEARCH = "discovery_query_awaiting_provider_search"
 
 
 class ProviderCandidateForGrounding(BaseModel):

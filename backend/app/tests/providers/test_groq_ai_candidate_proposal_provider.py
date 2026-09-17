@@ -112,9 +112,12 @@ def _valid_proposal_dict(**overrides: object) -> dict[str, object]:
     # "valid" fixture includes them explicitly (matching what a real
     # strict-mode Groq response now always contains), rather than relying
     # on _GroqProposalSchema's (removed) Python-level defaults.
+    # Step 191B: proposal_type/search_query are new required keys.
     fields: dict[str, object] = {
         "proposal_id": "proposal_001",
+        "proposal_type": "named_place",
         "candidate_name": "Old Town Waterfront",
+        "search_query": "Old Town Waterfront",
         "candidate_type": "neighborhood",
         "priority_hint": "unknown",
         "suggested_area": None,
@@ -737,6 +740,68 @@ def test_real_groq_400_tool_choice_error_is_classified_and_sanitized() -> None:
     assert "gsk_fake_should_not_leak" not in full_message
     assert "Authorization" not in full_message
     assert "Bearer" not in full_message
+
+
+# ---------------------------------------------------------------------------
+# Step 191B: discovery_query proposals, dedup, and schema shape.
+# ---------------------------------------------------------------------------
+
+
+def test_discovery_query_output_produces_completed_result() -> None:
+    client = _client_returning(
+        _valid_output(
+            proposals=[
+                _valid_proposal_dict(
+                    proposal_id="proposal_002",
+                    proposal_type="discovery_query",
+                    candidate_name=None,
+                    search_query="historic food market",
+                    candidate_type="food_area",
+                )
+            ]
+        )
+    )
+    provider = GroqAICandidateProposalProvider(client=client)
+
+    result = provider.propose(_request())
+
+    assert result.status == AICandidateProposalStatus.COMPLETED
+    proposal = result.proposals[0]
+    assert proposal.proposal_type.value == "discovery_query"
+    assert proposal.candidate_name is None
+    assert proposal.search_query == "historic food market"
+
+
+def test_duplicate_named_place_proposals_are_deduplicated() -> None:
+    client = _client_returning(
+        _valid_output(
+            proposals=[
+                _valid_proposal_dict(
+                    proposal_id="proposal_001", candidate_name="Belem Tower", search_query="Belem Tower"
+                ),
+                _valid_proposal_dict(
+                    proposal_id="proposal_002", candidate_name="Belem Tower!", search_query="Belem Tower!"
+                ),
+            ]
+        )
+    )
+    provider = GroqAICandidateProposalProvider(client=client)
+
+    result = provider.propose(_request())
+
+    assert len(result.proposals) == 1
+    assert result.proposals[0].proposal_id == "proposal_001"
+
+
+def test_groq_schema_requires_proposal_type_and_search_query() -> None:
+    schema = _GroqProposalBatchSchema.model_json_schema()
+    proposal_schema = schema["$defs"]["_GroqProposalSchema"]
+    assert "proposal_type" in proposal_schema["required"]
+    assert "search_query" in proposal_schema["required"]
+    # candidate_name stays a required *key* under Groq's strict json_schema
+    # mode (every key must always be present), but its *value* is nullable
+    # -- enforced one layer down by AICandidateProposal, not by this schema.
+    assert "candidate_name" in proposal_schema["required"]
 
 
 def test_valid_json_schema_response_still_goes_through_pydantic_validation() -> None:

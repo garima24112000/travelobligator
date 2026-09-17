@@ -16,6 +16,7 @@ from app.models.ai_candidate_proposal import (
     AICandidateProposalResult,
     AICandidateProposalStatus,
     AICandidateProposalTask,
+    AICandidateProposalType,
     AICandidateType,
     AICandidateVerificationRequirement,
 )
@@ -643,6 +644,83 @@ _DISALLOWED_IMPORT_SUBSTRINGS = (
     "app.providers.currency",
     "app.providers.gateway",
 )
+
+
+# ---------------------------------------------------------------------------
+# 10. Step 191B: a discovery_query proposal can never become a promoted
+#     itinerary place merely because the LLM emitted it, even when a
+#     provider candidate's name happens to match the search phrase
+#     exactly.
+# ---------------------------------------------------------------------------
+
+
+def _discovery_query_proposal(**overrides: object) -> AICandidateProposal:
+    fields: dict[str, object] = {
+        "proposal_id": "proposal_001",
+        "proposal_type": AICandidateProposalType.DISCOVERY_QUERY,
+        "candidate_name": None,
+        "search_query": "historic food market",
+        "candidate_type": AICandidateType.FOOD_AREA,
+        "why_consider": "Traveler prioritizes food and history.",
+        "verification_requirements": [
+            AICandidateVerificationRequirement.MUST_NOT_USE_WITHOUT_PROVIDER_MATCH
+        ],
+        "confidence": 0.5,
+    }
+    fields.update(overrides)
+    return AICandidateProposal(**fields)
+
+
+def test_discovery_query_is_never_grounded_even_with_a_name_matching_provider_candidate() -> None:
+    proposals = [_discovery_query_proposal()]
+    service = AICandidateDiscoveryService(proposal_provider=_ValidProposalsProvider(proposals))
+    planning_state = _planning_state(candidate_pois=[_place(name="historic food market")])
+
+    result = service.dry_run(planning_state)
+
+    assert result.grounding_result.status == CandidateGroundingStatus.REJECTED
+    assert result.grounding_result.grounded_candidates == []
+    assert result.grounding_result.rejected_proposals[0].reject_reason == (
+        CandidateGroundingRejectReason.DISCOVERY_QUERY_AWAITING_PROVIDER_SEARCH
+    )
+
+
+def test_discovery_query_is_never_eligible_for_promotion() -> None:
+    from app.services.ai_candidate_promotion_service import AICandidatePromotionService
+    from app.services.ai_candidate_review_service import AICandidateReviewService
+    from app.models.candidate_grounding import CandidateGroundingBatch
+    from app.services.candidate_grounding_request_builder import CandidateGroundingRequestBuilder
+    from app.services.candidate_grounding_service import CandidateGroundingService
+
+    proposals = [_discovery_query_proposal()]
+    planning_state = _planning_state(candidate_pois=[_place(name="historic food market")])
+    provider = _ValidProposalsProvider(proposals)
+    proposal_request = AICandidateProposalRequest(
+        task=AICandidateProposalTask.DESTINATION_CANDIDATE_DISCOVERY,
+        trip_id=planning_state.trip_id,
+        destination_name=planning_state.trip_request.primary_destination,
+        trip_duration_days=3,
+    )
+    proposal_result = provider.propose(proposal_request)
+    grounding_request = CandidateGroundingRequestBuilder().build_request(
+        planning_state, proposals=proposal_result.proposals
+    )
+    grounding_result = CandidateGroundingService().ground(grounding_request)
+
+    planning_state.ai_candidate_proposal_batch = AICandidateProposalBatch(
+        request=proposal_request, result=proposal_result
+    )
+    planning_state.candidate_grounding_batch = CandidateGroundingBatch(
+        request=grounding_request, result=grounding_result
+    )
+
+    review_report = AICandidateReviewService().build_report(planning_state)
+    assert review_report.eligible_for_promotion == 0
+    assert all(not item.eligible_for_promotion for item in review_report.items)
+
+    promotion_report = AICandidatePromotionService().build_promotion_report(planning_state)
+    assert promotion_report.promoted_count == 0
+    assert promotion_report.promoted_candidates == []
 
 
 def test_service_module_has_no_disallowed_imports() -> None:

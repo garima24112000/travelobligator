@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 
-from app.models.ai_candidate_proposal import AICandidateProposal
+from app.models.ai_candidate_proposal import AICandidateProposal, AICandidateProposalType
 from app.models.candidate_grounding import (
     CandidateGroundingConfidenceTier,
     CandidateGroundingEvidence,
@@ -146,6 +146,31 @@ class CandidateGroundingService:
         proposal: AICandidateProposal,
         provider_candidates: list[ProviderCandidateForGrounding],
     ) -> tuple[GroundedCandidate | None, RejectedCandidateProposal | None]:
+        # Step 191B: a `discovery_query` proposal is a search intent, not a
+        # factual place name -- there is nothing here to safely match by
+        # name. Matching its free-text `search_query` against provider
+        # candidates would be exactly the "pretend the search phrase is a
+        # factual place" behavior Section 192 exists to avoid; it stays
+        # ungrounded until a real provider search (Section 192) resolves
+        # it into a named, provider-backed candidate.
+        if proposal.proposal_type == AICandidateProposalType.DISCOVERY_QUERY:
+            return None, RejectedCandidateProposal(
+                proposal_id=proposal.proposal_id,
+                candidate_name=proposal.candidate_name or proposal.search_query,
+                candidate_type=proposal.candidate_type,
+                reject_reason=CandidateGroundingRejectReason.DISCOVERY_QUERY_AWAITING_PROVIDER_SEARCH,
+                message=(
+                    "This is a discovery-query proposal (a search intent, not a named "
+                    "place); it stays ungrounded until a provider search resolves it."
+                ),
+            )
+
+        # A named_place proposal is structurally guaranteed (by
+        # AICandidateProposal's own model validator) to carry a non-blank
+        # candidate_name -- safe to match by name exactly as before Step
+        # 191B.
+        assert proposal.candidate_name is not None
+
         # An exact case-insensitive match is always also a normalized match
         # (normalization is a pure function of the string), so normalized
         # matches are the full candidate set for ambiguity purposes -- "more
