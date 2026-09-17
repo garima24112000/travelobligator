@@ -340,7 +340,7 @@ def _enable_live_discovery_with_provider_discovery(
     )
 
 
-def test_live_discovery_enabled_discovery_query_resolved_by_targeted_lookup_grounds(
+def test_live_discovery_enabled_discovery_query_resolved_by_targeted_lookup_is_scored_and_promoted(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from app.models.common import DataStatus, ProviderStatus
@@ -397,16 +397,37 @@ def test_live_discovery_enabled_discovery_query_resolved_by_targeted_lookup_grou
     assert grounded["evidence"]["match_type"] == "targeted_lookup"
     assert grounded["evidence"]["provider_place_id"] == "test/discovered/1"
 
-    # Grounded via a real (fake) provider lookup, but this candidate was
-    # never scored by CandidateQualityService (that stage only scores the
-    # broad destination_context pool, unchanged by Section 192) -- so
-    # promotion-eligibility Rule 4 ("a quality score must exist") honestly
-    # keeps it un-promoted. Grounding succeeding is the real Section 192
-    # outcome being proven here; promotion staying honest about the gap
-    # it does not close is equally real and not silently papered over.
+    # Section 192A (docs/14_backend_architecture.md section 140): the
+    # targeted-lookup-grounded candidate is now scored by
+    # CandidateQualityService.score_provider_backed_candidate, stored on
+    # candidate_quality_report.ai_directed_scores -- so promotion-
+    # eligibility Rule 4 ("a quality score must exist") can now find it
+    # and this candidate is actually promoted, closing the gap Section
+    # 192's own real verification surfaced.
+    quality_report = planning_state["candidate_quality_report"]
+    assert quality_report is not None
+    ai_directed_scores = quality_report["ai_directed_scores"]
+    assert len(ai_directed_scores) == 1
+    assert ai_directed_scores[0]["candidate_id"] == "test/discovered/1"
+
     promotion_report = planning_state["ai_candidate_promotion_report"]
-    assert promotion_report["promoted_count"] == 0
-    assert promotion_report["skipped_candidate_ids"] == ["proposal_001"]
+    assert promotion_report["promoted_count"] == 1
+    assert promotion_report["promoted_candidates"][0]["provider_place_id"] == "test/discovered/1"
+    assert promotion_report["promoted_candidates"][0]["quality_bucket"] is not None
+
+    # Task 9: ExperiencePlanner's existing, unmodified promoted-candidate
+    # merge mechanism (Step 170D) actually schedules this Section 192 +
+    # 192A candidate -- proving the whole chain (proposal -> targeted
+    # provider lookup -> grounding -> quality score -> promotion ->
+    # scheduling) works end to end through one real /generate call, with
+    # zero ExperiencePlanner code changes.
+    items = _scheduled_items(planning_state)
+    promoted_items = [item for item in items if item.get("promoted_from_ai") is True]
+    assert len(promoted_items) == 1
+    assert promoted_items[0]["provider_place_id"] == "test/discovered/1"
+    assert promoted_items[0]["name"] == "Discovered Food Hall"
+    # Provider facts preserved verbatim -- never replaced by an LLM field.
+    assert promoted_items[0]["coordinates"] == {"lat": 1.0, "lng": 2.0}
 
 
 def test_live_discovery_enabled_ungrounded_proposal_records_provider_discovery_attempt(

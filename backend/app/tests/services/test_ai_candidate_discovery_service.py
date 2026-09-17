@@ -772,3 +772,191 @@ def test_injected_provider_discovery_service_is_used() -> None:
     injected = AIDirectedProviderDiscoveryService(gateway=gateway)
     service = AICandidateDiscoveryService(provider_discovery_service=injected)
     assert service.provider_discovery_service is injected
+
+
+# ---------------------------------------------------------------------------
+# Section 192A (docs/14_backend_architecture.md section 140): targeted-
+# lookup-grounded candidates are quality-scored; nothing else is.
+# ---------------------------------------------------------------------------
+
+
+def test_targeted_lookup_grounded_candidate_gets_quality_scored() -> None:
+    gateway = ProviderGateway(places=_FakePlacesProviderForDiscoveryTest())
+    proposal = _discovery_query_proposal()
+    service = AICandidateDiscoveryService(
+        proposal_provider=_FakeAICandidateProposalProvider([proposal]),
+        provider_discovery_service=AIDirectedProviderDiscoveryService(gateway=gateway),
+    )
+    planning_state = _planning_state(candidate_pois=[_place(name="Unrelated Place")])
+
+    result = service.dry_run(planning_state)
+
+    assert len(result.ai_directed_quality_scores) == 1
+    score = result.ai_directed_quality_scores[0]
+    assert score.candidate_id == "way/999"
+    # category "marketplace" (fake fixture) + candidate_type_hint "food_area"
+    # (the proposal's own candidate_type) routes to restaurant scoring.
+    assert score.use_case.value == "restaurant"
+
+
+def test_broad_pool_grounded_candidate_is_never_double_scored() -> None:
+    """A candidate grounded through the broad pool (exact_name) must
+    never appear in ai_directed_quality_scores -- it is already scored by
+    the separate CandidateQualityService.build_report pass, untouched by
+    this integration."""
+    gateway = ProviderGateway(places=_FakePlacesProviderForDiscoveryTest())
+    proposal = _proposal(candidate_name="Old Town Waterfront")
+    service = AICandidateDiscoveryService(
+        proposal_provider=_FakeAICandidateProposalProvider([proposal]),
+        provider_discovery_service=AIDirectedProviderDiscoveryService(gateway=gateway),
+    )
+    planning_state = _planning_state(candidate_pois=[_place(name="Old Town Waterfront")])
+
+    result = service.dry_run(planning_state)
+
+    assert result.ai_directed_quality_scores == []
+
+
+def test_ungrounded_proposal_is_never_scored() -> None:
+    class _NotFoundPlacesProvider(PlacesProvider):
+        provider_name = "not_found_places_provider"
+
+        def search_must_visit_place(self, must_visit_term, primary_destination, filters=None):
+            from app.providers.base import unavailable_response
+
+            return unavailable_response(self.provider_name, self.provider_type)
+
+    gateway = ProviderGateway(places=_NotFoundPlacesProvider())
+    proposal = _discovery_query_proposal()
+    service = AICandidateDiscoveryService(
+        proposal_provider=_FakeAICandidateProposalProvider([proposal]),
+        provider_discovery_service=AIDirectedProviderDiscoveryService(gateway=gateway),
+    )
+    planning_state = _planning_state(candidate_pois=[_place(name="Unrelated Place")])
+
+    result = service.dry_run(planning_state)
+
+    assert result.ai_directed_quality_scores == []
+    assert result.grounding_result.status == CandidateGroundingStatus.REJECTED
+
+
+def test_provider_failure_is_never_scored() -> None:
+    class _RaisingPlacesProvider(PlacesProvider):
+        provider_name = "raising_places_provider"
+
+        def search_must_visit_place(self, must_visit_term, primary_destination, filters=None):
+            raise RuntimeError("simulated provider crash")
+
+    gateway = ProviderGateway(places=_RaisingPlacesProvider())
+    proposal = _discovery_query_proposal()
+    service = AICandidateDiscoveryService(
+        proposal_provider=_FakeAICandidateProposalProvider([proposal]),
+        provider_discovery_service=AIDirectedProviderDiscoveryService(gateway=gateway),
+    )
+    planning_state = _planning_state(candidate_pois=[_place(name="Unrelated Place")])
+
+    result = service.dry_run(planning_state)  # must not raise
+
+    assert result.ai_directed_quality_scores == []
+
+
+def test_search_limit_skipped_proposal_is_never_scored(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.core.config import Settings
+
+    import app.services.ai_directed_provider_discovery_service as discovery_service_module
+
+    # Force the bound via Settings rather than the constructor (discover's
+    # own max_searches kwarg isn't threaded through AICandidateDiscoveryService,
+    # matching production, which always relies on the configured default).
+    monkeypatch.setattr(
+        discovery_service_module,
+        "get_settings",
+        lambda: Settings(_env_file=None, AI_DIRECTED_PROVIDER_DISCOVERY_MAX_SEARCHES=0),
+    )
+
+    gateway = ProviderGateway(places=_FakePlacesProviderForDiscoveryTest())
+    proposals = [
+        _discovery_query_proposal(proposal_id=f"proposal_{i:03d}", search_query=f"query {i}")
+        for i in range(3)
+    ]
+    service = AICandidateDiscoveryService(
+        proposal_provider=_FakeAICandidateProposalProvider(proposals),
+        provider_discovery_service=AIDirectedProviderDiscoveryService(gateway=gateway),
+    )
+    planning_state = _planning_state(candidate_pois=[_place(name="Unrelated Place")])
+
+    result = service.dry_run(planning_state)
+
+    assert result.provider_discovery_result.matched_count == 0
+    assert all(
+        attempt.status == AIProviderDiscoveryAttemptStatus.NOT_SEARCHED
+        for attempt in result.provider_discovery_result.attempts
+    )
+    assert result.ai_directed_quality_scores == []
+
+
+def test_duplicate_provider_identity_with_broad_pool_reuses_existing_score() -> None:
+    """Task 10: a targeted-lookup match whose provider_place_id already
+    has a broad-pool CandidateQualityScore must not get a conflicting
+    duplicate ai_directed score."""
+    from datetime import datetime, timezone
+
+    from app.models.candidate_quality import (
+        CandidateQualityReport,
+        CandidateQualityScore,
+        CandidateQualityTier,
+        CandidateUseCase,
+    )
+
+    gateway = ProviderGateway(places=_FakePlacesProviderForDiscoveryTest())
+    proposal = _discovery_query_proposal()
+    service = AICandidateDiscoveryService(
+        proposal_provider=_FakeAICandidateProposalProvider([proposal]),
+        provider_discovery_service=AIDirectedProviderDiscoveryService(gateway=gateway),
+    )
+    planning_state = _planning_state(candidate_pois=[_place(name="Unrelated Place")])
+    planning_state.candidate_quality_report = CandidateQualityReport(
+        destination_name=planning_state.trip_request.primary_destination,
+        generated_at=datetime.now(timezone.utc),
+        attraction_scores=[
+            CandidateQualityScore(
+                candidate_id="way/999",  # same provider_place_id the fake fixture returns
+                candidate_name="Mercado da Ribeira",
+                use_case=CandidateUseCase.ATTRACTION,
+                quality_tier=CandidateQualityTier.GOOD_CANDIDATE,
+                total_score=0.6,
+            )
+        ],
+    )
+
+    result = service.dry_run(planning_state)
+
+    assert result.ai_directed_quality_scores == []
+
+
+def test_ai_proposal_confidence_never_leaks_into_quality_score() -> None:
+    """Task 16: AICandidateProposal.confidence (the LLM's own confidence
+    in its idea) must never substitute for or alter provider-backed
+    CandidateQualityScore.confidence."""
+    gateway = ProviderGateway(places=_FakePlacesProviderForDiscoveryTest())
+    low_ai_confidence_proposal = _discovery_query_proposal(
+        proposal_id="proposal_low_conf", confidence=0.01
+    )
+    high_ai_confidence_proposal = _discovery_query_proposal(
+        proposal_id="proposal_high_conf", confidence=0.99
+    )
+
+    scores: list[float] = []
+    for proposal in (low_ai_confidence_proposal, high_ai_confidence_proposal):
+        service = AICandidateDiscoveryService(
+            proposal_provider=_FakeAICandidateProposalProvider([proposal]),
+            provider_discovery_service=AIDirectedProviderDiscoveryService(gateway=gateway),
+        )
+        planning_state = _planning_state(candidate_pois=[_place(name="Unrelated Place")])
+        result = service.dry_run(planning_state)
+        scores.append(result.ai_directed_quality_scores[0].confidence)
+
+    # The fake places provider always returns confidence=0.5 regardless of
+    # AI proposal confidence -- both runs must produce the exact same
+    # provider-backed quality-score confidence.
+    assert scores[0] == scores[1] == 0.5

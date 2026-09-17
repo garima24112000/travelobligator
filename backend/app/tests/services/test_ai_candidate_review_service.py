@@ -711,3 +711,103 @@ def test_report_has_no_forbidden_factual_fields() -> None:
 
     _collect(report.model_dump(mode="json"))
     assert dumped_keys & _FORBIDDEN_FACTUAL_FIELD_NAMES == set()
+
+
+# ---------------------------------------------------------------------------
+# Section 192A (docs/14_backend_architecture.md section 140):
+# find_quality_score/eligibility resolve a Section 192 targeted-lookup
+# grounded candidate's score from candidate_quality_report.ai_directed_scores
+# -- the same lookup path, no special "AI override".
+# ---------------------------------------------------------------------------
+
+
+def test_targeted_lookup_grounded_candidate_resolves_score_from_ai_directed_scores() -> None:
+    proposal = _proposal("proposal_targeted", "Torre de Belem")
+    quality_report = CandidateQualityReport(
+        destination_name="New York",
+        generated_at=datetime.now(timezone.utc),
+        # Deliberately empty broad lists -- this candidate was never part
+        # of the broad destination_context pool, only ai_directed_scores.
+        ai_directed_scores=[
+            _quality_score("way/24341353", "Torre de Belem", CandidateQualityTier.GOOD_CANDIDATE)
+        ],
+    )
+    planning_state = _state_with(
+        [proposal],
+        grounded=[
+            _grounded_candidate(
+                proposal,
+                provider_place_id="way/24341353",
+                match_type=CandidateGroundingMatchType.TARGETED_LOOKUP,
+            )
+        ],
+        quality_report=quality_report,
+    )
+
+    report = AICandidateReviewService().build_report(planning_state)
+    item = report.items[0]
+
+    assert item.eligible_for_promotion is True
+    assert item.quality_bucket == CandidateQualityTier.GOOD_CANDIDATE.value
+
+
+def test_targeted_lookup_grounded_candidate_without_ai_directed_score_stays_ineligible() -> None:
+    """No fabricated default score -- if scoring genuinely never happened
+    for this candidate, promotion stays honestly blocked."""
+    proposal = _proposal("proposal_targeted", "Torre de Belem")
+    quality_report = CandidateQualityReport(
+        destination_name="New York",
+        generated_at=datetime.now(timezone.utc),
+    )
+    planning_state = _state_with(
+        [proposal],
+        grounded=[
+            _grounded_candidate(
+                proposal,
+                provider_place_id="way/24341353",
+                match_type=CandidateGroundingMatchType.TARGETED_LOOKUP,
+            )
+        ],
+        quality_report=quality_report,
+    )
+
+    report = AICandidateReviewService().build_report(planning_state)
+    item = report.items[0]
+
+    assert item.eligible_for_promotion is False
+    assert item.quality_bucket is None
+    assert "No candidate quality score is available for this grounded candidate." in (
+        item.rejection_reasons
+    )
+
+
+@pytest.mark.parametrize("tier", [CandidateQualityTier.LOW_PRIORITY, CandidateQualityTier.REJECTED])
+def test_targeted_lookup_grounded_candidate_with_low_ai_directed_score_is_not_eligible(
+    tier: CandidateQualityTier,
+) -> None:
+    """Section 192A must not weaken promotion thresholds -- a low-quality
+    ai_directed_scores entry is rejected by the same Rule 4 threshold as a
+    broad-pool one."""
+    proposal = _proposal("proposal_targeted", "Torre de Belem")
+    quality_report = CandidateQualityReport(
+        destination_name="New York",
+        generated_at=datetime.now(timezone.utc),
+        ai_directed_scores=[_quality_score("way/24341353", "Torre de Belem", tier)],
+    )
+    planning_state = _state_with(
+        [proposal],
+        grounded=[
+            _grounded_candidate(
+                proposal,
+                provider_place_id="way/24341353",
+                match_type=CandidateGroundingMatchType.TARGETED_LOOKUP,
+            )
+        ],
+        quality_report=quality_report,
+    )
+
+    report = AICandidateReviewService().build_report(planning_state)
+    item = report.items[0]
+
+    assert item.eligible_for_promotion is False
+    assert item.quality_bucket == tier.value

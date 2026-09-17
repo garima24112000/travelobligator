@@ -472,6 +472,61 @@ class CandidateQualityService:
             confidence=confidence,
         )
 
+    def score_provider_backed_candidate(
+        self,
+        place: NormalizedPlace,
+        candidate_type_hint: str = "",
+        user_interests: list[str] | None = None,
+        must_visit_names: list[str] | None = None,
+    ) -> CandidateQualityScore:
+        """Section 192A (docs/14_backend_architecture.md section 140):
+        scores one already-grounded, provider-backed candidate that did
+        not come from `DestinationContext`'s own broad candidate
+        collections (today, a Section 192 AI-directed
+        `match_type=targeted_lookup` grounding result) using the exact
+        same deterministic rules as any broad-discovery candidate --
+        there is one quality policy, not a second AI-specific one. This
+        method adds only a classification dispatch on top of the existing
+        `score_attraction`/`score_restaurant`/`score_accommodation_poi`;
+        it invents no new scoring heuristic, weight, or threshold.
+
+        `place`'s own fields (name/category/coordinates/source/
+        data_status/confidence -- all real provider evidence) are what
+        get scored, exactly as for any other candidate. `candidate_type_hint`
+        (a plain string, e.g. an `AICandidateType.value`) is used only to
+        pick *which* of the three existing scoring functions to call when
+        `place.category` itself doesn't already answer that -- it is never
+        passed into the scoring math itself, so an AI's own labeling can
+        never inflate or substitute for provider-backed quality.
+
+        Classification prefers real provider category over the hint
+        (Task 3: "do not use LLM category alone as authoritative if
+        provider category exists"): a category recognized by
+        `score_restaurant`'s own restaurant/cafe/casual keyword sets, or
+        by an accommodation keyword, routes there regardless of the hint.
+        Only when the provider category gives no such signal does
+        `candidate_type_hint == "food_area"` route to restaurant scoring
+        as a fallback signal. Every other case (including an unrecognized
+        or missing provider category with any other/no hint) uses
+        `score_attraction` -- the safest existing generic POI path,
+        matching this task's own instruction rather than inventing a new
+        one. `AICandidateType` has no accommodation member today, so the
+        accommodation branch here is only ever reached by a real provider
+        category match, never by an AI hint alone -- documented, not
+        worked around.
+        """
+        category = str(_field(place, "category") or "").strip().lower()
+
+        if category in _STRONG_RESTAURANT_CATEGORIES or category in _CASUAL_RESTAURANT_CATEGORIES:
+            return self.score_restaurant(place, user_interests=user_interests)
+        if category and any(keyword in category for keyword in _ACCOMMODATION_KEYWORDS):
+            return self.score_accommodation_poi(place)
+        if candidate_type_hint.strip().lower() == "food_area":
+            return self.score_restaurant(place, user_interests=user_interests)
+        return self.score_attraction(
+            place, user_interests=user_interests, must_visit_names=must_visit_names
+        )
+
     def build_report(self, planning_state: PlanningState) -> CandidateQualityReport:
         """Builds a `CandidateQualityReport` purely from
         `planning_state.destination_context`'s existing candidate lists --

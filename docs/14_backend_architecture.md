@@ -9087,3 +9087,173 @@ routing, or regeneration; no new dependency; nothing committed.
 tests, zero change to any pre-existing test's outcome). `compileall`/
 `pytest` clean. No frontend/shared-contract file changed -- frontend
 checks explicitly skipped for that reason.
+
+## 140. Section 192A: Quality-Scoring Provider-Backed AI-Directed Candidates
+
+Section 192's own real verification produced real grounded candidates
+(e.g. "Belém Tower Lisbon" -> real OpenStreetMap place "Torre de Belém",
+`match_type=targeted_lookup`) that still never got promoted, because
+`AICandidatePromotionEligibilityService`'s Rule 4 requires a
+`CandidateQualityScore`, and `CandidateQualityService.build_report` only
+ever scores `PlanningState.destination_context`'s own broad candidate
+collections -- a Section 192 targeted-lookup result was never a member of
+any of them.
+
+```text
+AI proposal -> provider lookup -> grounding -> CandidateQualityScore -> promotion
+   OK             OK                OK              missing             blocked
+```
+
+**One quality policy, not two.** `CandidateQualityService` gained one new
+public method, `score_provider_backed_candidate(place, candidate_type_hint,
+user_interests=None, must_visit_names=None)` -- it adds only a
+classification dispatch on top of the pre-existing `score_attraction`/
+`score_restaurant`/`score_accommodation_poi` methods (already pure,
+already reusable on any single `NormalizedPlace`, not structurally tied to
+`destination_context` membership at all -- confirmed by inspection before
+writing a single line, per this step's own Task 1). No new scoring
+weight, threshold, tier, or heuristic exists anywhere in this step. A test
+(`test_provider_backed_candidate_uses_same_scoring_math_as_score_attraction`)
+asserts byte-identical output between the dispatcher and calling
+`score_attraction` directly for an attraction-classified input.
+
+**Classification prefers real provider category over the AI's own
+label** (Task 3): a `matched_category` recognized by `score_restaurant`'s
+own keyword sets, or by an accommodation keyword, routes there regardless
+of what the AI proposed. Only when the provider category is uninformative
+does the AI's `candidate_type` (passed as a plain string, e.g. `"food_area"`
+-- never the enum itself, so this module gains no import dependency on
+`app.models.ai_candidate_proposal`) get used, as a fallback signal for
+restaurant classification only. Everything else defaults to
+`score_attraction`, the safest existing generic path.
+`AICandidateType` has no accommodation member today, so that branch here
+is reachable only via a real provider category match -- documented, not
+worked around.
+
+**Only real, grounded, targeted-lookup candidates are ever scored**
+(Task 4). `AICandidateDiscoveryService.dry_run` gained one step after
+grounding: `_score_ai_directed_grounded_candidates` filters
+`grounding_result.grounded_candidates` down to `match_type=targeted_lookup`
+only (a broad-pool match is already scored by the separate
+`build_report` pass, untouched) and scores each one from real
+`GroundedCandidate.evidence` fields alone -- never `AICandidateProposal.
+confidence` (a completely different, non-factual "the LLM thinks this
+fits" signal; Task 16, regression-tested by
+`test_ai_proposal_confidence_never_leaks_into_quality_score`, which
+proves two proposals with confidence `0.01` and `0.99` produce identical
+score `confidence`). An ungrounded proposal, a provider failure/not-
+found/not-connected result, and a search-limit `not_searched` proposal
+are all structurally excluded (they never appear in
+`grounded_candidates` at all) -- each has its own passing test.
+
+**Storage**: `CandidateQualityReport` gained one new field,
+`ai_directed_scores: list[CandidateQualityScore]` (same model as every
+other list on the report, no second score shape) -- kept separate from
+`attraction_scores`/`restaurant_scores`/`accommodation_poi_scores` purely
+so "scored from the broad pool" stays distinguishable from "scored from a
+Section 192 targeted lookup," mirroring `ai_provider_discovery_result`'s
+own separation from `candidate_grounding_batch`. `apply_discovery_to_state`
+merges newly computed scores onto `planning_state.candidate_quality_report`
+(creating a minimal one only if none exists yet, e.g. a direct `dry_run`
+call outside the full pipeline) -- a no-op when nothing was scored.
+
+**Promotion integration is one line, not an override** (Task 7):
+`AICandidatePromotionEligibilityService.find_quality_score`'s `all_scores`
+tuple now also includes `candidate_quality_report.ai_directed_scores` --
+the exact same join-by-`provider_place_id`-then-normalized-name lookup
+applies identically to either source. No new eligibility rule, no
+relaxed threshold, no AI-specific code path.
+
+**Duplicate identity is deduplicated, not fuzzy-matched** (Task 10):
+before scoring a targeted-lookup candidate, its `provider_place_id` is
+checked against every `candidate_id` already present in the broad
+`attraction_scores`/`restaurant_scores`/`accommodation_poi_scores` (exact
+string match only) and against every `provider_place_id` already scored
+earlier in the same call -- either match skips scoring entirely, reusing
+the existing score rather than creating a conflicting duplicate.
+
+**ExperiencePlanner required zero changes** (Task 9). Its promoted-
+candidate merge (`_build_promoted_candidate_pois`, Step 170D) already
+reads `ai_candidate_promotion_report.promoted_candidates` completely
+generically -- it does not re-check quality tier (eligibility already
+enforced Rule 4) and does not care how the candidate was grounded. A real
+`/generate` API test now proves the full chain end to end: a
+`discovery_query` proposal resolved via a fake targeted lookup is
+grounded, scored, promoted, and actually scheduled
+(`promoted_from_ai: true` in `experience_plan`), with real coordinates
+carried verbatim from the provider fixture.
+
+**One real, pre-existing display-name bug surfaced and fixed along the
+way**: `AICandidateReviewItem.name` (Step 191B) fell back to
+`proposal.search_query` for a `discovery_query` proposal, which was
+harmless while such a proposal could never ground (Section 191B) or get
+promoted (pre-192A) -- but once Section 192A made promotion reachable,
+this surfaced as a real bug: a promoted candidate's displayed name was
+the AI's search phrase ("historic food market") instead of the real,
+provider-verified place name ("Discovered Food Hall"). Fixed in
+`ai_candidate_review_service.py`: `name` now prefers
+`grounded.evidence.matched_name` (real provider fact) whenever a
+candidate is grounded, falling back to `candidate_name`/`search_query`
+only for an ungrounded proposal. This is a one-line, narrowly scoped
+correctness fix directly caused by this step's own new integration test,
+not a broader "improve display" change.
+
+**Tests**: 18 new tests, zero changes to any pre-existing assertion or
+outcome except the two the fix above required (both updated to assert
+the now-correct, better behavior, not weakened) --
+`tests/services/test_candidate_quality_service.py` (+8: classification
+by provider category, classification fallback to the AI hint, default-
+to-attraction, byte-identical output vs. `score_attraction` directly, and
+a low-confidence/weak-category input still scoring `rejected` -- proving
+no privileged treatment), `tests/services/test_ai_candidate_discovery_service.py`
+(+7: targeted-lookup candidate gets scored, broad-pool match never
+double-scored, ungrounded/provider-failure/search-limit-skipped never
+scored, duplicate provider identity reuses the existing broad score, AI
+confidence never leaks into score confidence),
+`tests/services/test_ai_candidate_review_service.py` (+3: a targeted-
+lookup grounded candidate resolves its score via `ai_directed_scores` and
+becomes eligible, stays ineligible with no fabricated default score when
+no `ai_directed_scores` entry exists, and stays ineligible when the
+`ai_directed_scores` entry itself is low-quality/rejected -- proving Rule
+4's threshold is not weakened for this new source). Every pre-existing
+`CandidateQualityService`/`AICandidatePromotionEligibilityService`/
+`ExperiencePlannerService` test remains green unmodified.
+
+**Real Groq + real OpenStreetMap/Nominatim verification** (2 real runs,
+same Lisbon/3-day/food-history-walking shape, default
+`AI_DIRECTED_PROVIDER_DISCOVERY_MAX_SEARCHES=5`, no secrets printed).
+Run 1: 15 proposals, 5 real targeted calls (bound-limited), 3 provider
+matches, 3 grounded, all 3 quality-scored and all 3 eligible ("Belém
+Tower" -> "Torre de Belém" `good_candidate` 0.73; "Alfama District" ->
+"Made In Portugal" `secondary_candidate` 0.43; "Time Out Market Lisboa"
+-> itself `secondary_candidate` 0.44, classified `restaurant`). Run 2: 10
+proposals, 5 real targeted calls, 2 provider matches, 2 quality-scored
+and both eligible ("Belém Tower" -> "Torre de Belém" again;
+"Time Out Market" -> "Time Out Market Lisboa"). Both runs: `grounded > 0`
+and `quality_scored > 0`, as expected; every real match happened to clear
+the existing, unmodified promotion threshold in these two runs -- this
+step's own deterministic unit tests (not the real runs) are what prove a
+genuinely low-quality match still stays un-promoted, since real Lisbon
+landmarks are simply good candidates by the existing rules. Thresholds
+were not touched or tuned to produce this outcome.
+
+**Example provenance trace** (from Run 1, and further confirmed
+end-to-end -- including actual scheduling -- by the new deterministic API
+test): AI intent `"Belém Tower Lisbon"` -> OpenStreetMap -> real place
+`"Torre de Belém"` -> provider id `way/24341353` -> grounded
+`targeted_lookup` -> quality score `0.73` -> tier `good_candidate` ->
+promotion-eligible -> promoted -> (in the deterministic API test's fake-
+provider equivalent) scheduled with `promoted_from_ai: true` and its real
+provider coordinates preserved verbatim.
+
+**Strict boundaries honored**: no change to LLM prompts, Groq structured-
+output behavior, AI-directed provider lookup behavior, grounding rules
+(no fuzzy matching added), promotion thresholds/tiers, or LangGraph node
+order; no "AI override" path anywhere; `ExperiencePlannerService` source
+untouched; no new dependency; nothing committed.
+
+**Verification**: full suite **3568 passed + 18 skipped** (3550 + 18 new
+tests, zero change to any pre-existing test's outcome beyond the two
+updated for the display-name fix above). `compileall`/`pytest` clean. No
+frontend/shared-contract file changed -- frontend checks explicitly
+skipped for that reason.

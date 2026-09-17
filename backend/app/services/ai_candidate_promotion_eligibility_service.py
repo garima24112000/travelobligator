@@ -131,10 +131,19 @@ def find_quality_score(
     if candidate_quality_report is None:
         return None
 
+    # Section 192A (docs/14_backend_architecture.md section 140):
+    # ai_directed_scores holds the same CandidateQualityScore model as
+    # every other list here -- just for candidates that reached
+    # CandidateQualityService via a Section 192 targeted provider lookup
+    # instead of the broad destination_context pool. Searching it here is
+    # the entire integration: no separate "AI override" lookup path, no
+    # relaxed rule -- the same join-by-provider_place_id-then-normalized-
+    # name logic below applies identically either way.
     all_scores = (
         list(candidate_quality_report.attraction_scores)
         + list(candidate_quality_report.restaurant_scores)
         + list(candidate_quality_report.accommodation_poi_scores)
+        + list(candidate_quality_report.ai_directed_scores)
     )
 
     for score in all_scores:

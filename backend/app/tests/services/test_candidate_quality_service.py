@@ -4,8 +4,10 @@ import copy
 import inspect
 from typing import Any
 
-from app.models.candidate_quality import CandidateQualityTier, CandidateRejectReason
+from app.models.candidate_quality import CandidateQualityTier, CandidateRejectReason, CandidateUseCase
+from app.models.common import DataStatus, GeoPoint
 from app.models.planning_state import DestinationContext, PlanningState, TravelGroupType, TripRequest
+from app.models.providers import NormalizedPlace
 from app.services import candidate_quality_service as candidate_quality_service_module
 from app.services.candidate_quality_service import CandidateQualityService
 
@@ -353,3 +355,105 @@ def test_no_scores_in_report_contain_forbidden_factual_fields() -> None:
     ):
         field_names = set(score.model_dump().keys())
         assert field_names & _FORBIDDEN_FACTUAL_FIELD_NAMES == set()
+
+
+# ---------------------------------------------------------------------------
+# Section 192A: score_provider_backed_candidate -- one quality policy for
+# Section 192 targeted-lookup-grounded candidates, dispatching to the same
+# score_attraction/score_restaurant/score_accommodation_poi methods.
+# ---------------------------------------------------------------------------
+
+
+def _normalized_place(
+    name: str,
+    category: str | None,
+    *,
+    confidence: float = 0.5,
+    place_id: str = "way/999",
+) -> NormalizedPlace:
+    return NormalizedPlace(
+        place_id=place_id,
+        name=name,
+        category=category,
+        coordinates=GeoPoint(lat=38.7, lng=-9.1),
+        source="openstreetmap_places",
+        data_status=DataStatus.LIVE,
+        confidence=confidence,
+    )
+
+
+def test_provider_backed_candidate_with_museum_category_scores_as_attraction() -> None:
+    service = CandidateQualityService()
+    place = _normalized_place("Museu Nacional de Arte Antiga", "museum")
+
+    score = service.score_provider_backed_candidate(place, "attraction")
+
+    assert score.use_case == CandidateUseCase.ATTRACTION
+    assert score.candidate_id == "way/999"
+
+
+def test_provider_backed_candidate_with_restaurant_category_scores_as_restaurant_regardless_of_hint() -> None:
+    """Provider category wins over the AI's own candidate_type hint
+    (Task 3: never trust the LLM category alone when a provider category
+    exists)."""
+    service = CandidateQualityService()
+    place = _normalized_place("Time Out Market Lisboa", "restaurant")
+
+    score = service.score_provider_backed_candidate(place, "attraction")
+
+    assert score.use_case == CandidateUseCase.RESTAURANT
+
+
+def test_provider_backed_candidate_with_accommodation_category_scores_as_accommodation() -> None:
+    service = CandidateQualityService()
+    place = _normalized_place("Some Guesthouse", "guest_house")
+
+    score = service.score_provider_backed_candidate(place, "attraction")
+
+    assert score.use_case == CandidateUseCase.ACCOMMODATION_POI
+
+
+def test_provider_backed_candidate_falls_back_to_food_area_hint_when_category_uninformative() -> None:
+    service = CandidateQualityService()
+    place = _normalized_place("Discovered Food Hall", "marketplace")
+
+    score = service.score_provider_backed_candidate(place, "food_area")
+
+    assert score.use_case == CandidateUseCase.RESTAURANT
+
+
+def test_provider_backed_candidate_defaults_to_attraction_when_uninformative() -> None:
+    service = CandidateQualityService()
+    place = _normalized_place("Some Viewpoint", "viewpoint")
+
+    score = service.score_provider_backed_candidate(place, "viewpoint")
+
+    assert score.use_case == CandidateUseCase.ATTRACTION
+
+
+def test_provider_backed_candidate_uses_same_scoring_math_as_score_attraction() -> None:
+    """No separate scoring implementation -- score_provider_backed_candidate
+    must produce byte-identical output to calling score_attraction
+    directly for an attraction-classified candidate."""
+    service = CandidateQualityService()
+    place = _normalized_place("Belem Tower", "attraction")
+
+    via_dispatch = service.score_provider_backed_candidate(
+        place, "attraction", user_interests=["history"], must_visit_names=[]
+    )
+    via_direct = service.score_attraction(place, user_interests=["history"], must_visit_names=[])
+
+    assert via_dispatch.model_dump() == via_direct.model_dump()
+
+
+def test_provider_backed_candidate_never_receives_a_privileged_default_score() -> None:
+    """A low-confidence, weak-category provider result must still score
+    low/rejected -- Section 192A must not weaken promotion thresholds or
+    quality rules for AI-directed candidates."""
+    service = CandidateQualityService()
+    place = _normalized_place("Unnamed Spot", None, confidence=0.05)
+
+    score = service.score_provider_backed_candidate(place, "attraction")
+
+    assert score.quality_tier == CandidateQualityTier.REJECTED
+    assert CandidateRejectReason.INSUFFICIENT_PROVIDER_CONFIDENCE in score.reject_reasons

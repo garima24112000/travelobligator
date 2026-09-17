@@ -112,6 +112,21 @@ class CandidateQualityReport(BaseModel):
     attraction_scores: list[CandidateQualityScore] = Field(default_factory=list)
     restaurant_scores: list[CandidateQualityScore] = Field(default_factory=list)
     accommodation_poi_scores: list[CandidateQualityScore] = Field(default_factory=list)
+    # Section 192A (docs/14_backend_architecture.md section 140): scores
+    # for candidates that did not come from DestinationContext's own
+    # broad candidate collections -- today, exclusively Section 192
+    # AI-directed `match_type=targeted_lookup` grounding results. Reuses
+    # the exact same `CandidateQualityScore` model as every other score
+    # above (no second score shape) and the exact same deterministic
+    # scoring rules (`CandidateQualityService.score_provider_backed_candidate`
+    # dispatches to the same score_attraction/score_restaurant/
+    # score_accommodation_poi methods) -- kept in its own list, not merged
+    # into the lists above, purely so a caller can tell "scored from the
+    # broad destination_context pool" apart from "scored from a Section
+    # 192 targeted lookup" for debugging/evaluation, mirroring how
+    # `PlanningState.ai_provider_discovery_result` is already kept
+    # separate from `candidate_grounding_batch` for the same reason.
+    ai_directed_scores: list[CandidateQualityScore] = Field(default_factory=list)
     summary: dict[str, int] = Field(default_factory=dict)
 
     @field_validator("destination_name")

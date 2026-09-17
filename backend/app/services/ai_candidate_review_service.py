@@ -103,11 +103,19 @@ class AICandidateReviewService:
             items.append(
                 AICandidateReviewItem(
                     candidate_id=proposal.proposal_id,
-                    # Step 191B: a discovery_query proposal may have no
-                    # candidate_name (it's a search intent, not a named
-                    # place) -- fall back to search_query, which every
-                    # proposal is guaranteed to carry, purely for display.
-                    name=proposal.candidate_name or proposal.search_query,
+                    # Section 192A: once grounded, the real provider-
+                    # verified name is strictly better for display than
+                    # the AI's own wording -- prefer
+                    # grounded.evidence.matched_name (real provider fact)
+                    # first. Step 191B's original fallback chain
+                    # (candidate_name, then search_query -- a discovery_query
+                    # proposal may have no candidate_name at all) still
+                    # applies whenever nothing has been grounded yet.
+                    name=(
+                        (grounded.evidence.matched_name if grounded is not None else None)
+                        or proposal.candidate_name
+                        or proposal.search_query
+                    ),
                     category=proposal.candidate_type.value,
                     source=proposal.source,
                     proposal_type=proposal.proposal_type.value,
