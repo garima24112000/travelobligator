@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from app.models.accommodation import AccommodationSearchResult
 from app.models.ai_candidate_promotion import AICandidatePromotionReport
 from app.models.ai_candidate_proposal import AICandidateProposalBatch
+from app.models.ai_provider_discovery import AIProviderDiscoveryResult
 from app.models.candidate_grounding import CandidateGroundingBatch
 from app.models.candidate_quality import CandidateQualityReport
 from app.models.flight import FlightSearchResult
@@ -1237,6 +1238,19 @@ class PlanningState(BaseModel):
     # AICandidateDiscoveryService) populates these yet.
     ai_candidate_proposal_batch: AICandidateProposalBatch | None = None
     candidate_grounding_batch: CandidateGroundingBatch | None = None
+    # Section 192 (docs/14_backend_architecture.md section 138): per-
+    # proposal targeted provider-discovery bookkeeping
+    # (`AIDirectedProviderDiscoveryService.discover`'s output), stored
+    # separately from `candidate_grounding_batch` so "grounded via the
+    # broad destination_context pool" stays distinguishable from "grounded
+    # via a Section 192 targeted provider lookup" for debugging/
+    # evaluation. Purely additional detail -- every match this step found
+    # is also already reflected in `candidate_grounding_batch.result`
+    # (via `match_type=targeted_lookup`) when it was used to ground a
+    # proposal; this is never a second, independent candidate pool. Stays
+    # `None` until `ai_candidate_discovery_service.apply_discovery_to_state`
+    # runs (same gating as `ai_candidate_proposal_batch` above).
+    ai_provider_discovery_result: AIProviderDiscoveryResult | None = None
     # Deterministic AI candidate promotion report (Step 170C,
     # docs/13_llm_reasoning_pipeline.md, docs/14_backend_architecture.md).
     # A promoted candidate is not an itinerary stop -- it is a

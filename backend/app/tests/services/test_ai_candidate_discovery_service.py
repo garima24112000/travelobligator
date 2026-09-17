@@ -13,17 +13,24 @@ from app.models.ai_candidate_proposal import (
     AICandidateProposalResult,
     AICandidateProposalStatus,
     AICandidateProposalTask,
+    AICandidateProposalType,
     AICandidateType,
     AICandidateVerificationRequirement,
 )
-from app.models.candidate_grounding import CandidateGroundingStatus
+from app.models.ai_provider_discovery import AIProviderDiscoveryAttemptStatus
+from app.models.candidate_grounding import CandidateGroundingMatchType, CandidateGroundingStatus
+from app.models.common import DataStatus, GeoPoint, ProviderStatus
 from app.models.planning_state import DestinationContext, PlanningState, TravelGroupType, TripRequest
+from app.models.providers import NormalizedPlace, ProviderResponse
 from app.providers.ai_candidate_proposal import AICandidateProposalProvider
+from app.providers.base import PlacesProvider
+from app.providers.gateway import ProviderGateway
 from app.services import ai_candidate_discovery_service as discovery_module
 from app.services.ai_candidate_discovery_service import (
     AICandidateDiscoveryDryRunResult,
     AICandidateDiscoveryService,
 )
+from app.services.ai_directed_provider_discovery_service import AIDirectedProviderDiscoveryService
 
 _FORBIDDEN_MODEL_FIELD_NAMES = {
     "price",
@@ -122,6 +129,52 @@ def _proposal(**overrides: object) -> AICandidateProposal:
     }
     fields.update(overrides)
     return AICandidateProposal(**fields)
+
+
+def _discovery_query_proposal(**overrides: object) -> AICandidateProposal:
+    fields: dict[str, object] = {
+        "proposal_id": "proposal_002",
+        "proposal_type": AICandidateProposalType.DISCOVERY_QUERY,
+        "candidate_name": None,
+        "search_query": "historic food market",
+        "candidate_type": AICandidateType.FOOD_AREA,
+        "why_consider": "Matches traveler's stated interest in food.",
+        "verification_requirements": [
+            AICandidateVerificationRequirement.MUST_NOT_USE_WITHOUT_PROVIDER_MATCH
+        ],
+        "confidence": 0.5,
+    }
+    fields.update(overrides)
+    return AICandidateProposal(**fields)
+
+
+class _FakePlacesProviderForDiscoveryTest(PlacesProvider):
+    """Deterministic fake standing in for the real OSM adapter -- always
+    returns exactly one named, coordinate-backed match for
+    `search_must_visit_place`, never a real network call.
+    """
+
+    provider_name = "fake_places_provider_for_discovery_test"
+
+    def search_must_visit_place(self, must_visit_term, primary_destination, filters=None):
+        place = NormalizedPlace(
+            place_id="way/999",
+            name="Mercado da Ribeira",
+            category="marketplace",
+            coordinates=GeoPoint(lat=38.7071, lng=-9.1456),
+            source=self.provider_name,
+            data_status=DataStatus.LIVE,
+            confidence=0.5,
+        )
+        return ProviderResponse[list[NormalizedPlace]](
+            provider_name=self.provider_name,
+            provider_type=self.provider_type,
+            status=ProviderStatus.SUCCESS,
+            data_status=DataStatus.LIVE,
+            data=[place],
+            confidence=0.5,
+            message="found",
+        )
 
 
 @pytest.fixture()
@@ -605,3 +658,117 @@ def test_injected_provider_bypasses_the_factory(monkeypatch: pytest.MonkeyPatch)
     service = AICandidateDiscoveryService(proposal_provider=injected_provider)
 
     assert service.proposal_provider is injected_provider
+
+
+# ---------------------------------------------------------------------------
+# Section 192: targeted provider discovery is composed between proposal and
+# grounding.
+# ---------------------------------------------------------------------------
+
+
+def test_dry_run_result_includes_provider_discovery_result(service: AICandidateDiscoveryService) -> None:
+    planning_state = _planning_state()
+
+    result = service.dry_run(planning_state)
+
+    assert result.provider_discovery_result is not None
+    assert result.provider_discovery_result.attempts == []
+
+
+def test_discovery_query_resolves_and_grounds_via_targeted_provider_lookup() -> None:
+    gateway = ProviderGateway(places=_FakePlacesProviderForDiscoveryTest())
+    proposal = _discovery_query_proposal()
+    service = AICandidateDiscoveryService(
+        proposal_provider=_FakeAICandidateProposalProvider([proposal]),
+        provider_discovery_service=AIDirectedProviderDiscoveryService(gateway=gateway),
+    )
+    planning_state = _planning_state(candidate_pois=[_place(name="Unrelated Place")])
+
+    result = service.dry_run(planning_state)
+
+    assert result.provider_discovery_result.matched_count == 1
+    assert result.grounding_result.status == CandidateGroundingStatus.COMPLETED
+    grounded = result.grounding_result.grounded_candidates[0]
+    assert grounded.evidence.match_type == CandidateGroundingMatchType.TARGETED_LOOKUP
+    assert grounded.evidence.provider_place_id == "way/999"
+
+
+def test_named_place_already_matching_broad_pool_skips_targeted_lookup() -> None:
+    """Proves Section 192 never spends a targeted lookup (or overrides the
+    match) for a proposal the existing broad-pool grounding already
+    handles -- the pre-Section-192 behavior is completely unaffected.
+    """
+    gateway = ProviderGateway(places=_FakePlacesProviderForDiscoveryTest())
+    proposal = _proposal(candidate_name="Old Town Waterfront")
+    service = AICandidateDiscoveryService(
+        proposal_provider=_FakeAICandidateProposalProvider([proposal]),
+        provider_discovery_service=AIDirectedProviderDiscoveryService(gateway=gateway),
+    )
+    planning_state = _planning_state(candidate_pois=[_place(name="Old Town Waterfront")])
+
+    result = service.dry_run(planning_state)
+
+    assert result.provider_discovery_result.attempts == []
+    grounded = result.grounding_result.grounded_candidates[0]
+    assert grounded.evidence.match_type == CandidateGroundingMatchType.EXACT_NAME
+    assert grounded.evidence.provider_place_id != "way/999"
+
+
+def test_provider_discovery_zero_results_leaves_proposal_honestly_rejected() -> None:
+    class _NotFoundPlacesProvider(PlacesProvider):
+        provider_name = "not_found_places_provider"
+
+        def search_must_visit_place(self, must_visit_term, primary_destination, filters=None):
+            from app.providers.base import unavailable_response
+
+            return unavailable_response(self.provider_name, self.provider_type)
+
+    gateway = ProviderGateway(places=_NotFoundPlacesProvider())
+    proposal = _discovery_query_proposal()
+    service = AICandidateDiscoveryService(
+        proposal_provider=_FakeAICandidateProposalProvider([proposal]),
+        provider_discovery_service=AIDirectedProviderDiscoveryService(gateway=gateway),
+    )
+    planning_state = _planning_state(candidate_pois=[_place(name="Unrelated Place")])
+
+    result = service.dry_run(planning_state)
+
+    assert result.provider_discovery_result.matched_count == 0
+    assert result.provider_discovery_result.attempts[0].status == (
+        AIProviderDiscoveryAttemptStatus.NOT_FOUND
+    )
+    assert result.grounding_result.status == CandidateGroundingStatus.REJECTED
+    assert len(result.grounding_result.rejected_proposals) == 1
+
+
+def test_provider_discovery_failure_does_not_crash_dry_run() -> None:
+    class _RaisingPlacesProvider(PlacesProvider):
+        provider_name = "raising_places_provider"
+
+        def search_must_visit_place(self, must_visit_term, primary_destination, filters=None):
+            raise RuntimeError("simulated provider crash")
+
+    gateway = ProviderGateway(places=_RaisingPlacesProvider())
+    proposal = _discovery_query_proposal()
+    service = AICandidateDiscoveryService(
+        proposal_provider=_FakeAICandidateProposalProvider([proposal]),
+        provider_discovery_service=AIDirectedProviderDiscoveryService(gateway=gateway),
+    )
+    planning_state = _planning_state(candidate_pois=[_place(name="Unrelated Place")])
+
+    result = service.dry_run(planning_state)  # must not raise
+
+    assert result.provider_discovery_result.matched_count == 0
+    assert result.grounding_result.status == CandidateGroundingStatus.REJECTED
+
+
+def test_default_provider_discovery_service_is_injected_when_not_supplied() -> None:
+    service = AICandidateDiscoveryService()
+    assert isinstance(service.provider_discovery_service, AIDirectedProviderDiscoveryService)
+
+
+def test_injected_provider_discovery_service_is_used() -> None:
+    gateway = ProviderGateway(places=_FakePlacesProviderForDiscoveryTest())
+    injected = AIDirectedProviderDiscoveryService(gateway=gateway)
+    service = AICandidateDiscoveryService(provider_discovery_service=injected)
+    assert service.provider_discovery_service is injected

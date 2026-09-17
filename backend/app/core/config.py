@@ -169,6 +169,25 @@ class Settings(BaseSettings):
         alias="AI_CANDIDATE_DISCOVERY_ENABLED",
     )
 
+    # Section 192 (docs/14_backend_architecture.md section 138): bounds how
+    # many AI candidate proposals `AIDirectedProviderDiscoveryService` will
+    # run a real targeted provider lookup for in one `dry_run`/generation
+    # call. Only proposals that actually need a lookup count against this
+    # bound (a named_place proposal that already matched the broad
+    # destination_context pool is never searched at all) -- this exists so
+    # one LLM response (up to `AICandidateProposalRequest.max_candidates`,
+    # itself capped at 25) can never trigger an unbounded number of real
+    # Nominatim/Overpass calls. Each search still returns at most one
+    # result (`PlacesProvider.search_must_visit_place`'s own existing
+    # contract), so no separate "max results per proposal" setting is
+    # needed. A proposal that exceeds this bound is recorded honestly as
+    # `not_searched`, never silently dropped.
+    ai_directed_provider_discovery_max_searches: int = Field(
+        default=5,
+        ge=0,
+        alias="AI_DIRECTED_PROVIDER_DISCOVERY_MAX_SEARCHES",
+    )
+
     google_places_api_key: str | None = Field(default=None, alias="GOOGLE_PLACES_API_KEY")
     google_routes_api_key: str | None = Field(default=None, alias="GOOGLE_ROUTES_API_KEY")
     mapbox_access_token: str | None = Field(default=None, alias="MAPBOX_ACCESS_TOKEN")

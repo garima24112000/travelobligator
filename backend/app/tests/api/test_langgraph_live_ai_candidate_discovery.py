@@ -297,6 +297,148 @@ def test_live_discovery_enabled_ungrounded_proposal_never_promoted_or_scheduled(
 
 
 # ---------------------------------------------------------------------------
+# 4B. Section 192: a discovery_query proposal that a targeted provider
+#     lookup actually resolves gets grounded and promoted end to end
+#     through a real `/generate` call.
+# ---------------------------------------------------------------------------
+
+
+def _discovery_query_typed_proposal(search_query: str, **overrides: object) -> AICandidateProposal:
+    from app.models.ai_candidate_proposal import AICandidateProposalType
+
+    fields: dict[str, object] = {
+        "proposal_id": "proposal_001",
+        "proposal_type": AICandidateProposalType.DISCOVERY_QUERY,
+        "candidate_name": None,
+        "search_query": search_query,
+        "candidate_type": AICandidateType.FOOD_AREA,
+        "why_consider": "Matches traveler's stated interest in food.",
+        "verification_requirements": [
+            AICandidateVerificationRequirement.MUST_NOT_USE_WITHOUT_PROVIDER_MATCH
+        ],
+        "confidence": 0.5,
+    }
+    fields.update(overrides)
+    return AICandidateProposal(**fields)
+
+
+def _enable_live_discovery_with_provider_discovery(
+    monkeypatch: pytest.MonkeyPatch,
+    proposal_provider: AICandidateProposalProvider,
+    provider_discovery_service: Any,
+) -> None:
+    monkeypatch.setenv("AI_CANDIDATE_DISCOVERY_ENABLED", "true")
+    get_settings.cache_clear()
+    fake_discovery_service = AICandidateDiscoveryService(
+        proposal_provider=proposal_provider,
+        provider_discovery_service=provider_discovery_service,
+    )
+    monkeypatch.setattr(
+        orchestrator_module.planning_orchestrator,
+        "langgraph_planning_service",
+        LangGraphPlanningService(ai_candidate_discovery_service=fake_discovery_service),
+    )
+
+
+def test_live_discovery_enabled_discovery_query_resolved_by_targeted_lookup_grounds(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.models.common import DataStatus, ProviderStatus
+    from app.models.common import GeoPoint as _GeoPoint
+    from app.models.providers import NormalizedPlace, ProviderResponse
+    from app.providers.base import PlacesProvider
+    from app.providers.gateway import ProviderGateway
+    from app.services.ai_directed_provider_discovery_service import (
+        AIDirectedProviderDiscoveryService,
+    )
+
+    class _MatchingPlacesProvider(PlacesProvider):
+        provider_name = "fake_targeted_lookup_places_provider"
+
+        def search_must_visit_place(self, must_visit_term, primary_destination, filters=None):
+            place = NormalizedPlace(
+                place_id="test/discovered/1",
+                name="Discovered Food Hall",
+                category="marketplace",
+                coordinates=_GeoPoint(lat=1.0, lng=2.0),
+                source=self.provider_name,
+                data_status=DataStatus.LIVE,
+                confidence=0.5,
+            )
+            return ProviderResponse[list[NormalizedPlace]](
+                provider_name=self.provider_name,
+                provider_type=self.provider_type,
+                status=ProviderStatus.SUCCESS,
+                data_status=DataStatus.LIVE,
+                data=[place],
+                confidence=0.5,
+                message="found",
+            )
+
+    provider = _CompletedProposalProvider([_discovery_query_typed_proposal("historic food market")])
+    provider_discovery_service = AIDirectedProviderDiscoveryService(
+        gateway=ProviderGateway(places=_MatchingPlacesProvider())
+    )
+    _enable_live_discovery_with_provider_discovery(monkeypatch, provider, provider_discovery_service)
+
+    trip_id = _create_trip(client)
+    response = client.post(f"/trips/{trip_id}/generate")
+
+    assert response.status_code == 200
+    planning_state = response.json()["data"]["planning_state"]
+
+    provider_discovery_result = planning_state["ai_provider_discovery_result"]
+    assert provider_discovery_result is not None
+    assert provider_discovery_result["matched_count"] == 1
+
+    grounding_batch = planning_state["candidate_grounding_batch"]
+    assert grounding_batch["result"]["status"] == "completed"
+    grounded = grounding_batch["result"]["grounded_candidates"][0]
+    assert grounded["evidence"]["match_type"] == "targeted_lookup"
+    assert grounded["evidence"]["provider_place_id"] == "test/discovered/1"
+
+    # Grounded via a real (fake) provider lookup, but this candidate was
+    # never scored by CandidateQualityService (that stage only scores the
+    # broad destination_context pool, unchanged by Section 192) -- so
+    # promotion-eligibility Rule 4 ("a quality score must exist") honestly
+    # keeps it un-promoted. Grounding succeeding is the real Section 192
+    # outcome being proven here; promotion staying honest about the gap
+    # it does not close is equally real and not silently papered over.
+    promotion_report = planning_state["ai_candidate_promotion_report"]
+    assert promotion_report["promoted_count"] == 0
+    assert promotion_report["skipped_candidate_ids"] == ["proposal_001"]
+
+
+def test_live_discovery_enabled_ungrounded_proposal_records_provider_discovery_attempt(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Section 192: even when the targeted lookup finds nothing (the
+    globally deterministic test places provider honestly reports
+    not_connected for search_must_visit_place), the attempt is recorded on
+    `ai_provider_discovery_result` -- never silently omitted -- and the
+    proposal stays rejected exactly as it did before Section 192."""
+    provider = _CompletedProposalProvider(
+        [_attraction_typed_proposal("Completely Imaginary Landmark Nobody Provided")]
+    )
+    _enable_live_discovery(monkeypatch, provider)
+
+    trip_id = _create_trip(client)
+    response = client.post(f"/trips/{trip_id}/generate")
+
+    assert response.status_code == 200
+    planning_state = response.json()["data"]["planning_state"]
+
+    provider_discovery_result = planning_state["ai_provider_discovery_result"]
+    assert provider_discovery_result is not None
+    assert provider_discovery_result["matched_count"] == 0
+    assert len(provider_discovery_result["attempts"]) == 1
+    assert provider_discovery_result["attempts"][0]["status"] == "provider_not_connected"
+
+    grounding_batch = planning_state["candidate_grounding_batch"]
+    assert grounding_batch["result"]["status"] == "rejected"
+
+
+# ---------------------------------------------------------------------------
 # 5. Provider failure (raises): generation continues honestly, no
 #    fabricated candidate, real provider-backed itinerary still generates.
 # ---------------------------------------------------------------------------

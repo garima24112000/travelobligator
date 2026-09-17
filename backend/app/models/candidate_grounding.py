@@ -280,6 +280,16 @@ class CandidateGroundingRequest(BaseModel):
     provider_candidates: list[ProviderCandidateForGrounding] = Field(default_factory=list)
     provider_candidate_summary: dict[str, int] = Field(default_factory=dict)
     unavailable_data: list[str] = Field(default_factory=list)
+    # Section 192 (docs/14_backend_architecture.md section 138): real
+    # provider evidence already resolved for specific proposal_ids by
+    # `AIDirectedProviderDiscoveryService`, keyed by `proposal_id` --
+    # identity-based, never a name-text match. `ground` only ever falls
+    # back to this per proposal when the broad `provider_candidates` pool
+    # above could not cleanly match it by name (named_place) or when the
+    # proposal has no name to match by at all (discovery_query) -- it
+    # never overrides a proposal that already matched the broad pool
+    # cleanly. Empty by default, matching every pre-Section-192 request.
+    ai_directed_matches: dict[str, ProviderCandidateForGrounding] = Field(default_factory=dict)
 
     @field_validator("trip_id", "destination_name")
     @classmethod
@@ -293,6 +303,18 @@ class CandidateGroundingRequest(BaseModel):
             if count < 0:
                 raise ValueError(f"provider_candidate_summary[{key!r}] must be >= 0, got {count}.")
         return value
+
+    @model_validator(mode="after")
+    def validate_ai_directed_matches_reference_known_proposals(self) -> "CandidateGroundingRequest":
+        if self.ai_directed_matches and self.proposals:
+            known_ids = {proposal.proposal_id for proposal in self.proposals}
+            unknown_ids = set(self.ai_directed_matches.keys()) - known_ids
+            if unknown_ids:
+                raise ValueError(
+                    "CandidateGroundingRequest.ai_directed_matches references "
+                    f"proposal_id(s) not present in proposals: {sorted(unknown_ids)}."
+                )
+        return self
 
 
 class CandidateGroundingResult(BaseModel):

@@ -21,7 +21,10 @@ from app.models.candidate_grounding import (
     ProviderCandidateForGrounding,
 )
 from app.models.common import DataStatus, GeoPoint
-from app.services.candidate_grounding_service import CandidateGroundingService
+from app.services.candidate_grounding_service import (
+    CandidateGroundingService,
+    find_broad_pool_name_matches,
+)
 
 _FORBIDDEN_MODEL_FIELD_NAMES = {
     "price",
@@ -564,3 +567,129 @@ def test_mixed_named_place_and_discovery_query_produces_partial_result() -> None
     assert result.rejected_proposals[0].reject_reason == (
         CandidateGroundingRejectReason.DISCOVERY_QUERY_AWAITING_PROVIDER_SEARCH
     )
+
+
+# ---------------------------------------------------------------------------
+# 19. Section 192: ai_directed_matches -- targeted-lookup grounding.
+# ---------------------------------------------------------------------------
+
+
+def _directed_match(**overrides: object) -> ProviderCandidateForGrounding:
+    fields: dict[str, object] = {
+        "provider_name": "openstreetmap_places",
+        "provider_place_id": "way/999",
+        "name": "Mercado da Ribeira",
+        "category": "marketplace",
+        "coordinates": GeoPoint(lat=38.7071, lng=-9.1456),
+        "data_status": DataStatus.LIVE,
+        "confidence": 0.5,
+    }
+    fields.update(overrides)
+    return ProviderCandidateForGrounding(**fields)
+
+
+def test_discovery_query_grounds_via_ai_directed_match() -> None:
+    service = CandidateGroundingService()
+    proposal = _discovery_query_proposal(proposal_id="proposal_003")
+    request = _request(
+        proposals=[proposal],
+        provider_candidates=[],
+        ai_directed_matches={"proposal_003": _directed_match()},
+    )
+    result = service.ground(request)
+    assert result.status == CandidateGroundingStatus.COMPLETED
+    grounded = result.grounded_candidates[0]
+    assert grounded.evidence.match_type == CandidateGroundingMatchType.TARGETED_LOOKUP
+    assert grounded.evidence.provider_place_id == "way/999"
+    assert grounded.evidence.matched_name == "Mercado da Ribeira"
+    assert grounded.candidate_name == proposal.search_query
+
+
+def test_discovery_query_without_ai_directed_match_still_rejected() -> None:
+    service = CandidateGroundingService()
+    request = _request(
+        proposals=[_discovery_query_proposal(proposal_id="proposal_003")],
+        provider_candidates=[_provider_candidate(name="Unrelated Place")],
+        ai_directed_matches={},
+    )
+    result = service.ground(request)
+    assert result.status == CandidateGroundingStatus.REJECTED
+    assert result.rejected_proposals[0].reject_reason == (
+        CandidateGroundingRejectReason.DISCOVERY_QUERY_AWAITING_PROVIDER_SEARCH
+    )
+
+
+def test_named_place_with_clean_broad_match_ignores_ai_directed_match() -> None:
+    """A clean broad-pool match always wins -- Section 192's directed-match
+    fallback must never override an already-working exact/normalized
+    match, even if one happens to be supplied."""
+    service = CandidateGroundingService()
+    request = _request(
+        proposals=[_proposal(candidate_name="Old Town Waterfront")],
+        provider_candidates=[_provider_candidate(name="Old Town Waterfront")],
+        ai_directed_matches={"proposal_001": _directed_match(name="Some Other Place")},
+    )
+    result = service.ground(request)
+    grounded = result.grounded_candidates[0]
+    assert grounded.evidence.match_type == CandidateGroundingMatchType.EXACT_NAME
+    assert grounded.evidence.matched_name == "Old Town Waterfront"
+
+
+def test_named_place_falls_back_to_ai_directed_match_when_broad_match_fails() -> None:
+    service = CandidateGroundingService()
+    request = _request(
+        proposals=[_proposal(candidate_name="Miradouro Obscuro")],
+        provider_candidates=[_provider_candidate(name="Old Town Waterfront")],
+        ai_directed_matches={"proposal_001": _directed_match(name="Miradouro Obscuro")},
+    )
+    result = service.ground(request)
+    assert result.status == CandidateGroundingStatus.COMPLETED
+    grounded = result.grounded_candidates[0]
+    assert grounded.evidence.match_type == CandidateGroundingMatchType.TARGETED_LOOKUP
+
+
+def test_named_place_ambiguous_broad_match_falls_back_to_ai_directed_match() -> None:
+    service = CandidateGroundingService()
+    request = _request(
+        proposals=[_proposal(candidate_name="Old Town Waterfront")],
+        provider_candidates=[
+            _provider_candidate(provider_place_id="way/1", name="Old Town Waterfront"),
+            _provider_candidate(provider_place_id="way/2", name="old town waterfront"),
+        ],
+        ai_directed_matches={"proposal_001": _directed_match(name="Old Town Waterfront")},
+    )
+    result = service.ground(request)
+    assert result.status == CandidateGroundingStatus.COMPLETED
+    assert result.grounded_candidates[0].evidence.match_type == (
+        CandidateGroundingMatchType.TARGETED_LOOKUP
+    )
+
+
+def test_ground_with_only_ai_directed_matches_and_no_broad_pool_is_not_not_connected() -> None:
+    """An empty broad `provider_candidates` pool alone must not force
+    `not_connected` when real Section 192 evidence exists via
+    `ai_directed_matches`."""
+    service = CandidateGroundingService()
+    request = _request(
+        proposals=[_discovery_query_proposal(proposal_id="proposal_003")],
+        provider_candidates=[],
+        ai_directed_matches={"proposal_003": _directed_match()},
+    )
+    result = service.ground(request)
+    assert result.status != CandidateGroundingStatus.NOT_CONNECTED
+    assert result.status == CandidateGroundingStatus.COMPLETED
+
+
+def test_find_broad_pool_name_matches_is_reusable_helper() -> None:
+    candidates = [_provider_candidate(name="Old Town Waterfront")]
+    matches = find_broad_pool_name_matches("old town waterfront!", candidates)
+    assert len(matches) == 1
+    assert find_broad_pool_name_matches("Nonexistent Place", candidates) == []
+
+
+def test_ai_directed_matches_referencing_unknown_proposal_id_is_rejected() -> None:
+    with pytest.raises(ValidationError):
+        _request(
+            proposals=[_proposal(proposal_id="proposal_001")],
+            ai_directed_matches={"proposal_999": _directed_match()},
+        )

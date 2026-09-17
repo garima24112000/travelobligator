@@ -42,6 +42,26 @@ def _normalize_name(name: str) -> str:
     return collapsed
 
 
+def find_broad_pool_name_matches(
+    candidate_name: str, provider_candidates: list[ProviderCandidateForGrounding]
+) -> list[ProviderCandidateForGrounding]:
+    """Exact-or-normalized-name matches for `candidate_name` within
+    `provider_candidates` -- the exact same deterministic predicate
+    `_ground_one` uses for a `named_place` proposal, extracted so
+    `AIDirectedProviderDiscoveryService` (Section 192) can reuse it to
+    decide whether a proposal already has a clean broad-pool match before
+    spending a real targeted provider lookup on it. Never fuzzy/substring
+    matching -- identical semantics to the grounding path itself, kept as
+    one implementation rather than two that could silently drift apart.
+    """
+    normalized = _normalize_name(candidate_name)
+    return [
+        candidate
+        for candidate in provider_candidates
+        if candidate.coordinates is not None and _normalize_name(candidate.name) == normalized
+    ]
+
+
 class CandidateGroundingService:
     """`ground` matches each `AICandidateProposal` against the
     `ProviderCandidateForGrounding` entries explicitly supplied on
@@ -70,7 +90,14 @@ class CandidateGroundingService:
                 confidence=0.0,
             )
 
-        if not request.provider_candidates:
+        # Section 192: `ai_directed_matches` is its own, separate source of
+        # provider evidence (identity-keyed by proposal_id, never a name-
+        # text match) -- a request can carry zero broad-pool
+        # `provider_candidates` and still have real evidence to ground
+        # against via `ai_directed_matches`, so this only reports
+        # `not_connected` when *neither* source of provider evidence is
+        # present.
+        if not request.provider_candidates and not request.ai_directed_matches:
             return CandidateGroundingResult(
                 status=CandidateGroundingStatus.NOT_CONNECTED,
                 grounded_candidates=[],
@@ -88,7 +115,9 @@ class CandidateGroundingService:
         rejected_proposals: list[RejectedCandidateProposal] = []
 
         for proposal in request.proposals:
-            grounded, rejected = self._ground_one(proposal, request.provider_candidates)
+            grounded, rejected = self._ground_one(
+                proposal, request.provider_candidates, request.ai_directed_matches
+            )
             if grounded is not None:
                 grounded_candidates.append(grounded)
             else:
@@ -145,15 +174,25 @@ class CandidateGroundingService:
         self,
         proposal: AICandidateProposal,
         provider_candidates: list[ProviderCandidateForGrounding],
+        ai_directed_matches: dict[str, ProviderCandidateForGrounding],
     ) -> tuple[GroundedCandidate | None, RejectedCandidateProposal | None]:
-        # Step 191B: a `discovery_query` proposal is a search intent, not a
-        # factual place name -- there is nothing here to safely match by
-        # name. Matching its free-text `search_query` against provider
-        # candidates would be exactly the "pretend the search phrase is a
-        # factual place" behavior Section 192 exists to avoid; it stays
-        # ungrounded until a real provider search (Section 192) resolves
-        # it into a named, provider-backed candidate.
+        directed_match = ai_directed_matches.get(proposal.proposal_id)
+
+        # Step 191B/Section 192: a `discovery_query` proposal is a search
+        # intent, not a factual place name -- there is no broad-pool name
+        # to match by at all. It can only ever ground via a Section 192
+        # `ai_directed_matches` entry: real evidence
+        # `AIDirectedProviderDiscoveryService` already resolved for this
+        # exact `proposal_id` through a targeted provider search. Matching
+        # its free-text `search_query` against the broad pool by name would
+        # be exactly the "pretend the search phrase is a factual place"
+        # behavior this architecture exists to avoid, so that path is never
+        # attempted here.
         if proposal.proposal_type == AICandidateProposalType.DISCOVERY_QUERY:
+            if directed_match is not None:
+                return self._build_grounded_candidate(
+                    proposal, directed_match, CandidateGroundingMatchType.TARGETED_LOOKUP
+                ), None
             return None, RejectedCandidateProposal(
                 proposal_id=proposal.proposal_id,
                 candidate_name=proposal.candidate_name or proposal.search_query,
@@ -171,24 +210,28 @@ class CandidateGroundingService:
         # 191B.
         assert proposal.candidate_name is not None
 
-        # An exact case-insensitive match is always also a normalized match
-        # (normalization is a pure function of the string), so normalized
-        # matches are the full candidate set for ambiguity purposes -- "more
-        # than one provider candidate matches after normalization" already
-        # covers the exact-match case too.
-        proposal_normalized = _normalize_name(proposal.candidate_name)
-        proposal_lower = proposal.candidate_name.strip().lower()
+        matches = find_broad_pool_name_matches(proposal.candidate_name, provider_candidates)
 
-        # ProviderCandidateForGrounding.coordinates is a required GeoPoint,
-        # so this can never actually be None -- kept defensive per the
-        # build spec's "do not ground if provider candidate has missing
-        # coordinates" rule in case that constraint ever loosens.
-        matches = [
-            candidate
-            for candidate in provider_candidates
-            if candidate.coordinates is not None
-            and _normalize_name(candidate.name) == proposal_normalized
-        ]
+        if len(matches) == 1:
+            provider_candidate = matches[0]
+            is_exact = provider_candidate.name.strip().lower() == proposal.candidate_name.strip().lower()
+            match_type = (
+                CandidateGroundingMatchType.EXACT_NAME
+                if is_exact
+                else CandidateGroundingMatchType.NORMALIZED_NAME
+            )
+            return self._build_grounded_candidate(proposal, provider_candidate, match_type), None
+
+        # Section 192: broad-pool matching failed (zero or ambiguous
+        # matches) -- fall back to a Section 192 targeted provider lookup
+        # result, if `AIDirectedProviderDiscoveryService` already resolved
+        # one for this proposal_id. This never overrides a clean broad-pool
+        # match (handled above); it only rescues a proposal broad matching
+        # alone could not.
+        if directed_match is not None:
+            return self._build_grounded_candidate(
+                proposal, directed_match, CandidateGroundingMatchType.TARGETED_LOOKUP
+            ), None
 
         if len(matches) == 0:
             return None, RejectedCandidateProposal(
@@ -199,26 +242,27 @@ class CandidateGroundingService:
                 message="No supplied provider candidate matched this AI proposal, so it was not grounded.",
             )
 
-        if len(matches) > 1:
-            return None, RejectedCandidateProposal(
-                proposal_id=proposal.proposal_id,
-                candidate_name=proposal.candidate_name,
-                candidate_type=proposal.candidate_type,
-                reject_reason=CandidateGroundingRejectReason.AMBIGUOUS_MATCH,
-                message="Multiple supplied provider candidates matched this AI proposal, so it was not grounded.",
-            )
-
-        provider_candidate = matches[0]
-        is_exact = provider_candidate.name.strip().lower() == proposal_lower
-        match_type = (
-            CandidateGroundingMatchType.EXACT_NAME
-            if is_exact
-            else CandidateGroundingMatchType.NORMALIZED_NAME
+        return None, RejectedCandidateProposal(
+            proposal_id=proposal.proposal_id,
+            candidate_name=proposal.candidate_name,
+            candidate_type=proposal.candidate_type,
+            reject_reason=CandidateGroundingRejectReason.AMBIGUOUS_MATCH,
+            message="Multiple supplied provider candidates matched this AI proposal, so it was not grounded.",
         )
 
+    def _build_grounded_candidate(
+        self,
+        proposal: AICandidateProposal,
+        provider_candidate: ProviderCandidateForGrounding,
+        match_type: CandidateGroundingMatchType,
+    ) -> GroundedCandidate:
         if match_type == CandidateGroundingMatchType.EXACT_NAME and provider_candidate.confidence >= 0.75:
             confidence_tier = CandidateGroundingConfidenceTier.HIGH
-        elif match_type == CandidateGroundingMatchType.NORMALIZED_NAME or provider_candidate.confidence >= 0.5:
+        elif (
+            match_type
+            in (CandidateGroundingMatchType.NORMALIZED_NAME, CandidateGroundingMatchType.TARGETED_LOOKUP)
+            or provider_candidate.confidence >= 0.5
+        ):
             confidence_tier = CandidateGroundingConfidenceTier.MEDIUM
         else:
             confidence_tier = CandidateGroundingConfidenceTier.LOW
@@ -237,18 +281,17 @@ class CandidateGroundingService:
         # AICandidateProposal.verification_requirements is required to be
         # non-empty (min_length=1), so this always has at least one entry to
         # carry over -- GroundedCandidate.verification_requirements_satisfied
-        # has the same non-empty requirement.
-        return (
-            GroundedCandidate(
-                grounding_id=f"grounding_{proposal.proposal_id}",
-                proposal_id=proposal.proposal_id,
-                candidate_name=proposal.candidate_name,
-                candidate_type=proposal.candidate_type,
-                matched_name=provider_candidate.name,
-                confidence_tier=confidence_tier,
-                confidence=min(proposal.confidence, provider_candidate.confidence),
-                evidence=evidence,
-                verification_requirements_satisfied=list(proposal.verification_requirements),
-            ),
-            None,
+        # has the same non-empty requirement. candidate_name falls back to
+        # search_query for a discovery_query proposal (Step 191B), which
+        # never has a candidate_name of its own.
+        return GroundedCandidate(
+            grounding_id=f"grounding_{proposal.proposal_id}",
+            proposal_id=proposal.proposal_id,
+            candidate_name=proposal.candidate_name or proposal.search_query,
+            candidate_type=proposal.candidate_type,
+            matched_name=provider_candidate.name,
+            confidence_tier=confidence_tier,
+            confidence=min(proposal.confidence, provider_candidate.confidence),
+            evidence=evidence,
+            verification_requirements_satisfied=list(proposal.verification_requirements),
         )

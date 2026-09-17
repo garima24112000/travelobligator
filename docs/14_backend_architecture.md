@@ -8759,3 +8759,331 @@ never touched).
 tests, zero change to any pre-existing test's outcome). `compileall`/
 `pytest` clean. No frontend file or shared API response shape changed --
 frontend checks explicitly skipped for that reason.
+
+## 138. Section 192: AI-Directed Provider Discovery From Candidate Search Intents
+
+Section 191B gave LLM #1 a structured `named_place`/`discovery_query`
+contract, but real verification still showed `grounded: 0` -- the
+deterministic exact/normalized grounding pool had nothing to match a
+`discovery_query`'s free-text `search_query` against, and a `named_place`
+whose exact wording didn't already exist in the broad `destination_context`
+pool stayed rejected too. Section 192 closes that gap by giving both kinds
+of proposal an actual, targeted, provider-backed lookup -- an
+**additional** path alongside the existing broad `destination_context`
+discovery, never a replacement for it.
+
+**New flow** (inserted between AI proposal and grounding, inside
+`AICandidateDiscoveryService.dry_run` -- no LangGraph node/order change):
+
+```text
+AICandidateProposal (named_place | discovery_query)
+  -> AIDirectedProviderDiscoveryService.discover
+       (ProviderGateway.places.search_must_visit_place, real provider call)
+  -> AIProviderDiscoveryResult (proposal_id -> real ProviderCandidateForGrounding, or an honest non-match)
+  -> CandidateGroundingRequest.ai_directed_matches
+  -> CandidateGroundingService.ground (one call, unchanged public signature)
+       named_place:  broad-pool exact/normalized match first, ai_directed_matches only as fallback
+       discovery_query: ai_directed_matches only (never broad-pool name matching)
+  -> review -> promotion (both completely unmodified)
+```
+
+**New service**: `AIDirectedProviderDiscoveryService`
+(`app/services/ai_directed_provider_discovery_service.py`). Reaches
+provider data only through `ProviderGateway.places.search_must_visit_place`
+-- the exact same targeted single-result Nominatim lookup
+`DestinationContextService._append_must_visit_candidates` already uses for
+a traveler's explicit must-visit terms (Step 155C/section 10), reused here
+for an AI-proposed search intent/name instead. Never a direct
+OpenStreetMap/Nominatim/httpx import, matching the required `service ->
+ProviderGateway -> provider adapter` layering. Never calls an LLM, never
+calls `CandidateGroundingService` itself, never mutates `PlanningState`.
+
+A proposal only gets a real lookup if it needs one:
+`find_broad_pool_name_matches` (extracted, unchanged logic, from
+`CandidateGroundingService._ground_one` into a shared, importable function
+in `candidate_grounding_service.py`) decides whether a `named_place`
+proposal already has exactly one clean broad-pool match; if so, it is
+skipped entirely (no lookup, doesn't count against the search bound). A
+`discovery_query` proposal always needs a lookup (it has no broad-pool name
+to match by at all). This keeps the bound meaningful and avoids a wasted
+provider call for a proposal broad matching would have handled anyway.
+
+**Bound** (Task 8): `Settings.ai_directed_provider_discovery_max_searches`
+(`AI_DIRECTED_PROVIDER_DISCOVERY_MAX_SEARCHES`, default `5`) caps how many
+real lookups one `dry_run` call performs; a proposal beyond the bound is
+recorded honestly as `not_searched`, never silently dropped. No separate
+"max results per proposal" setting was needed --
+`search_must_visit_place`'s own existing contract already returns at most
+one result. `.env.example` still does not exist anywhere in this repo
+(pre-existing gap, per this file's Core Rules note) -- this one new setting
+was not used as the occasion to create one; it is documented here and in
+`Settings` itself instead.
+
+**New models** (`app/models/ai_provider_discovery.py`):
+`AIProviderDiscoveryAttemptStatus` (`matched`/`not_found`/
+`provider_failed`/`provider_not_connected`/`not_searched`),
+`AIProviderDiscoveryAttempt` (one proposal's outcome; `match` is a real
+`ProviderCandidateForGrounding` -- Step 159A's existing provider-evidence
+model, reused rather than duplicated -- required exactly when
+`status="matched"`, structurally forbidden otherwise),
+`AIProviderDiscoveryResult` (the batch rollup, with a
+`matches_by_proposal_id()` helper). No coordinate/price/rating/etc. is
+ever asserted by these models except through a real `ProviderResponse`
+returned from `ProviderGateway.places`.
+
+**Grounding extension, not weakening** (`CandidateGroundingRequest` gains
+`ai_directed_matches: dict[proposal_id, ProviderCandidateForGrounding]`,
+default `{}` so every pre-Section-192 request/test is unaffected;
+`CandidateGroundingService._ground_one` checks it only as a *fallback*):
+a `discovery_query` proposal grounds via `ai_directed_matches` or stays
+rejected with the existing (unremoved)
+`DISCOVERY_QUERY_AWAITING_PROVIDER_SEARCH` reason -- now honestly reused
+for "a provider search ran and found nothing," not just "no search ran
+yet," per Task 6's own instruction. A `named_place` proposal still tries
+broad-pool exact/normalized matching first (byte-for-byte the same
+behavior as before this step: a clean broad match always wins and is
+never overridden by a directed match, proven by a dedicated test), falling
+back to `ai_directed_matches` only when broad matching found zero or
+`>1` candidates. Both fallback paths use the existing
+`CandidateGroundingMatchType.TARGETED_LOOKUP` enum member (defined since
+Step 158A, never previously produced by any code path) -- already an
+`_ACCEPTED_MATCH_TYPES` member in
+`AICandidatePromotionEligibilityService` (Step 170B), so promotion
+eligibility needed zero changes to accept a Section 192 match. The
+`ground()` "no evidence at all -> not_connected" guard now checks both
+`provider_candidates` and `ai_directed_matches` before reporting
+`not_connected`, so a request with real directed evidence but an empty
+broad pool is never misreported.
+
+**PlanningState integration**: `ai_provider_discovery_result:
+AIProviderDiscoveryResult | None` (new field, stays `None` until
+`apply_discovery_to_state` runs, same gating as `ai_candidate_proposal_batch`),
+stored *alongside*, not merged into, `candidate_grounding_batch` -- every
+match this step actually contributed to grounding is already visible there
+too (via `match_type=targeted_lookup`), so this field is purely additional,
+inspectable detail for debugging/evaluation (Task 11's "distinguish broad
+vs. AI-directed discovery"), never a second candidate pool competing with
+`destination_context`.
+
+**Known, honest limitation surfaced by real verification (not fixed in
+this step, not asked for):** a proposal grounded only via Section 192
+(`match_type=targeted_lookup`) was never scored by `CandidateQualityService`
+(that stage only scores the pre-existing broad `destination_context` pool,
+untouched by this step) -- so `AICandidatePromotionEligibilityService`
+Rule 4 ("a quality score must exist") honestly keeps it un-promoted even
+after a successful real grounding. This is a real architectural gap, not
+a bug: grounding correctness was not weakened to paper over it, and it is
+called out explicitly (with a passing test asserting the honest
+`skipped_candidate_ids` outcome) rather than silently left undocumented.
+Wiring `CandidateQualityService` to also score Section 192 matches is
+future work, not attempted here.
+
+**Real Groq + real OpenStreetMap/Nominatim verification (2 real runs,
+same local `.env` `GROQ_API_KEY`/no key printed, `GROQ_MODEL=openai/gpt-oss-20b`,
+`AIDirectedProviderDiscoveryService` backed by the real
+`OpenStreetMapPlacesAdapter`, Lisbon/Portugal, 3-day, food/history/walking,
+mid-range budget, graded against the same small synthetic
+`destination_context` -- Belem Tower, Alfama -- Section 191B's
+verification used, deliberately sparse/unrelated rather than hand-fitted).**
+Run 1: 15 proposals (6 `named_place`, 9 `discovery_query`); all 15 needed a
+targeted lookup (none matched the synthetic broad pool). 6/6 `named_place`
+lookups matched a real provider place (Time Out Market Lisboa, a
+"Portugal Essential" tour listing for "Alfama district", Miradouro de São
+Pedro de Alcântara, Museu Nacional de Arte Antiga, Parque Eduardo VII,
+Bairro Alto); 0/9 `discovery_query` lookups matched (generic category
+phrases like "historic neighborhood walk"/"traditional food market" don't
+geocode -- Nominatim is a place-name search engine, not a category/
+semantic search engine, an honest, expected limitation this step's own
+task description anticipated: "If OSM/provider search legitimately finds
+no matching candidate, report it honestly"). Grounding: `partial`, 6
+grounded (all `targeted_lookup`), 9 rejected
+(`discovery_query_awaiting_provider_search`). Run 2 (after one real, known,
+pre-existing intermittent Groq `json_validate_failed` HTTP 400 on the
+first attempt -- Section 191A.1's own documented failure mode, retried):
+10 proposals (5 `named_place`, 5 `discovery_query`); 4/10 lookups matched,
+including **"Belém Tower Lisbon" correctly resolving to the real place
+"Torre de Belém"** (way/24341353) -- exactly Section 192's own target-
+architecture example, achieved with a real key against a real provider,
+not simulated. Grounding: `partial`, 4 grounded, 6 rejected (mix of
+`discovery_query_awaiting_provider_search` and, for the one `named_place`
+whose own targeted lookup also came back empty, the pre-existing
+`no_provider_match`).
+
+**Quality/honesty note from both real runs**: not every targeted-lookup
+match was a good one -- "Alfama district"/"Alfama Lisbon" both resolved to
+an unrelated business listing ("Portugal Essential"/"Made In Portugal")
+rather than the neighborhood itself, a real, pre-existing characteristic
+of `search_must_visit_place`'s single-top-Nominatim-result design (it
+already had this exact risk for a traveler's own must-visit terms before
+this step; Section 192 did not change or worsen it). This was left exactly
+as-is per this step's strict boundary ("do not add fuzzy provider
+grounding") -- Nominatim's own top-result ranking is the provider's
+answer, taken as real provider evidence and reported/grounded honestly
+under `TARGETED_LOOKUP`/`matched_name`, never silently upgraded to a
+higher-confidence tier or presented as more certain than a single
+targeted-lookup result actually is.
+
+**Tests**: 49 new tests, zero changes to any pre-existing test's
+assertions or outcome --
+`tests/models/test_ai_provider_discovery_models.py` (12: match-required-
+iff-matched contract, count-consistency validators, no-forbidden-fields),
+`tests/core/test_ai_directed_provider_discovery_config.py` (5: default,
+env override, negative rejected, zero allowed),
+`tests/services/test_ai_directed_provider_discovery_service.py` (15:
+discovery_query resolves/zero-results/provider-failure/not-connected/
+raises, named_place already-matched skips search, named_place fallback
+succeeds/fails, ambiguous broad match still falls back, search bound
+limits real calls including a zero-bound case, match fields provably
+originate from the fake provider response not the proposal, mixed-
+proposal independent outcomes), `tests/services/test_candidate_grounding_service.py`
+(+8: directed-match grounding for both proposal types, a clean broad
+match is never overridden, ambiguous-broad-match fallback, `not_connected`
+correctly not reported when only directed evidence exists, the extracted
+`find_broad_pool_name_matches` helper itself, unknown-proposal-id
+rejected by the new request validator), `tests/services/test_ai_candidate_discovery_service.py`
+(+7: `provider_discovery_result` present on every `dry_run`, end-to-end
+discovery_query grounds via a fake targeted lookup, named_place with an
+existing broad match never spends a lookup, zero-results and raised-
+exception provider failures both leave `dry_run` honest and non-crashing,
+default/injected `provider_discovery_service` wiring), and
+`tests/api/test_langgraph_live_ai_candidate_discovery.py` (+2: a real
+`/generate` call end-to-end grounds a `discovery_query` via a fake
+targeted lookup and honestly reports the resulting quality-score gap
+rather than asserting a false promotion; the pre-existing "ungrounded
+proposal" API test now also asserts `ai_provider_discovery_result` is
+present in the response envelope with the correct
+`provider_not_connected` attempt, since the globally deterministic
+`DeterministicTestPlacesProvider` test double -- `conftest.py`, autouse
+for the whole suite -- never overrode `search_must_visit_place`, so it
+already, correctly, safely defaults to the base `PlacesProvider` class's
+honest `not_connected` response with no code change needed here).
+
+**Strict boundaries honored**: LangGraph node order unchanged (verified by
+every pre-existing `test_langgraph_planning_graph.py`/
+`test_langgraph_planning_nodes.py` test passing unmodified); broad
+`destination_context` discovery completely untouched (no edit to
+`destination_context_service.py`); no fuzzy/trust-based grounding added
+(`find_broad_pool_name_matches` is the exact pre-existing exact/normalized
+predicate, `ai_directed_matches` is identity-keyed by `proposal_id`, never
+a second text-similarity pass); no LLM coordinate/fact ever trusted (every
+`AIProviderDiscoveryAttempt.match` traces to a real `NormalizedPlace` a
+`PlacesProvider` call returned); routing/accommodation/flights/narrator/
+feedback/regeneration/forking untouched; no new third-party dependency.
+
+**Verification**: full suite **3543 passed + 18 skipped** (3494 + 49 new
+tests, zero change to any pre-existing test's outcome). `compileall`/
+`pytest` clean. No frontend file changed; the one new `PlanningState`
+field (`ai_provider_discovery_result`) is additive to an already-partial,
+hand-maintained frontend type mirror (`frontend/lib/types.ts` already
+omits many backend fields by convention) -- frontend checks explicitly
+skipped for that reason.
+
+## 139. Section 192.1: AI-Directed Provider-Search Bound Verification
+
+Section 192's own real-verification report showed 15 and 10 "targeted
+searches" against a configured `AI_DIRECTED_PROVIDER_DISCOVERY_MAX_SEARCHES`
+default of 5 -- an apparent contradiction. Root cause, traced end to end
+(Task 1): **the manual verification script for Section 192, not
+production code, explicitly passed `max_searches=15`/an unbounded value
+into `AIDirectedProviderDiscoveryService.discover(...)` "so this manual
+verification isn't artificially starved"** (that script's own comment).
+The number reported was therefore a real count of real provider calls --
+just made under a deliberately raised bound the script chose for its own
+exploratory purposes, never the production default. Every actual
+production call site (`AICandidateDiscoveryService.dry_run`, the only
+caller) has never passed `max_searches` at all, always falling through to
+`get_settings().ai_directed_provider_discovery_max_searches`; a local
+`get_settings()` check confirms this repo's `.env` carries no override
+and the effective value is the coded default, `5`. Production wiring was
+never broken (Task 4: no fix needed there), and the enforcement logic
+itself (`searches_used >= bound` before every real call) was already
+correct and already covered by passing tests -- so `actual provider
+lookup calls <= configured max` was true in production all along. This
+step corrects the record (Task 10): "targeted searches: 15/10" in Section
+192's report meant real calls under a raised verification-only bound, not
+a production discrepancy.
+
+**One real, intentionally scoped production change was still made**
+(Task 6, not previously implemented): when more proposals need a lookup
+than the bound allows, `AIDirectedProviderDiscoveryService.discover` now
+selects deterministically by `priority_hint` (high, then medium, then
+low, then unknown), tie-broken by original proposal order -- never
+random, never an LLM call. Before this step, the naive first-come
+proposal-list order was already deterministic but not priority-aware (a
+`low`-priority proposal early in the LLM's own list could out-compete a
+`high`-priority one later in it for a scarce search slot). `attempts` is
+still reported in original proposal order for readability; only the
+*selection* of which eligible proposals actually spend a real call is
+priority-first. The existing `AIProviderDiscoveryAttemptStatus.NOT_SEARCHED`
+member (already added in Section 192, matching this step's own suggested
+`skipped_search_limit` concept) needed no new enum value -- it already
+means exactly "the search bound was reached," and its message text was
+reworded slightly to the more explicit phrasing this step's Task 7 asked
+for ("Provider search was not executed because the targeted-search limit
+for this generation was already reached").
+
+**Count definitions, made explicit** (Task 2): `proposal_count` (every
+proposal the LLM returned) is distinct from `eligible_lookup_count`
+(proposals that actually need a lookup -- excludes any `named_place`
+already cleanly matched by the broad `destination_context` pool, which
+counts against neither the eligible count nor the search bound) is
+distinct from `actual_provider_lookup_attempts` (`searched_count`, real
+calls to `ProviderGateway.places.search_must_visit_place`, always `<=`
+the configured bound) is distinct from `provider_results_found`
+(`matched_count`, the subset of real calls that actually returned a
+usable place). The cap only ever governs
+`actual_provider_lookup_attempts` -- it was never applied to, and does
+not affect, the existing broad `search_attractions`/`search_restaurants`/
+`search_accommodation_pois` calls `DestinationContextService` already
+makes independently.
+
+**Tests** (7 new, `tests/services/test_ai_directed_provider_discovery_service.py`,
+22 tests total in that file, zero changes to the 15 pre-existing ones):
+exact-limit (15 eligible, `max_searches=5` -> exactly 5 real calls, 10
+`not_searched`), under-limit (3 eligible, `max_searches=5` -> exactly 3
+calls), shared budget (3 `named_place` fallback + 7 `discovery_query`
+eligible proposals, `max_searches=5` -> exactly 5 total real calls across
+both types combined, never 5 per type), deterministic priority selection
+(high before medium before low before unknown, ties by original order --
+asserted against a specific expected id set), identical selection across
+two repeated calls with the same input, `NOT_SEARCHED` proven distinct
+from `not_found`/`failed`/`not_connected` (a provider double that would
+answer `unavailable` for anything actually asked, proving the skipped
+ones were never asked at all), and skipped proposals never producing a
+match (`matches_by_proposal_id()` disjoint from the skipped id set). The
+existing zero-bound test (`test_search_bound_zero_means_no_lookups_at_all`,
+Section 192) already covered `max_searches=0`; `Settings.
+ai_directed_provider_discovery_max_searches` already permits `0` by
+design (a legitimate "disable targeted lookups without touching
+`AI_CANDIDATE_DISCOVERY_ENABLED`" configuration, `ge=0`) so no contract
+change was needed there either.
+
+**Real verification** (real Groq + real OpenStreetMap/Nominatim, same
+Lisbon/3-day/food-history-walking shape, default `.env`-derived
+`max_searches=5`, no override passed anywhere in this run). Two real
+Groq attempts failed with the same known, pre-existing intermittent
+`json_validate_failed`/truncation HTTP 400 already documented in Sections
+191A.1/192 (unrelated to this step, not retried-away by any code change
+here) before a completed response arrived; this is reported honestly, not
+hidden. Successful run A: `proposal_count=10`, `eligible_lookup_count=10`,
+`configured_max_searches=5`, `actual_provider_lookup_attempts=5`,
+`provider_results_found=3`, `skipped_due_to_search_limit=5`; grounded 3,
+rejected 7. Successful run B: `proposal_count=10`, `eligible_lookup_count=10`,
+`configured_max_searches=5`, `actual_provider_lookup_attempts=5`,
+`provider_results_found=5`, `skipped_due_to_search_limit=5` (real matches
+included "Belém Tower" -> "Torre de Belém" way/24341353, "Jerónimos
+Monastery" -> "Mosteiro dos Jerónimos" relation/3258300, and "Time Out
+Market Lisboa" matching itself exactly); grounded 5, rejected 5. Both
+real runs independently confirm `actual_provider_lookup_attempts <=
+configured_max_searches` even though `eligible_lookup_count` was double
+the bound in both cases -- the invariant this step set out to verify.
+
+**Strict boundaries honored**: no change to AI proposal generation, Groq
+prompts, grounding semantics/confidence rules, candidate-quality
+behavior, promotion, experience planning, LangGraph node order, narrator,
+routing, or regeneration; no new dependency; nothing committed.
+
+**Verification**: full suite **3550 passed + 18 skipped** (3543 + 7 new
+tests, zero change to any pre-existing test's outcome). `compileall`/
+`pytest` clean. No frontend/shared-contract file changed -- frontend
+checks explicitly skipped for that reason.

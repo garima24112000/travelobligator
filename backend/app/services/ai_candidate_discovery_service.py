@@ -11,6 +11,7 @@ from app.models.ai_candidate_proposal import (
     AICandidateProposalResult,
     AICandidateProposalTask,
 )
+from app.models.ai_provider_discovery import AIProviderDiscoveryResult
 from app.models.candidate_grounding import (
     CandidateGroundingBatch,
     CandidateGroundingRequest,
@@ -22,6 +23,7 @@ from app.providers.ai_candidate_proposal import (
     get_ai_candidate_proposal_provider,
 )
 from app.services.ai_candidate_proposal_request_builder import AICandidateProposalRequestBuilder
+from app.services.ai_directed_provider_discovery_service import AIDirectedProviderDiscoveryService
 from app.services.candidate_grounding_request_builder import CandidateGroundingRequestBuilder
 from app.services.candidate_grounding_service import CandidateGroundingService
 
@@ -77,6 +79,12 @@ class AICandidateDiscoveryDryRunResult(BaseModel):
     proposal_result: AICandidateProposalResult
     grounding_request: CandidateGroundingRequest
     grounding_result: CandidateGroundingResult
+    # Section 192 (docs/14_backend_architecture.md section 138): the
+    # targeted provider-discovery attempts run between proposal and
+    # grounding, kept as its own field so its outcome (matched/not_found/
+    # provider_failed/not_searched per proposal) is inspectable separately
+    # from the final grounding result it fed into.
+    provider_discovery_result: AIProviderDiscoveryResult
 
 
 class AICandidateDiscoveryService:
@@ -88,6 +96,17 @@ class AICandidateDiscoveryService:
     schedules anything. It is only called by `PlanningOrchestrator` when
     shadow mode is explicitly enabled (Step 161B); by default it is not
     called by anything in the runtime pipeline.
+
+    Section 192 inserts one more step between proposal and grounding:
+    `provider_discovery_service.discover` runs a targeted provider lookup
+    for any proposal the broad `destination_context` pool alone could not
+    (or, for a `discovery_query` proposal, never could) cleanly match, and
+    its real matches are handed to `grounding_service.ground` as
+    `CandidateGroundingRequest.ai_directed_matches` -- `ground` itself
+    still decides, per proposal, whether to use them (only as a fallback
+    after broad-pool matching, per `CandidateGroundingService._ground_one`).
+    This never bypasses grounding and never adds a second, parallel
+    candidate pool of its own.
     """
 
     def __init__(
@@ -96,11 +115,13 @@ class AICandidateDiscoveryService:
         proposal_provider: AICandidateProposalProvider | None = None,
         grounding_request_builder: CandidateGroundingRequestBuilder | None = None,
         grounding_service: CandidateGroundingService | None = None,
+        provider_discovery_service: AIDirectedProviderDiscoveryService | None = None,
     ) -> None:
         self.proposal_request_builder = proposal_request_builder or AICandidateProposalRequestBuilder()
         self.proposal_provider = proposal_provider or get_ai_candidate_proposal_provider()
         self.grounding_request_builder = grounding_request_builder or CandidateGroundingRequestBuilder()
         self.grounding_service = grounding_service or CandidateGroundingService()
+        self.provider_discovery_service = provider_discovery_service or AIDirectedProviderDiscoveryService()
 
     def dry_run(
         self,
@@ -116,6 +137,15 @@ class AICandidateDiscoveryService:
         grounding_request = self.grounding_request_builder.build_request(
             planning_state, proposals=proposal_result.proposals
         )
+
+        provider_discovery_result = self.provider_discovery_service.discover(
+            planning_state, proposal_result.proposals, grounding_request.provider_candidates
+        )
+        if provider_discovery_result.matches_by_proposal_id():
+            grounding_request = grounding_request.model_copy(
+                update={"ai_directed_matches": provider_discovery_result.matches_by_proposal_id()}
+            )
+
         grounding_result = self.grounding_service.ground(grounding_request)
 
         return AICandidateDiscoveryDryRunResult(
@@ -123,6 +153,7 @@ class AICandidateDiscoveryService:
             proposal_result=proposal_result,
             grounding_request=grounding_request,
             grounding_result=grounding_result,
+            provider_discovery_result=provider_discovery_result,
         )
 
 
@@ -222,4 +253,13 @@ def apply_discovery_to_state(
         request=dry_run_result.grounding_request,
         result=dry_run_result.grounding_result,
     )
+    # Section 192: stored separately from candidate_grounding_batch so a
+    # caller can distinguish "grounded via the broad destination_context
+    # pool" from "grounded via a Section 192 targeted provider lookup" for
+    # debugging/evaluation -- every `GroundedCandidate` this attempt
+    # actually contributed to is still also reflected in
+    # `candidate_grounding_batch.result.grounded_candidates` above (via
+    # `match_type=targeted_lookup`), this field is purely additional,
+    # inspectable detail, never a second candidate pool.
+    planning_state.ai_provider_discovery_result = dry_run_result.provider_discovery_result
     return planning_state
