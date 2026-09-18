@@ -188,6 +188,20 @@ class Settings(BaseSettings):
         alias="AI_DIRECTED_PROVIDER_DISCOVERY_MAX_SEARCHES",
     )
 
+    # Section 193A (docs/14_backend_architecture.md section 141): bounds
+    # how many `ItineraryCandidateReference` entries
+    # `AIItineraryReasoningRequestBuilder.build_request` includes in one
+    # `AIItineraryReasoningRequest` -- selected deterministically by
+    # quality tier then score (never by AI proposal confidence, never
+    # arbitrary truncation). Contract-only in this step: nothing calls a
+    # live LLM #2 provider yet, so this setting has no runtime effect
+    # until Section 193B exists.
+    ai_itinerary_reasoning_max_candidates: int = Field(
+        default=40,
+        ge=1,
+        alias="AI_ITINERARY_REASONING_MAX_CANDIDATES",
+    )
+
     google_places_api_key: str | None = Field(default=None, alias="GOOGLE_PLACES_API_KEY")
     google_routes_api_key: str | None = Field(default=None, alias="GOOGLE_ROUTES_API_KEY")
     mapbox_access_token: str | None = Field(default=None, alias="MAPBOX_ACCESS_TOKEN")

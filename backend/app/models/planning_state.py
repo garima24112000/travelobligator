@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from app.models.accommodation import AccommodationSearchResult
 from app.models.ai_candidate_promotion import AICandidatePromotionReport
 from app.models.ai_candidate_proposal import AICandidateProposalBatch
+from app.models.ai_itinerary_reasoning import AIItineraryReasoningResult
 from app.models.ai_provider_discovery import AIProviderDiscoveryResult
 from app.models.candidate_grounding import CandidateGroundingBatch
 from app.models.candidate_quality import CandidateQualityReport
@@ -1265,6 +1266,17 @@ class PlanningState(BaseModel):
     # reads or writes this field; a promoted candidate is never scheduled
     # into `experience_plan.daily_plans` by this step.
     ai_candidate_promotion_report: AICandidatePromotionReport | None = None
+    # Section 193A (docs/14_backend_architecture.md section 141):
+    # contract-only storage for a future second LLM's itinerary-reasoning
+    # result (candidate selection/grouping/ordering into days) -- never
+    # populated by a live LLM yet, and never read by
+    # `ExperiencePlannerService`/`PlanningOrchestrator`/any LangGraph node.
+    # Stays `None` for every trip until Section 193B wires a real
+    # Groq/Anthropic-backed provider and Section 193C consumes an accepted
+    # result; a `PlanningState` serialized before this field existed still
+    # validates unchanged (backward compatible by construction -- an
+    # optional field with a `None` default).
+    ai_itinerary_reasoning_result: AIItineraryReasoningResult | None = None
     # Backend PlanningOrchestrator pipeline stage-progress bookkeeping (Step
     # 163B) -- never real flight/route/travel progress. `None` only for
     # planning states persisted before this step; `PlanningOrchestrator.
