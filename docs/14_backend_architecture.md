@@ -9419,3 +9419,123 @@ pipeline is wired to this yet).
 tests, zero change to any pre-existing test's outcome). `compileall`/
 `pytest` clean. No frontend/shared-contract file changed -- frontend
 checks explicitly skipped for that reason.
+
+## 142. Section 193B: Real Groq/Anthropic Provider for Grounded Itinerary Reasoning
+
+```text
+AIItineraryReasoningProvider (app/providers/ai_itinerary_reasoning/)
+├── not_connected  (default; no network call)
+├── groq           (Structured Outputs, json_schema/strict=True -- the Section 191A.1 lesson)
+└── anthropic      (forced tool use, mirroring AnthropicAICandidateProposalProvider)
+```
+
+**193B does NOT alter the generated itinerary.** It only produces a
+validated structured reasoning proposal. Section 193C will integrate
+that proposal into itinerary generation. Nothing in `PlanningOrchestrator`,
+any LangGraph node, `ExperiencePlannerService`, or the API routes imports
+the new provider package or `AIItineraryReasoningService` -- proven by
+dedicated import-absence tests and a real `/generate` behavioral
+regression test showing `ai_itinerary_reasoning_result` stays `None`
+even with `AI_ITINERARY_REASONING_ENABLED=true` set.
+
+**Provider package** (`app/providers/ai_itinerary_reasoning/` --
+`base.py`/`factory.py`/`groq_adapter.py`/`anthropic_adapter.py`/
+`not_connected_adapter.py`, mirroring
+`app.providers.ai_candidate_proposal`'s exact shape, audited first per
+Task 1; deliberately *not* modeled on `app.providers.itinerary_narrator`,
+whose Groq adapter still uses the pre-191A.1 `function_calling` method --
+a stale pattern, not a convention to copy forward). `AIItineraryReasoningProvider.reason(request) -> AIItineraryReasoningResult`
+is the only abstraction callers depend on; no LangChain/Groq/Anthropic
+SDK type is ever exposed outside an adapter's own module (both SDK
+imports stay deferred into `_build_client`, exactly like every other
+Groq/Anthropic adapter in this repo).
+
+**Configuration** (`AI_ITINERARY_REASONING_ENABLED` default `false`,
+`AI_ITINERARY_REASONING_PROVIDER` default `"not_connected"`,
+`AI_ITINERARY_REASONING_MODEL` default unset): no new API key setting --
+both adapters reuse the existing `GROQ_API_KEY`/`ANTHROPIC_API_KEY`, and
+each adapter's model resolves `explicit param -> AI_ITINERARY_REASONING_MODEL
+-> GROQ_MODEL/ANTHROPIC_MODEL`, the exact three-level fallback
+`GroqItineraryNarratorProvider`/`AnthropicItineraryNarratorProvider`
+already use. Added to `.env.example` in the same "AI candidate proposal"
+section as the closely related settings.
+
+**Groq Structured Outputs** (Task 5-6): `method="json_schema"`,
+`strict=True`, no `tools`/`tool_choice` -- verified by dedicated tests
+capturing the real outgoing kwargs, mirroring
+`GroqAICandidateProposalProvider`'s own Section 191A.1 tests exactly.
+`_GroqItineraryReasoningSchema` is a wire-schema-only mirror of the 193A
+domain contract with the same unsupported-constraint workarounds already
+established (`min_length`/`ge`/`le` dropped from the wire schema;
+`ItineraryReasoningDayPlan`/`AIItineraryReasoningResult` still enforce
+them one layer down, on the parsed output) -- the domain model itself was
+not changed to satisfy Groq. `max_tokens=6000` (headroom for a
+multi-day response, following the same truncation lesson that raised the
+AI-candidate-proposal adapter's own limit in 191A.1).
+
+**Candidate-ID safety is enforced twice, never assumed away by
+structured output** (Task 8-9): after building a domain-valid
+`AIItineraryReasoningResult` from the parsed response, both adapters call
+Section 193A's own `validate_result_against_request(request, result)`
+before ever returning `completed` -- a hallucinated, duplicated, or
+out-of-range candidate reference downgrades the result to `rejected`
+(with the specific violation(s) in `blocked_reasons`), never silently
+dropped while still reporting success, and never fuzzy-matched or
+searched for.
+
+**Anthropic adapter** (Task 10): same request/result models, same
+`validate_result_against_request` safety check, same forced-tool-use
+pattern as `AnthropicAICandidateProposalProvider` -- no substantially
+different architecture was needed.
+
+**Service layer** (`AIItineraryReasoningService`,
+`app/services/ai_itinerary_reasoning_service.py`, Task 13): composes
+`AIItineraryReasoningRequestBuilder` (193A) -> the configured provider ->
+the validated result. `reason` is pure; `apply` is the only mutating
+method and writes exactly `planning_state.ai_itinerary_reasoning_result`
+-- `experience_plan`/`route_feasibility_report`/
+`route_aware_sequencing_report`/`travel_time_buffer_report`/
+`validation_report` are all untouched (tested directly, before/after
+equality). `Settings.ai_itinerary_reasoning_enabled` gates the service
+itself (mirroring `ItineraryNarrativeService`/`itinerary_narrator_enabled`
+exactly) -- when disabled, no provider is even resolved, let alone
+called. `apply_itinerary_reasoning_safely` (a fail-safe wrapper mirroring
+`apply_discovery_to_state`) exists for Section 193C to reuse; nothing
+calls it in this step.
+
+**Real Groq verification (2 real runs, same local `.env` `GROQ_API_KEY`,
+never printed, `GROQ_MODEL=openai/gpt-oss-20b`, Lisbon/3-day/
+food-history-walking, 8 real provider-backed candidates -- 6 attraction,
+2 restaurant -- built through the real `AIItineraryReasoningRequestBuilder`).**
+Both runs: `completed`, 3 days, all 8 candidates scheduled exactly once
+each, zero unknown candidate IDs, zero cross-day duplicates, zero
+semantic-validation violations, only coarse time windows
+(morning/midday/afternoon/evening), concise rationale with no
+price/rating/hours/exact-route-time claims. Run 1 grouped Belém-area
+monuments on day 1, Alfama/Oceanário/Time Out Market on day 2, the museum
+and Mercado da Ribeira on day 3. Run 2 produced a different, equally
+plausible grouping (same candidate set, different day assignment) --
+expected non-determinism from a real LLM call, not a bug; both were
+independently valid under the same deterministic safety check.
+
+**Strict boundaries honored**: no LangGraph order change, no
+`ExperiencePlanner`/route/validator change, no LLM #1/grounding/
+CandidateQuality change, no repair loop, no new dependency; nothing
+committed.
+
+**Tests**: 78 new tests, zero changes to any pre-existing test --
+config (8), factory (8, including "unknown provider never silently maps
+to Groq"), Groq adapter (27: structured-output request shape, valid
+response parsing, unknown/duplicate/invalid-day rejection, forbidden-
+factual-claim rejection, HTTP-failure/malformed-JSON/missing-key
+handling, API-key-secrecy, model-fallback priority), Anthropic adapter
+(15, mirroring the Groq domain-safety tests with deterministic mocks),
+service (11: disabled-by-default, full composition, `apply` touches only
+its one field, fail-safe wrapper behavior, factory injection), and a
+dedicated no-wiring suite (9: import-absence across every generation
+entry point plus two real `/generate` behavioral regression tests).
+
+**Verification**: full suite **3712 passed + 18 skipped** (3634 + 78 new
+tests, zero change to any pre-existing test's outcome). `compileall`/
+`pytest` clean. No frontend/shared-contract file changed -- frontend
+checks explicitly skipped for that reason.

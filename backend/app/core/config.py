@@ -202,6 +202,36 @@ class Settings(BaseSettings):
         alias="AI_ITINERARY_REASONING_MAX_CANDIDATES",
     )
 
+    # Section 193B (docs/14_backend_architecture.md section 142): config
+    # gate for the real LLM #2 provider layer, mirroring
+    # `ai_candidate_discovery_enabled`/`ai_candidate_proposal_provider`
+    # (Step 191A/160E) and `itinerary_narrator_enabled`/
+    # `itinerary_narrator_provider` (Step 182F) exactly. Default `False`/
+    # `"not_connected"` so nothing calls a real LLM by default. Neither
+    # flag is read by any runtime generation path yet -- Section 193C is
+    # what would wire `AIItineraryReasoningService` into normal
+    # `POST /trips/{id}/generate`; until then this only affects direct,
+    # isolated calls to that service. `ai_itinerary_reasoning_model`
+    # deliberately has no repo-wide default of its own: each adapter falls
+    # back to the already-existing `groq_model`/`anthropic_model` setting
+    # when unset, the same three-level fallback
+    # `GroqItineraryNarratorProvider`/`AnthropicItineraryNarratorProvider`
+    # already use -- this never introduces a second, divergent default
+    # model per provider. No new API key setting is added: both adapters
+    # reuse the existing `groq_api_key`/`anthropic_api_key`.
+    ai_itinerary_reasoning_enabled: bool = Field(
+        default=False,
+        alias="AI_ITINERARY_REASONING_ENABLED",
+    )
+    ai_itinerary_reasoning_provider: str = Field(
+        default="not_connected",
+        alias="AI_ITINERARY_REASONING_PROVIDER",
+    )
+    ai_itinerary_reasoning_model: str | None = Field(
+        default=None,
+        alias="AI_ITINERARY_REASONING_MODEL",
+    )
+
     google_places_api_key: str | None = Field(default=None, alias="GOOGLE_PLACES_API_KEY")
     google_routes_api_key: str | None = Field(default=None, alias="GOOGLE_ROUTES_API_KEY")
     mapbox_access_token: str | None = Field(default=None, alias="MAPBOX_ACCESS_TOKEN")
