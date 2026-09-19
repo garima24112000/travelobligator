@@ -210,6 +210,7 @@ def test_run_returns_result_with_final_planning_state_and_completed_nodes() -> N
         "stay_transport",
         "accommodation_inventory",
         "flight_inventory",
+        "ai_itinerary_reasoning",
         "experience_planning",
         "route_feasibility",
         "route_aware_sequencing",

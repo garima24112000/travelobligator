@@ -7,14 +7,19 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-# Section 193B (docs/14_backend_architecture.md section 142) must not wire
-# `AIItineraryReasoningService`/the new provider package into normal
-# `POST /trips/{id}/generate` -- that is Section 193C's job. These tests
-# prove the new provider/service exist but remain dormant, mirroring the
-# exact import-absence pattern this repo already uses for every other
-# not-yet-wired AI module (e.g. `test_ai_candidate_discovery_safety.py`'s
-# own `_assert_no_discovery_service_import`, Section 193A's own
-# `test_ai_itinerary_reasoning_request_builder.py` import-absence tests).
+# Section 193B wired the `AIItineraryReasoningProvider`/`AIItineraryReasoningService`
+# layer but deliberately kept it dormant (not called by normal
+# `POST /trips/{id}/generate`). Section 193C (docs/14_backend_architecture.md
+# section 143) is what actually wires `AIItineraryReasoningService` into the
+# LangGraph `ai_itinerary_reasoning` node, positioned right before
+# `experience_planning`. This file's name/original tests predate that
+# wiring -- the tests below have been updated to assert the real, now-live
+# structure instead of the now-obsolete "nothing calls it yet" claim.
+# `PlanningOrchestrator`/`PlanValidatorService`/the API routes still never
+# import the reasoning service or provider package directly (they reach it
+# only through the same layered LangGraph node -> service -> provider
+# abstraction -> adapter chain every other AI stage in this repo uses) --
+# those import-absence assertions remain accurate and are kept unchanged.
 
 
 def _imported_module_names(module: object) -> list[str]:
@@ -39,24 +44,48 @@ def _assert_no_reasoning_service_import(module: object) -> None:
 
 
 def test_planning_orchestrator_does_not_import_reasoning_service() -> None:
+    """PlanningOrchestrator reaches the reasoning stage only indirectly,
+    through LangGraphPlanningService -> PlanningGraphRunner -> the graph
+    node -- exactly the same layering it already uses for
+    AICandidateDiscoveryService/AICandidatePromotionService."""
     import app.services.planning_orchestrator as orchestrator_module
 
     _assert_no_reasoning_service_import(orchestrator_module)
 
 
-def test_langgraph_nodes_do_not_import_reasoning_service() -> None:
+def test_langgraph_nodes_import_reasoning_service() -> None:
+    """Section 193C: planning_graph_nodes.py now builds and calls
+    AIItineraryReasoningService directly (build_ai_itinerary_reasoning_node)
+    -- the one, intentional exception to this file's otherwise-unchanged
+    import-absence assertions."""
     import app.graphs.planning_graph_nodes as nodes_module
 
-    _assert_no_reasoning_service_import(nodes_module)
+    imported_names = _imported_module_names(nodes_module)
+    assert any("ai_itinerary_reasoning_service" in name for name in imported_names)
+    assert any(name == "AIItineraryReasoningService" for name in imported_names)
+    # Still never imports a provider adapter/LangChain/Groq/Anthropic
+    # client directly -- only through the service -> provider abstraction.
+    assert not any("ai_itinerary_reasoning" in name and "providers" in name for name in imported_names)
 
 
-def test_langgraph_planning_service_does_not_import_reasoning_service() -> None:
-    import app.services.langgraph_planning_service as module
+def test_langgraph_planning_service_threads_reasoning_service_parameter() -> None:
+    """Section 193C: LangGraphPlanningService now accepts and forwards an
+    injectable ai_itinerary_reasoning_service, mirroring every other stage
+    service parameter it already threads through to PlanningGraphRunner."""
+    import inspect
 
-    _assert_no_reasoning_service_import(module)
+    from app.services.langgraph_planning_service import LangGraphPlanningService
+
+    signature = inspect.signature(LangGraphPlanningService.__init__)
+    assert "ai_itinerary_reasoning_service" in signature.parameters
 
 
 def test_experience_planner_does_not_import_reasoning_service() -> None:
+    """ExperiencePlannerService reads app.models.ai_itinerary_reasoning
+    (the contract models, to resolve an already-computed
+    AIItineraryReasoningResult from PlanningState) but never constructs or
+    calls AIItineraryReasoningService/a provider itself -- it only ever
+    consumes what the earlier ai_itinerary_reasoning node already stored."""
     import app.services.experience_planner_service as module
 
     _assert_no_reasoning_service_import(module)
@@ -90,10 +119,15 @@ def test_provider_package_calls_no_langgraph_or_disallowed_vendor() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Behavioral regression: a real /generate call never populates
-# ai_itinerary_reasoning_result, even with AI_ITINERARY_REASONING_ENABLED=true
-# set -- because nothing in the generation path calls the new service at
-# all (structural import-absence tests above prove why).
+# Behavioral regression (Task 15/18): with reasoning disabled (the
+# default), a real /generate call now honestly records a `not_connected`
+# ai_itinerary_reasoning_result (Section 193C's node always runs and
+# always records a real status, exactly like every other stage in this
+# repo -- e.g. ItineraryNarrativeService always sets
+# itinerary_narrative_report even when its own feature is disabled) --
+# but every OTHER part of the generated plan (experience_plan, routing,
+# validation) stays exactly what the deterministic path alone would have
+# produced.
 # ---------------------------------------------------------------------------
 
 
@@ -115,31 +149,51 @@ def _create_trip(client: TestClient) -> str:
     return response.json()["data"]["trip_id"]
 
 
-def test_generate_never_populates_ai_itinerary_reasoning_result_even_when_enabled(
+def test_generate_records_not_connected_reasoning_by_default(client: TestClient) -> None:
+    trip_id = _create_trip(client)
+    response = client.post(f"/trips/{trip_id}/generate")
+
+    assert response.status_code == 200
+    planning_state = response.json()["data"]["planning_state"]
+    reasoning_result = planning_state["ai_itinerary_reasoning_result"]
+    assert reasoning_result is not None
+    assert reasoning_result["status"] == "not_connected"
+    assert reasoning_result["days"] == []
+
+
+def test_generate_experience_plan_unchanged_whether_reasoning_enabled_flag_is_set(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """AI_ITINERARY_REASONING_ENABLED=true alone (provider still
+    "not_connected") must not change the deterministic experience_plan at
+    all -- the reasoning stage still records an honest not_connected
+    result (no provider configured), so ExperiencePlannerService still
+    falls back to its existing deterministic path exactly as when the
+    flag is off."""
     from app.core.config import get_settings
+
+    trip_id_disabled = _create_trip(client)
+    baseline_response = client.post(f"/trips/{trip_id_disabled}/generate")
+    assert baseline_response.status_code == 200
+    baseline_plan = baseline_response.json()["data"]["planning_state"]["experience_plan"]
 
     monkeypatch.setenv("AI_ITINERARY_REASONING_ENABLED", "true")
     get_settings.cache_clear()
+    try:
+        trip_id_enabled = _create_trip(client)
+        enabled_response = client.post(f"/trips/{trip_id_enabled}/generate")
+    finally:
+        monkeypatch.delenv("AI_ITINERARY_REASONING_ENABLED", raising=False)
+        get_settings.cache_clear()
 
-    trip_id = _create_trip(client)
-    response = client.post(f"/trips/{trip_id}/generate")
+    assert enabled_response.status_code == 200
+    enabled_plan = enabled_response.json()["data"]["planning_state"]["experience_plan"]
 
-    assert response.status_code == 200
-    planning_state = response.json()["data"]["planning_state"]
-    assert planning_state["ai_itinerary_reasoning_result"] is None
+    def _scheduled_names_by_day(plan: dict[str, Any]) -> list[list[str]]:
+        return [
+            [experience["name"] for experience in day["experiences"]]
+            for day in plan["daily_plans"]
+        ]
 
-    get_settings.cache_clear()
-
-
-def test_generate_behavior_unchanged_with_reasoning_disabled(client: TestClient) -> None:
-    """Sanity baseline: the default (disabled) path also never populates
-    the field -- both states produce byte-identical `None` for this
-    additive field."""
-    trip_id = _create_trip(client)
-    response = client.post(f"/trips/{trip_id}/generate")
-
-    assert response.status_code == 200
-    planning_state = response.json()["data"]["planning_state"]
-    assert planning_state["ai_itinerary_reasoning_result"] is None
+    assert _scheduled_names_by_day(enabled_plan) == _scheduled_names_by_day(baseline_plan)
+    assert enabled_plan["assumptions"] == baseline_plan["assumptions"]

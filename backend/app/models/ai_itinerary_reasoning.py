@@ -105,6 +105,19 @@ class ItineraryReasoningCategory(str, Enum):
     RESTAURANT = "restaurant"
 
 
+def build_candidate_id(provider_name: str, provider_place_id: str) -> str:
+    """The one, single-source-of-truth `candidate_id` formula (Task 3:
+    deterministic, never an array index). Section 193C's
+    `ExperiencePlannerService` reverse-index and this module's own
+    `AIItineraryReasoningRequestBuilder`-facing forward construction both
+    call this exact function -- never two independently written copies of
+    the same format string -- so a candidate_id a reasoning result
+    references always resolves to the same real place both places agree
+    on (Task 5: "avoid duplicating selection logic").
+    """
+    return f"{provider_name}:{provider_place_id}"
+
+
 class ItineraryCandidateReference(BaseModel):
     """One already-verified, provider-backed candidate LLM #2 is allowed
     to cite by `candidate_id`. Every field here is a real fact copied

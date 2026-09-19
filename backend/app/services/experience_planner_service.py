@@ -1,9 +1,17 @@
 from __future__ import annotations
 
+import logging
 from datetime import timedelta
 from typing import Any
 
+from app.core.config import get_settings
 from app.models.ai_candidate_promotion import PromotedAICandidate
+from app.models.ai_itinerary_reasoning import (
+    AIItineraryReasoningResult,
+    AIItineraryReasoningStatus,
+    ItineraryReasoningCategory,
+    build_candidate_id,
+)
 from app.models.candidate_quality import CandidateQualityScore, CandidateQualityTier
 from app.models.common import (
     ChecklistItemStatus,
@@ -31,6 +39,8 @@ from app.models.planning_state import (
 )
 from app.services.base import PlanningStageService
 from app.utils.geo import haversine_distance_km
+
+logger = logging.getLogger(__name__)
 
 _MAX_ATTRACTIONS_PER_DAY: dict[TripPace, int] = {
     TripPace.RELAXED: 2,
@@ -684,12 +694,61 @@ class ExperiencePlannerService(PlanningStageService):
             scheduling_candidate_pois, must_visit_terms, interest_terms
         )
 
-        day_groups = _group_candidates_into_days(ordered_pois, num_days, max_per_day)
+        # Section 193C (docs/14_backend_architecture.md section 143):
+        # attempt an AI-guided (LLM #2) day grouping first, falling back
+        # to the existing deterministic geographic grouping whenever no
+        # completed/valid reasoning result is available -- this is the
+        # only branch point this step adds; every other line of `run`
+        # below is unchanged regardless of which path produced
+        # `day_groups`.
+        scheduling_candidate_restaurants = _select_candidates_by_quality(
+            candidate_restaurants, restaurant_quality_lookup
+        )
+        candidate_reverse_index = _build_ai_candidate_reverse_index(
+            scheduling_candidate_pois, scheduling_candidate_restaurants
+        )
+        ai_day_groups, ai_restaurants_by_day = _resolve_ai_guided_day_groups(
+            planning_state.ai_itinerary_reasoning_result,
+            candidate_reverse_index,
+            num_days,
+            max_per_day,
+        )
+        used_ai_reasoning = ai_day_groups is not None
+        day_groups = (
+            ai_day_groups
+            if ai_day_groups is not None
+            else _group_candidates_into_days(ordered_pois, num_days, max_per_day)
+        )
+
+        reasoning_result = planning_state.ai_itinerary_reasoning_result
+        logger.info(
+            "ExperiencePlannerService resolved day grouping.",
+            extra={
+                "stage": "ai_itinerary_reasoning",
+                "enabled": get_settings().ai_itinerary_reasoning_enabled,
+                "provider": reasoning_result.provider_name if reasoning_result is not None else None,
+                "status": reasoning_result.status.value if reasoning_result is not None else None,
+                "candidate_count": len(candidate_reverse_index),
+                "selected_candidate_count": (
+                    sum(len(day) for day in ai_day_groups) if used_ai_reasoning and ai_day_groups else 0
+                ),
+                "day_count": num_days,
+                "fallback_used": not used_ai_reasoning,
+            },
+        )
 
         daily_plans: list[DailyPlan] = []
         for day_number in range(1, num_days + 1):
             day_date = trip_request.start_date + timedelta(days=day_number - 1)
-            day_pois = _order_day_by_distance(day_groups[day_number - 1])
+            # Section 193C: an AI-guided day keeps LLM #2's own chosen
+            # order verbatim -- re-sorting it by geographic distance here
+            # would silently discard the one thing LLM #2 was asked to
+            # decide (ordering). The deterministic path is unchanged.
+            day_pois = (
+                day_groups[day_number - 1]
+                if used_ai_reasoning
+                else _order_day_by_distance(day_groups[day_number - 1])
+            )
 
             warnings: list[str] = []
             if not has_any_attraction_candidates:
@@ -702,8 +761,32 @@ class ExperiencePlannerService(PlanningStageService):
                     warnings.append(
                         "No remaining candidate attractions were available for this day."
                     )
-                if quality_excluded_count > 0 and len(day_pois) < max_per_day:
+                if (
+                    not used_ai_reasoning
+                    and quality_excluded_count > 0
+                    and len(day_pois) < max_per_day
+                ):
+                    # Section 193C: for an AI-guided day, a count below
+                    # max_per_day is explained by LLM #2's own selection
+                    # (a restaurant-category pick routed to
+                    # restaurant_suggestions instead, or simply choosing
+                    # fewer attractions) -- attributing it to quality-tier
+                    # exclusion here would be a real fact about the wrong
+                    # cause, not a fabrication but still misleading.
                     warnings.append(_LOW_PRIORITY_OR_REJECTED_EXCLUDED_WARNING)
+            if used_ai_reasoning:
+                reasoning_day = next(
+                    (
+                        day
+                        for day in planning_state.ai_itinerary_reasoning_result.days
+                        if day.day_index == day_number
+                    ),
+                    None,
+                )
+                if reasoning_day is not None:
+                    warnings.append(
+                        f"AI itinerary reasoning rationale for this day: {reasoning_day.rationale}"
+                    )
 
             experiences = [
                 _build_experience_item(poi, must_visit_ids, interest_ids) for poi in day_pois
@@ -717,9 +800,22 @@ class ExperiencePlannerService(PlanningStageService):
                 experience.day_number = day_number
                 experience.stop_order = stop_index
 
-            restaurant_suggestions = _suggest_nearby_restaurants(
-                experiences, candidate_restaurants, warnings, restaurant_quality_lookup
-            )
+            # Section 193C: if LLM #2 explicitly selected one or more
+            # restaurant-category candidates for this day, honor that
+            # choice instead of the geographic nearest-neighbor
+            # suggestion -- the same "use only what the LLM actually
+            # selected" principle as attractions above. A day the AI
+            # reasoning didn't mention any restaurant for still falls
+            # back to the existing geographic suggestion, unchanged.
+            ai_restaurants_for_day = ai_restaurants_by_day.get(day_number) if used_ai_reasoning else None
+            if ai_restaurants_for_day:
+                restaurant_suggestions = [
+                    _build_restaurant_suggestion(restaurant) for restaurant in ai_restaurants_for_day
+                ]
+            else:
+                restaurant_suggestions = _suggest_nearby_restaurants(
+                    experiences, candidate_restaurants, warnings, restaurant_quality_lookup
+                )
             accommodation_suggestions = _suggest_nearby_accommodations(
                 experiences, candidate_accommodation_pois, warnings, accommodation_quality_lookup
             )
@@ -735,15 +831,27 @@ class ExperiencePlannerService(PlanningStageService):
                 )
             )
 
-        assumptions = [
-            "Attractions are scheduled directly from provider-backed candidates: each "
-            "day's highest-priority unscheduled candidate anchors that day, and "
-            "remaining slots (up to the pace-based per-day cap) are filled and ordered "
-            "using straight-line (haversine) geographic proximity when coordinates are "
-            "available. Days are grouped using geographic proximity, not route "
-            "optimization, and route ordering, timing, and opening-hours feasibility "
-            "are not implemented yet."
-        ]
+        if used_ai_reasoning:
+            assumptions = [
+                "Attraction (and, where selected, restaurant) grouping and order for this "
+                "plan were chosen by AI itinerary reasoning (LLM #2, Section 193B) from "
+                "the same provider-backed, quality-approved candidate pool the "
+                "deterministic path uses -- every scheduled place's name, coordinates, and "
+                "provider identity still come entirely from the real provider record, "
+                "never from the AI. A day this reasoning did not select any candidate for "
+                "stays empty rather than being auto-filled. Route ordering, timing, and "
+                "opening-hours feasibility are not implemented yet."
+            ]
+        else:
+            assumptions = [
+                "Attractions are scheduled directly from provider-backed candidates: each "
+                "day's highest-priority unscheduled candidate anchors that day, and "
+                "remaining slots (up to the pace-based per-day cap) are filled and ordered "
+                "using straight-line (haversine) geographic proximity when coordinates are "
+                "available. Days are grouped using geographic proximity, not route "
+                "optimization, and route ordering, timing, and opening-hours feasibility "
+                "are not implemented yet."
+            ]
         if not has_any_attraction_candidates:
             assumptions.insert(
                 0,
@@ -838,6 +946,115 @@ def _order_candidates(
     interest_ids = {id(poi) for poi in interest_matched}
     ordered = must_visit_matched + interest_matched + unmatched
     return ordered, must_visit_ids, interest_ids
+
+
+# Section 193C (docs/14_backend_architecture.md section 143): AI-guided
+# day grouping. LLM #2 (Section 193B) may only ever cite a `candidate_id`
+# already present in the exact same provider-backed, quality-approved
+# candidate pool this service already computes for its own deterministic
+# path (`scheduling_candidate_pois`/quality-filtered restaurants) --
+# `_build_ai_candidate_reverse_index` maps `candidate_id ->
+# (category, poi dict)` using `build_candidate_id`, the single formula
+# also used by `AIItineraryReasoningRequestBuilder` (Section 193A), so a
+# candidate_id always resolves to the same real place both places agree
+# on. Nothing here ever constructs a place from AI text -- resolution
+# either finds a real poi dict already in this pool, or the whole
+# AI-guided attempt is abandoned (never a partially-trusted result, never
+# a placeholder stop).
+
+
+def _build_ai_candidate_reverse_index(
+    scheduling_candidate_pois: list[dict[str, Any]],
+    scheduling_candidate_restaurants: list[dict[str, Any]],
+) -> dict[str, tuple[ItineraryReasoningCategory, dict[str, Any]]]:
+    index: dict[str, tuple[ItineraryReasoningCategory, dict[str, Any]]] = {}
+    for poi in scheduling_candidate_pois:
+        candidate_id = build_candidate_id(
+            str(poi.get("source") or "unknown_provider"), str(poi.get("place_id") or "")
+        )
+        index.setdefault(candidate_id, (ItineraryReasoningCategory.ATTRACTION, poi))
+    for poi in scheduling_candidate_restaurants:
+        candidate_id = build_candidate_id(
+            str(poi.get("source") or "unknown_provider"), str(poi.get("place_id") or "")
+        )
+        index.setdefault(candidate_id, (ItineraryReasoningCategory.RESTAURANT, poi))
+    return index
+
+
+def _resolve_ai_guided_day_groups(
+    reasoning_result: AIItineraryReasoningResult | None,
+    candidate_reverse_index: dict[str, tuple[ItineraryReasoningCategory, dict[str, Any]]],
+    num_days: int,
+    max_per_day: int,
+) -> tuple[list[list[dict[str, Any]]] | None, dict[int, list[dict[str, Any]]]]:
+    """Resolves a Section 193B `AIItineraryReasoningResult` into the exact
+    same `(day_groups, restaurant-suggestions-by-day)` shape the
+    deterministic path already produces.
+
+    Returns `(None, {})` -- signaling the caller to fall back to the
+    existing deterministic `_group_candidates_into_days` path entirely,
+    never a partially-trusted AI result -- whenever:
+
+    - `reasoning_result` is absent or not `completed` (feature disabled,
+      provider not connected/rejected/failed; Task 3).
+    - any `day_index` is outside `1..num_days`, or two days share one
+      (Task 22/25 generation-layer defense-in-depth: Section 193B's own
+      adapters already enforce this via `validate_result_against_request`
+      before ever returning `completed`, but a `PlanningState` populated
+      by any other path -- a future caller, a test, a bug -- must never
+      be trusted blindly here either).
+    - any `candidate_id` is not in `candidate_reverse_index` (Task 22:
+      "never create a placeholder stop").
+    - any `candidate_id` is referenced on more than one day (Task 25).
+    - after all of the above, zero attractions end up scheduled across
+      the whole trip (Task 10: an entirely empty AI-guided plan is never
+      preferred over attempting the deterministic algorithm).
+
+    A day's attraction list is truncated to `max_per_day` (Task 9: the
+    pace-based per-day cap is a hard deterministic constraint LLM #2's
+    own selection does not override), keeping the LLM's own chosen order
+    for both which candidates are kept and their `stop_order` -- this
+    function never re-sorts by distance or priority.
+    """
+    if reasoning_result is None or reasoning_result.status != AIItineraryReasoningStatus.COMPLETED:
+        return None, {}
+
+    seen_candidate_ids: set[str] = set()
+    seen_day_indexes: set[int] = set()
+    day_attractions: dict[int, list[dict[str, Any]]] = {}
+    day_restaurants: dict[int, list[dict[str, Any]]] = {}
+
+    for day in reasoning_result.days:
+        if not (1 <= day.day_index <= num_days) or day.day_index in seen_day_indexes:
+            return None, {}
+        seen_day_indexes.add(day.day_index)
+
+        attractions: list[dict[str, Any]] = []
+        restaurants: list[dict[str, Any]] = []
+        for candidate_id in day.candidate_ids:
+            if candidate_id in seen_candidate_ids:
+                return None, {}
+            seen_candidate_ids.add(candidate_id)
+
+            entry = candidate_reverse_index.get(candidate_id)
+            if entry is None:
+                return None, {}
+            category, poi = entry
+            if category == ItineraryReasoningCategory.RESTAURANT:
+                restaurants.append(poi)
+            else:
+                attractions.append(poi)
+
+        if attractions:
+            day_attractions[day.day_index] = attractions[:max_per_day]
+        if restaurants:
+            day_restaurants[day.day_index] = restaurants
+
+    if not any(day_attractions.values()):
+        return None, {}
+
+    day_groups = [day_attractions.get(day_number, []) for day_number in range(1, num_days + 1)]
+    return day_groups, day_restaurants
 
 
 def _group_candidates_into_days(

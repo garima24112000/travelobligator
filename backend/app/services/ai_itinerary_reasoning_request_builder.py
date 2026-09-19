@@ -11,6 +11,7 @@ from app.models.ai_itinerary_reasoning import (
     ItineraryReasoningCategory,
     TravelerContextSummary,
     TripStrategySummary,
+    build_candidate_id,
 )
 from app.models.candidate_grounding import GroundedCandidate
 from app.models.candidate_quality import CandidateQualityReport, CandidateQualityScore, CandidateQualityTier
@@ -280,7 +281,7 @@ class AIItineraryReasoningRequestBuilder:
                 continue
 
             provider_name = promoted.provider_source or "unknown_provider"
-            candidate_id = f"{provider_name}:{promoted.provider_place_id}"
+            candidate_id = build_candidate_id(provider_name, promoted.provider_place_id)
             category_hint = (promoted.category or "").strip().lower()
             category = (
                 ItineraryReasoningCategory.RESTAURANT
@@ -355,7 +356,7 @@ def _references_from_scores(
         provider_place_id = str(raw.get("place_id") or score.candidate_id)
         references.append(
             ItineraryCandidateReference(
-                candidate_id=f"{provider_name}:{provider_place_id}",
+                candidate_id=build_candidate_id(provider_name, provider_place_id),
                 name=score.candidate_name,
                 category=category,
                 provider_name=provider_name,

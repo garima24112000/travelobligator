@@ -6,6 +6,7 @@ from langgraph.graph.state import CompiledStateGraph
 from app.graphs.planning_graph_nodes import (
     build_accommodation_inventory_node,
     build_ai_candidate_node,
+    build_ai_itinerary_reasoning_node,
     build_candidate_quality_node,
     build_destination_context_node,
     build_experience_planning_node,
@@ -25,6 +26,7 @@ from app.models.planning_state import PlanningState, TripRequest
 from app.services.accommodation_inventory_service import AccommodationInventoryService
 from app.services.ai_candidate_discovery_service import AICandidateDiscoveryService
 from app.services.ai_candidate_promotion_service import AICandidatePromotionService
+from app.services.ai_itinerary_reasoning_service import AIItineraryReasoningService
 from app.services.candidate_quality_service import CandidateQualityService
 from app.services.destination_context_service import DestinationContextService
 from app.services.experience_planner_service import ExperiencePlannerService
@@ -98,6 +100,7 @@ def build_planning_graph(
     stay_transport_service: StayTransportService | None = None,
     accommodation_inventory_service: AccommodationInventoryService | None = None,
     flight_inventory_service: FlightInventoryService | None = None,
+    ai_itinerary_reasoning_service: AIItineraryReasoningService | None = None,
     experience_planner_service: ExperiencePlannerService | None = None,
     route_feasibility_service: RouteFeasibilityService | None = None,
     route_aware_sequencing_service: RouteAwareSequencingService | None = None,
@@ -142,6 +145,9 @@ def build_planning_graph(
         accommodation_inventory_service or AccommodationInventoryService()
     )
     resolved_flight_inventory_service = flight_inventory_service or FlightInventoryService()
+    resolved_ai_itinerary_reasoning_service = (
+        ai_itinerary_reasoning_service or AIItineraryReasoningService()
+    )
     resolved_experience_planner_service = (
         experience_planner_service or ExperiencePlannerService()
     )
@@ -178,6 +184,10 @@ def build_planning_graph(
         "flight_inventory", build_flight_inventory_node(resolved_flight_inventory_service)
     )
     graph.add_node(
+        "ai_itinerary_reasoning",
+        build_ai_itinerary_reasoning_node(resolved_ai_itinerary_reasoning_service),
+    )
+    graph.add_node(
         "experience_planning", build_experience_planning_node(resolved_experience_planner_service)
     )
     graph.add_node(
@@ -204,7 +214,8 @@ def build_planning_graph(
     graph.add_edge("trip_strategy", "stay_transport")
     graph.add_edge("stay_transport", "accommodation_inventory")
     graph.add_edge("accommodation_inventory", "flight_inventory")
-    graph.add_edge("flight_inventory", "experience_planning")
+    graph.add_edge("flight_inventory", "ai_itinerary_reasoning")
+    graph.add_edge("ai_itinerary_reasoning", "experience_planning")
     graph.add_edge("experience_planning", "route_feasibility")
     graph.add_edge("route_feasibility", "route_aware_sequencing")
     graph.add_edge("route_aware_sequencing", "travel_time_buffer")
@@ -239,6 +250,7 @@ class PlanningGraphRunner:
         stay_transport_service: StayTransportService | None = None,
         accommodation_inventory_service: AccommodationInventoryService | None = None,
         flight_inventory_service: FlightInventoryService | None = None,
+        ai_itinerary_reasoning_service: AIItineraryReasoningService | None = None,
         experience_planner_service: ExperiencePlannerService | None = None,
         route_feasibility_service: RouteFeasibilityService | None = None,
         route_aware_sequencing_service: RouteAwareSequencingService | None = None,
@@ -266,6 +278,9 @@ class PlanningGraphRunner:
             accommodation_inventory_service or AccommodationInventoryService()
         )
         self.flight_inventory_service = flight_inventory_service or FlightInventoryService()
+        self.ai_itinerary_reasoning_service = (
+            ai_itinerary_reasoning_service or AIItineraryReasoningService()
+        )
         self.experience_planner_service = (
             experience_planner_service or ExperiencePlannerService()
         )
@@ -288,6 +303,7 @@ class PlanningGraphRunner:
             self.stay_transport_service,
             self.accommodation_inventory_service,
             self.flight_inventory_service,
+            self.ai_itinerary_reasoning_service,
             self.experience_planner_service,
             self.route_feasibility_service,
             self.route_aware_sequencing_service,

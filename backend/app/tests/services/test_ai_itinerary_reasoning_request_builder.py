@@ -509,8 +509,15 @@ def test_factual_context_reports_unavailable_sources_honestly_not_with_placehold
 
 
 # ---------------------------------------------------------------------------
-# 9. Section 193A is contract-only -- nothing in the runtime pipeline calls
-#    it yet, so normal /generate behavior is unaffected (Task 13/15).
+# 9. Section 193A's request builder specifically is never imported
+#    directly by planning_graph_nodes.py/experience_planner_service.py --
+#    each reaches it (if at all) only through
+#    AIItineraryReasoningService (Section 193B), which
+#    planning_graph_nodes.py now legitimately constructs/calls as of
+#    Section 193C (docs/14_backend_architecture.md section 143;
+#    see test_ai_itinerary_reasoning_service_no_wiring.py for that
+#    wiring's own dedicated tests). PlanningOrchestrator still never
+#    references anything itinerary-reasoning-related, even indirectly.
 # ---------------------------------------------------------------------------
 
 
@@ -538,18 +545,29 @@ def test_planning_orchestrator_does_not_import_itinerary_reasoning_builder() -> 
     assert not any("ai_itinerary_reasoning" in name for name in imported_names)
 
 
-def test_langgraph_nodes_do_not_import_itinerary_reasoning_builder() -> None:
+def test_langgraph_nodes_do_not_import_itinerary_reasoning_builder_directly() -> None:
+    """Section 193C: planning_graph_nodes.py now legitimately imports
+    AIItineraryReasoningService (it builds/calls
+    build_ai_itinerary_reasoning_node) -- but never the request builder
+    module directly; the service owns that dependency."""
     import app.graphs.planning_graph_nodes as nodes_module
 
     imported_names = _imported_module_names(nodes_module)
-    assert not any("ai_itinerary_reasoning" in name for name in imported_names)
+    assert not any("ai_itinerary_reasoning_request_builder" in name for name in imported_names)
+    assert any("ai_itinerary_reasoning_service" in name for name in imported_names)
 
 
-def test_experience_planner_does_not_import_itinerary_reasoning_builder() -> None:
+def test_experience_planner_does_not_import_itinerary_reasoning_builder_directly() -> None:
+    """Section 193C: experience_planner_service.py reads the
+    app.models.ai_itinerary_reasoning contract models (to resolve an
+    already-computed AIItineraryReasoningResult from PlanningState) but
+    never imports the request builder itself -- ExperiencePlannerService
+    never builds a new request; it only ever consumes what the earlier
+    ai_itinerary_reasoning node already stored."""
     import app.services.experience_planner_service as module
 
     imported_names = _imported_module_names(module)
-    assert not any("ai_itinerary_reasoning" in name for name in imported_names)
+    assert not any("ai_itinerary_reasoning_request_builder" in name for name in imported_names)
 
 
 def test_api_routes_do_not_import_itinerary_reasoning_builder() -> None:

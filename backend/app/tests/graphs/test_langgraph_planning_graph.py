@@ -144,6 +144,7 @@ def test_graph_executes_nodes_in_expected_order() -> None:
         "stay_transport",
         "accommodation_inventory",
         "flight_inventory",
+        "ai_itinerary_reasoning",
         "experience_planning",
         "route_feasibility",
         "route_aware_sequencing",
@@ -195,6 +196,7 @@ def test_run_planning_graph_convenience_function_uses_default_services() -> None
         "stay_transport",
         "accommodation_inventory",
         "flight_inventory",
+        "ai_itinerary_reasoning",
         "experience_planning",
         "route_feasibility",
         "route_aware_sequencing",
@@ -393,3 +395,121 @@ def test_graph_run_result_has_no_forbidden_factual_fields() -> None:
 
     _collect(dumped)
     assert dumped_keys & _FORBIDDEN_FACTUAL_FIELD_NAMES == set()
+
+
+# ---------------------------------------------------------------------------
+# Section 193C, Task 26: routing/sequencing/buffer/validation still run
+# (with their own real services, unfaked) for an AI-guided plan -- LLM #2
+# selecting/grouping/ordering candidates never bypasses downstream
+# routing or validation.
+# ---------------------------------------------------------------------------
+
+
+class _FakeDestinationContextServiceWithCandidate:
+    """Populates a real, minimal DestinationContext with one real-shaped
+    candidate -- never calls a provider/network itself."""
+
+    def run(self, planning_state: PlanningState) -> PlanningState:
+        from app.models.planning_state import DestinationContext
+
+        planning_state.destination_context = DestinationContext(
+            destination_name=planning_state.trip_request.primary_destination,
+            candidate_pois=[
+                {
+                    "place_id": "fixture/museum/1",
+                    "name": "Fixture City Museum",
+                    "coordinates": {"lat": 40.7128, "lng": -74.0060},
+                    "category": "museum",
+                    "source": "test_places_provider",
+                    "data_status": "live",
+                    "confidence": 0.9,
+                }
+            ],
+            candidate_restaurants=[],
+            candidate_accommodation_pois=[],
+        )
+        return planning_state
+
+
+class _FakeCompletedAIItineraryReasoningService:
+    """Duck-typed stand-in for AIItineraryReasoningService: always reports
+    a completed result scheduling the one fixture candidate on day 1 --
+    never calls a real provider/LLM."""
+
+    def apply(self, planning_state: PlanningState) -> PlanningState:
+        from app.models.ai_itinerary_reasoning import (
+            AIItineraryReasoningGuardrailReport,
+            AIItineraryReasoningResult,
+            AIItineraryReasoningStatus,
+            ItineraryReasoningDayPlan,
+            ItineraryReasoningStrategy,
+            build_candidate_id,
+        )
+
+        planning_state.ai_itinerary_reasoning_result = AIItineraryReasoningResult(
+            status=AIItineraryReasoningStatus.COMPLETED,
+            strategy=ItineraryReasoningStrategy(
+                summary="Fixture strategy.", pace="balanced", reason="Fixture reason."
+            ),
+            days=[
+                ItineraryReasoningDayPlan(
+                    day_index=1,
+                    candidate_ids=[build_candidate_id("test_places_provider", "fixture/museum/1")],
+                    rationale="Only real candidate available.",
+                )
+            ],
+            guardrail_report=AIItineraryReasoningGuardrailReport(passed=True),
+            provider_name="fake_completed_provider",
+            confidence=0.6,
+        )
+        return planning_state
+
+
+def test_ai_guided_plan_still_runs_routing_sequencing_buffer_and_validation() -> None:
+    runner = PlanningGraphRunner(
+        destination_context_service=_FakeDestinationContextServiceWithCandidate(),
+        ai_itinerary_reasoning_service=_FakeCompletedAIItineraryReasoningService(),  # type: ignore[arg-type]
+    )
+    trip_request = _trip_request(start_date="2026-08-10", end_date="2026-08-10")
+    planning_state = PlanningState(trip_request=trip_request)
+
+    result = runner.run(planning_state.trip_id, trip_request, planning_state)
+
+    assert result["failed_nodes"] == []
+    assert result["completed_nodes"] == [
+        "traveler_profile",
+        "destination_context",
+        "candidate_quality",
+        "ai_candidate",
+        "trip_strategy",
+        "stay_transport",
+        "accommodation_inventory",
+        "flight_inventory",
+        "ai_itinerary_reasoning",
+        "experience_planning",
+        "route_feasibility",
+        "route_aware_sequencing",
+        "travel_time_buffer",
+        "validation",
+        "provider_coverage",
+        "final_state",
+    ]
+
+    final_state = result["planning_state"]
+    assert final_state.ai_itinerary_reasoning_result is not None
+    assert final_state.ai_itinerary_reasoning_result.status.value == "completed"
+
+    scheduled_names = [
+        experience.name
+        for day_plan in final_state.experience_plan.daily_plans
+        for experience in day_plan.experiences
+    ]
+    assert scheduled_names == ["Fixture City Museum"]
+
+    # Routing/sequencing/buffer/validation all really ran (their own
+    # real, unfaked services) rather than being skipped for an AI-guided
+    # plan -- each one honestly reports a real status object, never None.
+    assert final_state.route_feasibility_report is not None
+    assert final_state.route_aware_sequencing_report is not None
+    assert final_state.travel_time_buffer_report is not None
+    assert final_state.validation_report is not None

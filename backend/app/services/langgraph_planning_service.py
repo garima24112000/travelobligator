@@ -15,6 +15,7 @@ from app.providers.gateway import provider_gateway
 from app.services.accommodation_inventory_service import AccommodationInventoryService
 from app.services.ai_candidate_discovery_service import AICandidateDiscoveryService
 from app.services.ai_candidate_promotion_service import AICandidatePromotionService
+from app.services.ai_itinerary_reasoning_service import AIItineraryReasoningService
 from app.services.candidate_quality_service import CandidateQualityService
 from app.services.destination_context_service import DestinationContextService
 from app.services.experience_planner_service import ExperiencePlannerService
@@ -124,6 +125,7 @@ class LangGraphPlanningService:
         stay_transport_service: StayTransportService | None = None,
         accommodation_inventory_service: AccommodationInventoryService | None = None,
         flight_inventory_service: FlightInventoryService | None = None,
+        ai_itinerary_reasoning_service: AIItineraryReasoningService | None = None,
         experience_planner_service: ExperiencePlannerService | None = None,
         route_feasibility_service: RouteFeasibilityService | None = None,
         route_aware_sequencing_service: RouteAwareSequencingService | None = None,
@@ -141,6 +143,7 @@ class LangGraphPlanningService:
             stay_transport_service=stay_transport_service,
             accommodation_inventory_service=accommodation_inventory_service,
             flight_inventory_service=flight_inventory_service,
+            ai_itinerary_reasoning_service=ai_itinerary_reasoning_service,
             experience_planner_service=experience_planner_service,
             route_feasibility_service=route_feasibility_service,
             route_aware_sequencing_service=route_aware_sequencing_service,

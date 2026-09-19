@@ -17,6 +17,10 @@ from app.services.ai_candidate_promotion_service import (
     AICandidatePromotionService,
     apply_promotion_safely,
 )
+from app.services.ai_itinerary_reasoning_service import (
+    AIItineraryReasoningService,
+    apply_itinerary_reasoning_safely,
+)
 from app.services.candidate_quality_service import CandidateQualityService
 from app.services.destination_context_service import DestinationContextService
 from app.services.experience_planner_service import ExperiencePlannerService
@@ -463,6 +467,59 @@ def build_flight_inventory_node(
         return {"planning_state": planning_state, "completed_nodes": ["flight_inventory"]}
 
     return flight_inventory_node
+
+
+def build_ai_itinerary_reasoning_node(
+    service: AIItineraryReasoningService | None = None,
+) -> PlanningGraphNode:
+    """Wraps `AIItineraryReasoningService.apply` (Section 193C,
+    docs/14_backend_architecture.md section 143) -- the first real,
+    live LLM #2 dependency in this graph, positioned right before
+    `experience_planning` so `ExperiencePlannerService.run` can consume
+    `planning_state.ai_itinerary_reasoning_result` if it completed.
+
+    Gated entirely by `Settings.ai_itinerary_reasoning_enabled` (default
+    `False`), read fresh inside `AIItineraryReasoningService.reason` on
+    every call -- not by which service is injected here. With the flag
+    off (the default), `reason` returns an honest `not_connected` result
+    without ever resolving a provider or making a network call, so this
+    node stays a safe, cheap no-op for `ExperiencePlannerService`'s own
+    purposes (it only ever consumes a `completed` result).
+
+    This node's only path to a real LLM is
+    `AIItineraryReasoningService` -> the injected/factory-resolved
+    `AIItineraryReasoningProvider` -> a Groq/Anthropic adapter --
+    preserving the same layered "node -> service -> provider abstraction
+    -> adapter" structure every other node in this file already uses.
+    Never imports `app.providers.*`/Groq/Anthropic/OpenAI directly
+    (enforced by this module's own
+    `test_nodes_module_has_no_llm_or_network_imports`).
+
+    Fails safe end to end via `apply_itinerary_reasoning_safely`, which
+    never raises -- a provider timeout, missing API key, invalid/
+    malformed LLM output, or a semantic candidate-ID safety violation is
+    all caught and honestly recorded (never a fabricated day plan). This
+    node's own `try`/`except` below is defense-in-depth only, mirroring
+    every other node in this file. A caught failure here never blocks
+    generation: `ExperiencePlannerService`'s own deterministic path runs
+    exactly as it always has whenever `ai_itinerary_reasoning_result` is
+    absent or not `completed`.
+    """
+    resolved_service = service or AIItineraryReasoningService()
+
+    def ai_itinerary_reasoning_node(state: PlanningGraphState) -> dict[str, Any]:
+        try:
+            planning_state = apply_itinerary_reasoning_safely(
+                state["planning_state"], resolved_service
+            )
+        except Exception:
+            return {
+                "failed_nodes": ["ai_itinerary_reasoning"],
+                "errors": [_safe_error("ai_itinerary_reasoning")],
+            }
+        return {"planning_state": planning_state, "completed_nodes": ["ai_itinerary_reasoning"]}
+
+    return ai_itinerary_reasoning_node
 
 
 def build_experience_planning_node(

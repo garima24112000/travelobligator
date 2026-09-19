@@ -26,14 +26,17 @@ logger = logging.getLogger(__name__)
 # when disabled, `reason`/`apply` return/store an honest `not_connected`
 # result without resolving the factory or making any network call.
 #
-# **Not called by anything in the runtime pipeline yet.** No LangGraph
-# node, `PlanningOrchestrator` stage, or API route constructs or calls
-# this service -- that wiring is Section 193C's job. `apply` may populate
-# `planning_state.ai_itinerary_reasoning_result`, but it never touches
+# Section 193C (docs/14_backend_architecture.md section 143) wires this
+# service into the LangGraph `ai_itinerary_reasoning` node, positioned
+# immediately before `experience_planning`. `apply` only ever populates
+# `planning_state.ai_itinerary_reasoning_result` -- it never touches
 # `experience_plan`, `route_feasibility_report`,
 # `route_aware_sequencing_report`, `travel_time_buffer_report`, or
-# `validation_report` -- this step produces a validated proposal only, it
-# does not act on one.
+# `validation_report` itself. `ExperiencePlannerService` is the one
+# consumer that reads the resulting `ai_itinerary_reasoning_result` back
+# off `planning_state` to decide selection/grouping/order, always falling
+# back to its pre-193C deterministic path whenever the result isn't a
+# safely resolvable `completed` one.
 
 _STAGE = "ai_itinerary_reasoning"
 _DISABLED_MESSAGE = "AI itinerary reasoning is disabled (AI_ITINERARY_REASONING_ENABLED=false)."
@@ -167,9 +170,9 @@ def apply_itinerary_reasoning_safely(
     exception text, no API key) and leaving `planning_state` exactly as it
     was for that call -- never a fabricated reasoning result.
 
-    Not called by anything in this step -- provided so Section 193C has
-    one existing, already-tested implementation to call rather than
-    writing its own.
+    Called by `build_ai_itinerary_reasoning_node` (Section 193C,
+    `app.graphs.planning_graph_nodes`), the LangGraph node positioned
+    immediately before `experience_planning`.
     """
     try:
         return service.apply(planning_state)

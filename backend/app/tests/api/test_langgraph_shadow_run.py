@@ -84,6 +84,7 @@ def test_shadow_run_on_existing_trip_returns_expected_shape(client: TestClient) 
         "stay_transport",
         "accommodation_inventory",
         "flight_inventory",
+        "ai_itinerary_reasoning",
         "experience_planning",
         "route_feasibility",
         "route_aware_sequencing",

@@ -6,6 +6,7 @@ import pytest
 
 from app.graphs.planning_graph_nodes import (
     build_ai_candidate_node,
+    build_ai_itinerary_reasoning_node,
     build_destination_context_node,
     build_experience_planning_node,
     build_final_state_node,
@@ -467,3 +468,167 @@ def test_ai_candidate_node_live_enabled_discovery_failure_is_safe(
     # None so apply_promotion still runs but reports "no_candidate_data").
     assert "failed_nodes" not in result
     assert result["planning_state"].ai_candidate_proposal_batch is None
+
+
+# ---------------------------------------------------------------------------
+# Section 193C, Task 18: the ai_itinerary_reasoning node's disabled-by-
+# default path -- the injected provider must never be called, and the
+# node must still report completion with an honest not_connected result
+# rather than skip populating the field.
+# ---------------------------------------------------------------------------
+
+
+class _FakeAIItineraryReasoningProvider:
+    """Deterministic test double for `AIItineraryReasoningProvider`. Never
+    calls a network/LLM -- just records whether it was invoked, so tests
+    can assert the disabled path truly never resolves/calls a provider.
+    """
+
+    provider_name = "fake_itinerary_reasoning_provider"
+
+    def __init__(self) -> None:
+        self.call_count = 0
+
+    def reason(self, request: Any) -> Any:
+        self.call_count += 1
+        from app.models.ai_itinerary_reasoning import (
+            AIItineraryReasoningGuardrailReport,
+            AIItineraryReasoningResult,
+            AIItineraryReasoningStatus,
+            ItineraryReasoningDayPlan,
+            ItineraryReasoningStrategy,
+        )
+
+        allowed_ids = request.allowed_candidate_ids()
+        if not allowed_ids:
+            # No real candidate universe available for this fake state --
+            # report an honest not_connected result rather than inventing
+            # a candidate_id that isn't in request.allowed_candidates.
+            return AIItineraryReasoningResult(
+                status=AIItineraryReasoningStatus.NOT_CONNECTED,
+                days=[],
+                guardrail_report=AIItineraryReasoningGuardrailReport(
+                    passed=False, blocked_reasons=["no candidates available"]
+                ),
+                provider_name=self.provider_name,
+                confidence=0.0,
+            )
+        return AIItineraryReasoningResult(
+            status=AIItineraryReasoningStatus.COMPLETED,
+            strategy=ItineraryReasoningStrategy(
+                summary="A fake test strategy.", pace="balanced", reason="Matches test fixture."
+            ),
+            days=[
+                ItineraryReasoningDayPlan(
+                    day_index=1,
+                    candidate_ids=[next(iter(allowed_ids))],
+                    rationale="Fake test rationale.",
+                )
+            ],
+            guardrail_report=AIItineraryReasoningGuardrailReport(passed=True),
+            provider_name=self.provider_name,
+            confidence=0.5,
+        )
+
+
+def test_ai_itinerary_reasoning_node_disabled_by_default_never_calls_provider() -> None:
+    from app.services.ai_itinerary_reasoning_service import AIItineraryReasoningService
+
+    fake_provider = _FakeAIItineraryReasoningProvider()
+    service = AIItineraryReasoningService(provider=fake_provider)
+    node = build_ai_itinerary_reasoning_node(service)
+    state = _initial_state()
+
+    result = node(state)
+
+    assert result["completed_nodes"] == ["ai_itinerary_reasoning"]
+    assert fake_provider.call_count == 0
+    reasoning_result = result["planning_state"].ai_itinerary_reasoning_result
+    assert reasoning_result is not None
+    assert reasoning_result.status.value == "not_connected"
+    assert reasoning_result.days == []
+
+
+def test_ai_itinerary_reasoning_node_enabled_calls_provider_and_stores_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.core.config import Settings
+    from app.services.ai_itinerary_reasoning_service import AIItineraryReasoningService
+
+    from datetime import datetime, timezone
+
+    from app.models.candidate_quality import (
+        CandidateQualityReport,
+        CandidateQualityScore,
+        CandidateQualityTier,
+        CandidateUseCase,
+    )
+
+    monkeypatch.setattr(
+        "app.services.ai_itinerary_reasoning_service.get_settings",
+        lambda: Settings(_env_file=None, AI_ITINERARY_REASONING_ENABLED=True),
+    )
+    from app.models.planning_state import DestinationContext
+
+    fake_provider = _FakeAIItineraryReasoningProvider()
+    service = AIItineraryReasoningService(provider=fake_provider)
+    node = build_ai_itinerary_reasoning_node(service)
+    state = _initial_state()
+    state["planning_state"].destination_context = DestinationContext(
+        destination_name="Testville, Testland",
+        candidate_pois=[
+            {
+                "place_id": "test/attraction/1",
+                "name": "Test Fixture Attraction One",
+                "coordinates": {"lat": 1.0, "lng": 2.0},
+                "category": "attraction",
+                "source": "test_places_provider",
+                "data_status": "live",
+                "confidence": 0.9,
+            }
+        ],
+        candidate_restaurants=[],
+        candidate_accommodation_pois=[],
+    )
+    state["planning_state"].candidate_quality_report = CandidateQualityReport(
+        destination_name="Testville, Testland",
+        generated_at=datetime.now(timezone.utc),
+        attraction_scores=[
+            CandidateQualityScore(
+                candidate_id="test/attraction/1",
+                candidate_name="Test Fixture Attraction One",
+                use_case=CandidateUseCase.ATTRACTION,
+                quality_tier=CandidateQualityTier.PRIMARY_ANCHOR,
+                total_score=0.9,
+            )
+        ],
+        restaurant_scores=[],
+        accommodation_poi_scores=[],
+    )
+
+    result = node(state)
+
+    assert result["completed_nodes"] == ["ai_itinerary_reasoning"]
+    assert fake_provider.call_count == 1
+    reasoning_result = result["planning_state"].ai_itinerary_reasoning_result
+    assert reasoning_result is not None
+    assert reasoning_result.status.value == "completed"
+
+
+def test_ai_itinerary_reasoning_node_failure_is_safe() -> None:
+    class _RaisingService:
+        def apply(self, planning_state: PlanningState) -> PlanningState:
+            raise RuntimeError("simulated reasoning failure")
+
+    node = build_ai_itinerary_reasoning_node(_RaisingService())  # type: ignore[arg-type]
+    state = _initial_state()
+    before = state["planning_state"].model_copy(deep=True)
+
+    result = node(state)
+
+    # apply_itinerary_reasoning_safely swallows the exception -- the node
+    # itself never even sees it, so this is a normal completion with the
+    # planning_state left exactly as it was for this call.
+    assert result["completed_nodes"] == ["ai_itinerary_reasoning"]
+    assert "failed_nodes" not in result
+    assert result["planning_state"] == before

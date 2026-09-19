@@ -9539,3 +9539,201 @@ entry point plus two real `/generate` behavioral regression tests).
 tests, zero change to any pre-existing test's outcome). `compileall`/
 `pytest` clean. No frontend/shared-contract file changed -- frontend
 checks explicitly skipped for that reason.
+
+## 143. Section 193C: Wiring Grounded LLM #2 Reasoning into LangGraph Generation
+
+```text
+... flight_inventory -> ai_itinerary_reasoning -> experience_planning -> route_feasibility ...
+```
+
+**LangGraph order.** `build_ai_itinerary_reasoning_node` (Section 193B's
+`AIItineraryReasoningService`, unchanged) is inserted immediately before
+`experience_planning`, after `flight_inventory` -- the exact position the
+193C spec required, so `ExperiencePlannerService.run` can read an
+already-computed `planning_state.ai_itinerary_reasoning_result`. The node
+always runs (same as `ItineraryNarrativeService`'s node): with
+`AI_ITINERARY_REASONING_ENABLED=false` (the default) it stores an honest
+`not_connected` result without resolving a provider or making a network
+call; a real Groq/Anthropic call only happens when the flag is explicitly
+enabled.
+
+**ExperiencePlannerService integration is a single seam.** The only
+change to `run()` is at the `day_groups = _group_candidates_into_days(...)`
+call site: a new `_resolve_ai_guided_day_groups` helper is tried first,
+and its result is used only when it resolves to a fully safe,
+fully-referenced `(day_groups, restaurant_ids_by_day)` pair; otherwise
+`run()` falls through to the pre-193C deterministic geographic grouping
+completely unchanged. Every other line of `run()` -- `ExperienceItem`/
+`DailyPlan`/`ExperiencePlan` construction, accommodation suggestions,
+`stay_area_guidance`, `decision_summary`, `implementation_gaps`,
+`readiness_checklist` -- is untouched.
+
+**Candidate resolution never trusts a candidate_id blindly.** A
+module-level `build_candidate_id(provider_name, provider_place_id)` in
+`app.models.ai_itinerary_reasoning` is the single formula both Section
+193A's request builder (forward direction: building the allowed-candidate
+universe LLM #2 sees) and this step's `ExperiencePlannerService` reverse
+index (backward direction: resolving a chosen candidate_id back to its
+real provider record) use -- eliminating any chance of the two sides
+silently drifting out of sync. `_resolve_ai_guided_day_groups` re-validates
+independently of Section 193B's own `validate_result_against_request`
+(defense-in-depth against a future caller/bug/test that populates
+`ai_itinerary_reasoning_result` some other way): every `candidate_id`
+must resolve to a real entry in the reverse index built from that
+generation's own real `scheduling_candidate_pois`/tier-filtered
+restaurants, `day_index` must be in `1..num_days` with no day repeated,
+and no `candidate_id` may appear on more than one day. Any violation, or
+a result that isn't `completed`, or a `completed` result that ends up
+scheduling zero attractions trip-wide, falls back to the deterministic
+path entirely -- never a partially-trusted AI result, never a fabricated
+placeholder stop.
+
+**Restaurant handling**: LLM #2's `allowed_candidates` include both
+attraction and restaurant categories. When a day's resolved candidates
+include one or more restaurant-category entries, those become that
+day's `restaurant_suggestions` (via the existing `_build_restaurant_
+suggestion`), overriding the geographic `_suggest_nearby_restaurants`
+fallback for that day only; a day the AI didn't select any restaurant
+for keeps the unchanged geographic suggestion. Accommodation is never
+touched by AI reasoning (193A never included it in `allowed_candidates`).
+
+**Coarse time semantics, deliberately not mapped further.**
+`ExperienceItem.start_time`/`end_time`/`estimated_duration_minutes` are
+not set anywhere in this codebase today, deterministic or AI-guided --
+193C does not invent a coarse-time-to-clock-time convention that doesn't
+already exist elsewhere. `approximate_structure`'s time windows
+(morning/midday/afternoon/evening) stay on
+`planning_state.ai_itinerary_reasoning_result` for inspection; only
+`candidate_ids` order (already captured by the existing `stop_order`
+loop, unchanged) drives within-day ordering. An AI-guided day keeps that
+order verbatim -- `_order_day_by_distance` is skipped for it, since
+re-sorting by geography would silently discard the one thing LLM #2 was
+asked to decide.
+
+**Factual safety preserved.** Every `ExperienceItem` field (`name`,
+`coordinates`, `provider_place_id`, `provider_source`,
+`original_ai_candidate_id`, `data_quality`) still comes from the same
+real provider/promoted-candidate record the deterministic path already
+used -- LLM #2's output is only ever a list of `candidate_id`s, `day_index`,
+and a `rationale` string; it can select, group, and order, and it can
+explain, but it cannot originate a fact. Verified directly against real
+Groq output (see below): zero forbidden factual field names
+(`price`/`rating`/`opening_hours`/`route_time`/`booking_url`/
+`review_count`/`safety_score`/`availability`) anywhere in a real
+generated `planning_state`.
+
+**Routing/validation remain authoritative afterward.**
+`RouteFeasibilityService`/`RouteAwareSequencingService`/
+`TravelTimeBufferService`/`PlanValidatorService` are completely unaware
+an AI-guided plan differs from a deterministic one -- they run
+unconditionally, on whatever `experience_plan`
+`ExperiencePlannerService` produced, exactly as before. Proven both by a
+dedicated LangGraph-level test (real, unfaked route/sequencing/buffer/
+validator services genuinely executing against an AI-guided plan) and by
+the real end-to-end verification below (`route_feasibility`/
+`route_aware_sequencing` both `success`, `validation_report` 0 issues).
+
+**Observability**: `ExperiencePlannerService.run` logs one structured
+`stage=ai_itinerary_reasoning` line per generation with `enabled`,
+`provider`, `status`, `candidate_count`, `selected_candidate_count`,
+`day_count`, and `fallback_used` -- in addition to Section 193B's own
+service-level log (`stage`/`provider`/`status`/`duration_ms`/`day_count`)
+from the earlier `reason()` call.
+
+**Real Groq verification (2 real Lisbon/3-day/history-food-walking
+generations via actual `POST /trips/{id}/generate`, same local `.env`
+`GROQ_API_KEY` never printed, `GROQ_MODEL=openai/gpt-oss-20b`,
+`AI_ITINERARY_REASONING_ENABLED=true`/`AI_ITINERARY_REASONING_PROVIDER=groq`
+set only as process-level env overrides for the verification server --
+`.env` itself never modified).** Both runs: LLM #1 `completed`, grounding
+`partial` (5-6 grounded), promotion `promoted` (5 promoted candidates),
+LLM #2 `completed` via `groq_ai_itinerary_reasoning_provider`, 3 days,
+all candidate_ids resolved with zero unknown/duplicate/invalid-day
+violations, `route_feasibility`/`route_aware_sequencing` both `success`,
+`validation_report` 0 issues. Run 1 grouped Pelourinho/Miradouro/Pastéis
+de Belém on day 1, Comboio do Zoo/Torre de São Lourenço on day 2, Alfama/
+Mosteiro dos Jerónimos (both AI-directed-promoted) on day 3. Run 2
+produced a different, equally valid grouping from a different LLM #1
+proposal batch (6 grounded this run) -- expected non-determinism from a
+real LLM call, not a bug; every group still passed the same deterministic
+safety check.
+
+**AI-enabled vs. deterministic comparison (Task 29)**: a third real
+generation for the identical trip fixture with
+`AI_ITINERARY_REASONING_ENABLED` left at its default (`false`) --
+`ai_itinerary_reasoning_result.status` was `not_connected`, and
+`ExperiencePlannerService` fell back to the pre-193C deterministic
+geographic grouping. Same 5 promoted candidates entered the universe in
+both modes (factual candidate identity unaffected by which path grouped
+them), but selection/grouping/ordering differed: the deterministic run
+anchored each day on its highest-priority unscheduled candidate and
+filled by geographic proximity (e.g. day 1: Time Out Market Lisboa,
+Pelourinho de Lisboa, Miradouro de São Pedro de Alcântara), while the
+AI-guided runs grouped and explained days thematically (e.g. Run 1 day 1:
+a historic-monument-then-pastry-then-viewpoint narrative). This
+demonstrates LLM #2 actually changes selection/grouping/ordering without
+ever altering a candidate's factual identity.
+
+**Example end-to-end provenance (from Run 1, real values)**: user
+interest `"history"` → LLM #1 (`ai_candidate_proposal_batch`) proposed a
+discovery-query candidate → a real OpenStreetMap/Nominatim lookup
+grounded it to `way/24341353` / "Alfama" → `CandidateQualityService`
+scored it into an accepted tier → `AICandidatePromotionService` promoted
+it (`ai_candidate_promotion_report.promoted_candidates`, `promoted=true`)
+→ LLM #2 (`AIItineraryReasoningService`) selected
+`candidate_id="openstreetmap_places:node/207597971"` for
+`day_index=3` alongside `"openstreetmap_places:relation/3258300"` (Mosteiro
+dos Jerónimos) → `ExperiencePlannerService` resolved both back through
+the reverse index to their real provider records and scheduled them as
+day 3's `ExperienceItem`s, each still carrying its real
+`provider_place_id`/`provider_source`/`original_ai_candidate_id` →
+`RouteFeasibilityService`/`RouteAwareSequencingService`/
+`PlanValidatorService` ran unconditionally afterward and reported
+`success`/`success`/0 issues.
+
+**Failure-path verification**: node-level tests prove the disabled-by-
+default path never calls the injected provider and still records an
+honest `not_connected` result; `ExperiencePlannerService`-level tests
+prove an unknown candidate_id, a duplicate candidate_id across days, an
+out-of-range `day_index`, a `rejected`/`not_connected` reasoning result,
+and a zero-attraction-trip-wide result all fall back to the deterministic
+path rather than ever producing a partial/fabricated plan; a fail-safe
+wrapper (`apply_itinerary_reasoning_safely`, from 193B) still swallows
+any unexpected service exception, leaving `planning_state` unaffected for
+that call.
+
+**No-fabrication audit**: a real generated `planning_state` (Run 1) was
+scanned for `price`/`rating`/`opening_hours`/`route_time`/`booking_url`/
+`review_count`/`safety_score`/`availability` field names anywhere in the
+full nested structure -- zero matches. LLM #2's own `rationale` text is
+free prose describing sequencing/theme only (e.g. "Morning visit to
+Pelourinho de Lisboa for historic ambience..."), never a price, rating,
+opening hour, or exact route-time claim.
+
+**Current narrator behavior**: unchanged -- `ItineraryNarrativeService`
+was not touched by this step.
+
+**Strict boundaries honored**: no repair loop, no LLM #2 place invention,
+no routing/validator bypass, no change to CandidateQuality thresholds/
+LLM #1/grounding/accommodation/flight/narrator/regeneration, no new
+dependency, no secret exposed, nothing committed.
+
+**Tests**: 19 new tests added, zero changes to any pre-existing test's
+*expected outcome* (a small number of existing graph-order assertions in
+193A/193B-era test files were updated to include the new
+`ai_itinerary_reasoning` node/reflect the now-intentional live wiring --
+documented as part of this step, not a regression). New coverage:
+`test_experience_planner_ai_guided.py` (15: successful AI grouping/order,
+factual-fields-from-provider, AI-directed-promoted-candidate end-to-end,
+unknown/duplicate/invalid-day fallback, provider-failure fallback,
+absent-result baseline, subset selection, pace-cap truncation,
+transparent assumptions/rationale, no-forbidden-fields), 3 new node-level
+tests (disabled-by-default never calls provider, enabled calls provider
+and stores a real result, node-level failure is safe), 1 new full-graph
+test (routing/sequencing/buffer/validation all genuinely execute, with
+their own real services, for an AI-guided plan).
+
+**Verification**: full suite **3731 passed + 18 skipped** (3712 + 19 new
+tests, zero change to any pre-existing test's outcome). `compileall`/
+`pytest` clean. No frontend/shared-contract file changed -- frontend
+checks explicitly skipped for that reason.
