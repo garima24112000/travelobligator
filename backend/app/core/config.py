@@ -256,6 +256,39 @@ class Settings(BaseSettings):
         alias="AI_ITINERARY_REPAIR_MAX_ATTEMPTS",
     )
 
+    # Section 196 (docs/14_backend_architecture.md, following section
+    # 146): config gate for the AI feedback interpreter -- a genuinely
+    # separate job from itinerary reasoning/repair (translating a user's
+    # natural-language feedback into a structured change request, never
+    # selecting/repairing itinerary candidates itself), so it gets its
+    # own explicit provider/model settings rather than reusing
+    # `ai_itinerary_reasoning_provider`/`ai_itinerary_reasoning_model`,
+    # mirroring `itinerary_narrator_enabled`/`itinerary_narrator_provider`/
+    # `itinerary_narrator_model`'s own precedent for "a distinct AI
+    # feature gets its own config surface." Default `False`/
+    # `"not_connected"` so nothing calls a real LLM by default. No new
+    # API key setting: both adapters reuse the existing `groq_api_key`/
+    # `anthropic_api_key`. `ai_feedback_interpreter_model` has no
+    # repo-wide default of its own -- each adapter falls back to
+    # `groq_model`/`anthropic_model` when unset, the same three-level
+    # fallback every other AI feature in this repo already uses. Not
+    # called by any runtime generation/feedback/regeneration path yet
+    # (Section 197 is what would wire it in) -- these settings currently
+    # only affect a direct, isolated call to
+    # `AIFeedbackInterpreterService`.
+    ai_feedback_interpreter_enabled: bool = Field(
+        default=False,
+        alias="AI_FEEDBACK_INTERPRETER_ENABLED",
+    )
+    ai_feedback_interpreter_provider: str = Field(
+        default="not_connected",
+        alias="AI_FEEDBACK_INTERPRETER_PROVIDER",
+    )
+    ai_feedback_interpreter_model: str | None = Field(
+        default=None,
+        alias="AI_FEEDBACK_INTERPRETER_MODEL",
+    )
+
     google_places_api_key: str | None = Field(default=None, alias="GOOGLE_PLACES_API_KEY")
     google_routes_api_key: str | None = Field(default=None, alias="GOOGLE_ROUTES_API_KEY")
     mapbox_access_token: str | None = Field(default=None, alias="MAPBOX_ACCESS_TOKEN")
