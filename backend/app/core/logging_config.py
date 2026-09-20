@@ -151,6 +151,17 @@ ALLOWED_EXTRA_FIELDS = frozenset(
         "new_place_request_count",
         "clarification_required",
         "referenced_experience_count",
+        # Section 197A (docs/14_backend_architecture.md, following section
+        # 147): targeted-regeneration-plan-compiler observability. Plain
+        # counts/booleans/enum-value strings only -- never a raw
+        # feedback/instruction string, an experience name, or a
+        # credential.
+        "scope",
+        "affected_experience_count",
+        "preserved_day_count",
+        "provider_lookup_required",
+        "reasoning_required",
+        "required_stage_count",
     }
 )
 
