@@ -88,15 +88,27 @@ def test_request_includes_only_allow_listed_top_level_fields() -> None:
     assert forbidden_field_names.isdisjoint(allowed_fields)
 
 
-def test_request_experience_input_has_only_name_category_reason() -> None:
+def test_request_experience_input_has_only_name_category_reason_and_experience_id() -> None:
+    """`experience_id` (Section 195) is the one deliberate addition to
+    this otherwise-unchanged allow-list -- included specifically so
+    `ItineraryNarrativeDayOutput.referenced_experience_ids` can be
+    checked structurally, never displayed to the traveler itself and
+    never a provider id (see `ItineraryNarrativeExperienceInput`'s own
+    docstring)."""
     planning_state = _planning_state_with_schedule()
     request = ItineraryNarrativeRequestBuilder().build_request(planning_state)
 
     assert len(request.days) == 2
     day_with_experience = next(day for day in request.days if day.experiences)
     experience = day_with_experience.experiences[0]
-    assert set(type(experience).model_fields.keys()) == {"name", "category", "reason"}
+    assert set(type(experience).model_fields.keys()) == {
+        "experience_id",
+        "name",
+        "category",
+        "reason",
+    }
     assert experience.name == "Belem Tower"
+    assert experience.experience_id
 
 
 def test_request_never_includes_coordinates_or_provider_ids_in_the_dumped_payload() -> None:

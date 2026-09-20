@@ -232,6 +232,30 @@ class Settings(BaseSettings):
         alias="AI_ITINERARY_REASONING_MODEL",
     )
 
+    # Section 194B (docs/14_backend_architecture.md, following section
+    # 144): config gate for the bounded automatic repair loop built on
+    # Section 194A's contract/service layer. Default `False` so a normal
+    # `/generate` run stays exactly Section 193C's behavior (a completed
+    # LLM #2 reasoning result is used as-is, however deterministic
+    # routing/validation judge it) until explicitly opted in. Deliberately
+    # reuses `ai_itinerary_reasoning_provider`/`ai_itinerary_reasoning_model`
+    # (and their existing `groq_api_key`/`anthropic_api_key`) rather than
+    # a second provider/model setting -- repair is the same LLM #2 job as
+    # reasoning, just scoped to a subset of days. `ai_itinerary_repair_max_attempts`
+    # is deliberately capped at `2` (`ge=1, le=2`): a "bounded loop" that
+    # allowed an arbitrarily large value would not actually bound anything
+    # in practice, and every real repair call costs a live LLM request.
+    ai_itinerary_repair_enabled: bool = Field(
+        default=False,
+        alias="AI_ITINERARY_REPAIR_ENABLED",
+    )
+    ai_itinerary_repair_max_attempts: int = Field(
+        default=1,
+        ge=1,
+        le=2,
+        alias="AI_ITINERARY_REPAIR_MAX_ATTEMPTS",
+    )
+
     google_places_api_key: str | None = Field(default=None, alias="GOOGLE_PLACES_API_KEY")
     google_routes_api_key: str | None = Field(default=None, alias="GOOGLE_ROUTES_API_KEY")
     mapbox_access_token: str | None = Field(default=None, alias="MAPBOX_ACCESS_TOKEN")

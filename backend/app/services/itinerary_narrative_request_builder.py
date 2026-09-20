@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from app.core.config import get_settings
 from app.models.accommodation import AccommodationSearchStatus
+from app.models.ai_itinerary_reasoning import AIItineraryReasoningStatus
+from app.models.ai_itinerary_repair import AIItineraryRepairStatus
 from app.models.flight import FlightSearchStatus
 from app.models.itinerary_narrative import (
     ItineraryNarrativeDayInput,
@@ -43,6 +45,21 @@ class ItineraryNarrativeRequestBuilder:
         truncated = len(all_daily_plans) > max_days
 
         movement_success_experience_ids = self._movement_success_experience_ids(planning_state)
+        # Section 195, Task 3/4: LLM #2's own already-generated rationale,
+        # keyed by day_index -- only from a *completed* reasoning result,
+        # and only ever attached as context alongside the same day's real
+        # scheduled items, never substituted for them. Reads whatever is
+        # CURRENT on `planning_state` at call time, which -- for the live
+        # LangGraph `/generate` path -- is already the final, post-repair
+        # result (Section 194B's `ai_itinerary_repair` node updates this
+        # exact field via `merge_repair_into_reasoning_result` before the
+        # graph ever reaches `final_state`, well before this builder is
+        # ever invoked). No separate "give me the post-repair state"
+        # plumbing was needed -- there is only ever one current state.
+        reasoning_result = planning_state.ai_itinerary_reasoning_result
+        rationale_by_day_index: dict[int, str] = {}
+        if reasoning_result is not None and reasoning_result.status == AIItineraryReasoningStatus.COMPLETED:
+            rationale_by_day_index = {day.day_index: day.rationale for day in reasoning_result.days}
 
         days: list[ItineraryNarrativeDayInput] = []
         for day_plan in all_daily_plans[:max_days]:
@@ -53,6 +70,7 @@ class ItineraryNarrativeRequestBuilder:
 
             experiences = [
                 ItineraryNarrativeExperienceInput(
+                    experience_id=experience.experience_id,
                     name=experience.name,
                     category=experience.category,
                     reason=experience.why_included,
@@ -74,6 +92,7 @@ class ItineraryNarrativeRequestBuilder:
                     experiences=experiences,
                     restaurant_names=restaurant_names,
                     has_movement_data=has_movement_data,
+                    reasoning_rationale=rationale_by_day_index.get(day_plan.day_number),
                 )
             )
 
@@ -117,6 +136,24 @@ class ItineraryNarrativeRequestBuilder:
         pace = traveler_profile.pace.value if traveler_profile else trip_request.pace.value
         interests = traveler_profile.interests if traveler_profile else trip_request.interests
 
+        reasoning_strategy_summary: str | None = None
+        if reasoning_result is not None and reasoning_result.status == AIItineraryReasoningStatus.COMPLETED:
+            if reasoning_result.strategy is not None:
+                reasoning_strategy_summary = reasoning_result.strategy.summary
+
+        # Section 195, Task 5/6: a plain boolean only -- never a repair
+        # attempt count, provider name, or model name. `True` only when
+        # the currently-in-effect plan is genuinely the result of a
+        # *completed* repair (never for disabled/not_connected/rejected/
+        # a repair that was attempted but never actually changed
+        # anything).
+        repair_result = planning_state.ai_itinerary_repair_result
+        was_adjusted_after_feasibility_checks = (
+            planning_state.ai_itinerary_repair_attempt_count > 0
+            and repair_result is not None
+            and repair_result.status == AIItineraryRepairStatus.COMPLETED
+        )
+
         return ItineraryNarrativeRequest(
             destination=trip_request.primary_destination,
             start_date=trip_request.start_date,
@@ -138,6 +175,8 @@ class ItineraryNarrativeRequestBuilder:
             critical_issue_count=critical_issue_count,
             unavailable_data_fields=unavailable_data_fields,
             truncated=truncated,
+            reasoning_strategy_summary=reasoning_strategy_summary,
+            was_adjusted_after_feasibility_checks=was_adjusted_after_feasibility_checks,
         )
 
     @staticmethod

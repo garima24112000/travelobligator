@@ -11,6 +11,7 @@ from app.models.itinerary_narrative import (
     ItineraryNarrativeReport,
     ItineraryNarrativeRequest,
     ItineraryNarrativeStatus,
+    validate_narrative_against_request,
 )
 from app.providers.itinerary_narrator.base import ItineraryNarratorProvider
 
@@ -43,6 +44,20 @@ from app.providers.itinerary_narrator.base import ItineraryNarratorProvider
 
 
 class _NarratorDayOutputSchema(BaseModel):
+    """Section 195 lesson (same as the Section 191A.1/193B ones): Groq's
+    `json_schema` strict mode requires every property to appear in the
+    schema's `required` array -- a field with `default_factory=...`
+    (making it Python-optional) is silently excluded from `required` by
+    `langchain_groq`'s schema conversion, and Groq's own strict-mode
+    validator then rejects the whole request outright (`400 invalid JSON
+    schema for response_format`) before any completion is even
+    attempted. Every field below therefore has no Python default at all
+    -- always required, with the prompt instructed (matching
+    `_GroqItineraryReasoningSchema`'s own established convention) to use
+    an empty list/null when there is nothing to report, never to omit
+    the key.
+    """
+
     day_number: int = Field(description="Must match one of the day_number values given in the input.")
     title: str = Field(description="A short, traveler-facing title for this day.")
     narrative: str = Field(
@@ -51,29 +66,54 @@ class _NarratorDayOutputSchema(BaseModel):
         "confirmation, or clock time not already present in the input."
     )
     caveats: list[str] = Field(
-        default_factory=list,
-        description="Short caveats to preserve, e.g. when movement/route data wasn't available.",
+        description="Short caveats to preserve, e.g. when movement/route data wasn't "
+        "available. Always include this key; use an empty list if there are none."
+    )
+    referenced_experience_ids: list[str] = Field(
+        description="The experience_id value(s) (given alongside each scheduled place below) "
+        "this day's narrative is actually about. Never an id from a different day, and never "
+        "an invented id. Always include this key; use an empty list if unsure."
     )
 
 
 class _NarratorBatchSchema(BaseModel):
     summary: str = Field(description="A short, trip-level polished summary.")
-    daily_narratives: list[_NarratorDayOutputSchema] = Field(default_factory=list)
-    assumptions: list[str] = Field(default_factory=list)
-    warnings: list[str] = Field(default_factory=list)
+    daily_narratives: list[_NarratorDayOutputSchema] = Field(
+        description="One entry per day. Always include this key; use an empty list if none apply."
+    )
+    assumptions: list[str] = Field(
+        description="Always include this key. Use an empty list if there are none."
+    )
+    warnings: list[str] = Field(
+        description="Always include this key. Use an empty list if there are none."
+    )
 
 
 _SYSTEM_PROMPT = (
     "You are an itinerary narrator for a travel planning system. You write polished, "
     "traveler-facing prose that summarizes an already-finalized draft itinerary -- you are "
-    "a writer, never a source of new travel facts.\n\n"
+    "a writer, never a source of new travel facts, and you never make a new planning "
+    "decision.\n\n"
     "Use only the information given to you below. Do not invent, guess, or embellish a "
     "hotel, flight, price, rating, review count, route or travel-time duration, booking "
     "confirmation, opening hour, or clock time that isn't already present in the input. If "
     "something is marked unavailable or missing, acknowledge that honestly in a caveat "
     "instead of inventing a replacement fact. Never claim a place is booked, a route exists, "
-    "or a plan is finalized/production-ready. Every day_number you return must exactly match "
-    "one of the day_number values given in the input -- never invent a new day."
+    "or a plan is finalized/production-ready/optimal/verified/guaranteed/the safest option. "
+    "Every day_number you return must exactly match one of the day_number values given in "
+    "the input -- never invent a new day.\n\n"
+    "Each scheduled place below is given with its own experience_id. For each day, set "
+    "referenced_experience_ids to exactly the experience_id value(s) your narrative for that "
+    "day is actually about -- never an id from a different day, and never an id you made up.\n\n"
+    "Some days include an 'AI reasoning rationale' line -- this is context explaining why "
+    "those places were grouped together, not a verified fact. You may draw on it for tone/"
+    "phrasing, but every specific factual claim you make must still come from the scheduled "
+    "places themselves. If a day has no rationale, do not invent one.\n\n"
+    "If 'Plan adjusted after feasibility checks' is stated, you may mention once, briefly and "
+    "in plain traveler-facing language, that the plan was adjusted after feasibility checks "
+    "(e.g. 'the plan was adjusted after feasibility checks to keep the days manageable') -- "
+    "never mention any internal system, model, or provider name, never a repair attempt "
+    "number, and never say this when that line is absent."
 )
 
 
@@ -105,6 +145,10 @@ def _build_prompt(request: ItineraryNarrativeRequest) -> str:
         )
     if request.unavailable_data_fields:
         lines.append(f"Known-unavailable data: {', '.join(request.unavailable_data_fields)}")
+    if request.reasoning_strategy_summary:
+        lines.append(f"Overall AI reasoning strategy (context only): {request.reasoning_strategy_summary}")
+    if request.was_adjusted_after_feasibility_checks:
+        lines.append("Plan adjusted after feasibility checks: yes")
 
     lines.append("")
     lines.append("Days:")
@@ -112,7 +156,7 @@ def _build_prompt(request: ItineraryNarrativeRequest) -> str:
         lines.append(f"- day_number {day.day_number} ({day.date}):")
         if day.experiences:
             for experience in day.experiences:
-                piece = experience.name
+                piece = f"[experience_id={experience.experience_id}] {experience.name}"
                 if experience.category:
                     piece += f" ({experience.category})"
                 if experience.reason:
@@ -125,6 +169,8 @@ def _build_prompt(request: ItineraryNarrativeRequest) -> str:
         lines.append(
             f"    Movement/route data available: {'yes' if day.has_movement_data else 'no'}"
         )
+        if day.reasoning_rationale:
+            lines.append(f"    AI reasoning rationale for this day (context only): {day.reasoning_rationale}")
 
     if request.truncated:
         lines.append("")
@@ -157,7 +203,7 @@ class GroqItineraryNarratorProvider(ItineraryNarratorProvider):
         api_key: str | None = None,
         model: str | None = None,
         client: Any | None = None,
-        max_tokens: int = 2000,
+        max_tokens: int = 2500,
         temperature: float = 0.4,
     ) -> None:
         settings = get_settings()
@@ -220,7 +266,12 @@ class GroqItineraryNarratorProvider(ItineraryNarratorProvider):
             max_tokens=self._max_tokens,
             timeout=self._timeout_seconds,
         )
-        return chat.with_structured_output(_NarratorBatchSchema)
+        # Section 195 (Task 18): switched to Structured Outputs
+        # (`method="json_schema", strict=True`) -- the Section 191A.1
+        # fix this adapter had not yet adopted -- now that its output
+        # contract is changing anyway (`referenced_experience_ids`). No
+        # `tools`/`tool_choice` sent alongside it.
+        return chat.with_structured_output(_NarratorBatchSchema, method="json_schema", strict=True)
 
     @staticmethod
     def _coerce_output(raw_output: Any) -> dict[str, Any] | None:
@@ -266,6 +317,9 @@ class GroqItineraryNarratorProvider(ItineraryNarratorProvider):
                         title=raw_day.get("title", ""),
                         narrative=raw_day.get("narrative", ""),
                         caveats=[c for c in raw_day.get("caveats", []) if isinstance(c, str)],
+                        referenced_experience_ids=[
+                            i for i in raw_day.get("referenced_experience_ids", []) if isinstance(i, str)
+                        ],
                     )
                 )
             except ValidationError as exc:
@@ -278,17 +332,33 @@ class GroqItineraryNarratorProvider(ItineraryNarratorProvider):
                 "Input was truncated for length; some days/items were omitted from the narrator's view."
             ]
 
-        return ItineraryNarrativeReport(
-            status=ItineraryNarrativeStatus.SUCCESS,
-            provider=self.provider_name,
-            model=self._model,
-            summary=summary.strip(),
-            daily_narratives=daily_narratives,
-            warnings=warnings,
-            assumptions=assumptions,
-            source_fields_used=_source_fields_used(request),
-            generated_at=datetime.now(timezone.utc),
-        )
+        try:
+            report = ItineraryNarrativeReport(
+                status=ItineraryNarrativeStatus.SUCCESS,
+                provider=self.provider_name,
+                model=self._model,
+                summary=summary.strip(),
+                daily_narratives=daily_narratives,
+                warnings=warnings,
+                assumptions=assumptions,
+                source_fields_used=_source_fields_used(request),
+                generated_at=datetime.now(timezone.utc),
+            )
+        except ValidationError as exc:
+            return self._failed_result(f"Groq output failed validation: {exc}")
+
+        # Section 195 (Task 12): structural place-identity safety check --
+        # even schema-valid, domain-valid output must still be checked
+        # against request.days' own real experience_id sets before this
+        # adapter can ever report success.
+        violations = validate_narrative_against_request(request, report)
+        if violations:
+            return self._failed_result(
+                "Groq output referenced an experience_id outside that day's real scheduled "
+                "items: " + "; ".join(violations)
+            )
+
+        return report
 
     def _not_connected_result(self, reason: str) -> ItineraryNarrativeReport:
         return ItineraryNarrativeReport(
@@ -331,4 +401,10 @@ def _source_fields_used(request: ItineraryNarrativeRequest) -> list[str]:
         used.append("validation_status")
     if request.unavailable_data_fields:
         used.append("unavailable_data_fields")
+    if request.reasoning_strategy_summary:
+        used.append("reasoning_strategy_summary")
+    if any(day.reasoning_rationale for day in request.days):
+        used.append("reasoning_rationale")
+    if request.was_adjusted_after_feasibility_checks:
+        used.append("was_adjusted_after_feasibility_checks")
     return used

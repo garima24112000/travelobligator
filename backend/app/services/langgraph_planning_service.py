@@ -16,6 +16,7 @@ from app.services.accommodation_inventory_service import AccommodationInventoryS
 from app.services.ai_candidate_discovery_service import AICandidateDiscoveryService
 from app.services.ai_candidate_promotion_service import AICandidatePromotionService
 from app.services.ai_itinerary_reasoning_service import AIItineraryReasoningService
+from app.services.ai_itinerary_repair_service import AIItineraryRepairService
 from app.services.candidate_quality_service import CandidateQualityService
 from app.services.destination_context_service import DestinationContextService
 from app.services.experience_planner_service import ExperiencePlannerService
@@ -131,6 +132,7 @@ class LangGraphPlanningService:
         route_aware_sequencing_service: RouteAwareSequencingService | None = None,
         travel_time_buffer_service: TravelTimeBufferService | None = None,
         plan_validator_service: PlanValidatorService | None = None,
+        ai_itinerary_repair_service: AIItineraryRepairService | None = None,
         regeneration_readiness_service_instance: RegenerationReadinessService | None = None,
     ) -> None:
         self._runner = PlanningGraphRunner(
@@ -149,6 +151,7 @@ class LangGraphPlanningService:
             route_aware_sequencing_service=route_aware_sequencing_service,
             travel_time_buffer_service=travel_time_buffer_service,
             plan_validator_service=plan_validator_service,
+            ai_itinerary_repair_service=ai_itinerary_repair_service,
         )
         self.regeneration_readiness_service = (
             regeneration_readiness_service_instance or regeneration_readiness_service

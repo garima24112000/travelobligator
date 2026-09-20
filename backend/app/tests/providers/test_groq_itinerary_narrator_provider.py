@@ -27,7 +27,7 @@ def _request(**overrides: Any) -> ItineraryNarrativeRequest:
                 date="2026-10-10",
                 experiences=[
                     ItineraryNarrativeExperienceInput(
-                        name="Belem Tower", category="landmark", reason="must-visit"
+                        experience_id="exp_belem_tower", name="Belem Tower", category="landmark", reason="must-visit"
                     )
                 ],
             )
@@ -181,3 +181,118 @@ def test_accepts_a_pydantic_model_response_via_model_dump() -> None:
 
     assert result.status == ItineraryNarrativeStatus.SUCCESS
     assert result.summary == "Trip summary."
+
+
+# ---------------------------------------------------------------------------
+# Section 195 (docs/14_backend_architecture.md, following section 145):
+# structural place-identity safety (Task 12) and forbidden-claim safety
+# (Task 26) at the real adapter level, plus the Structured Outputs fix
+# (Task 18).
+# ---------------------------------------------------------------------------
+
+
+def test_returns_success_when_referenced_experience_id_is_valid() -> None:
+    response = {
+        "summary": "A short trip to Lisbon.",
+        "daily_narratives": [
+            {
+                "day_number": 1,
+                "title": "Historic Belem",
+                "narrative": "Start the day at Belem Tower.",
+                "referenced_experience_ids": ["exp_belem_tower"],
+            }
+        ],
+    }
+    provider = GroqItineraryNarratorProvider(client=_FakeClient(response))
+
+    result = provider.narrate(_request())
+
+    assert result.status == ItineraryNarrativeStatus.SUCCESS
+    assert result.daily_narratives[0].referenced_experience_ids == ["exp_belem_tower"]
+
+
+def test_rejects_hallucinated_referenced_experience_id() -> None:
+    response = {
+        "summary": "A short trip to Lisbon.",
+        "daily_narratives": [
+            {
+                "day_number": 1,
+                "title": "Historic Belem",
+                "narrative": "Start the day at Belem Tower.",
+                "referenced_experience_ids": ["made-up-experience-id"],
+            }
+        ],
+    }
+    provider = GroqItineraryNarratorProvider(client=_FakeClient(response))
+
+    result = provider.narrate(_request())
+
+    assert result.status == ItineraryNarrativeStatus.FAILED
+    assert "made-up-experience-id" in (result.message or "")
+    assert result.daily_narratives == []
+
+
+def test_rejects_forbidden_factual_claim_in_narrative() -> None:
+    response = {
+        "summary": "A short trip to Lisbon.",
+        "daily_narratives": [
+            {
+                "day_number": 1,
+                "title": "Historic Belem",
+                "narrative": "This is a highly rated and cheap stop.",
+            }
+        ],
+    }
+    provider = GroqItineraryNarratorProvider(client=_FakeClient(response))
+
+    result = provider.narrate(_request())
+
+    assert result.status == ItineraryNarrativeStatus.FAILED
+
+
+def test_rejects_overclaim_language_in_summary() -> None:
+    response = {
+        "summary": "This itinerary is guaranteed and optimal.",
+        "daily_narratives": [
+            {"day_number": 1, "title": "Historic Belem", "narrative": "A relaxed morning."}
+        ],
+    }
+    provider = GroqItineraryNarratorProvider(client=_FakeClient(response))
+
+    result = provider.narrate(_request())
+
+    assert result.status == ItineraryNarrativeStatus.FAILED
+
+
+def test_build_client_uses_structured_outputs_not_tool_calling(monkeypatch: Any) -> None:
+    import sys
+    import types
+
+    class _KwargCapturingFakeChatGroq:
+        captured_init_kwargs: dict[str, Any]
+        captured_structured_output_args: tuple[Any, ...]
+        captured_structured_output_kwargs: dict[str, Any]
+
+        def __init__(self, **kwargs: Any) -> None:
+            type(self).captured_init_kwargs = kwargs
+
+        def with_structured_output(self, *args: Any, **kwargs: Any) -> "_KwargCapturingFakeChatGroq":
+            type(self).captured_structured_output_args = args
+            type(self).captured_structured_output_kwargs = kwargs
+            return self
+
+    fake_module = types.ModuleType("langchain_groq")
+    fake_module.ChatGroq = _KwargCapturingFakeChatGroq  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "langchain_groq", fake_module)
+
+    provider = GroqItineraryNarratorProvider(api_key="fake-key", model="openai/gpt-oss-20b")
+    provider._build_client()
+
+    assert _KwargCapturingFakeChatGroq.captured_structured_output_kwargs["method"] == "json_schema"
+    assert _KwargCapturingFakeChatGroq.captured_structured_output_kwargs["strict"] is True
+    all_kwargs = {
+        **_KwargCapturingFakeChatGroq.captured_init_kwargs,
+        **_KwargCapturingFakeChatGroq.captured_structured_output_kwargs,
+    }
+    assert "tools" not in all_kwargs
+    assert "tool_choice" not in all_kwargs

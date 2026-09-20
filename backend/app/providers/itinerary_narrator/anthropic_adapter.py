@@ -11,6 +11,7 @@ from app.models.itinerary_narrative import (
     ItineraryNarrativeReport,
     ItineraryNarrativeRequest,
     ItineraryNarrativeStatus,
+    validate_narrative_against_request,
 )
 from app.providers.itinerary_narrator.base import ItineraryNarratorProvider
 
@@ -51,6 +52,13 @@ _DAY_OUTPUT_SCHEMA: dict[str, Any] = {
             "items": {"type": "string"},
             "description": "Short caveats to preserve, e.g. when movement/route data wasn't available.",
         },
+        "referenced_experience_ids": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "The experience_id value(s) (given alongside each scheduled place in "
+            "the input) this day's narrative is actually about. Never an id from a different "
+            "day, and never an invented id.",
+        },
     },
     "required": ["day_number", "title", "narrative"],
     "additionalProperties": False,
@@ -63,7 +71,8 @@ _TOOL_DEFINITION: dict[str, Any] = {
         "itinerary. Never invent a hotel, flight, price, rating, review count, "
         "route/travel-time duration, booking confirmation, opening hour, or clock time not "
         "already present in the input. Every day_number must exactly match one given in the "
-        "input -- never invent a new day."
+        "input -- never invent a new day. For each day, referenced_experience_ids must be "
+        "exactly the experience_id value(s) that day's narrative is actually about."
     ),
     "input_schema": {
         "type": "object",
@@ -81,14 +90,27 @@ _TOOL_DEFINITION: dict[str, Any] = {
 _SYSTEM_PROMPT = (
     "You are an itinerary narrator for a travel planning system. You write polished, "
     "traveler-facing prose that summarizes an already-finalized draft itinerary -- you are "
-    "a writer, never a source of new travel facts.\n\n"
+    "a writer, never a source of new travel facts, and you never make a new planning "
+    "decision.\n\n"
     "Use only the information given to you below. You MUST call the "
     "submit_itinerary_narrative tool to respond, and your output must match its schema "
     "exactly. Do not invent, guess, or embellish a hotel, flight, price, rating, review "
     "count, route or travel-time duration, booking confirmation, opening hour, or clock time "
     "that isn't already present in the input. If something is marked unavailable or missing, "
     "acknowledge that honestly in a caveat instead of inventing a replacement fact. Never "
-    "claim a place is booked, a route exists, or a plan is finalized/production-ready."
+    "claim a place is booked, a route exists, or a plan is finalized/production-ready/optimal/"
+    "verified/guaranteed/the safest option.\n\n"
+    "Each scheduled place below is given with its own experience_id. For each day, set "
+    "referenced_experience_ids to exactly the experience_id value(s) your narrative for that "
+    "day is actually about -- never an id from a different day, and never an id you made up.\n\n"
+    "Some days include an 'AI reasoning rationale' line -- this is context explaining why "
+    "those places were grouped together, not a verified fact. You may draw on it for tone/"
+    "phrasing, but every specific factual claim you make must still come from the scheduled "
+    "places themselves. If a day has no rationale, do not invent one.\n\n"
+    "If 'Plan adjusted after feasibility checks' is stated, you may mention once, briefly and "
+    "in plain traveler-facing language, that the plan was adjusted after feasibility checks -- "
+    "never mention any internal system, model, or provider name, never a repair attempt "
+    "number, and never say this when that line is absent."
 )
 
 
@@ -121,6 +143,10 @@ def _build_prompt(request: ItineraryNarrativeRequest) -> str:
         )
     if request.unavailable_data_fields:
         lines.append(f"Known-unavailable data: {', '.join(request.unavailable_data_fields)}")
+    if request.reasoning_strategy_summary:
+        lines.append(f"Overall AI reasoning strategy (context only): {request.reasoning_strategy_summary}")
+    if request.was_adjusted_after_feasibility_checks:
+        lines.append("Plan adjusted after feasibility checks: yes")
 
     lines.append("")
     lines.append("Days:")
@@ -128,7 +154,7 @@ def _build_prompt(request: ItineraryNarrativeRequest) -> str:
         lines.append(f"- day_number {day.day_number} ({day.date}):")
         if day.experiences:
             for experience in day.experiences:
-                piece = experience.name
+                piece = f"[experience_id={experience.experience_id}] {experience.name}"
                 if experience.category:
                     piece += f" ({experience.category})"
                 if experience.reason:
@@ -141,6 +167,8 @@ def _build_prompt(request: ItineraryNarrativeRequest) -> str:
         lines.append(
             f"    Movement/route data available: {'yes' if day.has_movement_data else 'no'}"
         )
+        if day.reasoning_rationale:
+            lines.append(f"    AI reasoning rationale for this day (context only): {day.reasoning_rationale}")
 
     if request.truncated:
         lines.append("")
@@ -278,6 +306,9 @@ class AnthropicItineraryNarratorProvider(ItineraryNarratorProvider):
                         title=raw_day.get("title", ""),
                         narrative=raw_day.get("narrative", ""),
                         caveats=[c for c in raw_day.get("caveats", []) if isinstance(c, str)],
+                        referenced_experience_ids=[
+                            i for i in raw_day.get("referenced_experience_ids", []) if isinstance(i, str)
+                        ],
                     )
                 )
             except ValidationError as exc:
@@ -290,17 +321,29 @@ class AnthropicItineraryNarratorProvider(ItineraryNarratorProvider):
                 "Input was truncated for length; some days/items were omitted from the narrator's view."
             ]
 
-        return ItineraryNarrativeReport(
-            status=ItineraryNarrativeStatus.SUCCESS,
-            provider=self.provider_name,
-            model=self._model,
-            summary=summary.strip(),
-            daily_narratives=daily_narratives,
-            warnings=warnings,
-            assumptions=assumptions,
-            source_fields_used=_source_fields_used(request),
-            generated_at=datetime.now(timezone.utc),
-        )
+        try:
+            report = ItineraryNarrativeReport(
+                status=ItineraryNarrativeStatus.SUCCESS,
+                provider=self.provider_name,
+                model=self._model,
+                summary=summary.strip(),
+                daily_narratives=daily_narratives,
+                warnings=warnings,
+                assumptions=assumptions,
+                source_fields_used=_source_fields_used(request),
+                generated_at=datetime.now(timezone.utc),
+            )
+        except ValidationError as exc:
+            return self._failed_result(f"Tool output failed validation: {exc}")
+
+        violations = validate_narrative_against_request(request, report)
+        if violations:
+            return self._failed_result(
+                "Claude output referenced an experience_id outside that day's real scheduled "
+                "items: " + "; ".join(violations)
+            )
+
+        return report
 
     def _not_connected_result(self, reason: str) -> ItineraryNarrativeReport:
         return ItineraryNarrativeReport(
@@ -342,4 +385,10 @@ def _source_fields_used(request: ItineraryNarrativeRequest) -> list[str]:
         used.append("validation_status")
     if request.unavailable_data_fields:
         used.append("unavailable_data_fields")
+    if request.reasoning_strategy_summary:
+        used.append("reasoning_strategy_summary")
+    if any(day.reasoning_rationale for day in request.days):
+        used.append("reasoning_rationale")
+    if request.was_adjusted_after_feasibility_checks:
+        used.append("was_adjusted_after_feasibility_checks")
     return used

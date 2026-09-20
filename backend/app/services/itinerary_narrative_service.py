@@ -4,7 +4,11 @@ import logging
 import time
 
 from app.core.config import get_settings
-from app.models.itinerary_narrative import ItineraryNarrativeReport, ItineraryNarrativeStatus
+from app.models.itinerary_narrative import (
+    ItineraryNarrativeReport,
+    ItineraryNarrativeRequest,
+    ItineraryNarrativeStatus,
+)
 from app.models.planning_state import PlanningState
 from app.providers.itinerary_narrator import ItineraryNarratorProvider, get_itinerary_narrator_provider
 from app.services.itinerary_narrative_request_builder import (
@@ -43,6 +47,52 @@ logger = logging.getLogger(__name__)
 _DISABLED_MESSAGE = "Itinerary narrator is disabled (ITINERARY_NARRATOR_ENABLED=false)."
 _UNEXPECTED_FAILURE_MESSAGE = "The itinerary narrator failed unexpectedly."
 
+# Section 195.1 (docs/14_backend_architecture.md, following section 146):
+# a deterministic, non-LLM safety net -- Section 195's own real
+# verification showed a real narrator can honestly avoid claiming a plan
+# is resolved/verified without ever actually surfacing the limitation
+# either, which technically satisfies "no false claim" but not "never
+# hidden." This exact wording carries no overclaim language of its own
+# and never describes what kind of issue remains (Task 2: "do not invent
+# the nature of an issue").
+_UNRESOLVED_VALIDATION_LIMITATION_WARNING = (
+    "Some itinerary checks still need review; see the validation details before relying on the plan."
+)
+
+
+def _apply_final_validation_disclosure(
+    report: ItineraryNarrativeReport, request: ItineraryNarrativeRequest
+) -> ItineraryNarrativeReport:
+    """Deterministic post-processing over an already-`success` narrator
+    result -- never applied to a `failed`/`not_connected`/`unavailable`
+    result (Task 5: those are unchanged). Driven entirely by `request`'s
+    own `warning_count`/`critical_issue_count`, which the request builder
+    already computed from `planning_state.validation_report` at request-
+    build time -- the same FINAL, current, post-repair validation state
+    the narrator itself saw, never a stale pre-repair snapshot (Task 3).
+
+    - Zero unresolved issues (a clean final validation, including the
+      case where a repair genuinely resolved what used to be a problem):
+      returns `report` completely unchanged -- never adds a warning about
+      a resolved issue.
+    - One or more unresolved issues, but the narrator already returned at
+      least one warning of its own: returns `report` unchanged too (Task
+      4's deliberately simple structural rule -- trust an existing
+      warning rather than risk a redundant duplicate; no fuzzy semantic
+      matching).
+    - One or more unresolved issues and `report.warnings` is empty:
+      returns a new report (never mutates `report` in place) with
+      `_UNRESOLVED_VALIDATION_LIMITATION_WARNING` appended.
+    """
+    if report.status != ItineraryNarrativeStatus.SUCCESS:
+        return report
+    unresolved_issue_count = request.warning_count + request.critical_issue_count
+    if unresolved_issue_count == 0:
+        return report
+    if report.warnings:
+        return report
+    return report.model_copy(update={"warnings": [_UNRESOLVED_VALIDATION_LIMITATION_WARNING]})
+
 # Step 187F (docs/14_backend_architecture.md section 125): this LLM-backed
 # subsystem calls its provider directly (via `get_itinerary_narrator_
 # provider()`), never through `ProviderGateway` -- so, per that step's
@@ -69,7 +119,12 @@ _NARRATOR_STATUS_TO_ERROR_CODE = {
 
 
 def _narrator_log_fields(
-    *, provider_name: str, status: str, duration_ms: float
+    *,
+    provider_name: str,
+    status: str,
+    duration_ms: float,
+    planning_state: PlanningState | None = None,
+    report: ItineraryNarrativeReport | None = None,
 ) -> dict[str, object]:
     fields: dict[str, object] = {
         "provider": provider_name,
@@ -80,6 +135,25 @@ def _narrator_log_fields(
     error_code = _NARRATOR_STATUS_TO_ERROR_CODE.get(status)
     if error_code is not None:
         fields["error_code"] = error_code
+    # Section 195 (Task 34): plain counts only -- never a prompt, a
+    # candidate name, or a validator message.
+    if planning_state is not None:
+        experience_plan = planning_state.experience_plan
+        fields["day_count"] = len(experience_plan.daily_plans) if experience_plan else 0
+        fields["final_plan_item_count"] = (
+            sum(len(day.experiences) for day in experience_plan.daily_plans) if experience_plan else 0
+        )
+        fields["repair_attempt_count"] = planning_state.ai_itinerary_repair_attempt_count
+        validation_report = planning_state.validation_report
+        fields["remaining_validation_issue_count"] = (
+            len(validation_report.critical_issues) + len(validation_report.warnings)
+            if validation_report is not None
+            else 0
+        )
+    if report is not None:
+        fields["narrative_reference_count"] = sum(
+            len(day.referenced_experience_ids) for day in report.daily_narratives
+        )
     return fields
 
 
@@ -113,6 +187,7 @@ class ItineraryNarrativeService:
         try:
             request = self.request_builder.build_request(planning_state)
             report = provider.narrate(request)
+            report = _apply_final_validation_disclosure(report, request)
         except Exception:
             duration_ms = (time.monotonic() - started_at) * 1000
             logger.warning(
@@ -120,7 +195,10 @@ class ItineraryNarrativeService:
                 "otherwise unaffected.",
                 exc_info=True,
                 extra=_narrator_log_fields(
-                    provider_name=provider_name, status="failed", duration_ms=duration_ms
+                    provider_name=provider_name,
+                    status="failed",
+                    duration_ms=duration_ms,
+                    planning_state=planning_state,
                 ),
             )
             report = ItineraryNarrativeReport(
@@ -132,7 +210,11 @@ class ItineraryNarrativeService:
 
         duration_ms = (time.monotonic() - started_at) * 1000
         fields = _narrator_log_fields(
-            provider_name=provider_name, status=report.status.value, duration_ms=duration_ms
+            provider_name=provider_name,
+            status=report.status.value,
+            duration_ms=duration_ms,
+            planning_state=planning_state,
+            report=report,
         )
         if report.status == ItineraryNarrativeStatus.SUCCESS:
             logger.info("ItineraryNarrativeService.generate completed.", extra=fields)

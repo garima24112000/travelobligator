@@ -74,6 +74,9 @@ class _FakeProvider(AIItineraryReasoningProvider):
             raise RuntimeError("simulated provider crash")
         return self._result if self._result is not None else _completed_result()
 
+    def repair(self, request: Any) -> Any:  # pragma: no cover - not exercised in this file
+        raise NotImplementedError("This fake is only used for AIItineraryReasoningService.reason tests.")
+
 
 # ---------------------------------------------------------------------------
 # 1. Disabled by default -- never calls the provider.

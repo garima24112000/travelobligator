@@ -7,12 +7,15 @@ import pytest
 from app.graphs.planning_graph_nodes import (
     build_ai_candidate_node,
     build_ai_itinerary_reasoning_node,
+    build_ai_itinerary_repair_node,
     build_destination_context_node,
     build_experience_planning_node,
     build_final_state_node,
     build_provider_coverage_node,
     build_stay_transport_node,
     build_validation_node,
+    route_after_repair,
+    route_after_validation,
 )
 from app.graphs.planning_graph_state import build_initial_planning_graph_state
 from app.models.planning_state import PlanningState, TravelGroupType, TripRequest
@@ -632,3 +635,142 @@ def test_ai_itinerary_reasoning_node_failure_is_safe() -> None:
     assert result["completed_nodes"] == ["ai_itinerary_reasoning"]
     assert "failed_nodes" not in result
     assert result["planning_state"] == before
+
+
+# ---------------------------------------------------------------------------
+# Section 194B: ai_itinerary_repair node and route_after_validation/
+# route_after_repair conditional-edge functions, at the node/router unit
+# level (docs/14_backend_architecture.md, following section 144). Full
+# end-to-end loop behavior (real geographic_spread trigger, real
+# multi-pass reruns, real merge) is covered separately in
+# test_ai_itinerary_repair_loop.py.
+# ---------------------------------------------------------------------------
+
+
+def _repair_completed_result(candidate_ids: list[Any]) -> Any:
+    from app.models.ai_itinerary_reasoning import (
+        AIItineraryReasoningGuardrailReport,
+        ItineraryReasoningDayPlan,
+    )
+    from app.models.ai_itinerary_repair import AIItineraryRepairResult, AIItineraryRepairStatus
+
+    return AIItineraryRepairResult(
+        status=AIItineraryRepairStatus.COMPLETED,
+        repaired_days=[
+            ItineraryReasoningDayPlan(day_index=1, candidate_ids=candidate_ids, rationale="Repaired.")
+        ],
+        repair_summary="Repaired day 1.",
+        guardrail_report=AIItineraryReasoningGuardrailReport(passed=True),
+        provider_name="fake_repair_provider",
+        confidence=0.7,
+    )
+
+
+def test_ai_itinerary_repair_node_disabled_never_calls_provider() -> None:
+    from app.core.config import Settings
+    from app.services.ai_itinerary_repair_service import AIItineraryRepairService
+
+    class _FakeRepairProvider:
+        provider_name = "fake_repair_provider"
+
+        def __init__(self) -> None:
+            self.call_count = 0
+
+        def reason(self, request: Any) -> Any:
+            raise NotImplementedError
+
+        def repair(self, request: Any) -> Any:
+            self.call_count += 1
+            return _repair_completed_result(["osm:a"])
+
+    fake_provider = _FakeRepairProvider()
+    service = AIItineraryRepairService(provider=fake_provider)
+    node = build_ai_itinerary_repair_node(service)
+    state = _initial_state()
+
+    import app.services.ai_itinerary_repair_service as repair_service_module
+
+    original_get_settings = repair_service_module.get_settings
+    repair_service_module.get_settings = lambda: Settings(_env_file=None)
+    try:
+        result = node(state)
+    finally:
+        repair_service_module.get_settings = original_get_settings
+
+    assert result["completed_nodes"] == ["ai_itinerary_repair"]
+    assert fake_provider.call_count == 0
+    assert result["planning_state"].ai_itinerary_repair_attempt_count == 0
+    assert result["planning_state"].ai_itinerary_repair_result is not None
+    assert result["planning_state"].ai_itinerary_repair_result.status.value == "not_connected"
+
+
+def test_ai_itinerary_repair_node_failure_is_safe() -> None:
+    class _RaisingService:
+        request_builder = None
+
+        def apply(self, planning_state: PlanningState, attempt_number: int = 1) -> PlanningState:
+            raise RuntimeError("simulated repair failure")
+
+    node = build_ai_itinerary_repair_node(_RaisingService())  # type: ignore[arg-type]
+    state = _initial_state()
+    before = state["planning_state"].model_copy(deep=True)
+
+    result = node(state)
+
+    assert result["failed_nodes"] == ["ai_itinerary_repair"]
+    assert "completed_nodes" not in result
+    assert state["planning_state"] == before
+
+
+def test_route_after_validation_returns_provider_coverage_when_disabled() -> None:
+    from app.core.config import Settings
+
+    import app.graphs.planning_graph_nodes as nodes_module
+
+    original_get_settings = nodes_module.get_settings
+    nodes_module.get_settings = lambda: Settings(_env_file=None)
+    try:
+        assert route_after_validation(_initial_state()) == "provider_coverage"
+    finally:
+        nodes_module.get_settings = original_get_settings
+
+
+def test_route_after_validation_returns_provider_coverage_when_no_reasoning_result() -> None:
+    from app.core.config import Settings
+
+    import app.graphs.planning_graph_nodes as nodes_module
+
+    original_get_settings = nodes_module.get_settings
+    nodes_module.get_settings = lambda: Settings(
+        _env_file=None, AI_ITINERARY_REPAIR_ENABLED=True, AI_ITINERARY_REASONING_ENABLED=True
+    )
+    try:
+        state = _initial_state()
+        assert state["planning_state"].ai_itinerary_reasoning_result is None
+        assert route_after_validation(state) == "provider_coverage"
+    finally:
+        nodes_module.get_settings = original_get_settings
+
+
+def test_route_after_repair_routes_completed_to_experience_planning() -> None:
+    state = _initial_state()
+    state["planning_state"].ai_itinerary_repair_result = _repair_completed_result(["osm:a"])
+    assert route_after_repair(state) == "experience_planning"
+
+
+def test_route_after_repair_routes_non_completed_to_provider_coverage() -> None:
+    from app.models.ai_itinerary_reasoning import AIItineraryReasoningGuardrailReport
+    from app.models.ai_itinerary_repair import AIItineraryRepairResult, AIItineraryRepairStatus
+
+    state = _initial_state()
+    state["planning_state"].ai_itinerary_repair_result = AIItineraryRepairResult(
+        status=AIItineraryRepairStatus.REJECTED,
+        guardrail_report=AIItineraryReasoningGuardrailReport(passed=False, blocked_reasons=["bad"]),
+    )
+    assert route_after_repair(state) == "provider_coverage"
+
+
+def test_route_after_repair_routes_absent_result_to_provider_coverage() -> None:
+    state = _initial_state()
+    assert state["planning_state"].ai_itinerary_repair_result is None
+    assert route_after_repair(state) == "provider_coverage"

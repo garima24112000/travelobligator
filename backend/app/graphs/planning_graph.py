@@ -7,6 +7,7 @@ from app.graphs.planning_graph_nodes import (
     build_accommodation_inventory_node,
     build_ai_candidate_node,
     build_ai_itinerary_reasoning_node,
+    build_ai_itinerary_repair_node,
     build_candidate_quality_node,
     build_destination_context_node,
     build_experience_planning_node,
@@ -20,6 +21,8 @@ from app.graphs.planning_graph_nodes import (
     build_traveler_profile_node,
     build_trip_strategy_node,
     build_validation_node,
+    route_after_repair,
+    route_after_validation,
 )
 from app.graphs.planning_graph_state import PlanningGraphState, build_initial_planning_graph_state
 from app.models.planning_state import PlanningState, TripRequest
@@ -27,6 +30,7 @@ from app.services.accommodation_inventory_service import AccommodationInventoryS
 from app.services.ai_candidate_discovery_service import AICandidateDiscoveryService
 from app.services.ai_candidate_promotion_service import AICandidatePromotionService
 from app.services.ai_itinerary_reasoning_service import AIItineraryReasoningService
+from app.services.ai_itinerary_repair_service import AIItineraryRepairService
 from app.services.candidate_quality_service import CandidateQualityService
 from app.services.destination_context_service import DestinationContextService
 from app.services.experience_planner_service import ExperiencePlannerService
@@ -53,9 +57,23 @@ from app.services.trip_strategy_service import TripStrategyService
 #
 #   START -> traveler_profile -> destination_context -> candidate_quality
 #   -> ai_candidate -> trip_strategy -> stay_transport
-#   -> accommodation_inventory -> flight_inventory -> experience_planning
-#   -> route_feasibility -> route_aware_sequencing -> travel_time_buffer
-#   -> validation -> provider_coverage -> final_state -> END
+#   -> accommodation_inventory -> flight_inventory -> ai_itinerary_reasoning
+#   -> experience_planning -> route_feasibility -> route_aware_sequencing
+#   -> travel_time_buffer -> validation
+#   -> [conditional: ai_itinerary_repair | provider_coverage]
+#   -> (ai_itinerary_repair -> [conditional: experience_planning | provider_coverage])
+#   -> provider_coverage -> final_state -> END
+#
+# Section 194B (docs/14_backend_architecture.md, following section 144)
+# added the two conditional edges after `validation`: a completed AI
+# reasoning result with a real repairable validator finding (Section
+# 194A's own `classify_repairable_issues`) may loop back through
+# `ai_itinerary_repair` -> `experience_planning` -> ... -> `validation`
+# again, bounded by `Settings.ai_itinerary_repair_max_attempts` (1 or 2)
+# so the graph always terminates. Both `Settings.ai_itinerary_repair_
+# enabled` and `Settings.ai_itinerary_reasoning_enabled` default `False`,
+# so a normal generation stays exactly Section 193C's linear
+# `validation -> provider_coverage` path unless explicitly opted in.
 #
 # Step 191A (docs/14_backend_architecture.md section 135) made the
 # `ai_candidate` node a real, config-gated live stage: when
@@ -106,6 +124,7 @@ def build_planning_graph(
     route_aware_sequencing_service: RouteAwareSequencingService | None = None,
     travel_time_buffer_service: TravelTimeBufferService | None = None,
     plan_validator_service: PlanValidatorService | None = None,
+    ai_itinerary_repair_service: AIItineraryRepairService | None = None,
 ) -> CompiledStateGraph:
     """Builds and compiles the planning `StateGraph` from already-
     constructed stage services (real or fake/injected). Every node calls
@@ -159,6 +178,7 @@ def build_planning_graph(
         travel_time_buffer_service or TravelTimeBufferService()
     )
     resolved_plan_validator_service = plan_validator_service or PlanValidatorService()
+    resolved_ai_itinerary_repair_service = ai_itinerary_repair_service or AIItineraryRepairService()
 
     graph = StateGraph(PlanningGraphState)
     graph.add_node(
@@ -203,6 +223,9 @@ def build_planning_graph(
         "travel_time_buffer", build_travel_time_buffer_node(resolved_travel_time_buffer_service)
     )
     graph.add_node("validation", build_validation_node(resolved_plan_validator_service))
+    graph.add_node(
+        "ai_itinerary_repair", build_ai_itinerary_repair_node(resolved_ai_itinerary_repair_service)
+    )
     graph.add_node("provider_coverage", build_provider_coverage_node())
     graph.add_node("final_state", build_final_state_node())
 
@@ -220,7 +243,26 @@ def build_planning_graph(
     graph.add_edge("route_feasibility", "route_aware_sequencing")
     graph.add_edge("route_aware_sequencing", "travel_time_buffer")
     graph.add_edge("travel_time_buffer", "validation")
-    graph.add_edge("validation", "provider_coverage")
+    # Section 194B (docs/14_backend_architecture.md, following section
+    # 144): a completed AI reasoning result with a real, structurally-
+    # sourced repairable validator finding routes to a bounded repair
+    # attempt instead of straight to provider_coverage; a completed
+    # repair reruns the full experience_planning -> ... -> validation
+    # chain (never a partial shortcut), and everything else -- disabled,
+    # no repairable issue, attempt budget exhausted, or the repair itself
+    # not completed -- routes to provider_coverage exactly like Section
+    # 193C's graph always has. See route_after_validation/
+    # route_after_repair's own docstrings for the exact conditions.
+    graph.add_conditional_edges(
+        "validation",
+        route_after_validation,
+        {"ai_itinerary_repair": "ai_itinerary_repair", "provider_coverage": "provider_coverage"},
+    )
+    graph.add_conditional_edges(
+        "ai_itinerary_repair",
+        route_after_repair,
+        {"experience_planning": "experience_planning", "provider_coverage": "provider_coverage"},
+    )
     graph.add_edge("provider_coverage", "final_state")
     graph.add_edge("final_state", END)
 
@@ -256,6 +298,7 @@ class PlanningGraphRunner:
         route_aware_sequencing_service: RouteAwareSequencingService | None = None,
         travel_time_buffer_service: TravelTimeBufferService | None = None,
         plan_validator_service: PlanValidatorService | None = None,
+        ai_itinerary_repair_service: AIItineraryRepairService | None = None,
     ) -> None:
         self.traveler_profile_service = traveler_profile_service or TravelerProfileService()
         self.destination_context_service = (
@@ -292,6 +335,9 @@ class PlanningGraphRunner:
             travel_time_buffer_service or TravelTimeBufferService()
         )
         self.plan_validator_service = plan_validator_service or PlanValidatorService()
+        self.ai_itinerary_repair_service = (
+            ai_itinerary_repair_service or AIItineraryRepairService()
+        )
 
         self._graph = build_planning_graph(
             self.traveler_profile_service,
@@ -309,6 +355,7 @@ class PlanningGraphRunner:
             self.route_aware_sequencing_service,
             self.travel_time_buffer_service,
             self.plan_validator_service,
+            self.ai_itinerary_repair_service,
         )
 
     def run(

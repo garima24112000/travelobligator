@@ -27,7 +27,7 @@ def _request(**overrides: Any) -> ItineraryNarrativeRequest:
                 date="2026-10-10",
                 experiences=[
                     ItineraryNarrativeExperienceInput(
-                        name="Belem Tower", category="landmark", reason="must-visit"
+                        experience_id="exp_belem_tower", name="Belem Tower", category="landmark", reason="must-visit"
                     )
                 ],
             )
@@ -188,3 +188,95 @@ def test_never_fabricates_price_rating_route_or_time_fields() -> None:
     }
     assert forbidden_field_names.isdisjoint(dumped_report.keys())
     assert forbidden_field_names.isdisjoint(dumped_day.keys())
+
+
+# ---------------------------------------------------------------------------
+# Section 195 (docs/14_backend_architecture.md, following section 145):
+# structural place-identity safety (Task 12) and forbidden-claim safety
+# (Task 26) at the real adapter level.
+# ---------------------------------------------------------------------------
+
+
+def test_returns_success_when_referenced_experience_id_is_valid() -> None:
+    tool_input = {
+        "summary": "A short trip to Lisbon.",
+        "daily_narratives": [
+            {
+                "day_number": 1,
+                "title": "Historic Belem",
+                "narrative": "Start the day at Belem Tower.",
+                "referenced_experience_ids": ["exp_belem_tower"],
+            }
+        ],
+    }
+    client = _FakeClient(
+        response=_FakeResponse([_FakeToolUseBlock("submit_itinerary_narrative", tool_input)])
+    )
+    provider = AnthropicItineraryNarratorProvider(client=client)
+
+    result = provider.narrate(_request())
+
+    assert result.status == ItineraryNarrativeStatus.SUCCESS
+    assert result.daily_narratives[0].referenced_experience_ids == ["exp_belem_tower"]
+
+
+def test_rejects_hallucinated_referenced_experience_id() -> None:
+    tool_input = {
+        "summary": "A short trip to Lisbon.",
+        "daily_narratives": [
+            {
+                "day_number": 1,
+                "title": "Historic Belem",
+                "narrative": "Start the day at Belem Tower.",
+                "referenced_experience_ids": ["made-up-experience-id"],
+            }
+        ],
+    }
+    client = _FakeClient(
+        response=_FakeResponse([_FakeToolUseBlock("submit_itinerary_narrative", tool_input)])
+    )
+    provider = AnthropicItineraryNarratorProvider(client=client)
+
+    result = provider.narrate(_request())
+
+    assert result.status == ItineraryNarrativeStatus.FAILED
+    assert "made-up-experience-id" in (result.message or "")
+    assert result.daily_narratives == []
+
+
+def test_rejects_forbidden_factual_claim_in_narrative() -> None:
+    tool_input = {
+        "summary": "A short trip to Lisbon.",
+        "daily_narratives": [
+            {
+                "day_number": 1,
+                "title": "Historic Belem",
+                "narrative": "This is a highly rated and cheap stop.",
+            }
+        ],
+    }
+    client = _FakeClient(
+        response=_FakeResponse([_FakeToolUseBlock("submit_itinerary_narrative", tool_input)])
+    )
+    provider = AnthropicItineraryNarratorProvider(client=client)
+
+    result = provider.narrate(_request())
+
+    assert result.status == ItineraryNarrativeStatus.FAILED
+
+
+def test_rejects_overclaim_language_in_summary() -> None:
+    tool_input = {
+        "summary": "This itinerary is guaranteed and optimal.",
+        "daily_narratives": [
+            {"day_number": 1, "title": "Historic Belem", "narrative": "A relaxed morning."}
+        ],
+    }
+    client = _FakeClient(
+        response=_FakeResponse([_FakeToolUseBlock("submit_itinerary_narrative", tool_input)])
+    )
+    provider = AnthropicItineraryNarratorProvider(client=client)
+
+    result = provider.narrate(_request())
+
+    assert result.status == ItineraryNarrativeStatus.FAILED

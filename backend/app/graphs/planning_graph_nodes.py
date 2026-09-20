@@ -1,10 +1,17 @@
 from __future__ import annotations
 
+import logging
 from typing import Any, Callable
 
 from app.core.config import get_settings
 from app.graphs.planning_graph_state import PlanningGraphState
 from app.models.accommodation import AccommodationSearchResult, AccommodationSearchStatus
+from app.models.ai_itinerary_reasoning import AIItineraryReasoningGuardrailReport, AIItineraryReasoningStatus
+from app.models.ai_itinerary_repair import (
+    AIItineraryRepairResult,
+    AIItineraryRepairStatus,
+    merge_repair_into_reasoning_result,
+)
 from app.models.common import ProviderStatus
 from app.models.flight import FlightSearchResult, FlightSearchStatus
 from app.models.hotel_ratings import HotelRatingsStatus
@@ -21,6 +28,11 @@ from app.services.ai_itinerary_reasoning_service import (
     AIItineraryReasoningService,
     apply_itinerary_reasoning_safely,
 )
+from app.services.ai_itinerary_repair_request_builder import (
+    AIItineraryRepairRequestBuilder,
+    classify_repairable_issues,
+)
+from app.services.ai_itinerary_repair_service import AIItineraryRepairService, apply_repair_safely
 from app.services.candidate_quality_service import CandidateQualityService
 from app.services.destination_context_service import DestinationContextService
 from app.services.experience_planner_service import ExperiencePlannerService
@@ -92,6 +104,8 @@ from app.services.trip_strategy_service import TripStrategyService
 # from `planning_orchestrator.py` at module load time would be a circular
 # import. `test_langgraph_planning_nodes.py` asserts both copies stay in
 # sync so this intentional duplication can never silently drift.
+
+logger = logging.getLogger(__name__)
 
 PlanningGraphNode = Callable[[PlanningGraphState], dict[str, Any]]
 
@@ -674,6 +688,244 @@ def build_validation_node(
         return {"planning_state": planning_state, "completed_nodes": ["validation"]}
 
     return validation_node
+
+
+def build_ai_itinerary_repair_node(
+    service: AIItineraryRepairService | None = None,
+) -> PlanningGraphNode:
+    """Wraps `AIItineraryRepairService`/`merge_repair_into_reasoning_result`
+    (Section 194B, docs/14_backend_architecture.md, following section
+    144) -- only ever reached via `route_after_validation`'s conditional
+    edge, which already re-verifies every eligibility condition (repair
+    enabled, reasoning enabled, a completed reasoning result exists, a
+    real repairable issue exists, the attempt budget isn't exhausted, a
+    request can actually be built) before ever routing here. This node
+    therefore always treats a real invocation as having occurred once it
+    runs -- see `_invocation_was_attempted` below for the one exception
+    (a swallowed exception, which `apply_repair_safely` never surfaces to
+    its caller).
+
+    1. Computes `attempt_number` from
+       `planning_state.ai_itinerary_repair_attempt_count + 1`.
+    2. Builds the exact `AIItineraryRepairRequest` this attempt uses (via
+       the service's own `request_builder` instance -- never a second,
+       independently-written copy of that logic) purely so this node has
+       the request object `merge_repair_into_reasoning_result` needs; the
+       real, gated, logged repair call itself still happens exactly once,
+       inside `apply_repair_safely` -> `AIItineraryRepairService.apply`.
+    3. Calls `apply_repair_safely`, which stores the fresh
+       `AIItineraryRepairResult` on `planning_state.ai_itinerary_repair_result`.
+    4. Increments `ai_itinerary_repair_attempt_count` only when
+       `Settings.ai_itinerary_reasoning_enabled` is `True`, a request
+       could actually be built, and `apply_repair_safely` did not
+       silently catch an exception (detected by comparing
+       `ai_itinerary_repair_result`'s identity before/after --
+       `AIItineraryRepairService.apply` always assigns a brand-new result
+       object on every real call, so an unchanged reference can only mean
+       the call never completed). The first two conditions mirror
+       `AIItineraryRepairService.repair`'s own early-return checks exactly
+       (never a second, independently-written copy of that decision) --
+       kept here so attempt-counting stays correct even if this node is
+       ever reached without `route_after_validation`'s own pre-check
+       having already guaranteed them.
+    5. If the result is `completed`, merges it into
+       `planning_state.ai_itinerary_reasoning_result` via
+       `merge_repair_into_reasoning_result` -- the one, single-source-of-
+       truth merge function, never reimplemented here. A `ValueError`
+       from that merge (defense-in-depth only -- a `completed` result
+       already passed `validate_repair_result_against_request` inside the
+       provider itself, so this should be unreachable for a real
+       Groq/Anthropic adapter) leaves `ai_itinerary_reasoning_result`
+       untouched *and* downgrades the stored
+       `ai_itinerary_repair_result` to an honest `rejected` (Task 22) --
+       never a stale `completed` label sitting alongside an unmodified
+       reasoning result, which would otherwise mislead
+       `route_after_repair`'s plain status check into looping back to
+       `experience_planning` for nothing.
+
+    Never touches `experience_plan`/`route_feasibility_report`/
+    `route_aware_sequencing_report`/`travel_time_buffer_report`/
+    `validation_report`, and never rebuilds `ExperiencePlan` itself --
+    `route_after_repair`'s conditional edge sends a `completed` repair
+    back to `experience_planning`, which is what actually re-derives a
+    new plan from the now-updated `ai_itinerary_reasoning_result` (the
+    existing Section 193C integration, unchanged).
+    """
+    resolved_service = service or AIItineraryRepairService()
+
+    def ai_itinerary_repair_node(state: PlanningGraphState) -> dict[str, Any]:
+        try:
+            planning_state = state["planning_state"]
+            attempt_number = planning_state.ai_itinerary_repair_attempt_count + 1
+            previous_repair_result = planning_state.ai_itinerary_repair_result
+
+            request = resolved_service.request_builder.build_request(
+                planning_state, attempt_number=attempt_number
+            )
+            planning_state = apply_repair_safely(
+                planning_state, resolved_service, attempt_number=attempt_number
+            )
+
+            repair_result = planning_state.ai_itinerary_repair_result
+            # Task 3: only count this as a real invocation when every
+            # condition `AIItineraryRepairService.repair` itself requires
+            # before ever calling `provider.repair` actually held --
+            # mirrored here (never reimplemented as a second call path)
+            # so this stays correct even if this node is ever reached
+            # without `route_after_validation`'s own pre-check having run
+            # first (defense-in-depth, not reliance on the router alone).
+            # The identity comparison additionally catches the one case
+            # neither flag can: `apply_repair_safely` silently swallowing
+            # a raised exception, which leaves `ai_itinerary_repair_result`
+            # completely unchanged.
+            invocation_was_attempted = (
+                get_settings().ai_itinerary_reasoning_enabled
+                and request is not None
+                and repair_result is not previous_repair_result
+            )
+
+            if invocation_was_attempted:
+                planning_state.ai_itinerary_repair_attempt_count = attempt_number
+
+                original_result = planning_state.ai_itinerary_reasoning_result
+                if (
+                    repair_result is not None
+                    and repair_result.status == AIItineraryRepairStatus.COMPLETED
+                    and request is not None
+                    and original_result is not None
+                ):
+                    try:
+                        planning_state.ai_itinerary_reasoning_result = merge_repair_into_reasoning_result(
+                            original_result, request, repair_result
+                        )
+                    except ValueError:
+                        # A provider that claims `completed` but fails
+                        # `merge_repair_into_reasoning_result`'s own
+                        # defense-in-depth safety check (Task 22 -- e.g.
+                        # a hallucinated candidate, an unaffected-day
+                        # mutation) never reaches `experience_planning`
+                        # with a stale "completed" label:
+                        # `ai_itinerary_reasoning_result` is left
+                        # untouched, and the stored repair result itself
+                        # is honestly downgraded to `rejected` so
+                        # `route_after_repair`'s plain status check sends
+                        # it to `provider_coverage`, never back into the
+                        # planning/routing/validation chain.
+                        planning_state.ai_itinerary_repair_result = AIItineraryRepairResult(
+                            status=AIItineraryRepairStatus.REJECTED,
+                            repaired_days=[],
+                            guardrail_report=AIItineraryReasoningGuardrailReport(
+                                passed=False,
+                                blocked_reasons=[
+                                    "Repair result failed post-completion safety validation "
+                                    "and was rejected."
+                                ],
+                                checked_fields=["merge_safety"],
+                            ),
+                            provider_name=repair_result.provider_name,
+                            model_name=repair_result.model_name,
+                            confidence=0.0,
+                            attempt_number=attempt_number,
+                        )
+
+            final_repair_result = planning_state.ai_itinerary_repair_result
+            loops_back = (
+                final_repair_result is not None
+                and final_repair_result.status == AIItineraryRepairStatus.COMPLETED
+            )
+            # Task 27: one structured, secret-free observability line per
+            # invocation -- never the prompt, the raw request/result
+            # payload, or any credential.
+            logger.info(
+                "ai_itinerary_repair_node evaluated.",
+                extra={
+                    "stage": "ai_itinerary_repair_loop",
+                    "attempt_number": attempt_number if invocation_was_attempted else None,
+                    "max_attempts": get_settings().ai_itinerary_repair_max_attempts,
+                    "repairable_issue_count": len(request.issues) if request is not None else 0,
+                    "affected_days": request.affected_days if request is not None else [],
+                    "provider": (
+                        final_repair_result.provider_name if final_repair_result is not None else None
+                    ),
+                    "repair_status": (
+                        final_repair_result.status.value if final_repair_result is not None else None
+                    ),
+                    "loop_back": loops_back,
+                    "remaining_repairable_issue_count": (
+                        None if loops_back else (len(request.issues) if request is not None else 0)
+                    ),
+                },
+            )
+        except Exception:
+            return {
+                "failed_nodes": ["ai_itinerary_repair"],
+                "errors": [_safe_error("ai_itinerary_repair")],
+            }
+        return {"planning_state": planning_state, "completed_nodes": ["ai_itinerary_repair"]}
+
+    return ai_itinerary_repair_node
+
+
+def route_after_validation(state: PlanningGraphState) -> str:
+    """Section 194B's deterministic post-validation router (Task 5).
+    Returns `"ai_itinerary_repair"` only when every one of these holds,
+    otherwise `"provider_coverage"`:
+
+    1. `Settings.ai_itinerary_repair_enabled` is `True`.
+    2. `Settings.ai_itinerary_reasoning_enabled` is `True` (repairing a
+       reasoning result makes no sense when reasoning itself is off).
+    3. A `completed` `ai_itinerary_reasoning_result` exists.
+    4. `ai_itinerary_repair_attempt_count` is still below
+       `Settings.ai_itinerary_repair_max_attempts`.
+    5. `classify_repairable_issues` (Section 194A's own, real
+       classifier -- never reimplemented here) finds at least one real,
+       structurally-sourced repairable issue.
+    6. `AIItineraryRepairRequestBuilder.build_request` (the same builder
+       `AIItineraryRepairService` itself uses) can actually build a
+       request from the current state.
+
+    A failed repair never loops back through this router at all --
+    `route_after_repair` sends every non-completed outcome straight to
+    `provider_coverage`, so "there has not already been a terminal
+    repair failure for this cycle" is guaranteed by the graph's topology
+    itself rather than by separate state tracked here.
+    """
+    planning_state = state["planning_state"]
+    settings = get_settings()
+
+    if not settings.ai_itinerary_repair_enabled or not settings.ai_itinerary_reasoning_enabled:
+        return "provider_coverage"
+
+    reasoning_result = planning_state.ai_itinerary_reasoning_result
+    if reasoning_result is None or reasoning_result.status != AIItineraryReasoningStatus.COMPLETED:
+        return "provider_coverage"
+
+    if planning_state.ai_itinerary_repair_attempt_count >= settings.ai_itinerary_repair_max_attempts:
+        return "provider_coverage"
+
+    if not classify_repairable_issues(planning_state):
+        return "provider_coverage"
+
+    next_attempt_number = planning_state.ai_itinerary_repair_attempt_count + 1
+    request = AIItineraryRepairRequestBuilder().build_request(planning_state, attempt_number=next_attempt_number)
+    if request is None:
+        return "provider_coverage"
+
+    return "ai_itinerary_repair"
+
+
+def route_after_repair(state: PlanningGraphState) -> str:
+    """Section 194B's deterministic post-repair router (Task 6): a
+    `completed` repair re-enters the planning/routing/validation chain at
+    `experience_planning` (Task 7 -- the full downstream chain reruns,
+    never a partial shortcut); every other outcome (`rejected`/
+    `not_connected`/`skipped`, or the node itself failing) goes straight
+    to `provider_coverage` -- never an immediate retry.
+    """
+    repair_result = state["planning_state"].ai_itinerary_repair_result
+    if repair_result is not None and repair_result.status == AIItineraryRepairStatus.COMPLETED:
+        return "experience_planning"
+    return "provider_coverage"
 
 
 def build_provider_coverage_node() -> PlanningGraphNode:

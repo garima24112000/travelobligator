@@ -9737,3 +9737,263 @@ their own real services, for an AI-guided plan).
 tests, zero change to any pre-existing test's outcome). `compileall`/
 `pytest` clean. No frontend/shared-contract file changed -- frontend
 checks explicitly skipped for that reason.
+
+## 144. Section 194A: Validator-Driven AI Itinerary Repair Contract and Service
+
+```text
+ExperiencePlan
+  -> routing (RouteFeasibilityService/RouteAwareSequencingService/TravelTimeBufferService)
+  -> validator (PlanValidatorService)
+  -> repair request (AIItineraryRepairRequestBuilder -- ONLY when a real,
+     structurally-sourced repairable issue exists)
+  -> LLM repair (AIItineraryReasoningProvider.repair, same provider as `reason`)
+  -> validated reasoning revision (validate_repair_result_against_request,
+     then merge_repair_into_reasoning_result)
+```
+
+**194A does not yet run this automatically during `/generate`.** No
+LangGraph node, `PlanningOrchestrator` stage, or API route constructs or
+calls `AIItineraryRepairService`/`AIItineraryRepairRequestBuilder` --
+proven by a dedicated import-absence test suite and a real `/generate`
+regression test showing `ai_itinerary_repair_result` stays `None` even
+with `AI_ITINERARY_REASONING_ENABLED=true` set. **Section 194B will
+introduce the bounded execution loop** that actually calls this after
+validation, decides whether to merge an accepted repair back into
+`ai_itinerary_reasoning_result`, and (if so) reruns whatever downstream
+steps that merge requires.
+
+**Validator audit (Task 1/2)**: `ValidationIssue` has no structured
+`code`/`affected_day`/`affected_candidate_id` field -- only `severity`,
+a free-string `category`, `message`, and an optional free-string
+`affected_section`. Of every `category` this app's `PlanValidatorService`
+actually produces (`accommodation_inventory`/`budget`/`constraints`/
+`feasibility`/`flight_inventory`/`geographic_spread`/`holidays`/
+`hotel_ratings`/`movement_data`/`must_visit`/`provider_coverage`/
+`provider_coverage_consistency`/`regeneration`/
+`regeneration_state_consistency`/`route_aware_sequencing`/
+`route_geometry`/`scheduling`/`weather`), only **`geographic_spread`**
+names a specific day (`affected_section=f"experience_plan.daily_plans[{day_number}]"`)
+and only ever warns, never blocks. Every route/sequencing/buffer/geometry
+category above it is either a plan-wide aggregate status report (e.g.
+"3 of 5 legs feasible") with no single actionable target, or -- for
+`route_aware_sequencing`/`movement_data`/`route_geometry` specifically --
+a pure data-availability restatement, never a "this is wrong" finding.
+`scheduling`/`provider_coverage` are `CRITICAL` but describe an empty
+plan with nothing scheduled at all, which a day-editing repair has no
+mechanism to address. The remaining categories are genuinely external/
+factual data repair must never be asked to "fix" (Task 2: "do not ask
+the LLM to repair missing provider truth").
+
+Two of this app's *other* real reports, inspected directly rather than
+through `ValidationReport`, do carry leg-level identity: a
+`RouteLegFeasibility` on `route_feasibility_report.legs` with
+`feasibility_status == RouteFeasibilityStatus.NEEDS_REVIEW`, and a
+`TravelTimeBuffer` on `travel_time_buffer_report.buffers` with
+`buffer_status == BufferSufficiencyStatus.INSUFFICIENT` -- both carry
+real `from_experience_id`/`to_experience_id` values, resolved to a day
+via that experience's own `DailyPlan.day_number` (never the
+denormalized, restatement-only `ExperienceItem.day_number`). Together
+with `geographic_spread`, these three are the **only** members of this
+app's own `RepairableIssueType` vocabulary
+(`app.models.ai_itinerary_repair`) -- a deliberately narrow, real-field-
+backed list, not a 1:1 mirror of `ValidationIssue.category`. Several
+examples the 194A task spec itself named as "possibly repairable"
+(day-count/pace overload, duplicate candidate, pacing violation) have no
+corresponding validator/report finding anywhere in this codebase --
+`ExperiencePlannerService` already prevents them at scheduling time, so
+there is nothing to classify; they are deliberately not invented
+(Task 2: "do not invent validator categories that do not exist").
+
+**Repair request (Task 3/4/13)**: `AIItineraryRepairRequest`
+(`app.models.ai_itinerary_repair`) mirrors `AIItineraryReasoningRequest`'s
+trip-context/traveler-context/`allowed_candidates` shape exactly, plus
+`original_days` (the full current reasoning result), `affected_days`
+(derived from the classified issues' own day_index values),
+`issues: list[AIItineraryRepairIssue]`, and `attempt_number` (supported,
+never auto-incremented in this step). `AIItineraryRepairRequestBuilder`
+composes the existing `AIItineraryReasoningRequestBuilder` (Section 193A)
+to reconstruct the **exact same candidate universe** the original
+reasoning call used -- safe because that builder performs zero provider
+I/O of its own and 194A never mutates the `PlanningState` fields it
+reads between the original reasoning call and a repair call. Returns
+`None` (never calls the LLM) whenever there is no `completed` reasoning
+result to repair, no repairable issue is classified, or the freshly-
+rebuilt candidate universe is empty or inconsistent with the original
+result.
+
+**Repair result (Task 5)**: `AIItineraryRepairResult.repaired_days` holds
+**only the day(s) actually changed** -- the smallest design compatible
+with the existing reasoning architecture, never a full restated day
+list. `merge_repair_into_reasoning_result` is the one deterministic place
+that combines this with the original `AIItineraryReasoningResult`.
+
+**Provider architecture (Task 9-11)**: `repair` was added directly to
+the existing `AIItineraryReasoningProvider` ABC alongside `reason` --
+one provider hierarchy, not two -- so `NotConnectedAIItineraryReasoningProvider`/
+`GroqAIItineraryReasoningProvider`/`AnthropicAIItineraryReasoningProvider`
+all reuse their existing client/API-key/model resolution exactly as-is.
+Groq: `method="json_schema", strict=True`, no `tools`/`tool_choice` (same
+191A.1 pattern), a narrower wire schema (`repaired_days`/`repair_summary`/
+`addressed_issue_types`/`confidence` only). Anthropic: same forced
+tool-use pattern, a narrower tool schema. Both call
+`validate_repair_result_against_request` before ever reporting
+`completed`, exactly mirroring how both `reason` implementations already
+call `validate_result_against_request`.
+
+**Configuration (Task 12)**: no new setting. Repair reuses
+`AI_ITINERARY_REASONING_ENABLED`/`AI_ITINERARY_REASONING_PROVIDER`/
+`AI_ITINERARY_REASONING_MODEL` exactly -- repairing a reasoning result
+makes no sense when reasoning itself is disabled, and Section 194B is
+what will need its own bounded-loop-control setting (attempt limits,
+automatic wiring), not this step.
+
+**Merge semantics (Task 16)**: `merge_repair_into_reasoning_result`
+replaces each `affected_days` entry with its repaired version, carries
+every other original day over unchanged, and always preserves
+`strategy`/`overall_tradeoffs` from the original result (194A's repair
+result has no strategy field of its own to adjust it with). Never
+mutates the original `AIItineraryReasoningResult`. Defense-in-depth:
+re-runs `validate_repair_result_against_request` before merging, then
+re-runs the standard `validate_result_against_request` against the full
+merged result (via `AIItineraryRepairRequest.to_reasoning_request()`,
+which reconstructs an equivalent `AIItineraryReasoningRequest` from the
+same fields the repair request already carries) -- "full result
+validates under the standard reasoning contract."
+
+**Semantic safety (Task 15)**: `validate_repair_result_against_request`
+rejects an unknown candidate_id, a day_index outside `affected_days`
+(Task 23 -- an unaffected day can never be "repaired"), a duplicate
+day_index or candidate_id within the repair output itself, and a
+candidate_id that collides with one already used by an *unaffected*
+original day (would create a cross-day duplicate the instant the merge
+combines both). All four are enforced identically whether the violation
+comes from a real LLM or a directly-constructed, hand-crafted result
+(the tests build both).
+
+**Real Groq verification (2 real repair calls, same local `.env`
+`GROQ_API_KEY` never printed, `GROQ_MODEL=openai/gpt-oss-20b`, a
+realistic 6-candidate 2-day Lisbon `AIItineraryRepairRequest` built the
+same shape `AIItineraryRepairRequestBuilder` itself would produce, with
+one real `geographic_spread`-derived `AIItineraryRepairIssue` on day 2).**
+Both runs: `completed`, `affected_days=[2]` honored exactly (day 1 never
+touched by either run), zero unknown candidate IDs, zero semantic
+violations, zero forbidden factual field names anywhere in the result.
+Run 1 dropped one candidate from day 2 ("Removed Padrao dos
+Descobrimentos from day 2 to reduce geographic spread"); Run 2 instead
+kept all three and reordered them ("Reordered the experiences on day 2
+to group geographically close sites together") -- expected non-
+determinism from a real LLM call, not a bug; both independently passed
+the same deterministic safety check, and both merged cleanly into the
+original `AIItineraryReasoningResult` via `merge_repair_into_reasoning_result`
+with day 1 preserved byte-for-byte and the original `strategy` intact.
+
+**Strict boundaries honored**: no LangGraph wiring, no automatic retry,
+no `ExperiencePlan` mutation, no automatic routing/validator rerun, no
+new provider discovery, no new candidate invention, no change to
+CandidateQuality/LLM #1/narrator/feedback/regeneration, no new
+dependency, no secret exposed, nothing committed.
+
+**Tests**: 78 new tests, zero changes to any pre-existing test's outcome
+-- models (21: request/result structural safety, Tasks 21-25 exactly),
+request builder (13: Task 1/2's classification for all three repairable
+categories plus explicit non-repairable-category exclusion, Task
+19/20's affected-day targeting, Task 13/18's "return None" cases), service
+(8: Task 18's disabled path, Task 26's no-repairable-issues path, Task 27's
+provider-failure safety, `apply`'s single-field mutation), Groq adapter
+(17) and Anthropic adapter (8) repair-specific safety tests (structured-
+output/tool-use shape, hallucinated-candidate/unaffected-day/forbidden-
+claim rejection, API-key secrecy), and a dedicated no-wiring suite (11:
+import-absence across every generation entry point plus three real
+`/generate` behavioral regression tests, including one proving the
+validator still runs exactly once).
+
+**Verification**: full suite **3809 passed + 18 skipped** (3731 + 78 new
+tests, zero change to any pre-existing test's outcome). `compileall`/
+`pytest` clean. No frontend/shared-contract file changed -- frontend
+checks explicitly skipped for that reason.
+
+## 145. Section 194B: Bounded Automatic AI Repair Loop
+
+```text
+validation
+  -> route_after_validation (conditional)
+       |-- no repairable issue / disabled / no completed reasoning / budget exhausted -> provider_coverage
+       `-- eligible -> ai_itinerary_repair
+                          -> route_after_repair (conditional)
+                               |-- completed -> experience_planning -> route_feasibility
+                               |                 -> route_aware_sequencing -> travel_time_buffer
+                               |                 -> validation (loops back to route_after_validation)
+                               `-- rejected/not_connected/skipped -> provider_coverage
+```
+
+**Automatic repair is disabled by default** (`AI_ITINERARY_REPAIR_ENABLED=false`), and even when enabled it only ever fires on top of an already-`AI_ITINERARY_REASONING_ENABLED=true` completed LLM #2 result -- a normal deterministic or narrator-only generation is completely untouched by this section. `AI_ITINERARY_REPAIR_MAX_ATTEMPTS` (default `1`, hard-bounded `1..2`) is the loop's only stopping condition beyond "no repairable issue remains"; there is no unlimited-retry path anywhere in this graph.
+
+**Reuses Section 194A entirely, unmodified in shape.** `AIItineraryRepairService`/`AIItineraryRepairRequestBuilder`/`classify_repairable_issues`/`merge_repair_into_reasoning_result`/the `AIItineraryReasoningProvider.repair` method are called exactly as 194A defined them -- the node adds zero new orchestration logic, only the loop-control wiring around them. The one real correction 194B's audit (Task 1) surfaced: `classify_repairable_issues`'s `ROUTE_NEEDS_REVIEW` check now additionally requires `RouteLegFeasibility.status == ProviderStatus.FAILED` (a routing call that was actually attempted and genuinely failed), not `feasibility_status == NEEDS_REVIEW` alone -- that status is *also* produced whenever no routing provider is connected at all (`ROUTING_PROVIDER` defaults to `not_connected` in this app), which is an absence of data, not a detected problem, and would otherwise have triggered repair on nearly every multi-stop day in any real deployment that hasn't configured OSRM.
+
+**Configuration**: `AI_ITINERARY_REPAIR_ENABLED`/`AI_ITINERARY_REPAIR_MAX_ATTEMPTS` are the only new settings -- repair reuses `AI_ITINERARY_REASONING_PROVIDER`/`AI_ITINERARY_REASONING_MODEL` and the existing Groq/Anthropic API keys, since repair is the same LLM #2 job as reasoning, just scoped to a subset of days. Added to `.env.example` in the same itinerary-reasoning section; `.env` itself was never modified.
+
+**`PlanningState.ai_itinerary_repair_attempt_count`** (new field, default `0`, backward compatible) tracks real invocations only. It is incremented by the `ai_itinerary_repair` node exactly when `Settings.ai_itinerary_reasoning_enabled` is `True`, a request could actually be built, and the call wasn't silently swallowed by `apply_repair_safely`'s own exception guard -- mirroring (never reimplementing as a second code path) the exact conditions `AIItineraryRepairService.repair` itself uses to decide whether to reach the provider at all, so the count stays correct even if this node is ever invoked without `route_after_validation`'s own pre-check having already guaranteed them. `ai_itinerary_repair_result` always holds the *latest* attempt's result -- never cleared once a later validation pass happens to come back clean, so a completed generation still shows exactly what happened during repair (Task 14: evidence for observability/evaluation).
+
+**The `ai_itinerary_repair` node** (`build_ai_itinerary_repair_node`) computes `attempt_number`, builds one `AIItineraryRepairRequest` (via the service's own `request_builder` instance) purely so it has the exact object `merge_repair_into_reasoning_result` needs, calls `apply_repair_safely` (the one real, gated, logged call), and -- only on a `completed` result -- merges it into `ai_itinerary_reasoning_result`. A `completed` result whose merge fails defense-in-depth safety validation (Task 22: a hallucinated candidate, an unaffected-day mutation) is honestly downgraded in place to `rejected` before being stored, so a dishonest/buggy provider claim can never send `route_after_repair` back into the planning chain with a stale "completed" label sitting next to an untouched plan. Never rebuilds `ExperiencePlan` itself, never touches `route_feasibility_report`/`route_aware_sequencing_report`/`travel_time_buffer_report`/`validation_report` -- those are exactly the fields the existing downstream nodes already unconditionally overwrite on every call (Task 8's audit conclusion: every one of `RouteFeasibilityService`/`RouteAwareSequencingService`/`TravelTimeBufferService`/`PlanValidatorService`'s node wrappers assigns a fresh report object on every successful run, so a second pass never needs to see a stale value cleared first -- no explicit clearing was added anywhere).
+
+**Two conditional edges, no new stage logic.** `route_after_validation` re-verifies every eligibility condition from scratch (repair enabled, reasoning enabled, a `completed` reasoning result exists, `classify_repairable_issues` finds something, the attempt budget isn't exhausted, a request can actually be built) using the real 194A classifier and request builder, never a reimplementation. `route_after_repair` is a one-line status check: `completed` re-enters at `experience_planning` (the full downstream chain -- route_feasibility, route_aware_sequencing, travel_time_buffer, validation -- always reruns in full, never a partial shortcut); everything else goes straight to `provider_coverage`, so a failed repair is never retried immediately -- only a later, independent pass through `route_after_validation` (itself only reachable after a *successful* repair's own re-validation) can ever trigger another attempt, which is what makes "no retry after failure" a property of the graph's topology rather than separate tracked state.
+
+**Real Groq verification (2 real Lisbon/3-day/history-food-walking generations via actual `POST /trips/{id}/generate`, `AI_CANDIDATE_DISCOVERY_ENABLED=true`/`AI_ITINERARY_REASONING_ENABLED=true`/`AI_ITINERARY_REASONING_PROVIDER=groq`/`AI_ITINERARY_REPAIR_ENABLED=true`/`AI_ITINERARY_REPAIR_MAX_ATTEMPTS=1` set only as process-level env overrides for the verification server -- `.env` itself never modified, `GROQ_API_KEY` never printed).** Run 1 naturally produced a real `geographic_spread` finding on day 2 (5 candidates, one -- Torre de São Lourenço -- geographically far from the rest); the router correctly routed to repair, a real Groq call (`groq_ai_itinerary_reasoning_provider`, `openai/gpt-oss-20b`) returned a `completed` repair dropping exactly that one candidate, the merge preserved days 1 and 3 byte-for-byte, `experience_planning`/`route_feasibility`/`route_aware_sequencing`/`travel_time_buffer`/`validation` all genuinely reran, and the second validation pass showed zero remaining `geographic_spread` issues (route/sequencing both `success`). This one real run satisfies Task 30's "controlled" verification requirement too -- no synthetic validator schema or threshold change was needed; a real trip naturally produced the exact condition being tested. Run 2's LLM #2 call itself came back `rejected` (a real, honest reasoning-provider outcome, unrelated to repair), so `ai_itinerary_reasoning_result.status != completed` and the router correctly never attempted repair at all (`attempt_count=0`) -- the resulting plan fell back to the deterministic path and still carried a real, un-repaired `geographic_spread` finding in its final validation report, exactly as Task 13 requires ("do not repair non-AI itineraries").
+
+**No-fabrication audit**: the full real Run 1 `planning_state` was scanned for `price`/`rating`/`opening_hours`/`route_time`/`route_distance`/`booking_url`/`review_count`/`availability`/`safety_score` field names anywhere in the nested structure -- zero matches. Every `repaired_days` candidate_id was confirmed to be a subset of the (unchanged) allowed candidate universe; three AI-directed promoted candidates (Castelo de São Jorge, Torre de Belém, Mosteiro dos Jerónimos) kept their exact `provider_place_id`/`provider_source`/coordinates across the repair, both in the untouched days (1 and 3) and structurally guaranteed for day 2 by `merge_repair_into_reasoning_result`'s own safety check.
+
+**Strict boundaries honored**: no Section 195 narrator work, no new provider discovery during repair, no LLM #1/CandidateQuality change, no weakened/suppressed validation (a plan that exhausts its repair budget still reports every remaining issue honestly), no invented candidate ID, no accommodation/flight/feedback/regeneration change, no new dependency, no secret exposed, nothing committed (194A remains uncommitted, and 194B is built directly on top of it per this section's explicit instruction).
+
+**Tests**: 25 new tests, zero changes to any pre-existing test's outcome (three 194A-era import-absence assertions in `test_ai_itinerary_repair_service_no_wiring.py` were updated to reflect the now-intentional live wiring, exactly like every prior section's own "no wiring yet" flip) -- a full-graph loop suite (17: valid-plan-needs-no-repair, non-repairable-findings-never-trigger, the critical successful-one-attempt full-rerun test, max-attempts-1/2 exhaustion in both outcomes, an explicit never-a-third-call bound test, provider-rejected/not_connected failure handling, semantic-invalid-repair rejection for both a hallucinated candidate and an unaffected-day mutation, stale-plan/second-pass consumption, unaffected-day preservation, and AI-directed-promoted-candidate provenance survival), 7 new node/router unit tests (disabled-never-calls-provider, node-failure-is-safe, both routers' eligibility branches), and 1 new request-builder regression test locking in the `ProviderStatus.FAILED` classification correction.
+
+**Verification**: full suite **3834 passed + 18 skipped** (3809 + 25 new tests, zero change to any pre-existing test's outcome). `compileall`/`pytest` clean. No frontend/shared-contract file changed -- frontend checks explicitly skipped for that reason.
+
+## 146. Section 195: Final Grounded Itinerary Narrator
+
+```text
+verified/provider-backed planning -> LLM #2 selection -> ExperiencePlanner
+  -> routing -> validation -> optional bounded repair (Section 194B)
+  -> FINAL planning state (result.planning_state from the LangGraph run)
+  -> itinerary narrator (Step 182F, refined here)
+```
+
+**The narrator already ran on final, post-repair state -- no invocation-point change was needed.** Auditing `PlanningOrchestrator.generate_full_plan_via_langgraph` (Task 1) showed `self.itinerary_narrative_service.generate(new_state)` is called using `new_state = result.planning_state`, where `result` is the LangGraph run's own completed output -- and Section 194B's bounded repair loop is entirely contained *inside* that graph run (the graph only reaches `final_state`/`END` after any repair attempts have already resolved). By the time the narrator's request builder reads `planning_state.experience_plan`/`validation_report`/`ai_itinerary_reasoning_result`, these are already whatever the graph settled on -- there is only ever one current state, never a separate "give me the post-repair snapshot" step to add. This is proven directly (not just asserted) by `test_itinerary_narrative_final_state.py`, which builds a "day 2 already repaired down to one candidate" fixture and confirms the real request builder reflects exactly that. The legacy (non-LangGraph) `generate_full_plan` path has no LLM #2/repair stage at all, so it has nothing extra to reflect.
+
+**Section 194B proposal-count sanity check (Task 0.1)**: the "LLM #1 proposals: 0, grounded: 3, promoted: 3" figure reported during 194B's own real verification was a bug in that turn's throwaway Python extraction script, not a system defect -- it read a nonexistent `proposal['result']['candidates']` key (silently defaulting to `[]`) instead of the real `proposal['result']['proposals']` key. Re-extracting the same two saved real responses with the correct key shows LLM #1 genuinely proposed 15 and 12 candidates in those two runs; only 3 of each were successfully grounded to a real provider place (an expected, honest narrowing -- not every AI-proposed named place has a matching Nominatim/OSM entry), and every grounded, quality-scored candidate was promoted. No production code changed as a result of this finding.
+
+**The narrator's job stayed unchanged: explain, never decide.** No new place, price, rating, opening hour, route duration, or booking claim can reach `ItineraryNarrativeReport` -- the request model still has no such field (unchanged since Step 182F), and this step added the same forbidden-factual-claim-pattern check every other AI-facing contract in this repo already enforces (`_FORBIDDEN_TEXT_PATTERNS`, now including `optimal`/`verified`/`guaranteed`/`travel-ready`/`booking-ready`/`safest`/`the best`) directly onto `ItineraryNarrativeDayOutput.title`/`narrative`/`caveats` and `ItineraryNarrativeReport.summary`/`assumptions`/`warnings` -- previously this model had zero such guard, unlike `ai_candidate_proposal`/`ai_itinerary_reasoning`/`ai_itinerary_repair`.
+
+**LLM #2 reasoning rationale and repair awareness are explanatory context only (Tasks 4-6).** `ItineraryNarrativeDayInput.reasoning_rationale`/`ItineraryNarrativeRequest.reasoning_strategy_summary` carry LLM #2's own already-generated prose, explicitly labeled "context only" in both adapters' prompts -- every specific factual claim in the narrator's own output must still independently pass the same forbidden-pattern/place-identity checks, so rationale prose can never smuggle an unsupported claim through. `was_adjusted_after_feasibility_checks` is a single plain boolean (`ai_itinerary_repair_attempt_count > 0` and the latest repair `status == completed`) -- never a provider name, model name, or attempt number -- and both adapters are instructed to mention it, when true, only in plain traveler-facing language, and never to mention it when false.
+
+**Structural place-identity safety (Task 12), the one real architectural addition.** `ItineraryNarrativeExperienceInput.experience_id` (request side) and `ItineraryNarrativeDayOutput.referenced_experience_ids` (output side) are validated against each other by the new pure function `validate_narrative_against_request` -- every referenced id must belong to *that exact day's* real, current, post-repair scheduled experiences, never a different day's, never an invented one. Both adapters call it before ever reporting `success`, exactly mirroring how `validate_result_against_request`/`validate_repair_result_against_request` already gate `completed` in the reasoning/repair adapters. This is a structural check, not a claim that the free-text narrative mentions only allowed places by name -- deliberately chosen over fuzzy free-text place-name matching (Task 12's own explicit steer), consistent with how this codebase already trusts prompt-level instruction-following for rationale/tradeoff prose elsewhere.
+
+**Real bug found and fixed via Task 29's real verification, invisible to unit tests.** The Groq narrator adapter had never adopted the Section 191A.1 Structured Outputs fix (`method="json_schema", strict=True`) -- Section 195 adopted it now that the output contract was changing anyway (Task 18). Doing so surfaced a genuine schema-construction bug: Groq's strict mode requires every property to appear in the schema's `required` array, but `Field(default_factory=list)` causes `langchain_groq`'s schema conversion to omit that field from `required`, and Groq then rejects the entire request (`400 invalid JSON schema for response_format`) before any completion is attempted -- a failure mode no fake-client unit test could ever observe, since it depends on the real schema Groq itself receives. Fixed by giving every field in `_NarratorDayOutputSchema`/`_NarratorBatchSchema` no Python default at all (always required, with the prompt instructed to use an empty list when there's nothing to report) -- the exact same convention `_GroqItineraryReasoningSchema`/`_GroqRepairSchema` already used correctly from the start.
+
+**Real Groq verification (2 real Lisbon/3-day/history-food-walking generations via actual `POST /trips/{id}/generate`, `AI_CANDIDATE_DISCOVERY_ENABLED=true`/`AI_ITINERARY_REASONING_ENABLED=true`/`AI_ITINERARY_REASONING_PROVIDER=groq`/`AI_ITINERARY_REPAIR_ENABLED=true`/`AI_ITINERARY_REPAIR_MAX_ATTEMPTS=1`/`ITINERARY_NARRATOR_ENABLED=true`/`ITINERARY_NARRATOR_PROVIDER=groq` set only as process-level env overrides -- `.env` itself never modified, `GROQ_API_KEY` never printed).** Both runs: a real repair genuinely completed (attempt_count=1), the narrator succeeded (`groq_itinerary_narrator_provider`), and both summaries correctly, honestly mentioned the adjustment in plain language (e.g. "adjusted after feasibility checks to keep the days manageable") without naming any internal system/model/provider. Every `referenced_experience_ids` value across both runs (9 and 8 respectively) matched a real, currently-scheduled experience_id exactly -- zero unknown references, zero forbidden factual field names, zero overclaim words anywhere in either real report. Both real repairs happened to *reorder* day 2 rather than remove a candidate outright, so the specific "a removed candidate never appears in the narrator's request or output" guarantee (Task 11) is proven by the deterministic test suite (`test_itinerary_narrative_final_state.py`) rather than by these two particular real runs -- noted here explicitly rather than overstated.
+
+**No-fabrication audit**: both real reports scanned for `price`/`rating`/`opening_hours`/`route_time`/`route_distance`/`booking_url`/`review_count`/`availability`/`safety_score` field names anywhere in the nested structure -- zero matches in either. Neither summary claimed the plan was resolved, verified, or complete -- but, as originally run, neither real report proactively surfaced the 8 real, still-unresolved validation issues either. Section 195.1 (below) closed that gap deterministically.
+
+**Strict boundaries honored**: no LLM #1/CandidateQuality change, no new provider discovery, no repair-loop behavior change, no weakened `PlanValidator`, no routing change, no Section 196/197 work, no new dependency, no secret exposed, nothing committed (194A + 194B + 195 remain a combined uncommitted stack, exactly as instructed).
+
+**Tests**: 26 new tests, zero changes to any pre-existing test's outcome (one 182F-era test renamed/updated to reflect `experience_id` as an intentional new allow-listed field, not a leak) -- `test_itinerary_narrative_final_state.py` (17: final-state-only reflection, removed-candidate/cross-day-reference rejection, resolved-vs-unresolved validation context, repaired/failed-repair/no-repair/deterministic-fallback narrator context, forbidden-claim/blank-text rejection, full read-only regression), 5 new Groq adapter tests (valid/hallucinated reference, forbidden-claim/overclaim rejection, the `json_schema`/`strict=True` structured-output regression), 4 new Anthropic adapter tests (the same reference/claim safety, mirrored).
+
+**Verification**: full suite **3860 passed + 18 skipped** (3834 + 26 new tests, zero change to any pre-existing test's outcome). `compileall`/`pytest` clean. No frontend/shared-contract file changed -- frontend checks explicitly skipped for that reason.
+
+### 146.1. Section 195.1: Deterministic Unresolved-Validation Disclosure
+
+Section 195's real verification showed a real gap: a narrator that honestly avoids *claiming* a plan is resolved/verified still isn't the same as one that actually *surfaces* an unresolved limitation -- the LLM is free to simply not mention it, and both real Section 195 runs did exactly that (8 unresolved issues, zero caveats). Section 195.1 closes this with a small, deterministic, non-LLM post-processing step in `ItineraryNarrativeService.generate` (`_apply_final_validation_disclosure`), applied only to an already-`success` result, using the existing `ItineraryNarrativeReport.warnings` field -- no new model field, no provider/prompt change.
+
+**Rule, driven entirely by the request's own (already final-state) `warning_count`/`critical_issue_count`:**
+- zero unresolved issues (including a genuinely repair-resolved one): `report` returned completely unchanged.
+- one or more unresolved issues and the narrator already returned at least one warning of its own: returned unchanged too (a deliberately simple structural rule -- trust an existing warning, never a fuzzy semantic duplicate check).
+- one or more unresolved issues and `report.warnings` is empty: a new report (never a mutation) with exactly one fixed, pre-written sentence appended -- *"Some itinerary checks still need review; see the validation details before relying on the plan."* -- which never names the issue's category and carries none of `_FORBIDDEN_TEXT_PATTERNS`' overclaim language.
+
+Never applied to a `failed`/`not_connected`/`unavailable` result (unchanged from Section 195). Never touches `experience_plan`/`route_feasibility_report`/`route_aware_sequencing_report`/`travel_time_buffer_report`/`validation_report`/`ai_itinerary_reasoning_result`/`ai_itinerary_repair_result` -- proven directly by a read-only regression test (full before/after deep-copy diff).
+
+**Proposal-count sanity check re-confirmed (Task 9)**: unchanged conclusion from Section 195 -- the earlier "proposals=0, grounded/promoted=3" figure was a wrong-JSON-key bug in a throwaway verification script, not a product defect. No candidate-discovery code was touched.
+
+**Combined worktree file count (Task 8)**: Section 195's own report undercounted by exactly one file. `git diff --stat` only shows tracked changes; `backend/app/tests/services/test_itinerary_narrative_final_state.py` was still genuinely untracked at the moment that count was taken, so it never appeared in that diff. `git status --porcelain`, which includes untracked files, correctly shows **33** changed/new paths for the full combined 194A + 194B + 195 (+ 195.1) working tree -- verified directly, no code changed because of this.
+
+**Tests**: 7 new, all in `test_itinerary_narrative_final_state.py` -- unresolved-and-omitted (disclosure added), clean validation (no synthetic warning), resolved-after-repair (old issue never mentioned), exhausted-repair-with-remaining-issue (disclosure added), narrator-already-warns (no duplicate), failed-narrator (unaffected), and full read-only regression.
+
+**Verification**: full suite **3867 passed + 18 skipped** (3860 + 7 new tests, zero change to any pre-existing test's outcome). `compileall`/`pytest` clean. No frontend/shared-contract file changed -- frontend checks explicitly skipped for that reason.

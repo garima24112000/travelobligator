@@ -29,9 +29,16 @@ allowlist below already reserved every one of those names since Step
 name, `auth_event` ("signup"/"login"/"logout"/"session_verify"), and put
 it to use in `app.auth.service`/`app.auth.sessions`/
 `app.auth.dependencies` -- still never an email, password, session
-token/cookie value, or `Authorization` header. Later steps still add
-provider/gateway logging and frontend visibility -- none of that exists
-yet.
+token/cookie value, or `Authorization` header. Sections 194A/194B
+(docs/14_backend_architecture.md, following section 144) added
+`attempt_number`/`repairable_issue_count`/`affected_day_count` (used by
+`AIItineraryRepairService`'s own per-call log) and
+`max_attempts`/`affected_days`/`repair_status`/`loop_back`/
+`remaining_repairable_issue_count` (used by the `ai_itinerary_repair`
+LangGraph node's per-invocation loop-decision log) -- all plain counts/
+booleans/day-index lists/status strings, never a prompt, a candidate
+name, or a credential. Later steps still add provider/gateway logging
+and frontend visibility -- none of that exists yet.
 
 Every backend module that wants structured fields on a log line already
 uses the stdlib pattern `logger.warning("...", extra={"trip_id": ...})`
@@ -115,6 +122,26 @@ ALLOWED_EXTRA_FIELDS = frozenset(
         # address or any other per-user identifying value -- `user_id`
         # above already covers "which account," once known.
         "auth_event",
+        # Sections 194A/194B (docs/14_backend_architecture.md, following
+        # section 144): AI itinerary repair observability. All plain
+        # counts/booleans/day-index lists/status strings -- never a
+        # prompt, a candidate name/id, a rationale, or a credential.
+        "attempt_number",
+        "max_attempts",
+        "repairable_issue_count",
+        "affected_day_count",
+        "affected_days",
+        "repair_status",
+        "loop_back",
+        "remaining_repairable_issue_count",
+        # Section 195 (docs/14_backend_architecture.md, following section
+        # 145): itinerary-narrator observability. Plain counts only --
+        # never a prompt, a candidate name, or a validator message.
+        "final_plan_item_count",
+        "day_count",
+        "repair_attempt_count",
+        "remaining_validation_issue_count",
+        "narrative_reference_count",
     }
 )
 

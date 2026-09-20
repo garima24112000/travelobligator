@@ -11,6 +11,7 @@ from app.models.accommodation import AccommodationSearchResult
 from app.models.ai_candidate_promotion import AICandidatePromotionReport
 from app.models.ai_candidate_proposal import AICandidateProposalBatch
 from app.models.ai_itinerary_reasoning import AIItineraryReasoningResult
+from app.models.ai_itinerary_repair import AIItineraryRepairResult
 from app.models.ai_provider_discovery import AIProviderDiscoveryResult
 from app.models.candidate_grounding import CandidateGroundingBatch
 from app.models.candidate_quality import CandidateQualityReport
@@ -1277,6 +1278,32 @@ class PlanningState(BaseModel):
     # validates unchanged (backward compatible by construction -- an
     # optional field with a `None` default).
     ai_itinerary_reasoning_result: AIItineraryReasoningResult | None = None
+    # Section 194A/194B (docs/14_backend_architecture.md, following
+    # section 144): the latest repair attempt's result -- populated by
+    # the `ai_itinerary_repair` LangGraph node whenever
+    # `Settings.ai_itinerary_repair_enabled` allows a repair attempt to
+    # actually run (Section 194B). Stays `None` for every trip where
+    # repair was never attempted (disabled, no completed AI reasoning
+    # result, or no repairable issue found). Never read by
+    # `ExperiencePlannerService` -- only `ai_itinerary_reasoning_result`
+    # (updated with the merged, validated repair when one completes) is
+    # ever consumed downstream; this field exists purely for evidence/
+    # observability of what the repair attempt itself produced. A
+    # `PlanningState` serialized before this field existed still
+    # validates unchanged (backward compatible by construction -- an
+    # optional field with a `None` default).
+    ai_itinerary_repair_result: AIItineraryRepairResult | None = None
+    # Section 194B: how many real repair provider invocations have
+    # actually occurred for this trip's current generation -- incremented
+    # by the `ai_itinerary_repair` node only when an invocation actually
+    # happens (never for "repair disabled"/"no repairable issue"/"no
+    # completed AI reasoning result", which never reach the node at all).
+    # Bounded by `Settings.ai_itinerary_repair_max_attempts` (1 or 2) --
+    # the post-validation router refuses to route back to
+    # `ai_itinerary_repair` once this count reaches that bound, so the
+    # loop always terminates. `0` for every trip generated before this
+    # field existed or where repair was never attempted.
+    ai_itinerary_repair_attempt_count: int = 0
     # Backend PlanningOrchestrator pipeline stage-progress bookkeeping (Step
     # 163B) -- never real flight/route/travel progress. `None` only for
     # planning states persisted before this step; `PlanningOrchestrator.
