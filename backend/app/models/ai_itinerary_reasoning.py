@@ -93,6 +93,15 @@ class CandidateOrigin(str, Enum):
 
     BROAD_PROVIDER_DISCOVERY = "broad_provider_discovery"
     AI_DIRECTED_PROVIDER_DISCOVERY = "ai_directed_provider_discovery"
+    # Section 197B (docs/14_backend_architecture.md, following section
+    # 148): a place the USER explicitly named in feedback (Section 196's
+    # `NewPlaceRequest.query`), grounded by a direct, targeted provider
+    # lookup -- never an AI proposal. Task 17's explicit instruction: this
+    # must never be mislabeled as `AI_DIRECTED_PROVIDER_DISCOVERY` just
+    # because it reuses the same targeted-lookup gateway method. Nothing
+    # reads `origin` for behavior (see this enum's own docstring) -- this
+    # is provenance/debugging only, same as the other two values.
+    USER_REQUESTED = "user_requested"
 
 
 class ItineraryReasoningCategory(str, Enum):

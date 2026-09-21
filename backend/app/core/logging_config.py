@@ -162,6 +162,15 @@ ALLOWED_EXTRA_FIELDS = frozenset(
         "provider_lookup_required",
         "reasoning_required",
         "required_stage_count",
+        # Section 197B (docs/14_backend_architecture.md, following section
+        # 148): targeted-regeneration-EXECUTION observability. Plain
+        # counts/booleans/status/version-label strings only -- never a
+        # raw feedback/instruction string, an experience name, or a
+        # credential.
+        "source_version",
+        "deterministic_edit_count",
+        "provider_lookup_count",
+        "repair_attempt_count",
     }
 )
 

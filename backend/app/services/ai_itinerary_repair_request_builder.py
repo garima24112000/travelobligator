@@ -72,7 +72,9 @@ def _experience_day_index(planning_state: PlanningState) -> dict[str, int]:
     return index
 
 
-def classify_repairable_issues(planning_state: PlanningState) -> list[AIItineraryRepairIssue]:
+def classify_repairable_issues(
+    planning_state: PlanningState, allowed_day_indices: set[int] | None = None
+) -> list[AIItineraryRepairIssue]:
     """Task 2's deterministic repairable/non-repairable classification,
     implemented directly from real structured fields (Task 8: never from
     loose parsing of `ValidationIssue.message` prose):
@@ -101,6 +103,14 @@ def classify_repairable_issues(planning_state: PlanningState) -> list[AIItinerar
     guessed. Returns an empty list -- never `None` -- when nothing
     repairable is found; the caller (`AIItineraryRepairRequestBuilder`)
     is what decides that an empty list means "do not call the LLM."
+
+    `allowed_day_indices` (Section 197B, Task 28): when given, an issue
+    whose `day_index` is outside this set is excluded -- the smallest
+    addition needed so a targeted regeneration's bounded repair can be
+    constrained to only the days that execution actually touched,
+    without ever repairing an issue that happens to also exist on a
+    hard-preserved day. `None` (the default) preserves the original,
+    whole-trip behavior used by initial generation's repair loop.
     """
     issues: list[AIItineraryRepairIssue] = []
 
@@ -188,6 +198,9 @@ def classify_repairable_issues(planning_state: PlanningState) -> list[AIItinerar
                 )
             )
 
+    if allowed_day_indices is not None:
+        issues = [issue for issue in issues if issue.day_index in allowed_day_indices]
+
     return issues
 
 
@@ -212,7 +225,10 @@ class AIItineraryRepairRequestBuilder:
         self._reasoning_request_builder = reasoning_request_builder or AIItineraryReasoningRequestBuilder()
 
     def build_request(
-        self, planning_state: PlanningState, attempt_number: int = 1
+        self,
+        planning_state: PlanningState,
+        attempt_number: int = 1,
+        allowed_day_indices: set[int] | None = None,
     ) -> AIItineraryRepairRequest | None:
         """Returns `None` -- meaning "do not call the LLM" (Task 13/18) --
         whenever any of the following holds:
@@ -227,12 +243,16 @@ class AIItineraryRepairRequestBuilder:
           original reasoning result somehow references a candidate_id
           outside it (defensive: repair must never be attempted against
           an inconsistent candidate universe).
+
+        `allowed_day_indices` (Section 197B, Task 28): forwarded to
+        `classify_repairable_issues` unchanged -- `None` preserves the
+        original whole-trip behavior.
         """
         original_result = planning_state.ai_itinerary_reasoning_result
         if original_result is None or original_result.status != AIItineraryReasoningStatus.COMPLETED:
             return None
 
-        issues = classify_repairable_issues(planning_state)
+        issues = classify_repairable_issues(planning_state, allowed_day_indices)
         if not issues:
             return None
 
