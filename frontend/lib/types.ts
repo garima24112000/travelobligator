@@ -698,6 +698,52 @@ export type FeedbackInterpretation = {
   change_preview?: FeedbackChangePreview;
 };
 
+// Section 197C: what a genuinely AI-interpreted feedback event's
+// `interpretation` dict looks like once targeted regeneration has
+// interpreted it (backend: TargetedRegenerationApplicationService.
+// _persist_interpretation). Distinguished from the deterministic
+// `FeedbackInterpretation` shape above purely by `method` -- an older/
+// legacy event, or one interpreted while targeted mode is off, keeps the
+// `"deterministic_rule_based"` shape and is never touched by this one.
+// `structured_result` mirrors the backend's `AIFeedbackInterpretationResult`
+// closely enough to read a clarification's reason/possible ids after a
+// 409 REGENERATION_NEEDS_CLARIFICATION refusal (which never returns this
+// detail on the error response itself -- only this persisted record
+// does, recoverable via a follow-up GET /trips/{trip_id}). Never contains
+// a raw prompt or model chain-of-thought -- only the same structured,
+// forbidden-pattern-checked fields the backend contract itself allows.
+export type AIFeedbackClarification = {
+  reason: string;
+  possible_experience_ids: string[];
+};
+
+export type AIFeedbackInterpretedResult = {
+  method: "ai_interpreted";
+  status: string;
+  provider: string | null;
+  model: string | null;
+  source_version: string | null;
+  confidence: number;
+  scope: string | null;
+  structured_result: {
+    status: string;
+    scope: string | null;
+    clarification: AIFeedbackClarification | null;
+    summary: string | null;
+    confidence: number;
+  };
+  interpreted_at: string;
+};
+
+export function isAiInterpretedResult(
+  interpretation: FeedbackInterpretation | AIFeedbackInterpretedResult | null,
+): interpretation is AIFeedbackInterpretedResult {
+  return (
+    interpretation !== null &&
+    (interpretation as AIFeedbackInterpretedResult).method === "ai_interpreted"
+  );
+}
+
 export type FeedbackEvent = {
   feedback_event_id: string;
   feedback_text: string;
@@ -705,7 +751,7 @@ export type FeedbackEvent = {
   handling_status: string;
   regeneration_strategy: string;
   affected_stages: string[];
-  interpretation: FeedbackInterpretation | null;
+  interpretation: FeedbackInterpretation | AIFeedbackInterpretedResult | null;
   created_at: string;
   // Step 174D: set only by a successful regeneration that actually reran
   // the stage(s) this event named -- never by feedback capture itself.
@@ -844,6 +890,50 @@ export type RegenerateRequestInput = {
   scope: "affected_stages";
 };
 
+// Stable-identity, before/after content diff for a targeted regeneration
+// (backend: app.models.targeted_regeneration_diff.TargetedRegenerationDiff,
+// Section 197C). Derived purely by comparing two real PlanningState
+// snapshots server-side -- added/removed/moved use experience_id identity
+// only, never fuzzy name/coordinate matching. Never present on a legacy
+// (non-targeted) regeneration response.
+export type MovedExperienceDiff = {
+  experience_id: string;
+  from_day: number;
+  to_day: number;
+};
+
+export type ReorderedDayDiff = {
+  day_index: number;
+  before_order: string[];
+  after_order: string[];
+};
+
+export type TravelerProfileDiff = {
+  pace_before: string | null;
+  pace_after: string | null;
+  interests_added: string[];
+  interests_removed: string[];
+};
+
+export type TargetedRegenerationDiff = {
+  trip_id: string;
+  source_version: string;
+  new_version: string;
+  affected_day_indices: number[];
+  preserved_day_indices: number[];
+  added_experience_ids: string[];
+  removed_experience_ids: string[];
+  moved_experiences: MovedExperienceDiff[];
+  reordered_days: ReorderedDayDiff[];
+  traveler_profile_diff: TravelerProfileDiff | null;
+  validation_status_before: string | null;
+  validation_status_after: string | null;
+  warning_count_before: number;
+  warning_count_after: number;
+  critical_issue_count_before: number;
+  critical_issue_count_after: number;
+};
+
 // Response payload for a successful `POST /trips/{trip_id}/regenerate`
 // (backend: app.schemas.regeneration_result.RegenerateResponseData, Step
 // 174C). Deliberately minimal -- no plan content, no fabricated diff;
@@ -851,6 +941,12 @@ export type RegenerateRequestInput = {
 // restatements of what the backend actually reran, never a frontend-
 // computed value. The frontend follows up with `GET /trips/{trip_id}` (via
 // `loadPlanResult`) for the plan's actual current content.
+//
+// Section 197C extends this backward-compatibly: every field below
+// `message` is new and optional. A legacy (non-targeted) response never
+// sets them, so existing code reading only the original fields is
+// unaffected; new code must check `targeted === true` before trusting
+// `diff`/`interpretation_status`/`execution_status` are meaningful.
 export type RegenerateResponseData = {
   trip_id: string;
   status: string;
@@ -861,6 +957,20 @@ export type RegenerateResponseData = {
   applied_feedback_event_ids: string[];
   active_lock_count: number;
   message: string;
+  targeted?: boolean;
+  interpretation_status?: string | null;
+  execution_status?: string | null;
+  affected_day_indices?: number[];
+  preserved_day_indices?: number[];
+  diff?: TargetedRegenerationDiff | null;
+  // Note (Section 197C's own backend behavior): these two are declared on
+  // the backend schema but are never actually populated on a 200 response
+  // today -- a needs-clarification outcome is always a 409 refusal
+  // instead (see `AIFeedbackInterpretedResult.structured_result.clarification`
+  // above for where the real detail lives). Kept here only for forward
+  // compatibility/honesty about the full contract shape.
+  clarification_reason?: string | null;
+  clarification_possible_experience_ids?: string[];
 };
 
 // Step 186D: `POST /trips/{trip_id}/regenerate` returns `RegenerateResponseData`

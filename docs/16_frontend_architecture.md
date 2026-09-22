@@ -5154,3 +5154,72 @@ accurate strings, the frontend displays them correctly with zero code
 change, exactly as it already displayed the (formerly stale) ones.
 `tsc --noEmit`/`lint`/`build` were re-run and are unaffected, as
 expected for a step that changed no frontend file.
+
+## 60. Section 198A: Targeted-Regeneration Functional UX
+
+```text
+feedback input (existing FeedbackPanel, unchanged)
+  |
+  v
+feedback captured (existing /feedback flow, unchanged)
+  |
+  v
+regenerate button (existing readiness-gated CTA, unchanged)
+  |
+  v
+POST /trips/{trip_id}/regenerate
+  |
+  +-- legacy backend (TARGETED_REGENERATION_ENABLED=false, default)
+  |     -> RegenerateResponseData with targeted=undefined -- every new
+  |        field this section adds is optional and simply absent, so
+  |        the existing UI renders exactly as it always has
+  |
+  +-- targeted backend (TARGETED_REGENERATION_ENABLED=true)
+        -> RegenerateResponseData.targeted=true, .diff, .affected_day_
+           indices, .preserved_day_indices, .interpretation_status,
+           .execution_status
+        -> OR a 409 (REGENERATION_NEEDS_CLARIFICATION /
+           REGENERATION_CONFLICT / REGENERATION_PROVIDER_UNAVAILABLE /
+           the existing REGENERATION_* codes)
+  |
+  v
+sync 200 / async 202+job-poll -- both funnel through the SAME
+`onRegenerateSuccess` full-trip-reload callback and the same
+`applyTargetedSummary` diff-name-resolution helper (Task 8)
+  |
+  v
+trip reload (existing loadPlanResult, unchanged) -- now returns the
+fresh PlanResult back to RegenerationReadinessSection so it can resolve
+added/moved experience_ids to real names and report remaining pending-
+feedback count
+  |
+  v
+version + basic structured diff + clarification/error states rendered
+inline in the existing regenerate success/error banners
+```
+
+**Audited the existing frontend first (Task 1) and found it already functionally complete for the legacy pipeline -- no stale placeholder copy exists anywhere.** `FeedbackPanel`, the readiness-gated "Regenerate from feedback" button, `useJobPolling`, `JobStatusCard`, and the existing `handleRegenerationRefusal`/`REGENERATION_REASON_CODE_LABELS` error-code map were all already live, tested by hand across the legacy Section 174 pipeline, and are reused as-is -- this section is purely additive. The one genuinely stale thing found was `frontend/lib/types.ts`'s `RegenerateResponseData`, which mirrored only the legacy fields; Section 197C's real fields (`targeted`, `interpretation_status`, `execution_status`, `affected_day_indices`, `preserved_day_indices`, `diff`, `clarification_reason`, `clarification_possible_experience_ids`) were entirely missing and have been added, all optional so a legacy response still parses safely (Task 2/30).
+
+**A real backend contract discovery, not a bug**: `clarification_reason`/`clarification_possible_experience_ids` are declared on the backend's `RegenerateResponseData` schema but are never actually populated on a 200 response -- a needs-clarification outcome is always a `409 REGENERATION_NEEDS_CLARIFICATION` refusal instead, with the real clarification detail persisted only onto the triggering `FeedbackEvent.interpretation.structured_result.clarification`. The frontend handles this correctly: on that specific error code, `handleRegenerationRefusal` now also re-fetches the trip and reads the newest AI-interpreted feedback event's clarification via a new `findLatestClarificationDetail` helper, rendering the real question/possible items in a dedicated amber clarification panel (Task 9) rather than showing this as a generic red failure or guessing at options client-side.
+
+**A second real contract gap, disclosed rather than worked around**: `JobResponseData` (the async job-poll result type) carries only `result_version`/`changed_sections` -- no `diff`/`targeted`/`interpretation_status` field exists on it. An async targeted regeneration success therefore cannot show the rich item-level diff summary the sync path can -- only the version transition and `JobStatusCard`'s existing fields. Both paths still funnel through the exact same `onRegenerateSuccess`/`applyTargetedSummary` handling (Task 8's "one shared result-handling path" requirement is honored structurally), but the sync path has strictly more data to show. This is a genuine, disclosed backend-contract limitation for a future section to close (e.g. persisting the diff onto the job record), not a frontend bug.
+
+**Structured diff rendering resolves stable experience_ids to real names using before/after snapshots, never fuzzy matching (Task 17/18/19).** `RegenerationReadinessSection` captures a display-only `Map<experience_id, {name, dayNumber}>` from its current `dailyPlans` prop the instant a regeneration request is sent (`beforeNameMap`); `onRegenerateSuccess` now returns the freshly reloaded `PlanResult` instead of `void`, giving an "after" snapshot to resolve added/moved names against. An id that resolves against neither snapshot displays as `Experience {id}` rather than being hidden or guessed at by name.
+
+**Preserved days are shown factually, never as a stronger guarantee than the backend actually made (Task 19)**: "Unchanged in this revision: Day 2" -- never "guaranteed unchanged." Validation before/after and profile changes are rendered as plain factual comparisons (Task 20/21) -- no "improved"/"better"/"optimized" language anywhere.
+
+**Multiple pending feedback is reported honestly (Task 24).** After a successful targeted regeneration, `targetedSummary.remainingPendingCount` (read from the reloaded `PlanResult.pendingFeedbackSummary.total_feedback_items`) drives a line like "1 feedback item applied. 2 more feedback items still pending -- regenerate again to apply the next one." -- never implying one click applied everything.
+
+**A version conflict now triggers a real reload, not just an error message (Task 12).** `REGENERATION_CONFLICT` was the one refusal code where leaving the UI showing a stale version would be actively misleading (someone else's regeneration already committed); `handleRegenerationRefusal` now also calls the same full-reload `onRegenerateSuccess()` path for this one code, without showing the "applied" banner.
+
+**Accessibility (Task 28)**: the feedback textarea gained an explicit associated `<label>` (visually hidden via `sr-only`, plus `aria-label` for redundancy); the regenerate success banner, the new clarification panel, and the generic error banner all gained `role="status"|"alert"` + `aria-live="polite"`, matching the existing pattern already used elsewhere in this file (auth errors, the "My trips" error region) rather than inventing a new convention. No new color-only-dependent communication was introduced -- every state change is also carried by text.
+
+**Responsive/visual polish is explicitly deferred to Section 198B**, per this section's own scope boundary -- new content reuses the existing `<dl>`/list/stat-card Tailwind patterns already used throughout the file (`grid-cols-2 gap-3 text-sm sm:grid-cols-4`-style breakpoints, `break-words` on every id/message list) rather than introducing new layout primitives.
+
+**No frontend test framework exists in this repository** (confirmed directly, not assumed -- `frontend/package.json` has no test runner, no test files exist anywhere under `frontend/`, and `npm run lint` remains the only frontend CI check per the root `CLAUDE.md`). Rather than unilaterally introducing a new test framework as an unrequested infrastructure change, this section relies on `tsc --noEmit` (which caught a real type error during development -- the shared `FeedbackEvent.interpretation` union needed an explicit branch, not an `any` cast), `npm run lint`, `npm run build`, and a real end-to-end contract verification against a live backend (below) as the available verification surface. This is a disclosed, deliberate scope decision, not a silently skipped requirement.
+
+**Real verification**: a live backend (`TARGETED_REGENERATION_ENABLED=true`, `AI_FEEDBACK_INTERPRETER_ENABLED=true`, `AI_FEEDBACK_INTERPRETER_PROVIDER=groq`, process-level env only, `.env` never modified) and a live frontend dev server were both started. Real signup -> real trip creation -> real generation -> real feedback ("Remove Pastéis de Belém please.") -> real Groq interpretation -> real targeted regeneration were exercised via direct HTTP calls against the running backend (not through a browser -- no browser-automation tool is available in this environment, disclosed explicitly rather than claimed). The raw JSON response matched the new TypeScript types field-for-field with zero discrepancies: `targeted`, `interpretation_status`, `execution_status`, `affected_day_indices`, `preserved_day_indices`, and a `diff` object with every field `TargetedRegenerationDiff` declares. The persisted `FeedbackEvent.interpretation` also matched `AIFeedbackInterpretedResult` exactly, including a real `structured_result.summary` ("Pastéis de Belém removed.") and no `clarification` (correctly `null` for a `completed` interpretation). The frontend dev server was separately confirmed to boot cleanly and serve the real page (`200`, correct `<title>`) with these changes in place. Full interactive browser click-through (Tasks 43-45) was not performed -- disclosed as a real limitation of this verification pass, not claimed as done.
+
+**Files changed**: `frontend/lib/types.ts` (new `AIFeedbackClarification`/`AIFeedbackInterpretedResult`/`isAiInterpretedResult`, `MovedExperienceDiff`/`ReorderedDayDiff`/`TravelerProfileDiff`/`TargetedRegenerationDiff`, extended `FeedbackEvent.interpretation`/`RegenerateResponseData`), `frontend/app/page.tsx` (new helpers `buildExperienceNameMap`/`experienceLabel`/`findLatestClarificationDetail`, extended `REGENERATION_REASON_CODE_LABELS`, extended `RegenerationReadinessSection` with `dailyPlans` prop + targeted summary/clarification state and rendering, updated `FeedbackPanel`'s interpretation rendering to branch on `isAiInterpretedResult`, both mount sites updated to pass `dailyPlans` and return the reloaded `PlanResult`).
+
+**Verification**: `tsc --noEmit` clean, `npm run lint` clean, `npm run build` succeeds. No frontend test suite exists to run (see above). Backend was not modified by this section -- no backend test run was needed or performed.

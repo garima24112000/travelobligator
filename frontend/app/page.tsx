@@ -42,6 +42,7 @@ import type {
   TrustDashboardModel,
   TrustDashboardStatusKind,
 } from "@/lib/trust-dashboard";
+import { isAiInterpretedResult } from "@/lib/types";
 import type {
   AccommodationInventoryReport,
   AccommodationOffer,
@@ -50,6 +51,7 @@ import type {
   AICandidatePromotionReport,
   AICandidateReviewItem,
   AICandidateReviewReport,
+  AIFeedbackClarification,
   CandidatePoi,
   ChecklistItemStatus,
   CurrencyContext,
@@ -86,6 +88,7 @@ import type {
   ScrapedAccommodationProvenance,
   ScrapedFlightProvenance,
   StayAreaGuidance,
+  TargetedRegenerationDiff,
   TravelTimeBuffer,
   TravelTimeBufferReport,
   TripListItem,
@@ -4063,11 +4066,74 @@ const REGENERATION_REASON_CODE_LABELS: Record<string, string> = {
   // already uses, so no separate error-handling branch was needed here.
   JOB_ALREADY_RUNNING: "Already in progress",
   JOB_NOT_FOUND: "Job not found",
+  // Section 197C/198A: targeted-regeneration-specific outcomes, only ever
+  // raised when the backend's TARGETED_REGENERATION_ENABLED flag is on --
+  // surfaced through the exact same refusal path as every code above.
+  REGENERATION_NEEDS_CLARIFICATION: "Needs clarification",
+  REGENERATION_CONFLICT: "Itinerary changed during regeneration",
+  REGENERATION_PROVIDER_UNAVAILABLE: "Requested place could not be looked up",
   UNKNOWN_ERROR: "Unknown error",
 };
 
 function regenerationReasonCodeLabel(code: string): string {
   return REGENERATION_REASON_CODE_LABELS[code] ?? code;
+}
+
+// Section 198A (Task 17/18): resolves experience_id -> {name, dayNumber}
+// against a given day-by-day snapshot, for showing human-readable names
+// alongside a targeted regeneration's structured (ID-only) diff. Stable-
+// ID lookup only -- never a fuzzy name/coordinate match, and never
+// invents a label for an id it can't find.
+function buildExperienceNameMap(
+  dailyPlans: DailyPlan[],
+): Map<string, { name: string; dayNumber: number }> {
+  const map = new Map<string, { name: string; dayNumber: number }>();
+  for (const day of dailyPlans) {
+    for (const experience of day.experiences) {
+      map.set(experience.experience_id, {
+        name: experience.name,
+        dayNumber: day.day_number,
+      });
+    }
+  }
+  return map;
+}
+
+function experienceLabel(
+  experienceId: string,
+  nameMap: Map<string, { name: string; dayNumber: number }>,
+): string {
+  return nameMap.get(experienceId)?.name ?? `Experience ${experienceId}`;
+}
+
+// Section 198A (Task 9): a REGENERATION_NEEDS_CLARIFICATION refusal never
+// carries its own reason/possible-items on the error response itself
+// (backend: only `FeedbackEvent.interpretation` gets that detail
+// persisted) -- this finds the most recent AI-interpreted feedback event
+// whose structured result reported genuine ambiguity, after a follow-up
+// trip reload.
+function findLatestClarificationDetail(
+  feedbackHistory: FeedbackEvent[],
+): AIFeedbackClarification | null {
+  let latest: { detail: AIFeedbackClarification; interpretedAt: string } | null =
+    null;
+  for (const event of feedbackHistory) {
+    const interpretation = event.interpretation;
+    if (!isAiInterpretedResult(interpretation)) {
+      continue;
+    }
+    const clarification = interpretation.structured_result.clarification;
+    if (interpretation.status !== "needs_clarification" || !clarification) {
+      continue;
+    }
+    if (!latest || interpretation.interpreted_at > latest.interpretedAt) {
+      latest = {
+        detail: clarification,
+        interpretedAt: interpretation.interpreted_at,
+      };
+    }
+  }
+  return latest?.detail ?? null;
 }
 
 /**
@@ -4238,6 +4304,7 @@ function PlanDiffPreviewSection({ preview }: { preview: PlanDiffPreview }) {
 function RegenerationReadinessSection({
   tripId,
   readiness,
+  dailyPlans,
   onRegenerationAttemptsChange,
   onRegenerateSuccess,
   onAuthenticationRequired,
@@ -4246,8 +4313,17 @@ function RegenerationReadinessSection({
 }: {
   tripId: string;
   readiness: RegenerationReadiness;
+  // Section 198A (Task 17/18): the CURRENT, still-displayed itinerary,
+  // captured at the start of a regeneration attempt as a display-only
+  // "before" snapshot -- used only to resolve a removed experience_id's
+  // name after success, never to decide regeneration behavior itself.
+  dailyPlans: DailyPlan[];
   onRegenerationAttemptsChange: (attempts: RegenerationAttempt[]) => void;
-  onRegenerateSuccess: () => Promise<void>;
+  // Section 198A: now returns the freshly reloaded PlanResult (instead of
+  // void) so this section can resolve added/moved experience names
+  // against the real post-regeneration plan and report how many pending
+  // feedback items remain, without a second, divergent fetch.
+  onRegenerateSuccess: () => Promise<PlanResult>;
   // Step 186D: called (instead of showing a generic error) when a
   // request or job poll here comes back `AUTHENTICATION_REQUIRED` -- lets
   // the top-level `Home` component clear its auth/trip state and show the
@@ -4273,6 +4349,25 @@ function RegenerationReadinessSection({
   } | null>(null);
   const [regenerateSuccess, setRegenerateSuccess] =
     useState<RegenerateResponseData | null>(null);
+  // Section 198A: only populated for a synchronous targeted regeneration
+  // success (`regenerateSuccess.targeted && regenerateSuccess.diff`) --
+  // resolves the diff's stable experience_ids into display names against
+  // the before/after snapshots, and reports how many pending feedback
+  // items remain after this call (Task 24: the backend applies exactly
+  // one pending event per call, never all of them).
+  const [targetedSummary, setTargetedSummary] = useState<{
+    diff: TargetedRegenerationDiff;
+    addedLabels: string[];
+    removedLabels: string[];
+    movedLabels: { label: string; fromDay: number; toDay: number }[];
+    remainingPendingCount: number;
+  } | null>(null);
+  // Section 198A (Task 9): the real clarification question/possible
+  // items, recovered via a follow-up trip reload after a
+  // REGENERATION_NEEDS_CLARIFICATION refusal -- the 409 itself never
+  // carries this detail.
+  const [clarificationDetail, setClarificationDetail] =
+    useState<AIFeedbackClarification | null>(null);
   // Step 186D: independent job-polling instance for this component
   // instance only -- see `useJobPolling`'s own docstring for why that's
   // the right scope (one active foreground job per mounted instance;
@@ -4282,26 +4377,52 @@ function RegenerationReadinessSection({
 
   async function handleRegenerationRefusal(err: unknown) {
     recordApiError("regenerate", err);
+    const errorCode =
+      err instanceof ApiRequestError ? err.code ?? "UNKNOWN_ERROR" : "UNKNOWN_ERROR";
     setRegenerateError(
       err instanceof ApiRequestError
-        ? { code: err.code ?? "UNKNOWN_ERROR", message: err.message }
+        ? { code: errorCode, message: err.message }
         : {
             code: "UNKNOWN_ERROR",
             message: "Something went wrong while requesting regeneration.",
           },
     );
-    if (err instanceof ApiRequestError && err.code === "AUTHENTICATION_REQUIRED") {
+    if (errorCode === "AUTHENTICATION_REQUIRED") {
       onAuthenticationRequired();
       return;
+    }
+    // Section 198A (Task 9): the ambiguity detail is never on the error
+    // response -- it's only recoverable by reloading the trip and reading
+    // the newest AI-interpreted feedback event. Best-effort: if this
+    // reload itself fails, the generic error banner above still shows.
+    if (errorCode === "REGENERATION_NEEDS_CLARIFICATION") {
+      try {
+        const tripData = await getTrip(tripId);
+        setClarificationDetail(
+          findLatestClarificationDetail(tripData.planning_state.feedback_history),
+        );
+      } catch {
+        // Leave clarificationDetail as-is; the generic error message
+        // still explains that clarification is needed.
+      }
+    }
+    // Task 12: a stale-version conflict means someone else's regeneration
+    // already committed while this one was running -- never leave the UI
+    // showing what is now an outdated version. Full reload, same as a
+    // real success, just without the "applied" banner.
+    if (errorCode === "REGENERATION_CONFLICT") {
+      try {
+        await onRegenerateSuccess();
+      } catch {
+        // Leave the current (stale) view rather than crash; the error
+        // banner above already explains what happened.
+      }
     }
     // Refusal only ever appends one audit attempt -- refresh just that
     // list, never the rest of the plan, and never loadPlanResult. Skipped
     // for JOB_ALREADY_RUNNING/JOB_NOT_FOUND, which never touch
     // regeneration_attempts on the backend at all.
-    if (
-      err instanceof ApiRequestError &&
-      (err.code === "JOB_ALREADY_RUNNING" || err.code === "JOB_NOT_FOUND")
-    ) {
+    if (errorCode === "JOB_ALREADY_RUNNING" || errorCode === "JOB_NOT_FOUND") {
       return;
     }
     try {
@@ -4313,11 +4434,52 @@ function RegenerationReadinessSection({
     }
   }
 
+  // Section 198A: shared by both the sync and async success paths (Task
+  // 8) -- resolves a targeted diff's experience_ids into display names
+  // using the "before" snapshot this call started with plus the freshly
+  // reloaded "after" plan, and reports the remaining pending-feedback
+  // count. `diff` is `undefined` for a legacy response, or for an async
+  // job result (the job-polling contract doesn't carry the rich diff
+  // today -- see this component's own doc comment above `handleRegenerate`).
+  function applyTargetedSummary(
+    diff: TargetedRegenerationDiff | null | undefined,
+    beforeNameMap: Map<string, { name: string; dayNumber: number }>,
+    afterResult: PlanResult,
+  ) {
+    if (!diff) {
+      setTargetedSummary(null);
+      return;
+    }
+    const afterNameMap = buildExperienceNameMap(afterResult.dailyPlans);
+    setTargetedSummary({
+      diff,
+      addedLabels: diff.added_experience_ids.map((id) =>
+        experienceLabel(id, afterNameMap),
+      ),
+      removedLabels: diff.removed_experience_ids.map((id) =>
+        experienceLabel(id, beforeNameMap),
+      ),
+      movedLabels: diff.moved_experiences.map((moved) => ({
+        label: experienceLabel(moved.experience_id, afterNameMap),
+        fromDay: moved.from_day,
+        toDay: moved.to_day,
+      })),
+      remainingPendingCount: afterResult.pendingFeedbackSummary.total_feedback_items,
+    });
+  }
+
   async function handleRegenerate() {
     setIsRegenerating(true);
     setRegenerateError(null);
     setRegenerateSuccess(null);
+    setTargetedSummary(null);
+    setClarificationDetail(null);
     clearJob();
+    // Task 18: a display-only snapshot of the itinerary as currently
+    // rendered, taken before any request goes out -- never used to
+    // decide regeneration behavior, only to label a removed item by name
+    // afterward.
+    const beforeNameMap = buildExperienceNameMap(dailyPlans);
     try {
       const data = await requestRegeneration(tripId);
 
@@ -4330,7 +4492,11 @@ function RegenerationReadinessSection({
           // Full refresh so the itinerary, movement rows, route paths,
           // version history, diff preview, and readiness all reflect the
           // regenerated state together -- never just this section's own
-          // local state.
+          // local state. The job contract itself carries no rich diff
+          // (Task 41's own honest finding), so only version/changed-
+          // sections-level detail is available for an async result --
+          // shown via the same JobStatusCard already used for legacy
+          // async regeneration, not a fabricated diff.
           await onRegenerateSuccess();
         } else {
           await handleRegenerationRefusal(
@@ -4351,7 +4517,8 @@ function RegenerationReadinessSection({
       // Full refresh so the itinerary, movement rows, route paths, version
       // history, diff preview, and readiness all reflect the regenerated
       // state together -- never just this section's own local state.
-      await onRegenerateSuccess();
+      const afterResult = await onRegenerateSuccess();
+      applyTargetedSummary(data.targeted ? data.diff : null, beforeNameMap, afterResult);
     } catch (err) {
       if (err instanceof JobPollingCancelledError) {
         // Abandoned (unmount/logout) -- the whole view is going away or
@@ -4515,7 +4682,11 @@ function RegenerationReadinessSection({
         <JobStatusCard job={activeJob} pollingError={jobPollingError} mode={mode} />
 
         {regenerateSuccess && (
-          <div className="mt-3 rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-3 text-sm">
+          <div
+            role="status"
+            aria-live="polite"
+            className="mt-3 rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-3 text-sm"
+          >
             <p className="font-semibold text-emerald-300">
               Regeneration applied
             </p>
@@ -4540,19 +4711,188 @@ function RegenerationReadinessSection({
                 {regenerateSuccess.applied_feedback_event_ids.join(", ")}
               </p>
             )}
+
+            {regenerateSuccess.targeted && (
+              <div className="mt-3 border-t border-emerald-500/20 pt-3">
+                <p className="text-[11px] font-semibold uppercase tracking-wide text-emerald-400">
+                  Targeted regeneration summary
+                </p>
+                {regenerateSuccess.affected_day_indices &&
+                  regenerateSuccess.affected_day_indices.length > 0 && (
+                    <p className="mt-1 text-xs text-emerald-200">
+                      Changed: Day
+                      {regenerateSuccess.affected_day_indices.length > 1 ? "s" : ""}{" "}
+                      {regenerateSuccess.affected_day_indices.join(", ")}
+                    </p>
+                  )}
+                {regenerateSuccess.preserved_day_indices &&
+                  regenerateSuccess.preserved_day_indices.length > 0 && (
+                    <p className="mt-1 text-xs text-emerald-200">
+                      Unchanged in this revision: Day
+                      {regenerateSuccess.preserved_day_indices.length > 1 ? "s" : ""}{" "}
+                      {regenerateSuccess.preserved_day_indices.join(", ")}
+                    </p>
+                  )}
+
+                {targetedSummary && (
+                  <>
+                    {targetedSummary.removedLabels.length > 0 && (
+                      <div className="mt-2">
+                        <p className="text-xs font-semibold text-emerald-200">
+                          Removed
+                        </p>
+                        <ul className="mt-1 list-disc break-words pl-4 text-xs text-emerald-200">
+                          {targetedSummary.removedLabels.map((label, index) => (
+                            <li key={`targeted-removed-${index}`}>{label}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                    {targetedSummary.addedLabels.length > 0 && (
+                      <div className="mt-2">
+                        <p className="text-xs font-semibold text-emerald-200">
+                          Added
+                        </p>
+                        <ul className="mt-1 list-disc break-words pl-4 text-xs text-emerald-200">
+                          {targetedSummary.addedLabels.map((label, index) => (
+                            <li key={`targeted-added-${index}`}>{label}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                    {targetedSummary.movedLabels.length > 0 && (
+                      <div className="mt-2">
+                        <p className="text-xs font-semibold text-emerald-200">
+                          Moved
+                        </p>
+                        <ul className="mt-1 list-disc break-words pl-4 text-xs text-emerald-200">
+                          {targetedSummary.movedLabels.map((moved, index) => (
+                            <li key={`targeted-moved-${index}`}>
+                              {moved.label}: Day {moved.fromDay} → Day{" "}
+                              {moved.toDay}
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                    {targetedSummary.diff.traveler_profile_diff && (
+                      <div className="mt-2 text-xs text-emerald-200">
+                        <p className="font-semibold">Preferences</p>
+                        {targetedSummary.diff.traveler_profile_diff.pace_before !==
+                          targetedSummary.diff.traveler_profile_diff.pace_after && (
+                          <p className="mt-1">
+                            Pace:{" "}
+                            {targetedSummary.diff.traveler_profile_diff.pace_before ??
+                              "unset"}{" "}
+                            →{" "}
+                            {targetedSummary.diff.traveler_profile_diff.pace_after ??
+                              "unset"}
+                          </p>
+                        )}
+                        {targetedSummary.diff.traveler_profile_diff.interests_added
+                          .length > 0 && (
+                          <p className="mt-1">
+                            Added preference:{" "}
+                            {targetedSummary.diff.traveler_profile_diff.interests_added.join(
+                              ", ",
+                            )}
+                          </p>
+                        )}
+                        {targetedSummary.diff.traveler_profile_diff.interests_removed
+                          .length > 0 && (
+                          <p className="mt-1">
+                            Removed preference:{" "}
+                            {targetedSummary.diff.traveler_profile_diff.interests_removed.join(
+                              ", ",
+                            )}
+                          </p>
+                        )}
+                      </div>
+                    )}
+                    {(targetedSummary.diff.validation_status_before ||
+                      targetedSummary.diff.validation_status_after) && (
+                      <p className="mt-2 text-xs text-emerald-200">
+                        Validation: {targetedSummary.diff.validation_status_before ?? "unknown"}{" "}
+                        → {targetedSummary.diff.validation_status_after ?? "unknown"}
+                        {" · "}
+                        Warnings: {targetedSummary.diff.warning_count_before} →{" "}
+                        {targetedSummary.diff.warning_count_after}
+                      </p>
+                    )}
+                    {targetedSummary.remainingPendingCount > 0 && (
+                      <p className="mt-2 text-xs text-amber-200">
+                        1 feedback item applied. {targetedSummary.remainingPendingCount}{" "}
+                        more feedback item
+                        {targetedSummary.remainingPendingCount > 1 ? "s" : ""} still
+                        pending -- regenerate again to apply the next one.
+                      </p>
+                    )}
+                  </>
+                )}
+              </div>
+            )}
           </div>
         )}
 
-        {regenerateError && (
-          <div className="mt-3 rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-sm">
-            <p className="break-words font-semibold text-red-300">
-              {regenerationReasonCodeLabel(regenerateError.code)}
-            </p>
-            <p className="mt-1 break-words text-xs text-red-200">
-              {regenerateError.message}
-            </p>
-          </div>
-        )}
+        {regenerateError &&
+          (regenerateError.code === "REGENERATION_NEEDS_CLARIFICATION" ? (
+            <div
+              role="alert"
+              aria-live="polite"
+              className="mt-3 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm"
+            >
+              <p className="font-semibold text-amber-200">
+                This feedback needs clarification
+              </p>
+              <p className="mt-1 text-xs text-amber-100">
+                {clarificationDetail?.reason ??
+                  "The feedback could not be resolved to a single, unambiguous change. No plan section was changed."}
+              </p>
+              {clarificationDetail &&
+                clarificationDetail.possible_experience_ids.length > 0 && (
+                  <ul className="mt-2 list-disc break-words pl-4 text-xs text-amber-100">
+                    {clarificationDetail.possible_experience_ids.map((id) => (
+                      <li key={`clarification-possible-${id}`}>
+                        {experienceLabel(id, buildExperienceNameMap(dailyPlans))}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              <p className="mt-2 text-xs text-amber-200">
+                Your feedback is still saved as pending. Try submitting
+                clearer feedback below (e.g. naming the specific place)
+                and regenerate again.
+              </p>
+            </div>
+          ) : (
+            <div
+              role="alert"
+              aria-live="polite"
+              className="mt-3 rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-sm"
+            >
+              <p className="break-words font-semibold text-red-300">
+                {regenerationReasonCodeLabel(regenerateError.code)}
+              </p>
+              <p className="mt-1 break-words text-xs text-red-200">
+                {regenerateError.message}
+              </p>
+              {regenerateError.code === "REGENERATION_PROVIDER_UNAVAILABLE" && (
+                <p className="mt-1 break-words text-xs text-red-200">
+                  The requested place could not be looked up with the
+                  available provider data right now. This does not mean
+                  the place does not exist -- your feedback is still
+                  saved as pending; you can try regenerating again later.
+                </p>
+              )}
+              {regenerateError.code === "REGENERATION_CONFLICT" && (
+                <p className="mt-1 break-words text-xs text-red-200">
+                  The itinerary changed while this request was being
+                  processed. The latest version has been reloaded below --
+                  nothing was overwritten.
+                </p>
+              )}
+            </div>
+          ))}
       </div>
     </div>
   );
@@ -4649,7 +4989,12 @@ function FeedbackPanel({
         readiness below to check whether regeneration can run on it yet.
       </p>
 
+      <label htmlFor="trip-feedback-textarea" className="sr-only">
+        Feedback for this itinerary
+      </label>
       <textarea
+        id="trip-feedback-textarea"
+        aria-label="Feedback for this itinerary"
         className={`mt-3 w-full rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-sm text-slate-100 ${FOCUS_RING_CLASSNAME}`}
         rows={3}
         placeholder="e.g. Make this less packed"
@@ -4667,10 +5012,14 @@ function FeedbackPanel({
       </button>
 
       {errorMessage && (
-        <p className="mt-3 break-words text-sm text-red-300">{errorMessage}</p>
+        <p role="alert" aria-live="polite" className="mt-3 break-words text-sm text-red-300">
+          {errorMessage}
+        </p>
       )}
       {successMessage && !errorMessage && (
-        <p className="mt-3 break-words text-sm text-emerald-300">{successMessage}</p>
+        <p role="status" aria-live="polite" className="mt-3 break-words text-sm text-emerald-300">
+          {successMessage}
+        </p>
       )}
 
       <p className="mt-4 text-xs font-semibold uppercase tracking-wide text-slate-500">
@@ -4711,24 +5060,47 @@ function FeedbackPanel({
               <p className="mt-1 text-xs text-slate-400">
                 Regeneration strategy: {event.regeneration_strategy}
               </p>
-              {event.interpretation && (
-                <div className="mt-2 rounded-md border border-white/10 bg-slate-950/60 p-2">
-                  <p className="text-[11px] uppercase tracking-wide text-slate-500">
-                    Preliminary interpretation
-                  </p>
-                  <p className="mt-1 break-words text-xs text-slate-300">
-                    {event.interpretation.summary}
-                  </p>
-                  <p className="mt-1 break-words text-xs text-amber-300/90">
-                    {event.interpretation.note}
-                  </p>
-                  {event.interpretation.change_preview && (
-                    <FeedbackChangePreviewSection
-                      changePreview={event.interpretation.change_preview}
-                    />
-                  )}
-                </div>
-              )}
+              {event.interpretation &&
+                (isAiInterpretedResult(event.interpretation) ? (
+                  // Section 198A (Task 22): only safe, high-level fields --
+                  // status/scope/version. Never the provider/model name,
+                  // a raw prompt, or anything resembling chain-of-thought;
+                  // the backend contract itself never carries those here.
+                  <div className="mt-2 rounded-md border border-white/10 bg-slate-950/60 p-2">
+                    <p className="text-[11px] uppercase tracking-wide text-slate-500">
+                      AI interpretation
+                    </p>
+                    <p className="mt-1 break-words text-xs text-slate-300">
+                      Status: {event.interpretation.status}
+                      {event.interpretation.scope
+                        ? ` · Scope: ${event.interpretation.scope}`
+                        : ""}
+                    </p>
+                    {event.interpretation.source_version && (
+                      <p className="mt-1 break-words text-xs text-slate-400">
+                        Interpreted against version{" "}
+                        {event.interpretation.source_version}
+                      </p>
+                    )}
+                  </div>
+                ) : (
+                  <div className="mt-2 rounded-md border border-white/10 bg-slate-950/60 p-2">
+                    <p className="text-[11px] uppercase tracking-wide text-slate-500">
+                      Preliminary interpretation
+                    </p>
+                    <p className="mt-1 break-words text-xs text-slate-300">
+                      {event.interpretation.summary}
+                    </p>
+                    <p className="mt-1 break-words text-xs text-amber-300/90">
+                      {event.interpretation.note}
+                    </p>
+                    {event.interpretation.change_preview && (
+                      <FeedbackChangePreviewSection
+                        changePreview={event.interpretation.change_preview}
+                      />
+                    )}
+                  </div>
+                ))}
             </li>
           ))}
         </ul>
@@ -7568,6 +7940,7 @@ PY`}
                 <RegenerationReadinessSection
                   tripId={result.summary.trip_id}
                   readiness={result.regenerationReadiness}
+                  dailyPlans={result.dailyPlans}
                   compact={false}
                   mode="developer"
                   onAuthenticationRequired={handleAuthenticationRequired}
@@ -7577,7 +7950,9 @@ PY`}
                     )
                   }
                   onRegenerateSuccess={async () => {
-                    setResult(await loadPlanResult(result.summary.trip_id));
+                    const next = await loadPlanResult(result.summary.trip_id);
+                    setResult(next);
+                    return next;
                   }}
                 />
 
@@ -7771,6 +8146,7 @@ PY`}
                   <RegenerationReadinessSection
                     tripId={result.summary.trip_id}
                     readiness={result.regenerationReadiness}
+                    dailyPlans={result.dailyPlans}
                     compact={true}
                     mode="user"
                     onAuthenticationRequired={handleAuthenticationRequired}
@@ -7780,7 +8156,9 @@ PY`}
                       )
                     }
                     onRegenerateSuccess={async () => {
-                      setResult(await loadPlanResult(result.summary.trip_id));
+                      const next = await loadPlanResult(result.summary.trip_id);
+                      setResult(next);
+                      return next;
                     }}
                   />
                 </div>
