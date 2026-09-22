@@ -11,12 +11,15 @@ import app.db.models  # noqa: F401  -- registers TripRow/PlanningStateRow/UserRo
 # never calls `Base.metadata.create_all`.
 
 
-def test_importing_models_registers_exactly_four_tables() -> None:
+def test_importing_models_registers_exactly_six_tables() -> None:
     assert set(Base.metadata.tables.keys()) == {
         "trips",
         "planning_states",
         "users",
         "generation_jobs",
+        # Section 199A: revision-snapshot/branch-lineage foundation.
+        "itinerary_branches",
+        "itinerary_revisions",
     }
 
 
@@ -242,6 +245,93 @@ def test_generation_jobs_has_expected_indexes() -> None:
 
 def test_no_secret_or_password_columns_on_generation_jobs() -> None:
     table = Base.metadata.tables["generation_jobs"]
+    column_names = {name.lower() for name in table.columns.keys()}
+    for forbidden in ("password", "session_token", "api_key", "secret"):
+        assert forbidden not in column_names
+
+
+def test_itinerary_branches_row_columns() -> None:
+    table = Base.metadata.tables["itinerary_branches"]
+    assert set(c.name for c in table.columns) == {
+        "branch_id",
+        "trip_id",
+        "display_name",
+        "is_default",
+        "base_revision_id",
+        "head_revision_id",
+        "created_at",
+    }
+    assert table.columns["branch_id"].primary_key is True
+    for not_null_column in ("trip_id", "display_name", "is_default", "created_at"):
+        assert table.columns[not_null_column].nullable is False
+    for nullable_column in ("base_revision_id", "head_revision_id"):
+        assert table.columns[nullable_column].nullable is True
+
+    foreign_keys = list(table.columns["trip_id"].foreign_keys)
+    assert len(foreign_keys) == 1
+    assert foreign_keys[0].target_fullname == "trips.trip_id"
+    assert foreign_keys[0].ondelete == "CASCADE"
+
+    # head_revision_id/base_revision_id deliberately carry no FK (see
+    # ItineraryBranchRow's own docstring) -- confirmed here, not just
+    # documented.
+    assert list(table.columns["head_revision_id"].foreign_keys) == []
+    assert list(table.columns["base_revision_id"].foreign_keys) == []
+
+
+def test_itinerary_revisions_row_columns() -> None:
+    table = Base.metadata.tables["itinerary_revisions"]
+    assert set(c.name for c in table.columns) == {
+        "revision_id",
+        "trip_id",
+        "branch_id",
+        "parent_revision_id",
+        "version_label",
+        "created_by",
+        "created_at",
+        "feedback_event_id",
+        "version_history_item_id",
+        "snapshot_available",
+        "snapshot",
+    }
+    assert table.columns["revision_id"].primary_key is True
+    for not_null_column in (
+        "trip_id",
+        "branch_id",
+        "version_label",
+        "created_by",
+        "created_at",
+        "snapshot_available",
+    ):
+        assert table.columns[not_null_column].nullable is False
+    for nullable_column in (
+        "parent_revision_id",
+        "feedback_event_id",
+        "version_history_item_id",
+        "snapshot",
+    ):
+        assert table.columns[nullable_column].nullable is True
+
+    assert isinstance(table.columns["snapshot"].type, JSONB)
+
+    trip_fks = list(table.columns["trip_id"].foreign_keys)
+    assert len(trip_fks) == 1
+    assert trip_fks[0].target_fullname == "trips.trip_id"
+    assert trip_fks[0].ondelete == "CASCADE"
+
+    branch_fks = list(table.columns["branch_id"].foreign_keys)
+    assert len(branch_fks) == 1
+    assert branch_fks[0].target_fullname == "itinerary_branches.branch_id"
+    assert branch_fks[0].ondelete == "CASCADE"
+
+    parent_fks = list(table.columns["parent_revision_id"].foreign_keys)
+    assert len(parent_fks) == 1
+    assert parent_fks[0].target_fullname == "itinerary_revisions.revision_id"
+    assert parent_fks[0].ondelete == "SET NULL"
+
+
+def test_no_secret_or_password_columns_on_itinerary_revisions() -> None:
+    table = Base.metadata.tables["itinerary_revisions"]
     column_names = {name.lower() for name in table.columns.keys()}
     for forbidden in ("password", "session_token", "api_key", "secret"):
         assert forbidden not in column_names

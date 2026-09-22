@@ -27,6 +27,7 @@ from app.services.regeneration_mutation_service import (
     RegenerationMutationError,
     apply_regeneration_mutation,
 )
+from app.services.revision_lineage_service import revision_lineage_service
 from app.services.targeted_regeneration_application_service import (
     targeted_regeneration_application_service,
 )
@@ -630,6 +631,11 @@ def run_regenerate_job(
 
         final_state = regeneration_attempt_service.record_applied_attempt(result.planning_state)
         state_repo.save(final_state)
+        # Section 199A (Task 13): same immutable-revision capture the
+        # synchronous legacy route performs, for the async legacy path --
+        # best-effort, see RevisionLineageService.record_current_revision's
+        # own docstring.
+        revision_lineage_service.record_current_revision(final_state)
 
         job = mark_job_succeeded(
             job,

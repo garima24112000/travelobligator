@@ -28,6 +28,9 @@ from app.services.regeneration_attempt_service import (
 from app.services.regeneration_readiness_service import (
     regeneration_readiness_service as default_regeneration_readiness_service,
 )
+from app.services.revision_lineage_service import (
+    revision_lineage_service as default_revision_lineage_service,
+)
 from app.services.targeted_regeneration_diff_builder import build_targeted_regeneration_diff
 from app.services.targeted_regeneration_executor import targeted_regeneration_executor as default_executor
 from app.services.targeted_regeneration_plan_builder import (
@@ -113,6 +116,7 @@ class TargetedRegenerationApplicationService:
         plan_diff_preview_service: Any = None,
         regeneration_readiness_service: Any = None,
         regeneration_attempt_service: Any = None,
+        revision_lineage_service: Any = None,
     ) -> None:
         self.planning_state_repository = planning_state_repository or default_planning_state_repository
         self.interpreter_service = interpreter_service or default_interpreter_service
@@ -126,6 +130,7 @@ class TargetedRegenerationApplicationService:
             regeneration_readiness_service or default_regeneration_readiness_service
         )
         self.regeneration_attempt_service = regeneration_attempt_service or default_regeneration_attempt_service
+        self.revision_lineage_service = revision_lineage_service or default_revision_lineage_service
 
     def regenerate(self, trip_id: str) -> TargetedRegenerationRuntimeResult:
         started_at = time.monotonic()
@@ -518,6 +523,16 @@ class TargetedRegenerationApplicationService:
 
         try:
             self.planning_state_repository.save(resulting_state)
+            # Section 199A (Task 14): the new version's immutable
+            # revision, captured only after the real save above already
+            # succeeded, so `revision.version_label` always agrees with
+            # `resulting_state`/`VersionHistoryItem`/
+            # `FeedbackEvent.applied_in_version`/`RegenerationAttempt` --
+            # best-effort (see
+            # RevisionLineageService.record_current_revision's own
+            # docstring), never turns an already-successful targeted
+            # regeneration into a reported failure.
+            self.revision_lineage_service.record_current_revision(resulting_state)
         except Exception:
             # Task 6: the executor succeeded and an attempt record was
             # appended in memory, but persistence itself failed -- never

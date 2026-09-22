@@ -33,6 +33,7 @@ from app.models.common import DataStatus, GeoPoint, ProviderStatus
 from app.models.providers import NormalizedPlace, ProviderResponse
 from app.providers.base import PlacesProvider
 from app.providers.gateway import provider_gateway
+from app.repositories.itinerary_lineage_repository import itinerary_lineage_repository
 from app.repositories.job_repository import job_repository
 from app.repositories.planning_state_repository import planning_state_repository
 from app.repositories.trip_repository import trip_repository
@@ -176,6 +177,12 @@ def _reset_in_memory_repositories(tmp_path: Path) -> None:
     # "jobs" collection -- reset here for the same isolation reason.
     job_repository._store = test_store
     job_repository._jobs = {}
+    # Section 199A: itinerary_lineage_repository (branches/revisions)
+    # shares the same underlying file as the other four, under its own
+    # two new collections -- reset here for the same isolation reason.
+    itinerary_lineage_repository._store = test_store
+    itinerary_lineage_repository._branches = {}
+    itinerary_lineage_repository._revisions = {}
     yield
 
 

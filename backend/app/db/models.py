@@ -32,7 +32,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Text, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -181,3 +181,104 @@ class GenerationJobRow(Base):
     clarification_possible_experience_ids: Mapped[list[str]] = mapped_column(
         JSONB, nullable=False, server_default="[]"
     )
+
+
+class ItineraryBranchRow(Base):
+    """Mirrors `app.models.itinerary_lineage.ItineraryBranch` (Section
+    199A). Not read or written by any repository unless
+    `Settings.persistence_backend == "postgres"` -- see
+    `app/repositories/postgres_itinerary_lineage_repository.py`.
+
+    `head_revision_id`/`base_revision_id` semantically reference
+    `itinerary_revisions.revision_id`, but deliberately carry NO foreign
+    -key constraint (neither here nor in the Alembic migration) -- a
+    branch is always inserted before its first revision exists (head
+    starts `NULL`, then advances via `UPDATE` once that revision is
+    created), so a real FK would only ever constrain an already-safe
+    write order; omitting it also means a future cleanup path could
+    remove a revision without that being blocked by the branch row that
+    still names it. `itinerary_revisions.branch_id`/`trip_id`/
+    `parent_revision_id` DO carry real FKs (see `ItineraryRevisionRow`
+    below) -- only this one circular direction is intentionally left
+    unconstrained.
+    """
+
+    __tablename__ = "itinerary_branches"
+    __table_args__ = (
+        Index("ix_itinerary_branches_trip_id", "trip_id"),
+        # Task 29/30: at most one default branch per trip, enforced at
+        # the database level too (a partial unique index, since
+        # `is_default` is `False` for every future Section 199B fork
+        # branch and only ever `True` for the one per-trip default) --
+        # not just in `RevisionLineageService.ensure_default_branch`'s
+        # own read-check-then-create.
+        Index(
+            "uq_itinerary_branches_default_per_trip",
+            "trip_id",
+            unique=True,
+            postgresql_where=text("is_default = true"),
+        ),
+    )
+
+    branch_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    trip_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("trips.trip_id", ondelete="CASCADE"), nullable=False
+    )
+    display_name: Mapped[str] = mapped_column(Text, nullable=False, server_default="Main")
+    is_default: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
+    base_revision_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    head_revision_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class ItineraryRevisionRow(Base):
+    """Mirrors `app.models.itinerary_lineage.ItineraryRevision` (Section
+    199A). Not read or written by any repository unless
+    `Settings.persistence_backend == "postgres"`.
+
+    `snapshot` is `JSONB NULLABLE` -- it stores
+    `revision_snapshot_service.serialize_planning_state_snapshot`'s
+    output verbatim (the entire `PlanningState`, exactly like
+    `PlanningStateRow.state` already stores the live one), `NULL` only
+    for a historical, pre-199A version-history entry this section found
+    but never captured a full state for (`snapshot_available=False` --
+    Task 2/17/18: never fabricated, never backfilled). A UNIQUE
+    constraint on `(branch_id, version_label)` enforces Task 29's
+    idempotency requirement (no duplicate revision for the same real
+    version) at the database level too, not just in
+    `RevisionLineageService`'s own pre-check.
+    """
+
+    __tablename__ = "itinerary_revisions"
+    __table_args__ = (
+        Index("ix_itinerary_revisions_trip_id", "trip_id"),
+        Index("ix_itinerary_revisions_branch_id", "branch_id"),
+        UniqueConstraint(
+            "branch_id", "version_label", name="uq_itinerary_revisions_branch_id_version_label"
+        ),
+    )
+
+    revision_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    trip_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("trips.trip_id", ondelete="CASCADE"), nullable=False
+    )
+    branch_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("itinerary_branches.branch_id", ondelete="CASCADE"), nullable=False
+    )
+    # Self-referential FK (ON DELETE SET NULL -- removing an ancestor
+    # should never cascade-delete its descendants) -- `None` only for a
+    # branch's first-ever revision.
+    parent_revision_id: Mapped[str | None] = mapped_column(
+        Text,
+        ForeignKey("itinerary_revisions.revision_id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    version_label: Mapped[str] = mapped_column(Text, nullable=False)
+    created_by: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    feedback_event_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    version_history_item_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    snapshot_available: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="false"
+    )
+    snapshot: Mapped[dict | None] = mapped_column(JSONB, nullable=True)

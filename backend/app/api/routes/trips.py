@@ -13,6 +13,7 @@ from app.core.errors import (
     REGENERATION_NO_PENDING_FEEDBACK_MESSAGE,
     REGENERATION_NOT_AVAILABLE_MESSAGE,
     AppError,
+    branch_not_found_error,
     job_not_found_error,
     lock_not_found_error,
     regeneration_blocked_by_locks_error,
@@ -21,15 +22,21 @@ from app.core.errors import (
     regeneration_no_pending_feedback_error,
     regeneration_not_available_error,
     regeneration_provider_unavailable_error,
+    revision_not_found_error,
     trip_not_found_error,
 )
 from app.core.response import success_response
 from app.models.common import ReadinessStatus
 from app.models.generation_job import GenerationJob
+from app.models.itinerary_lineage import ItineraryBranch, ItineraryRevision
 from app.models.planning_state import GenerationProgress, TripRequest
 from app.models.targeted_regeneration_runtime import TargetedRegenerationRuntimeStatus
 from app.models.user import PublicUser
-from app.repositories.factory import get_planning_state_repository, get_trip_repository
+from app.repositories.factory import (
+    get_lineage_repository,
+    get_planning_state_repository,
+    get_trip_repository,
+)
 from app.schemas.ai_candidate_promotion import AICandidatePromotionResponseData
 from app.schemas.ai_candidate_review import AICandidateReviewResponseData
 from app.schemas.api_responses import ApiResponse
@@ -39,6 +46,13 @@ from app.schemas.errors import ErrorCode
 from app.schemas.experience_plan import ExperiencePlanResponseData
 from app.schemas.generation_job import JobListResponseData, JobResponseData, StartJobResponseData
 from app.schemas.generation_progress import GenerationProgressResponseData
+from app.schemas.itinerary_lineage import (
+    ItineraryBranchListResponseData,
+    ItineraryBranchResponseData,
+    ItineraryRevisionDetailResponseData,
+    ItineraryRevisionListResponseData,
+    ItineraryRevisionSummary,
+)
 from app.schemas.langgraph_shadow_run import LangGraphShadowRunResponseData
 from app.schemas.provider_coverage import ProviderCoverageResponseData
 from app.schemas.regeneration_attempts import RegenerationAttemptsResponseData
@@ -67,6 +81,7 @@ from app.services.regeneration_mutation_service import (
     apply_regeneration_mutation,
 )
 from app.services.regeneration_readiness_service import regeneration_readiness_service
+from app.services.revision_lineage_service import revision_lineage_service
 from app.services.targeted_regeneration_application_service import (
     targeted_regeneration_application_service,
 )
@@ -462,6 +477,12 @@ def regenerate_trip_plan(
 
     final_state = regeneration_attempt_service.record_applied_attempt(result.planning_state)
     get_planning_state_repository().save(final_state)
+    # Section 199A (Task 13): captures an immutable revision for the new
+    # version legacy sync regeneration just successfully created and
+    # saved above -- additive only, never changes this route's existing
+    # response/behavior (best-effort, see
+    # RevisionLineageService.record_current_revision's own docstring).
+    revision_lineage_service.record_current_revision(final_state)
 
     data = RegenerateResponseData(
         trip_id=trip_id,
@@ -795,6 +816,145 @@ def get_regeneration_attempts(
     data = RegenerationAttemptsResponseData(
         trip_id=trip_id,
         regeneration_attempts=planning_state.regeneration_attempts,
+    )
+    return success_response(data)
+
+
+# -- Section 199A: read-only revision-snapshot/branch-lineage endpoints ----
+#
+# Foundation only -- no fork creation, no branch switching, no
+# regeneration from a historical revision (see this section's own scope
+# boundary, recorded in full in
+# `app.services.revision_lineage_service`'s module docstring). Every
+# route below reuses `require_trip_owner` for authentication/ownership
+# exactly like every other trip-scoped route in this file, and
+# additionally verifies the fetched branch/revision's own `trip_id`
+# actually matches the URL's `trip_id` -- never trusting a branch_id/
+# revision_id alone, since a stable id existing at all reveals nothing
+# about who owns the trip it belongs to (Task 39).
+
+
+def _branch_response(branch: ItineraryBranch) -> ItineraryBranchResponseData:
+    return ItineraryBranchResponseData(
+        branch_id=branch.branch_id,
+        trip_id=branch.trip_id,
+        display_name=branch.display_name,
+        is_default=branch.is_default,
+        base_revision_id=branch.base_revision_id,
+        head_revision_id=branch.head_revision_id,
+        created_at=branch.created_at,
+    )
+
+
+def _revision_summary(revision: ItineraryRevision) -> ItineraryRevisionSummary:
+    return ItineraryRevisionSummary(
+        revision_id=revision.revision_id,
+        trip_id=revision.trip_id,
+        branch_id=revision.branch_id,
+        parent_revision_id=revision.parent_revision_id,
+        version_label=revision.version_label,
+        created_by=revision.created_by,
+        created_at=revision.created_at,
+        feedback_event_id=revision.feedback_event_id,
+        snapshot_available=revision.snapshot_available,
+    )
+
+
+@router.get(
+    "/{trip_id}/branches",
+    response_model=ApiResponse[ItineraryBranchListResponseData],
+)
+def list_itinerary_branches(
+    trip_id: str, current_user: PublicUser = Depends(require_trip_owner)
+) -> ApiResponse[ItineraryBranchListResponseData]:
+    """Every branch recorded for `trip_id` -- today, always exactly one
+    (the default "Main" branch), lazily created on first call if it
+    doesn't exist yet (Task 6/17: safe/cheap, never itself captures a
+    revision/snapshot). Section 199B is what will let this list grow
+    beyond one entry.
+    """
+    planning_state = get_planning_state_repository().get_by_trip_id(trip_id)
+    if planning_state is None:
+        raise trip_not_found_error(trip_id)
+
+    branch = revision_lineage_service.ensure_default_branch(trip_id)
+    data = ItineraryBranchListResponseData(trip_id=trip_id, branches=[_branch_response(branch)])
+    return success_response(data)
+
+
+@router.get(
+    "/{trip_id}/branches/{branch_id}/revisions",
+    response_model=ApiResponse[ItineraryRevisionListResponseData],
+)
+def list_itinerary_revisions(
+    trip_id: str,
+    branch_id: str,
+    current_user: PublicUser = Depends(require_trip_owner),
+) -> ApiResponse[ItineraryRevisionListResponseData]:
+    """Every revision recorded for `branch_id`, oldest first -- metadata
+    only (never each revision's `snapshot`, Task 20/27). Use
+    `GET /trips/{trip_id}/revisions/{revision_id}` for one revision's
+    full detail.
+    """
+    planning_state = get_planning_state_repository().get_by_trip_id(trip_id)
+    if planning_state is None:
+        raise trip_not_found_error(trip_id)
+
+    branch = revision_lineage_service.ensure_default_branch(trip_id)
+    if branch_id != branch.branch_id:
+        # Task 39: never reveal whether a branch_id belonging to a
+        # different trip exists at all.
+        raise branch_not_found_error(trip_id, branch_id)
+
+    revisions = revision_lineage_service.list_branch_lineage(branch_id)
+    data = ItineraryRevisionListResponseData(
+        trip_id=trip_id,
+        branch_id=branch_id,
+        revisions=[_revision_summary(revision) for revision in revisions],
+    )
+    return success_response(data)
+
+
+@router.get(
+    "/{trip_id}/revisions/{revision_id}",
+    response_model=ApiResponse[ItineraryRevisionDetailResponseData],
+)
+def get_itinerary_revision(
+    trip_id: str,
+    revision_id: str,
+    current_user: PublicUser = Depends(require_trip_owner),
+) -> ApiResponse[ItineraryRevisionDetailResponseData]:
+    """One revision's full metadata, plus its `planning_state` snapshot
+    when one was actually captured (`snapshot_available=True`) -- `None`,
+    honestly, for a historical version this section found recorded but
+    never itself captured a snapshot for (Task 2/17/18: never
+    reconstructed by any other means). Reuses the exact same
+    `PlanningState` shape `GET /trips/{trip_id}` already returns (Task
+    27) -- never a second, richer, internal-only representation.
+    """
+    repository = get_lineage_repository()
+    revision = repository.get_revision(revision_id)
+    if revision is None or revision.trip_id != trip_id:
+        # Task 39: same "never reveal it belongs to someone else" rule
+        # as the branch check above.
+        raise revision_not_found_error(trip_id, revision_id)
+
+    planning_state = (
+        revision_lineage_service.load_snapshot(revision_id)
+        if revision.snapshot_available
+        else None
+    )
+    data = ItineraryRevisionDetailResponseData(
+        revision_id=revision.revision_id,
+        trip_id=revision.trip_id,
+        branch_id=revision.branch_id,
+        parent_revision_id=revision.parent_revision_id,
+        version_label=revision.version_label,
+        created_by=revision.created_by,
+        created_at=revision.created_at,
+        feedback_event_id=revision.feedback_event_id,
+        snapshot_available=revision.snapshot_available,
+        planning_state=planning_state,
     )
     return success_response(data)
 

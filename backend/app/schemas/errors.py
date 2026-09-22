@@ -45,6 +45,11 @@ class ErrorCode(str, Enum):
     # FORBIDDEN/etc. were added ahead of Step 184D actually wiring them in.
     JOB_NOT_FOUND = "JOB_NOT_FOUND"
     JOB_ALREADY_RUNNING = "JOB_ALREADY_RUNNING"
+    # Section 199A: revision-snapshot/branch-lineage foundation
+    # (read-only endpoints only -- no fork-mutation code raises anything
+    # new yet).
+    BRANCH_NOT_FOUND = "BRANCH_NOT_FOUND"
+    REVISION_NOT_FOUND = "REVISION_NOT_FOUND"
 
 
 class ApiError(BaseModel):

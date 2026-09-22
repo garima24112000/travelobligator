@@ -37,12 +37,16 @@ from __future__ import annotations
 from functools import lru_cache
 
 from app.core.config import get_settings
+from app.repositories.itinerary_lineage_repository import (
+    itinerary_lineage_repository as _local_lineage_repository,
+)
 from app.repositories.job_repository import job_repository as _local_job_repository
 from app.repositories.planning_state_repository import (
     planning_state_repository as _local_planning_state_repository,
 )
 from app.repositories.protocols import (
     GenerationJobRepositoryProtocol,
+    ItineraryLineageRepositoryProtocol,
     PlanningStateRepositoryProtocol,
     TripRepositoryProtocol,
     UserRepositoryProtocol,
@@ -81,6 +85,15 @@ def _postgres_job_repository() -> GenerationJobRepositoryProtocol:
     return PostgresJobRepository()
 
 
+@lru_cache
+def _postgres_lineage_repository() -> ItineraryLineageRepositoryProtocol:
+    from app.repositories.postgres_itinerary_lineage_repository import (
+        PostgresItineraryLineageRepository,
+    )
+
+    return PostgresItineraryLineageRepository()
+
+
 def get_trip_repository() -> TripRepositoryProtocol:
     if get_settings().persistence_backend == "postgres":
         return _postgres_trip_repository()
@@ -115,3 +128,11 @@ def get_job_repository() -> GenerationJobRepositoryProtocol:
     if get_settings().persistence_backend == "postgres":
         return _postgres_job_repository()
     return _local_job_repository
+
+
+def get_lineage_repository() -> ItineraryLineageRepositoryProtocol:
+    """Section 199A revision-snapshot/branch-lineage foundation. Same
+    per-call resolution as every other `get_*_repository()` above."""
+    if get_settings().persistence_backend == "postgres":
+        return _postgres_lineage_repository()
+    return _local_lineage_repository

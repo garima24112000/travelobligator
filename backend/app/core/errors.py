@@ -278,6 +278,28 @@ def job_already_running_error(trip_id: str) -> AppError:
     )
 
 
+def branch_not_found_error(trip_id: str, branch_id: str) -> AppError:
+    """404 -- no `ItineraryBranch` exists with this id for this trip
+    (Section 199A)."""
+    return AppError(
+        code=ErrorCode.BRANCH_NOT_FOUND,
+        message=f"Branch '{branch_id}' was not found for trip '{trip_id}'.",
+        status_code=status.HTTP_404_NOT_FOUND,
+        field="branch_id",
+    )
+
+
+def revision_not_found_error(trip_id: str, revision_id: str) -> AppError:
+    """404 -- no `ItineraryRevision` exists with this id for this trip
+    (Section 199A)."""
+    return AppError(
+        code=ErrorCode.REVISION_NOT_FOUND,
+        message=f"Revision '{revision_id}' was not found for trip '{trip_id}'.",
+        status_code=status.HTTP_404_NOT_FOUND,
+        field="revision_id",
+    )
+
+
 def auth_not_configured_error() -> AppError:
     """503 -- session signing/verification was attempted while
     `Settings.session_secret_key` is unset. Distinct from

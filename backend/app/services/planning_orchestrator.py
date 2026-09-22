@@ -47,6 +47,7 @@ from app.services.langgraph_planning_service import LangGraphPlanningService
 from app.services.plan_diff_preview_service import PlanDiffPreviewService
 from app.services.plan_validator_service import PlanValidatorService
 from app.services.regeneration_readiness_service import RegenerationReadinessService
+from app.services.revision_lineage_service import RevisionLineageService
 from app.services.route_aware_sequencing_service import RouteAwareSequencingService
 from app.services.route_feasibility_service import RouteFeasibilityService
 from app.services.stay_transport_service import StayTransportService
@@ -308,6 +309,7 @@ class PlanningOrchestrator:
         versioning_service: VersioningService | None = None,
         plan_diff_preview_service: PlanDiffPreviewService | None = None,
         regeneration_readiness_service: RegenerationReadinessService | None = None,
+        revision_lineage_service: RevisionLineageService | None = None,
         ai_candidate_discovery_service: AICandidateDiscoveryService | None = None,
         ai_candidate_promotion_service: AICandidatePromotionService | None = None,
         itinerary_narrative_service: ItineraryNarrativeService | None = None,
@@ -343,6 +345,7 @@ class PlanningOrchestrator:
         self.regeneration_readiness_service = (
             regeneration_readiness_service or RegenerationReadinessService()
         )
+        self.revision_lineage_service = revision_lineage_service or RevisionLineageService()
         self.ai_candidate_discovery_service = (
             ai_candidate_discovery_service or AICandidateDiscoveryService()
         )
@@ -928,6 +931,15 @@ class PlanningOrchestrator:
             planning_state = self._mark_stage_finished(planning_state, "post_processing")
             planning_state = self._finish_generation_progress(planning_state)
             self.planning_state_repository.save(planning_state)
+            # Section 199A (Task 12): captures the first forkable revision
+            # (v1) at the same lifecycle boundary the initial version
+            # label itself is recorded, using the fully-finished state
+            # (post narrative/progress) actually saved above -- never an
+            # empty pre-generation shell. Best-effort by construction
+            # (see RevisionLineageService.record_current_revision's own
+            # docstring); a failure here never affects a plan generation
+            # that already succeeded and was already saved.
+            self.revision_lineage_service.record_current_revision(planning_state)
         except Exception:
             # Mark failed before re-raising -- never swallow or replace the
             # original exception, and never change existing error behavior
@@ -1010,6 +1022,9 @@ class PlanningOrchestrator:
             new_state = self._mark_stage_finished(new_state, "post_processing")
             new_state = self._finish_generation_progress(new_state)
             self.planning_state_repository.save(new_state)
+            # Section 199A (Task 12): same first-forkable-revision capture
+            # generate_full_plan performs -- see that call site's comment.
+            self.revision_lineage_service.record_current_revision(new_state)
         except Exception:
             planning_state = self._fail_generation_progress(planning_state)
             self.planning_state_repository.save(planning_state)
