@@ -212,6 +212,13 @@ def test_run_regenerate_job_success_creates_version_and_marks_feedback_applied(
     assert reloaded_job.status == GenerationJobStatus.SUCCEEDED
     assert reloaded_job.result_version == "v2"
     assert reloaded_job.changed_sections
+    # Section 198B (Task 5 regression fix): a legacy async job's real
+    # previous version must be carried through, exactly like the
+    # synchronous legacy route's `RegenerateResponseData.previous_version`
+    # already does -- a real browser regression pass caught this showing
+    # as "None yet" before this field was wired through here.
+    assert reloaded_job.previous_version == "v1"
+    assert reloaded_job.targeted is False
 
     reloaded_state = planning_state_repository.get_by_trip_id(generated_trip_id)
     assert reloaded_state is not None

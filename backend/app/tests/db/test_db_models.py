@@ -134,6 +134,18 @@ def test_generation_job_row_columns() -> None:
         "finished_at",
         "result_version",
         "changed_sections",
+        # Section 198B: targeted-regeneration result fields, carrying the
+        # same canonical `TargetedRegenerationDiff` an async job's sync
+        # `/regenerate` counterpart already returns.
+        "previous_version",
+        "targeted",
+        "interpretation_status",
+        "execution_status",
+        "affected_day_indices",
+        "preserved_day_indices",
+        "diff",
+        "clarification_reason",
+        "clarification_possible_experience_ids",
     ]
     assert table.columns["job_id"].primary_key is True
     for not_null_column in (
@@ -143,6 +155,10 @@ def test_generation_job_row_columns() -> None:
         "status",
         "created_at",
         "changed_sections",
+        "targeted",
+        "affected_day_indices",
+        "preserved_day_indices",
+        "clarification_possible_experience_ids",
     ):
         assert table.columns[not_null_column].nullable is False
     for nullable_column in (
@@ -153,6 +169,11 @@ def test_generation_job_row_columns() -> None:
         "started_at",
         "finished_at",
         "result_version",
+        "previous_version",
+        "interpretation_status",
+        "execution_status",
+        "diff",
+        "clarification_reason",
     ):
         assert table.columns[nullable_column].nullable is True
 
@@ -160,6 +181,17 @@ def test_generation_job_row_columns() -> None:
 def test_generation_job_row_changed_sections_is_postgres_jsonb() -> None:
     table = Base.metadata.tables["generation_jobs"]
     assert isinstance(table.columns["changed_sections"].type, JSONB)
+
+
+def test_generation_job_row_targeted_regeneration_fields_are_postgres_jsonb() -> None:
+    table = Base.metadata.tables["generation_jobs"]
+    for jsonb_column in (
+        "affected_day_indices",
+        "preserved_day_indices",
+        "diff",
+        "clarification_possible_experience_ids",
+    ):
+        assert isinstance(table.columns[jsonb_column].type, JSONB)
 
 
 def test_generation_job_row_result_version_is_text_not_integer() -> None:

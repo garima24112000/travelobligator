@@ -32,7 +32,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Index, Text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -159,5 +159,25 @@ class GenerationJobRow(Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     result_version: Mapped[str | None] = mapped_column(Text, nullable=True)
     changed_sections: Mapped[list[str]] = mapped_column(
+        JSONB, nullable=False, server_default="[]"
+    )
+    # Section 198B: carries the same canonical targeted-regeneration
+    # result an async job's sync `/regenerate` counterpart returns
+    # (`RegenerateResponseData`) -- see `app/schemas/generation_job.py`.
+    # All nullable/defaulted so existing rows (pre-migration, or from a
+    # `generate`/legacy `regenerate` job) still read back unchanged.
+    previous_version: Mapped[str | None] = mapped_column(Text, nullable=True)
+    targeted: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
+    interpretation_status: Mapped[str | None] = mapped_column(Text, nullable=True)
+    execution_status: Mapped[str | None] = mapped_column(Text, nullable=True)
+    affected_day_indices: Mapped[list[int]] = mapped_column(
+        JSONB, nullable=False, server_default="[]"
+    )
+    preserved_day_indices: Mapped[list[int]] = mapped_column(
+        JSONB, nullable=False, server_default="[]"
+    )
+    diff: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    clarification_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    clarification_possible_experience_ids: Mapped[list[str]] = mapped_column(
         JSONB, nullable=False, server_default="[]"
     )

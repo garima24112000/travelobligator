@@ -5,6 +5,7 @@ from datetime import datetime
 from pydantic import BaseModel, Field
 
 from app.models.generation_job import GenerationJob, GenerationJobStatus, GenerationJobType
+from app.models.targeted_regeneration_diff import TargetedRegenerationDiff
 
 # Public API shapes for the async job foundation (Step 186C,
 # docs/14_backend_architecture.md section 117). `JobResponseData` mirrors
@@ -34,6 +35,22 @@ class JobResponseData(BaseModel):
     result_version: str | None = None
     changed_sections: list[str] = Field(default_factory=list)
 
+    # Section 198B: the same canonical targeted-regeneration result the
+    # sync `/regenerate` route returns (`RegenerateResponseData`), carried
+    # through a completed async job -- never a second, hand-derived diff.
+    # Optional/defaulted so an old, already-persisted job (or any
+    # `generate`/legacy `regenerate` job) still serializes exactly as
+    # before.
+    previous_version: str | None = None
+    targeted: bool = False
+    interpretation_status: str | None = None
+    execution_status: str | None = None
+    affected_day_indices: list[int] = Field(default_factory=list)
+    preserved_day_indices: list[int] = Field(default_factory=list)
+    diff: TargetedRegenerationDiff | None = None
+    clarification_reason: str | None = None
+    clarification_possible_experience_ids: list[str] = Field(default_factory=list)
+
     @classmethod
     def from_job(cls, job: GenerationJob) -> "JobResponseData":
         return cls(
@@ -50,6 +67,17 @@ class JobResponseData(BaseModel):
             finished_at=job.finished_at,
             result_version=job.result_version,
             changed_sections=list(job.changed_sections),
+            previous_version=job.previous_version,
+            targeted=job.targeted,
+            interpretation_status=job.interpretation_status,
+            execution_status=job.execution_status,
+            affected_day_indices=list(job.affected_day_indices),
+            preserved_day_indices=list(job.preserved_day_indices),
+            diff=job.diff,
+            clarification_reason=job.clarification_reason,
+            clarification_possible_experience_ids=list(
+                job.clarification_possible_experience_ids
+            ),
         )
 
 

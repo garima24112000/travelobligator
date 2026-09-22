@@ -635,6 +635,16 @@ def run_regenerate_job(
             job,
             result_version=result.new_version_label,
             changed_sections=result.changed_sections,
+            # Section 198B (Task 5, legacy-async regression fix): a
+            # legacy (non-targeted) async job carries the same real
+            # `previous_version` the synchronous legacy route already
+            # returns (`RegenerationMutationResult.previous_version`,
+            # Step 186C's own dataclass) -- before this fix, the async
+            # success banner showed "None yet -> vN" instead of the true
+            # "vN-1 -> vN" transition, since `previous_version` simply
+            # went unset (`targeted` stays `False`, matching a legacy
+            # job -- untouched by this fix).
+            previous_version=result.previous_version,
         )
         job_repo.save(job)
         logger.info(
@@ -721,12 +731,22 @@ def run_targeted_regenerate_job(job_id: str) -> None:
         result = targeted_regeneration_application_service.regenerate(job.trip_id)
 
         if result.status == TargetedRegenerationRuntimeStatus.COMPLETED:
+            # Section 198B: carry the SAME canonical result the sync route
+            # returns through the job record -- never a second, hand-
+            # derived diff/summary.
             job = mark_job_succeeded(
                 job,
                 result_version=result.new_version,
                 changed_sections=[
                     f"day_{day}" for day in (result.diff.affected_day_indices if result.diff else [])
                 ],
+                previous_version=result.source_version,
+                targeted=True,
+                interpretation_status=result.interpretation_status,
+                execution_status=result.execution_status,
+                affected_day_indices=result.diff.affected_day_indices if result.diff else [],
+                preserved_day_indices=result.diff.preserved_day_indices if result.diff else [],
+                diff=result.diff,
             )
             job_repo.save(job)
             logger.info(
@@ -743,7 +763,22 @@ def run_targeted_regenerate_job(job_id: str) -> None:
             TargetedRegenerationRuntimeStatus.PROVIDER_UNAVAILABLE: ErrorCode.REGENERATION_PROVIDER_UNAVAILABLE.value,
         }
         error_code = error_code_by_status.get(result.status, ErrorCode.REGENERATION_NOT_AVAILABLE.value)
-        job = mark_job_failed(job, error_code=error_code, error_message=result.message)
+        # Task 5: structured targeted failure information (interpretation/
+        # execution status, and clarification detail when the runtime
+        # result carried one) is preserved on the job record rather than
+        # collapsed into an opaque generic string -- the frontend can
+        # distinguish clarification/provider-unavailable/conflict exactly
+        # like it already does for the sync path.
+        job = mark_job_failed(
+            job,
+            error_code=error_code,
+            error_message=result.message,
+            targeted=True,
+            interpretation_status=result.interpretation_status,
+            execution_status=result.execution_status,
+            clarification_reason=result.clarification_reason,
+            clarification_possible_experience_ids=result.clarification_possible_experience_ids,
+        )
         job_repo.save(job)
         logger.info(
             "Targeted regenerate job %s did not complete for trip %s: %s.",

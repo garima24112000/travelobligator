@@ -23,6 +23,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.db.models import GenerationJobRow
 from app.db.session import get_session_factory
 from app.models.generation_job import GenerationJob, GenerationJobStatus
+from app.models.targeted_regeneration_diff import TargetedRegenerationDiff
 
 _RUNNING_STATUSES = frozenset(
     {GenerationJobStatus.QUEUED.value, GenerationJobStatus.RUNNING.value}
@@ -46,6 +47,27 @@ def _row_to_job(row: GenerationJobRow) -> GenerationJob:
             "finished_at": row.finished_at,
             "result_version": row.result_version,
             "changed_sections": row.changed_sections,
+            # Section 198B: a row's `targeted`/list columns are `NOT
+            # NULL` with a Postgres-side `server_default`, but that
+            # default is applied by Postgres at INSERT time, not by
+            # SQLAlchemy in Python -- an in-memory `GenerationJobRow`
+            # that was never actually inserted (as some tests construct
+            # directly) still has `None` for these attributes. Falling
+            # back to `GenerationJob`'s own field defaults here keeps
+            # `_row_to_job` correct in both cases rather than relying on
+            # every caller having gone through a real INSERT.
+            "previous_version": row.previous_version,
+            "targeted": bool(row.targeted),
+            "interpretation_status": row.interpretation_status,
+            "execution_status": row.execution_status,
+            "affected_day_indices": row.affected_day_indices or [],
+            "preserved_day_indices": row.preserved_day_indices or [],
+            "diff": (
+                TargetedRegenerationDiff.model_validate(row.diff) if row.diff else None
+            ),
+            "clarification_reason": row.clarification_reason,
+            "clarification_possible_experience_ids": row.clarification_possible_experience_ids
+            or [],
         }
     )
 
@@ -66,6 +88,17 @@ def _job_values(job: GenerationJob) -> dict:
         "finished_at": job.finished_at,
         "result_version": job.result_version,
         "changed_sections": list(job.changed_sections),
+        "previous_version": job.previous_version,
+        "targeted": job.targeted,
+        "interpretation_status": job.interpretation_status,
+        "execution_status": job.execution_status,
+        "affected_day_indices": list(job.affected_day_indices),
+        "preserved_day_indices": list(job.preserved_day_indices),
+        "diff": job.diff.model_dump(mode="json") if job.diff else None,
+        "clarification_reason": job.clarification_reason,
+        "clarification_possible_experience_ids": list(
+            job.clarification_possible_experience_ids
+        ),
     }
 
 

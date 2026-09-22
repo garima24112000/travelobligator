@@ -1065,6 +1065,16 @@ export type GenerationJobStatus =
 
 export type GenerationJobType = "generate" | "regenerate";
 
+// Section 198B extends this backward-compatibly: every field below
+// `changed_sections` is new and optional, mirroring the exact same
+// targeted-regeneration result fields `RegenerateResponseData` above
+// already carries -- a completed async targeted-regeneration job now
+// surfaces the same `TargetedRegenerationDiff` the sync route returns,
+// never a second hand-derived shape. A legacy `generate` job or a job
+// persisted before this section never sets them, so existing code
+// reading only the original fields is unaffected; new code must check
+// `targeted === true` before trusting `diff`/`interpretation_status`/
+// `execution_status` are meaningful, exactly like `RegenerateResponseData`.
 export type JobResponseData = {
   job_id: string;
   trip_id: string;
@@ -1079,6 +1089,15 @@ export type JobResponseData = {
   finished_at: string | null;
   result_version: string | null;
   changed_sections: string[];
+  previous_version?: string | null;
+  targeted?: boolean;
+  interpretation_status?: string | null;
+  execution_status?: string | null;
+  affected_day_indices?: number[];
+  preserved_day_indices?: number[];
+  diff?: TargetedRegenerationDiff | null;
+  clarification_reason?: string | null;
+  clarification_possible_experience_ids?: string[];
 };
 
 // Returned the moment a job is created (`202 Accepted`) -- structurally

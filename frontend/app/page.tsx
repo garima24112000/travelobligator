@@ -4050,6 +4050,88 @@ function formatNullableVersionLabel(version: string | null): string {
   return version ?? "None yet";
 }
 
+// Section 198B (Task 6): the one shared shape the "Regeneration applied"
+// banner renders from, regardless of whether the result arrived
+// synchronously (`RegenerateResponseData`) or via a completed async job
+// (`JobResponseData`, now carrying the same targeted-result fields as of
+// this section). `preservedSections`/`appliedFeedbackEventIds` are
+// `undefined` for the async path -- `GenerationJob` only ever tracked
+// `changed_sections`, never those two, and Section 198B did not add them
+// (no fabrication: the banner simply omits those two lines rather than
+// inventing a value for a field the async contract never carried).
+type RevisionSummary = {
+  previousVersion: string | null;
+  currentVersion: string;
+  changedSections: string[];
+  preservedSections?: string[];
+  appliedFeedbackEventIds?: string[];
+  targeted: boolean;
+  affectedDayIndices: number[];
+  preservedDayIndices: number[];
+};
+
+function buildRevisionSummaryFromSyncResponse(
+  data: RegenerateResponseData,
+): RevisionSummary {
+  return {
+    previousVersion: data.previous_version,
+    currentVersion: data.current_version,
+    changedSections: data.changed_sections,
+    preservedSections: data.preserved_sections,
+    appliedFeedbackEventIds: data.applied_feedback_event_ids,
+    targeted: data.targeted === true,
+    affectedDayIndices: data.affected_day_indices ?? [],
+    preservedDayIndices: data.preserved_day_indices ?? [],
+  };
+}
+
+// Section 198B (Task 1, component-extraction audit): the ONE truly
+// identical, repeated shape found in the revision-summary render --
+// "Added" and "Removed" are structurally identical (a heading + a plain
+// label list), so they're factored into this narrow helper. "Moved" and
+// "Reordered" were deliberately left inline -- each carries a different
+// per-item shape (from/to day, or a bare day-index list), so forcing
+// them through this same component would need a render-prop/children
+// escape hatch that adds more indirection than the three lines it would
+// save. No broader extraction was justified (see the audit note above
+// `RegenerationReadinessSection`).
+function TargetedDiffCategoryList({
+  label,
+  items,
+  keyPrefix,
+}: {
+  label: string;
+  items: string[];
+  keyPrefix: string;
+}) {
+  if (items.length === 0) {
+    return null;
+  }
+  return (
+    <div className="mt-2">
+      <p className="text-xs font-semibold text-emerald-200">{label}</p>
+      <ul className="mt-1 list-disc break-words pl-4 text-xs text-emerald-200">
+        {items.map((item, index) => (
+          <li key={`${keyPrefix}-${index}`}>{item}</li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function buildRevisionSummaryFromJob(job: JobResponseData): RevisionSummary {
+  return {
+    previousVersion: job.previous_version ?? null,
+    // A succeeded job always sets `result_version` -- the fallback is
+    // only a defensive label, never a real claim about version state.
+    currentVersion: job.result_version ?? "unknown",
+    changedSections: job.changed_sections,
+    targeted: job.targeted === true,
+    affectedDayIndices: job.affected_day_indices ?? [],
+    preservedDayIndices: job.preserved_day_indices ?? [],
+  };
+}
+
 // Human-readable labels for the backend's regeneration reason/error codes
 // (Step 179D copy polish). Backend: app.core.errors's REGENERATION_*
 // AppError codes plus the frontend's own "UNKNOWN_ERROR" catch-all -- this
@@ -4077,6 +4159,29 @@ const REGENERATION_REASON_CODE_LABELS: Record<string, string> = {
 
 function regenerationReasonCodeLabel(code: string): string {
   return REGENERATION_REASON_CODE_LABELS[code] ?? code;
+}
+
+// Section 198B (Task 26): a legible Pending / "Applied in vN" / Needs
+// clarification distinction for a feedback event's real state -- derived
+// only from fields the backend already persists (`applied_at`,
+// `applied_in_version`, and a genuinely AI-interpreted event's
+// `structured_result.clarification`), never a new claim. Falls back to
+// the raw `handling_status` string only when none of those three real
+// signals apply, so nothing is hidden for a shape this function doesn't
+// yet recognize.
+function feedbackEventStatusLabel(event: FeedbackEvent): string {
+  if (event.applied_at !== null) {
+    return event.applied_in_version
+      ? `Applied in ${event.applied_in_version}`
+      : "Applied";
+  }
+  if (
+    isAiInterpretedResult(event.interpretation) &&
+    event.interpretation.structured_result.clarification !== null
+  ) {
+    return "Needs clarification";
+  }
+  return event.handling_status === "pending" ? "Pending" : event.handling_status;
 }
 
 // Section 198A (Task 17/18): resolves experience_id -> {name, dayNumber}
@@ -4300,6 +4405,19 @@ function PlanDiffPreviewSection({ preview }: { preview: PlanDiffPreview }) {
  * (via `ApiRequestError`) and refreshes only the attempt audit list via
  * `onRegenerationAttemptsChange` -- never implying the plan changed, and
  * never calling `loadPlanResult`.
+ *
+ * Section 198B (Task 1) component extraction audited; no broader
+ * extraction justified. The revision-summary/clarification/failure JSX
+ * here is long but each branch is a one-off shape driven by a different
+ * field of `RevisionSummary`/`TargetedRegenerationDiff` -- splitting it
+ * into separate components would mean threading `regenerateSuccess`/
+ * `targetedSummary`/`clarificationDetail` (all set together, read
+ * together, cleared together at the top of `handleRegenerate`) across
+ * several new prop boundaries for no real readability gain. The one
+ * genuinely identical, repeated shape (Added/Removed: heading + plain
+ * label list) was factored out as `TargetedDiffCategoryList` above;
+ * Moved/Reordered were deliberately left inline since each has its own
+ * per-item shape.
  */
 function RegenerationReadinessSection({
   tripId,
@@ -4342,13 +4460,35 @@ function RegenerationReadinessSection({
   // requests racing each other.
   compact?: boolean;
 }) {
+  // Section 198B (Tasks 2/3) lifecycle audit of every piece of state
+  // below (`regenerateSuccess`/`targetedSummary`/`clarificationDetail`/
+  // `isRegenerating`/`regenerateError`, plus `useJobPolling`'s own
+  // `activeJob`): no fix was needed. This component is only ever
+  // rendered inside the parent's `{result && (...)}` block, and every
+  // trip-identity-changing action in the parent (`handleSelectMyTrip`,
+  // `handleLoadExistingTrip`, `handlePlanTrip`, `handleLogout`,
+  // `handleAuthenticationRequired`) calls `setResult(null)` BEFORE
+  // fetching the next trip's data -- so React actually unmounts this
+  // whole component (discarding all of the state above) rather than
+  // just re-rendering it with a new `tripId` prop, for every trip
+  // switch/creation/reload/logout. Within a single mounted lifetime,
+  // `handleRegenerate` itself clears `regenerateSuccess`/
+  // `targetedSummary`/`clarificationDetail`/`activeJob` at the very top
+  // of every call (covering "subsequent regeneration" and "conflict
+  // reload", since a conflict is only ever discovered mid-call, after
+  // that same clearing already ran). The "before" snapshot
+  // (`beforeNameMap` inside `handleRegenerate`) is never stored in
+  // React state at all -- it's a local variable recomputed fresh from
+  // the current `dailyPlans` prop on every call and discarded when the
+  // function returns, so it cannot leak between attempts or trips by
+  // construction.
   const [isRegenerating, setIsRegenerating] = useState(false);
   const [regenerateError, setRegenerateError] = useState<{
     code: string;
     message: string;
   } | null>(null);
   const [regenerateSuccess, setRegenerateSuccess] =
-    useState<RegenerateResponseData | null>(null);
+    useState<RevisionSummary | null>(null);
   // Section 198A: only populated for a synchronous targeted regeneration
   // success (`regenerateSuccess.targeted && regenerateSuccess.diff`) --
   // resolves the diff's stable experience_ids into display names against
@@ -4360,6 +4500,7 @@ function RegenerationReadinessSection({
     addedLabels: string[];
     removedLabels: string[];
     movedLabels: { label: string; fromDay: number; toDay: number }[];
+    reorderedDayIndices: number[];
     remainingPendingCount: number;
   } | null>(null);
   // Section 198A (Task 9): the real clarification question/possible
@@ -4374,6 +4515,17 @@ function RegenerationReadinessSection({
   // unmounting this instance, e.g. via a mode toggle or logout hiding the
   // whole result view, automatically stops any in-flight poll).
   const { activeJob, jobPollingError, waitForJob, clearJob } = useJobPolling();
+  // Task 37: moves keyboard/screen-reader focus onto the clarification or
+  // failure panel the moment it appears, rather than leaving focus
+  // sitting on the (now potentially disabled) "Regenerate" button with no
+  // indication anything changed. Never runs for a success -- only a
+  // `regenerateError` transitions here.
+  const regenerateErrorPanelRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (regenerateError) {
+      regenerateErrorPanelRef.current?.focus();
+    }
+  }, [regenerateError]);
 
   async function handleRegenerationRefusal(err: unknown) {
     recordApiError("regenerate", err);
@@ -4393,13 +4545,24 @@ function RegenerationReadinessSection({
     }
     // Section 198A (Task 9): the ambiguity detail is never on the error
     // response -- it's only recoverable by reloading the trip and reading
-    // the newest AI-interpreted feedback event. Best-effort: if this
-    // reload itself fails, the generic error banner above still shows.
+    // the newest AI-interpreted feedback event.
+    // Section 198B (Task 7 regression fix): a real controlled-browser
+    // pass caught that this used to call a standalone `getTrip` just for
+    // `clarificationDetail`, never writing the result back into the
+    // page's main `result` state -- so the feedback-history list kept
+    // showing its pre-attempt snapshot (still "Pending", not "Needs
+    // clarification") even though the backend had already persisted a
+    // real interpretation onto that event. Now uses the same full
+    // `onRegenerateSuccess` refresh the CONFLICT branch below already
+    // uses, so itinerary/version history/feedback history all move
+    // together with the clarification detail -- one fetch, one
+    // consistent snapshot. Best-effort: if this reload itself fails, the
+    // generic error banner above still shows.
     if (errorCode === "REGENERATION_NEEDS_CLARIFICATION") {
       try {
-        const tripData = await getTrip(tripId);
+        const refreshed = await onRegenerateSuccess();
         setClarificationDetail(
-          findLatestClarificationDetail(tripData.planning_state.feedback_history),
+          findLatestClarificationDetail(refreshed.feedbackHistory),
         );
       } catch {
         // Leave clarificationDetail as-is; the generic error message
@@ -4464,6 +4627,7 @@ function RegenerationReadinessSection({
         fromDay: moved.from_day,
         toDay: moved.to_day,
       })),
+      reorderedDayIndices: diff.reordered_days.map((reordered) => reordered.day_index),
       remainingPendingCount: afterResult.pendingFeedbackSummary.total_feedback_items,
     });
   }
@@ -4492,12 +4656,18 @@ function RegenerationReadinessSection({
           // Full refresh so the itinerary, movement rows, route paths,
           // version history, diff preview, and readiness all reflect the
           // regenerated state together -- never just this section's own
-          // local state. The job contract itself carries no rich diff
-          // (Task 41's own honest finding), so only version/changed-
-          // sections-level detail is available for an async result --
-          // shown via the same JobStatusCard already used for legacy
-          // async regeneration, not a fabricated diff.
-          await onRegenerateSuccess();
+          // local state. Section 198B: a completed job now carries the
+          // same canonical targeted-result fields the sync path does, so
+          // the async branch converges on the same shared revision
+          // summary (Task 6) instead of only showing the generic
+          // JobStatusCard.
+          const afterResult = await onRegenerateSuccess();
+          setRegenerateSuccess(buildRevisionSummaryFromJob(finalJob));
+          applyTargetedSummary(
+            finalJob.targeted ? finalJob.diff ?? null : null,
+            beforeNameMap,
+            afterResult,
+          );
         } else {
           await handleRegenerationRefusal(
             new ApiRequestError(
@@ -4513,7 +4683,7 @@ function RegenerationReadinessSection({
         return;
       }
 
-      setRegenerateSuccess(data);
+      setRegenerateSuccess(buildRevisionSummaryFromSyncResponse(data));
       // Full refresh so the itinerary, movement rows, route paths, version
       // history, diff preview, and readiness all reflect the regenerated
       // state together -- never just this section's own local state.
@@ -4691,75 +4861,61 @@ function RegenerationReadinessSection({
               Regeneration applied
             </p>
             <p className="mt-1 text-xs text-emerald-200">
-              {formatNullableVersionLabel(regenerateSuccess.previous_version)}
+              {formatNullableVersionLabel(regenerateSuccess.previousVersion)}
               {" → "}
-              {regenerateSuccess.current_version}
+              {regenerateSuccess.currentVersion}
             </p>
-            {regenerateSuccess.changed_sections.length > 0 && (
+            {regenerateSuccess.changedSections.length > 0 && (
               <p className="mt-1 text-xs text-emerald-200">
-                Changed: {regenerateSuccess.changed_sections.join(", ")}
+                Changed: {regenerateSuccess.changedSections.join(", ")}
               </p>
             )}
-            {regenerateSuccess.preserved_sections.length > 0 && (
-              <p className="mt-1 text-xs text-emerald-200">
-                Preserved: {regenerateSuccess.preserved_sections.join(", ")}
-              </p>
-            )}
-            {regenerateSuccess.applied_feedback_event_ids.length > 0 && (
-              <p className="mt-1 break-words text-xs text-emerald-200">
-                Applied feedback:{" "}
-                {regenerateSuccess.applied_feedback_event_ids.join(", ")}
-              </p>
-            )}
+            {regenerateSuccess.preservedSections &&
+              regenerateSuccess.preservedSections.length > 0 && (
+                <p className="mt-1 text-xs text-emerald-200">
+                  Preserved: {regenerateSuccess.preservedSections.join(", ")}
+                </p>
+              )}
+            {regenerateSuccess.appliedFeedbackEventIds &&
+              regenerateSuccess.appliedFeedbackEventIds.length > 0 && (
+                <p className="mt-1 break-words text-xs text-emerald-200">
+                  Applied feedback:{" "}
+                  {regenerateSuccess.appliedFeedbackEventIds.join(", ")}
+                </p>
+              )}
 
             {regenerateSuccess.targeted && (
               <div className="mt-3 border-t border-emerald-500/20 pt-3">
                 <p className="text-[11px] font-semibold uppercase tracking-wide text-emerald-400">
                   Targeted regeneration summary
                 </p>
-                {regenerateSuccess.affected_day_indices &&
-                  regenerateSuccess.affected_day_indices.length > 0 && (
-                    <p className="mt-1 text-xs text-emerald-200">
-                      Changed: Day
-                      {regenerateSuccess.affected_day_indices.length > 1 ? "s" : ""}{" "}
-                      {regenerateSuccess.affected_day_indices.join(", ")}
-                    </p>
-                  )}
-                {regenerateSuccess.preserved_day_indices &&
-                  regenerateSuccess.preserved_day_indices.length > 0 && (
-                    <p className="mt-1 text-xs text-emerald-200">
-                      Unchanged in this revision: Day
-                      {regenerateSuccess.preserved_day_indices.length > 1 ? "s" : ""}{" "}
-                      {regenerateSuccess.preserved_day_indices.join(", ")}
-                    </p>
-                  )}
+                {regenerateSuccess.affectedDayIndices.length > 0 && (
+                  <p className="mt-1 text-xs text-emerald-200">
+                    Changed: Day
+                    {regenerateSuccess.affectedDayIndices.length > 1 ? "s" : ""}{" "}
+                    {regenerateSuccess.affectedDayIndices.join(", ")}
+                  </p>
+                )}
+                {regenerateSuccess.preservedDayIndices.length > 0 && (
+                  <p className="mt-1 text-xs text-emerald-200">
+                    Unchanged in this revision: Day
+                    {regenerateSuccess.preservedDayIndices.length > 1 ? "s" : ""}{" "}
+                    {regenerateSuccess.preservedDayIndices.join(", ")}
+                  </p>
+                )}
 
                 {targetedSummary && (
                   <>
-                    {targetedSummary.removedLabels.length > 0 && (
-                      <div className="mt-2">
-                        <p className="text-xs font-semibold text-emerald-200">
-                          Removed
-                        </p>
-                        <ul className="mt-1 list-disc break-words pl-4 text-xs text-emerald-200">
-                          {targetedSummary.removedLabels.map((label, index) => (
-                            <li key={`targeted-removed-${index}`}>{label}</li>
-                          ))}
-                        </ul>
-                      </div>
-                    )}
-                    {targetedSummary.addedLabels.length > 0 && (
-                      <div className="mt-2">
-                        <p className="text-xs font-semibold text-emerald-200">
-                          Added
-                        </p>
-                        <ul className="mt-1 list-disc break-words pl-4 text-xs text-emerald-200">
-                          {targetedSummary.addedLabels.map((label, index) => (
-                            <li key={`targeted-added-${index}`}>{label}</li>
-                          ))}
-                        </ul>
-                      </div>
-                    )}
+                    <TargetedDiffCategoryList
+                      label="Added"
+                      items={targetedSummary.addedLabels}
+                      keyPrefix="targeted-added"
+                    />
+                    <TargetedDiffCategoryList
+                      label="Removed"
+                      items={targetedSummary.removedLabels}
+                      keyPrefix="targeted-removed"
+                    />
                     {targetedSummary.movedLabels.length > 0 && (
                       <div className="mt-2">
                         <p className="text-xs font-semibold text-emerald-200">
@@ -4774,6 +4930,12 @@ function RegenerationReadinessSection({
                           ))}
                         </ul>
                       </div>
+                    )}
+                    {targetedSummary.reorderedDayIndices.length > 0 && (
+                      <p className="mt-2 text-xs text-emerald-200">
+                        Reordered: Day{targetedSummary.reorderedDayIndices.length > 1 ? "s" : ""}{" "}
+                        {targetedSummary.reorderedDayIndices.join(", ")}
+                      </p>
                     )}
                     {targetedSummary.diff.traveler_profile_diff && (
                       <div className="mt-2 text-xs text-emerald-200">
@@ -4817,6 +4979,10 @@ function RegenerationReadinessSection({
                         {" · "}
                         Warnings: {targetedSummary.diff.warning_count_before} →{" "}
                         {targetedSummary.diff.warning_count_after}
+                        {" · "}
+                        Critical issues:{" "}
+                        {targetedSummary.diff.critical_issue_count_before} →{" "}
+                        {targetedSummary.diff.critical_issue_count_after}
                       </p>
                     )}
                     {targetedSummary.remainingPendingCount > 0 && (
@@ -4837,9 +5003,11 @@ function RegenerationReadinessSection({
         {regenerateError &&
           (regenerateError.code === "REGENERATION_NEEDS_CLARIFICATION" ? (
             <div
+              ref={regenerateErrorPanelRef}
               role="alert"
               aria-live="polite"
-              className="mt-3 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm"
+              tabIndex={-1}
+              className={`mt-3 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm ${FOCUS_RING_CLASSNAME}`}
             >
               <p className="font-semibold text-amber-200">
                 This feedback needs clarification
@@ -4866,9 +5034,11 @@ function RegenerationReadinessSection({
             </div>
           ) : (
             <div
+              ref={regenerateErrorPanelRef}
               role="alert"
               aria-live="polite"
-              className="mt-3 rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-sm"
+              tabIndex={-1}
+              className={`mt-3 rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-sm ${FOCUS_RING_CLASSNAME}`}
             >
               <p className="break-words font-semibold text-red-300">
                 {regenerationReasonCodeLabel(regenerateError.code)}
@@ -4889,6 +5059,14 @@ function RegenerationReadinessSection({
                   The itinerary changed while this request was being
                   processed. The latest version has been reloaded below --
                   nothing was overwritten.
+                </p>
+              )}
+              {regenerateError.code === "REGENERATION_BLOCKED_BY_LOCKS" && (
+                <p className="mt-1 break-words text-xs text-red-200">
+                  At least one item is locked, so regeneration was refused
+                  outright rather than worked around. Unlock every locked
+                  item first, then regenerate again -- your feedback is
+                  still saved as pending.
                 </p>
               )}
             </div>
@@ -5042,7 +5220,7 @@ function FeedbackPanel({
             >
               <p className="break-words text-slate-200">{event.feedback_text}</p>
               <p className="mt-1 text-[11px] uppercase tracking-wide text-slate-500">
-                {event.handling_status} ·{" "}
+                {feedbackEventStatusLabel(event)} ·{" "}
                 {new Date(event.created_at).toLocaleString()}
               </p>
               {event.feedback_type && (

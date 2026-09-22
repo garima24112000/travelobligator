@@ -7,6 +7,7 @@ from uuid import uuid4
 from pydantic import BaseModel, Field, field_validator
 
 from app.models.planning_state import GENERATION_STAGE_KEYS
+from app.models.targeted_regeneration_diff import TargetedRegenerationDiff
 
 # Async job foundation (Step 186B, docs/14_backend_architecture.md section
 # 116). This module adds the inert data model + creation/transition
@@ -116,6 +117,30 @@ class GenerationJob(BaseModel):
     result_version: str | None = None
     changed_sections: list[str] = Field(default_factory=list)
 
+    # Section 198B: targeted-regeneration result parity between the sync
+    # `RegenerateResponseData` and an async job's completed result --
+    # this is the SAME canonical result the sync route already returns,
+    # carried through the job record rather than hand-copied into a
+    # second, divergent shape. Every field below is optional/defaulted so
+    # an old, already-persisted `generate` job or legacy `regenerate` job
+    # (none of which ever set these) still deserializes unchanged --
+    # `targeted=False` and every other new field stays at its default for
+    # any job this section didn't touch.
+    previous_version: str | None = None
+    targeted: bool = False
+    interpretation_status: str | None = None
+    execution_status: str | None = None
+    affected_day_indices: list[int] = Field(default_factory=list)
+    preserved_day_indices: list[int] = Field(default_factory=list)
+    diff: TargetedRegenerationDiff | None = None
+    # Populated only for a targeted job that ended in
+    # needs_clarification -- mirrors what the sync route recovers from
+    # `FeedbackEvent.interpretation` after a 409, but here it's carried
+    # directly since a background job has no HTTP response to attach it
+    # to.
+    clarification_reason: str | None = None
+    clarification_possible_experience_ids: list[str] = Field(default_factory=list)
+
     @field_validator("progress_stage", mode="after")
     @classmethod
     def _validate_progress_stage(cls, value: str | None) -> str | None:
@@ -159,6 +184,16 @@ def mark_job_succeeded(
     *,
     result_version: str | None = None,
     changed_sections: list[str] | None = None,
+    # Section 198B: optional targeted-result parity fields -- every
+    # existing call site (legacy generate/regenerate) omits these and
+    # gets the exact same behavior as before.
+    previous_version: str | None = None,
+    targeted: bool = False,
+    interpretation_status: str | None = None,
+    execution_status: str | None = None,
+    affected_day_indices: list[int] | None = None,
+    preserved_day_indices: list[int] | None = None,
+    diff: TargetedRegenerationDiff | None = None,
 ) -> GenerationJob:
     """Transitions `job` to `succeeded`, setting `finished_at`. Never
     itself claims the resulting plan is travel-ready/final/guaranteed --
@@ -167,6 +202,13 @@ def mark_job_succeeded(
     job.finished_at = _utc_now()
     job.result_version = result_version
     job.changed_sections = list(changed_sections) if changed_sections else []
+    job.previous_version = previous_version
+    job.targeted = targeted
+    job.interpretation_status = interpretation_status
+    job.execution_status = execution_status
+    job.affected_day_indices = list(affected_day_indices) if affected_day_indices else []
+    job.preserved_day_indices = list(preserved_day_indices) if preserved_day_indices else []
+    job.diff = diff
     job.message = "Job completed successfully."
     job.error_code = None
     job.error_message = None
@@ -174,7 +216,18 @@ def mark_job_succeeded(
 
 
 def mark_job_failed(
-    job: GenerationJob, *, error_code: str, error_message: str
+    job: GenerationJob,
+    *,
+    error_code: str,
+    error_message: str,
+    # Section 198B: optional targeted-result parity fields, mirroring the
+    # sync route's own honest non-success outcomes -- never populated for
+    # a legacy generate/regenerate job failure.
+    targeted: bool = False,
+    interpretation_status: str | None = None,
+    execution_status: str | None = None,
+    clarification_reason: str | None = None,
+    clarification_possible_experience_ids: list[str] | None = None,
 ) -> GenerationJob:
     """Transitions `job` to `failed`, setting `finished_at`.
 
@@ -189,6 +242,15 @@ def mark_job_failed(
     job.error_code = error_code
     job.error_message = error_message
     job.message = "Job failed."
+    job.targeted = targeted
+    job.interpretation_status = interpretation_status
+    job.execution_status = execution_status
+    job.clarification_reason = clarification_reason
+    job.clarification_possible_experience_ids = (
+        list(clarification_possible_experience_ids)
+        if clarification_possible_experience_ids
+        else []
+    )
     return job
 
 
