@@ -171,6 +171,19 @@ ALLOWED_EXTRA_FIELDS = frozenset(
         "deterministic_edit_count",
         "provider_lookup_count",
         "repair_attempt_count",
+        # Section 197C (docs/14_backend_architecture.md, following section
+        # 149.1): targeted-regeneration-RUNTIME (application-service)
+        # observability. Plain counts/statuses/version-label strings
+        # only -- never raw feedback text, a prompt, or a credential.
+        "feedback_event_count",
+        "interpretation_status",
+        "plan_status",
+        "execution_status",
+        "new_version",
+        "added_count",
+        "removed_count",
+        "moved_count",
+        "persistence_status",
     }
 )
 

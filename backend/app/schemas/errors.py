@@ -13,6 +13,14 @@ class ErrorCode(str, Enum):
     REGENERATION_NOT_AVAILABLE = "REGENERATION_NOT_AVAILABLE"
     REGENERATION_BLOCKED_BY_LOCKS = "REGENERATION_BLOCKED_BY_LOCKS"
     REGENERATION_NO_PENDING_FEEDBACK = "REGENERATION_NO_PENDING_FEEDBACK"
+    # Section 197C: targeted-regeneration-specific outcomes the legacy
+    # coarse path never produced (needs_clarification/version-conflict/
+    # provider-unavailable are all honest states the AI interpretation
+    # layer can reach that "REGENERATION_NOT_AVAILABLE" alone can't
+    # distinguish for a caller).
+    REGENERATION_NEEDS_CLARIFICATION = "REGENERATION_NEEDS_CLARIFICATION"
+    REGENERATION_CONFLICT = "REGENERATION_CONFLICT"
+    REGENERATION_PROVIDER_UNAVAILABLE = "REGENERATION_PROVIDER_UNAVAILABLE"
     PROVIDER_FAILED = "PROVIDER_FAILED"
     PROVIDER_NOT_CONNECTED = "PROVIDER_NOT_CONNECTED"
     DATA_UNAVAILABLE = "DATA_UNAVAILABLE"

@@ -16,14 +16,18 @@ from app.core.errors import (
     job_not_found_error,
     lock_not_found_error,
     regeneration_blocked_by_locks_error,
+    regeneration_conflict_error,
+    regeneration_needs_clarification_error,
     regeneration_no_pending_feedback_error,
     regeneration_not_available_error,
+    regeneration_provider_unavailable_error,
     trip_not_found_error,
 )
 from app.core.response import success_response
 from app.models.common import ReadinessStatus
 from app.models.generation_job import GenerationJob
 from app.models.planning_state import GenerationProgress, TripRequest
+from app.models.targeted_regeneration_runtime import TargetedRegenerationRuntimeStatus
 from app.models.user import PublicUser
 from app.repositories.factory import get_planning_state_repository, get_trip_repository
 from app.schemas.ai_candidate_promotion import AICandidatePromotionResponseData
@@ -63,6 +67,9 @@ from app.services.regeneration_mutation_service import (
     apply_regeneration_mutation,
 )
 from app.services.regeneration_readiness_service import regeneration_readiness_service
+from app.services.targeted_regeneration_application_service import (
+    targeted_regeneration_application_service,
+)
 from app.services.user_lock_service import user_lock_service
 
 logger = logging.getLogger(__name__)
@@ -83,6 +90,66 @@ def _job_started_response(job: GenerationJob) -> JSONResponse:
     return JSONResponse(
         content=envelope.model_dump(mode="json"), status_code=status.HTTP_202_ACCEPTED
     )
+
+
+def _regenerate_targeted(trip_id: str, background_tasks: BackgroundTasks, current_user: PublicUser):
+    """Section 197C: the targeted-mode counterpart to the legacy sync/
+    async branch below. Calls the ONE application-service boundary
+    (`TargetedRegenerationApplicationService.regenerate`) for the sync
+    case, or its own async job starter for the async case -- both
+    ultimately call the exact same service method (Task 28: semantic
+    parity by construction).
+    """
+    if get_settings().async_generation_enabled:
+        job = generation_job_service.start_targeted_regenerate_job(
+            trip_id=trip_id,
+            owner_id=current_user.user_id,
+            background_tasks=background_tasks,
+        )
+        return _job_started_response(job)
+
+    result = targeted_regeneration_application_service.regenerate(trip_id)
+    return _targeted_regenerate_response(result)
+
+
+def _targeted_regenerate_response(result):
+    if result.status == TargetedRegenerationRuntimeStatus.COMPLETED:
+        diff = result.diff
+        data = RegenerateResponseData(
+            trip_id=result.trip_id,
+            status="applied",
+            previous_version=result.source_version,
+            current_version=result.new_version,
+            changed_sections=[f"day_{d}" for d in (diff.affected_day_indices if diff else [])],
+            preserved_sections=[f"day_{d}" for d in (diff.preserved_day_indices if diff else [])],
+            applied_feedback_event_ids=[result.feedback_event_id] if result.feedback_event_id else [],
+            active_lock_count=0,
+            message=result.message,
+            targeted=True,
+            interpretation_status=result.interpretation_status,
+            execution_status=result.execution_status,
+            affected_day_indices=diff.affected_day_indices if diff else [],
+            preserved_day_indices=diff.preserved_day_indices if diff else [],
+            diff=diff,
+        )
+        return success_response(data)
+
+    # Every non-completed outcome below is a genuine refusal -- no
+    # version created, no feedback consumed, no plan content changed
+    # (enforced by `TargetedRegenerationApplicationService` itself, never
+    # re-derived or trusted blindly here). The full structured
+    # interpretation (including a clarification's `possible_experience_ids`)
+    # is always persisted onto the triggering `FeedbackEvent` regardless
+    # of outcome (Task 3/14), so a caller can always recover it via
+    # `GET /trips/{trip_id}` even from this deliberately minimal error
+    # message.
+    if result.status == TargetedRegenerationRuntimeStatus.NEEDS_CLARIFICATION:
+        raise regeneration_needs_clarification_error()
+    if result.status == TargetedRegenerationRuntimeStatus.CONFLICT:
+        raise regeneration_conflict_error()
+    if result.status == TargetedRegenerationRuntimeStatus.PROVIDER_UNAVAILABLE:
+        raise regeneration_provider_unavailable_error()
+    raise regeneration_not_available_error()
 
 router = APIRouter(prefix="/trips", tags=["trips"])
 
@@ -326,6 +393,18 @@ def regenerate_trip_plan(
         )
         get_planning_state_repository().save(planning_state)
         raise regeneration_no_pending_feedback_error()
+
+    # Section 197C: `confirm=true`, pending feedback exists, zero active
+    # locks -- the same precondition Section 174's legacy MVP scope
+    # required, shared unchanged above. From here, `targeted_regeneration_
+    # enabled` decides which engine actually runs. Off (the default):
+    # falls through to the untouched legacy coarse stage-rerun path
+    # below, byte-for-byte unchanged. On: routes through
+    # Sections 196/197A/197B/197C instead, and NEVER falls back to the
+    # legacy path on a targeted-mode failure/ambiguity/staleness -- doing
+    # so could silently widen a user's deliberately scoped request.
+    if get_settings().targeted_regeneration_enabled:
+        return _regenerate_targeted(trip_id, background_tasks, current_user)
 
     # confirm=true, pending feedback exists, zero active locks: Section
     # 174's MVP scope. Two more safe-refusal conditions before any

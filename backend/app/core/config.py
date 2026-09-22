@@ -289,6 +289,27 @@ class Settings(BaseSettings):
         alias="AI_FEEDBACK_INTERPRETER_MODEL",
     )
 
+    # Section 197C (docs/14_backend_architecture.md, following section
+    # 149.1): the runtime gate for the whole Sections 196/197A/197B
+    # pipeline inside `POST /trips/{trip_id}/regenerate`. Deliberately a
+    # SEPARATE flag from `ai_feedback_interpreter_enabled` -- they answer
+    # different questions: the latter is "may the interpreter ever call a
+    # provider at all" (also usable in isolation, per Section 196's own
+    # scope), while this one is "should `/regenerate` route through the
+    # targeted pipeline instead of the legacy coarse stage-rerun path."
+    # Both default `False`, so a fresh deployment's `/regenerate`
+    # behavior is completely unchanged until an operator opts in
+    # explicitly. When this is `True` but `ai_feedback_interpreter_enabled`
+    # is `False` (or the configured provider is unreachable), the targeted
+    # path still never falls back to legacy stage-rerun -- it returns an
+    # honest `not_connected`-derived failure instead (Task 6: silently
+    # running broad regeneration when the user asked for a scoped change
+    # would violate their intent).
+    targeted_regeneration_enabled: bool = Field(
+        default=False,
+        alias="TARGETED_REGENERATION_ENABLED",
+    )
+
     google_places_api_key: str | None = Field(default=None, alias="GOOGLE_PLACES_API_KEY")
     google_routes_api_key: str | None = Field(default=None, alias="GOOGLE_ROUTES_API_KEY")
     mapbox_access_token: str | None = Field(default=None, alias="MAPBOX_ACCESS_TOKEN")

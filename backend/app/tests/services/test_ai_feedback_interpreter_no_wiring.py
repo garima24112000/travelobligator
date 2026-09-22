@@ -8,14 +8,28 @@ import pytest
 from fastapi.testclient import TestClient
 
 # Section 196 (docs/14_backend_architecture.md, following section 146)
-# builds `AIFeedbackInterpreterService`/`AIFeedbackInterpretationRequestBuilder`/
-# the interpreter-capable provider adapters, but deliberately keeps them
-# dormant -- not called by `POST /trips/{id}/feedback`, not called by
-# `POST /trips/{id}/regenerate`, no LangGraph node, no
-# `PlanningOrchestrator` stage. Section 197 is what would wire targeted
-# regeneration around an accepted interpretation. These tests prove that
-# boundary holds today, mirroring the exact convention Sections 193B/194A
-# established for their own "not wired yet" test suites.
+# built `AIFeedbackInterpreterService`/`AIFeedbackInterpretationRequestBuilder`/
+# the interpreter-capable provider adapters dormant -- not called by
+# `POST /trips/{id}/feedback`, not called by `POST /trips/{id}/regenerate`,
+# no LangGraph node, no `PlanningOrchestrator` stage. Sections 197A/197B
+# built the deterministic plan compiler/executor on top, equally dormant.
+#
+# Section 197C (docs/14_backend_architecture.md, following section
+# 149.1) is the intentional flip, mirroring the established convention
+# Sections 193C/194B used for their own "not wired yet" suites:
+# `POST /trips/{trip_id}/regenerate` now DOES wire the whole
+# 196->197A->197B pipeline in, through exactly one new module,
+# `app.services.targeted_regeneration_application_service`, and ONLY
+# when `Settings.targeted_regeneration_enabled=True` (default `False`).
+# `feedback_service.py`/`regeneration_mutation_service.py`/
+# `planning_orchestrator.py`/`app/graphs/planning_graph_nodes.py` remain
+# entirely untouched by this -- the legacy coarse regeneration path they
+# implement is still exactly what runs whenever targeted mode is off,
+# proven directly below by real HTTP calls with the flag left at its
+# default. `test_api_routes_do_not_import_interpreter` (the fifth
+# no-wiring check, for `app/api/routes/trips.py`) is retired below in
+# favor of its own flipped counterpart -- everything else in this file is
+# still exactly true and unchanged.
 
 
 def _imported_module_names(module: object) -> list[str]:
@@ -63,10 +77,28 @@ def test_langgraph_nodes_do_not_import_interpreter() -> None:
     _assert_no_interpreter_import(module)
 
 
-def test_api_routes_do_not_import_interpreter() -> None:
+def test_api_routes_now_wire_targeted_regeneration_application_service() -> None:
+    """Section 197C's intentional flip of the old `test_api_routes_do_not_
+    import_interpreter` check: `app/api/routes/trips.py` now imports the
+    ONE targeted-regeneration orchestration boundary
+    (`targeted_regeneration_application_service`) -- never the interpreter/
+    plan-builder/executor modules directly, and never any provider-vendor
+    module (matching the same disallowed-vendor discipline
+    `test_provider_package_calls_no_langgraph_or_disallowed_vendor` already
+    enforces on the provider package itself).
+    """
     import app.api.routes.trips as module
 
-    _assert_no_interpreter_import(module)
+    imported_names = _imported_module_names(module)
+    assert any("targeted_regeneration_application_service" in name for name in imported_names)
+    # Never a direct import of the interpreter class or a vendor adapter --
+    # only the application service boundary. (This route file legitimately
+    # imports an unrelated pre-existing LangGraph shadow-run schema, so the
+    # broader "no langgraph/vendor substring anywhere" check used for the
+    # provider package itself doesn't apply to this whole route file.)
+    assert not any(name == "AIFeedbackInterpreterService" for name in imported_names)
+    assert not any("groq_adapter" in name or "anthropic_adapter" in name for name in imported_names)
+    assert not any("langsmith" in name.lower() for name in imported_names)
 
 
 def test_provider_package_calls_no_langgraph_or_disallowed_vendor() -> None:
@@ -85,7 +117,11 @@ def test_provider_package_calls_no_langgraph_or_disallowed_vendor() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Task 26: current /feedback and /regenerate behavior is unchanged.
+# Task 26 (Section 196) / Task 34 (Section 197C): current /feedback and
+# /regenerate behavior is unchanged with targeted mode at its default
+# (off) -- these three tests already prove Section 197C's own Task 34
+# feature-disabled regression requirement, unmodified, since they never
+# set TARGETED_REGENERATION_ENABLED and the default is False.
 # ---------------------------------------------------------------------------
 
 

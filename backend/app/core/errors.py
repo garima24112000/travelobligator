@@ -129,6 +129,56 @@ def regeneration_no_pending_feedback_error() -> AppError:
     )
 
 
+# Section 197C: targeted-regeneration-specific refusals (docs/14_backend_
+# architecture.md, following section 149.1). Only raised when
+# `Settings.targeted_regeneration_enabled=True` -- the legacy refusals
+# above are unchanged and still exclusively used when it's off.
+
+REGENERATION_NEEDS_CLARIFICATION_MESSAGE = (
+    "The feedback is ambiguous and needs clarification before regenerating. "
+    "No plan section was changed."
+)
+
+
+def regeneration_needs_clarification_error() -> AppError:
+    return AppError(
+        code=ErrorCode.REGENERATION_NEEDS_CLARIFICATION,
+        message=REGENERATION_NEEDS_CLARIFICATION_MESSAGE,
+        status_code=status.HTTP_409_CONFLICT,
+        field="regeneration",
+    )
+
+
+REGENERATION_CONFLICT_MESSAGE = (
+    "The itinerary changed while this regeneration was running. Nothing was "
+    "overwritten -- retry the request."
+)
+
+
+def regeneration_conflict_error() -> AppError:
+    return AppError(
+        code=ErrorCode.REGENERATION_CONFLICT,
+        message=REGENERATION_CONFLICT_MESSAGE,
+        status_code=status.HTTP_409_CONFLICT,
+        field="regeneration",
+    )
+
+
+REGENERATION_PROVIDER_UNAVAILABLE_MESSAGE = (
+    "AI feedback interpretation is not available right now, so targeted "
+    "regeneration was not attempted. No plan section was changed."
+)
+
+
+def regeneration_provider_unavailable_error() -> AppError:
+    return AppError(
+        code=ErrorCode.REGENERATION_PROVIDER_UNAVAILABLE,
+        message=REGENERATION_PROVIDER_UNAVAILABLE_MESSAGE,
+        status_code=status.HTTP_409_CONFLICT,
+        field="regeneration",
+    )
+
+
 # Auth foundation (Step 184B). None of these are raised by any route yet --
 # no route is auth-gated until Step 184D wires `get_current_user_id`
 # (backend/app/auth/dependencies.py) and an owner check into

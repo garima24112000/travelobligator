@@ -10160,3 +10160,116 @@ Section 197B's own report disclosed a gap it left deliberately broad: "a pure ne
 **Strict boundaries honored**: no wiring into `/feedback`/`/regenerate`, no Section 197C work, no weakened validator/locks, no secret exposed, nothing committed. All of remove/move/explicit-day-regeneration/global-pace/global-interest/stale-version/active-lock/provider-unavailable/narrator/failure-atomicity behavior is unchanged (Task 23), confirmed by the full pre-existing 197B test suite passing unmodified in outcome.
 
 **Verification**: full suite **4001 passed + 18 skipped** (3991 + 10 new tests, zero change to any pre-existing test's outcome). `compileall`/`pytest` clean. No frontend/shared-contract file changed -- frontend checks explicitly skipped for this narrow follow-up for that reason.
+
+## 151. Section 197C: Runtime Targeted Regeneration Integration
+
+```text
+user feedback (POST /trips/{trip_id}/feedback, unchanged)
+  |
+  v
+POST /trips/{trip_id}/regenerate
+  confirm / locks / pending-feedback checks (shared, unchanged)
+  |
+  +-- targeted_regeneration_enabled=False (default) --> legacy coarse
+  |      stage-rerun path, byte-for-byte unchanged (apply_regeneration_mutation)
+  |
+  +-- targeted_regeneration_enabled=True
+         |
+         v
+       TargetedRegenerationApplicationService.regenerate(trip_id)
+         load current PlanningState
+         -> pick oldest pending FeedbackEvent
+         -> AIFeedbackInterpreterService.interpret() [fresh, against THIS state]
+         -> persist structured interpretation onto FeedbackEvent.interpretation
+         -> needs_clarification / rejected / not_connected -> honest refusal, no version
+         -> TargetedRegenerationPlanBuilder.build_plan() -- require status=ready
+         -> TargetedRegenerationExecutor.execute() -- the one 197A/197B boundary
+         -> re-check current persisted version + locks immediately before commit
+         -> versioning_service.create_version_after_feedback()
+         -> mark the ONE consumed FeedbackEvent applied (same 3 fields legacy uses)
+         -> recompute pending-feedback-summary / plan-diff-preview / readiness
+         -> planning_state_repository.save()
+         -> build_targeted_regeneration_diff() [pure, stable-id, before/after]
+         v
+       RegenerateResponseData (backward-compatible extension) / structured refusal
+```
+
+**Audited the entire existing runtime mutation path first (Task 1).** `POST /trips/{trip_id}/regenerate` (`app/api/routes/trips.py`) already had 5 ordered outcomes, all preserved unchanged: confirm/locks/pending-feedback checks, then (previously) legacy `derive_pending_affected_stages` + `apply_regeneration_mutation`. `apply_regeneration_mutation` (`regeneration_mutation_service.py`) is the one place `FeedbackEvent.applied_at`/`applied_in_version`/`handling_status="applied"` are set, and the one place `versioning_service.create_version_after_feedback` + the 3-recompute sequence (`feedback_service.recompute_pending_feedback_summary`, `plan_diff_preview_service.recompute`, `regeneration_readiness_service.recompute`) run. Async `/regenerate` (`generation_job_service.start_regenerate_job`/`run_regenerate_job`) calls the exact same `apply_regeneration_mutation` in the background, re-deriving eligibility from a freshly-reloaded state rather than trusting the request-time object. The audit also corrected a stale claim in this repo's own `CLAUDE.md`/`config.py` comments: real, functioning Postgres-backed repositories already exist (`app/repositories/postgres_*.py`, gated by `Settings.persistence_backend`, default still `local_json`) -- not "no code path reads a database" as previously documented. Because every repository (local JSON and Postgres alike) persists a `PlanningState` as one opaque `model_dump(mode="json")` blob, every new field this section adds is automatically compatible with both backends -- no migration, no schema change (Task 46).
+
+**Decision: `apply_regeneration_mutation` is NOT reused for targeted regeneration.** Its step 2 (`rerun_affected_stages`) is a coarse, stage-level rerun -- fundamentally the wrong mechanism for an entity-level targeted edit. Instead, `TargetedRegenerationApplicationService._commit` replicates exactly steps 6-8 of `apply_regeneration_mutation` (version creation via the same `versioning_service.create_version_after_feedback` helper, the same 3-field feedback-applied marking, the same 3 recomputes in the same order) around `TargetedRegenerationExecutor`'s own result instead of `rerun_affected_stages`'s. This keeps `PlanningState` internally consistent regardless of which engine produced the new state, without a second `apply_*_mutation` definition drifting from the first.
+
+**Feature gating (Task 2): a genuinely separate flag, `TARGETED_REGENERATION_ENABLED` (default `false`), not a reuse of `AI_FEEDBACK_INTERPRETER_ENABLED`.** They answer different questions -- the interpreter flag is "may the interpreter ever call a provider," the new flag is "should `/regenerate` route through the targeted pipeline at all." Both default off, so a fresh deployment's `/regenerate` is unchanged until an operator explicitly opts into both (plus a real interpreter provider). When targeted mode is on but the interpreter itself is unavailable, `/regenerate` returns an honest `REGENERATION_PROVIDER_UNAVAILABLE` refusal -- it never silently falls back to the legacy coarse path, which could execute changes far outside the scope the user actually asked for (Task 6).
+
+**Interpretation timing (Task 3/4): always fresh, immediately before regeneration, never a reused stale interpretation.** `TargetedRegenerationApplicationService` calls `AIFeedbackInterpreterService.interpret` against the SAME `PlanningState` snapshot the plan gets compiled from, in the same call -- interpretation and plan-compilation can never disagree about which version they're targeting, sidestepping the "interpreted against v2, now v3" staleness class by construction rather than by detection. The structured result is persisted into the EXISTING `FeedbackEvent.interpretation` dict slot regardless of outcome (`{"method": "ai_interpreted", "status", "provider", "model", "source_version", "confidence", "scope", "structured_result", "interpreted_at"}`) -- never a schema/migration change, and never the raw prompt/response, only the already-validated structured result. An old event's `{"method": "deterministic_rule_based", ...}` shape is untouched and still loads (Task 33, proven directly by a dedicated test).
+
+**Clarification/rejected/not_connected never execute, never version, never fall back (Task 5/6).** Each returns immediately after persisting the interpretation record, with an honest, distinct outcome: `NEEDS_CLARIFICATION` / `BLOCKED` (rejected) / `PROVIDER_UNAVAILABLE` (not_connected) -- mapped to three new `ErrorCode`s (`REGENERATION_NEEDS_CLARIFICATION`, `REGENERATION_CONFLICT`, `REGENERATION_PROVIDER_UNAVAILABLE`, all 409, mirroring the existing regeneration-refusal convention exactly). The full clarification detail (`reason`, `possible_experience_ids`) is always recoverable via the pre-existing `GET /trips/{trip_id}` -> `feedback_history[*].interpretation.structured_result.clarification`, without needing to overload the error envelope itself.
+
+**Compile-then-execute through the two existing 197A/197B boundaries only (Task 7/8/9).** `TargetedRegenerationPlanBuilder.build_plan` must return `status=ready` before `TargetedRegenerationExecutor.execute` is ever called; neither deterministic-edit, provider-grounding, scoped-reasoning, preservation, routing, validation, repair, nor narration logic is reproduced in the application service or the route -- both stay thin orchestration.
+
+**Commit boundary and atomicity (Task 10/11).** All AI/provider/executor work happens against an isolated in-memory candidate state (197B's own `model_copy(deep=True)`); persistent mutation happens ONLY after `execution_result.status == completed`. Immediately before committing, the application service reloads the CURRENT persisted state and re-checks both its version (against `plan.source_version`) and its active-lock count -- a concurrent regeneration or a lock introduced mid-flight is caught here and returns `CONFLICT`/`BLOCKED` rather than overwriting newer state (proven directly by two dedicated tests that inject a version/lock change between the service's own two `get_by_trip_id` calls). For the default `local_json` backend, the strongest atomicity actually available is what `LocalJsonStore` already provides (tempfile + `fsync` + atomic rename, single-process in-memory dict, one `RLock`) -- genuinely atomic per-write, but not a cross-request transaction; the version-recheck immediately before `save()` is what closes that gap for THIS specific race, not a database transaction. Documented honestly rather than claimed as ACID.
+
+**Version increment and history (Task 12/13)** use the existing `versioning_service.create_version_after_feedback` helper unchanged -- never a manually concatenated `"v" + number`. `VersionHistoryItem.feedback_event_id` records the one consumed event; `changed_sections`/`preserved_sections` are derived from the plan's own `required_stages`/`preserved_day_indices`. No new version-history API was added (Task 43) -- the existing `GET /trips/{trip_id}` -> `version_history` already surfaces it, matching the pre-existing (and still only) way to read version history in this codebase.
+
+**Feedback lifecycle (Task 15/16): the same 3-field "applied" marking, one pending event per call.** `applied_at`/`applied_in_version`/`handling_status="applied"` are set identically to the legacy path, but only on success, and only for the ONE event this call actually processed. Multiple pending events are handled by an explicit, deliberate strategy (Task 16's "option B," conflict-avoidant by construction): the oldest pending event (by `created_at`) is processed per call; every other pending event is left untouched for a subsequent call. This was chosen over combining/concatenating multiple structured interpretations, which risks silently merging two different user intents into one plan.
+
+**Structured content diff (Task 18-25): a new, deliberately small `TargetedRegenerationDiff` contract**, separate from the pre-existing `PlanDiffPreview` (section-level only, no item identity). Built purely by comparing two real `PlanningState` snapshots (`build_targeted_regeneration_diff`) -- added/removed/moved experiences use stable `experience_id` identity only, never fuzzy name/coordinate matching (Task 19); a "reordered day" is reported only when the day's own experience_id SET is unchanged (never double-counted against an add/remove/move already reported); the traveler-profile diff only ever reports real, existing `pace`/`interests` fields; validation before/after is a factual status+count comparison, never an evaluative "improved" claim (Task 25).
+
+**API response contract (Task 26): `RegenerateResponseData` extended backward-compatibly.** Every new field (`targeted`, `interpretation_status`, `execution_status`, `affected_day_indices`, `preserved_day_indices`, `diff`, `clarification_reason`, `clarification_possible_experience_ids`) defaults to `False`/`None`/empty, so a legacy (non-targeted) response's substance is unchanged -- no frontend migration forced.
+
+**Sync and async share exactly one service boundary (Task 27/28).** The synchronous route calls `TargetedRegenerationApplicationService.regenerate(trip_id)` directly; the async job starter (`start_targeted_regenerate_job`/`run_targeted_regenerate_job`, mirroring the legacy `start_regenerate_job`/`run_regenerate_job` pair) calls the exact same method from a background task, reusing the identical duplicate-job guard/per-trip lock (`check_no_duplicate_running_job`/`_lock_for_trip`) the legacy async path already uses (Task 30's idempotency protection is therefore inherited, not reimplemented). Proven directly by an HTTP test asserting the async job's polled result matches the sync path's outcome for the same operation.
+
+**Bounded scope, disclosed honestly.** Targeted-mode outcomes do not yet append a `RegenerationAttempt` audit-trail entry the way every legacy outcome does -- a real, disclosed gap, not a silent omission. Postgres compatibility is structural (generic JSONB blob persistence, no per-field schema) rather than proven by running a live Postgres-gated test in this environment.
+
+**Strict boundaries honored**: no Section 198 UI, no true itinerary forks, legacy regeneration untouched and still the default, no weakened locks/validator, no data fabricated, no secret exposed, nothing committed.
+
+**Tests**: 31 new -- `test_targeted_regeneration_application_service.py` (12: full success + version/feedback-marking, needs_clarification, rejected, not_connected, plan-blocked, execution-failure, version-conflict-before-commit, lock-before-interpretation, lock-after-execution-before-commit, no-pending-feedback, multiple-pending-events-oldest-only, legacy-interpretation-shape-still-loads), `test_targeted_regeneration_runtime_http.py` (10: real HTTP round-trip for remove/clarification/interpreter-unavailable/lock/day-scoped-success/day-scoped-honest-failure/new-place-provider-unavailable/new-place-success/stale-version-conflict/async-sync-parity, all against a REAL generated plan with only the AI interpretation and, where needed, the AI reasoning provider faked -- 197A's plan compiler and 197B's executor run for real), `test_ai_feedback_interpreter_no_wiring.py` (updated: the old `test_api_routes_do_not_import_interpreter` check is intentionally flipped to `test_api_routes_now_wire_targeted_regeneration_application_service`, mirroring the established Section 193C/194B "flip" convention -- the other four modules' no-wiring checks are untouched and still true).
+
+**Real verification**: a real Lisbon trip (real OSM/Nominatim/Open-Meteo/Groq providers, `.env`/API keys never modified or printed, direct `PlanningOrchestrator.create_trip`/`generate_full_plan_via_langgraph` calls bypassing only the unrelated HTTP/auth layer) round-tripped through real feedback -> real Groq interpretation -> targeted regenerate: `"Remove Mercado da Ribeira please."` -> interpretation `completed` -> plan `ready` -> execution `completed` -> `v1 -> v2`, diff `removed=[the exact experience_id]`, `added=[]`, affected day `[1]`, preserved `[2, 3]`, validation `needs_review -> needs_review` (honest, unchanged), narrator `success`, feedback marked `applied` with `ai_interpreted` method, persisted reload confirmed `v2`. A deliberately vague follow-up ("Remove the place, I don't like it.") real-interpreted as `rejected` -> `blocked`, zero mutation, version unchanged. A real "I also want to visit Sintra." real-interpreted as `needs_clarification` on this run -> zero mutation, `new_version=None`, persisted version unchanged -- an honest, non-deterministic real LLM outcome (a clean grounding success is separately proven by the controlled real-response-shaped HTTP test), not a defect.
+
+**Verification**: full suite **4023 passed + 18 skipped** (4001 + 22 new tests, zero change to any pre-existing test's outcome). `compileall`/`pytest` clean. No frontend/shared-contract file changed -- frontend checks explicitly skipped for that reason.
+
+### 151.1. Section 197C.1: Regeneration Attempt Audit Parity
+
+Section 197C's own report disclosed one gap: targeted regeneration never appended a `RegenerationAttempt` the way the legacy path does for every one of its outcomes. This closes it by reusing the existing model/service exactly as-is -- no second, targeted-only audit model, no new field on `RegenerationAttempt` (Task 1/2's audit confirmed the model is deliberately coarse: `attempt_id`, `status`, `requested_at`, `current_version`, `would_create_version`, `pending_feedback_count`, `active_lock_count`, `reason_code`, `message` -- no per-feedback-event linkage field exists, so `pending_feedback_count` stays the same whole-`feedback_history` count the legacy path already uses, unchanged).
+
+```text
+feedback -> interpretation -> plan
+  |
+  +-- every pre-executor refusal (no pending feedback, active lock, no
+  |    experience plan, needs_clarification, interpreter rejected/
+  |    not_connected, plan not ready)
+  |    -> RegenerationAttempt(status="blocked") -- executor never invoked
+  |
+  +-- executor invoked, did not complete (reasoning_failed/
+  |    provider_unavailable/failed/needs_clarification) OR completed but
+  |    the pre-commit version/lock recheck refused to persist it
+  |    -> RegenerationAttempt(status="failed") -- real work happened,
+  |       nothing was saved
+  |
+  +-- executor completed AND committed
+       -> version created -> feedback marked applied -> recomputes
+       -> RegenerationAttempt(status="applied"), current_version ==
+          the just-created version
+```
+
+**Audited legacy behavior first, and it directly overturned this task's own "preferred" framing (Task 3).** The legacy `/regenerate` route already records a `RegenerationAttempt` for confirm-missing, an active lock, no pending feedback, AND "no derivable affected stage" -- every refusal, not only a real mutation attempt. Real legacy behavior, not the narrower "only audit once the executor is about to run" framing, is what this section mirrors: every terminal branch of `TargetedRegenerationApplicationService._regenerate` now records exactly one attempt, via a small `_record_blocked` helper wrapping the existing `RegenerationAttemptService.record_blocked_attempt` (blocked/failed) and `record_applied_attempt` (applied, called only after version creation/feedback-marking/recomputes, exactly matching that method's own documented ordering requirement).
+
+**The blocked/failed distinction is drawn honestly by whether the executor was ever invoked (Task 5/10/11), not by which error code fired.** `status="blocked"`: no pending feedback, an active lock, no experience plan, `needs_clarification` (from either the interpreter or the plan compiler), interpreter `rejected`/`not_connected`, plan not `ready` -- the executor never ran. `status="failed"`: the executor was actually invoked and its `TargetedRegenerationExecutionResult.status != completed` (this is what correctly distinguishes a new-place `provider_unavailable` reached mid-execution from the interpreter-level `provider_unavailable` above, which never reached the executor at all -- Task 11, proven by a dedicated test using each), or the executor completed in memory but the pre-commit version-conflict/lock recheck refused to persist it (real work happened, nothing was saved -- Task 7).
+
+**Stale-version conflict (Task 7) records its attempt onto the freshest known state, not the stale one the call started from**, so the audit trail's own `current_version` reflects reality -- accepting the same small residual cross-request race section 151 already discloses (not a claim of perfect atomicity), rather than silently skipping the audit or overwriting the newer state to make room for it.
+
+**Persistence failure after a completed execution (Task 6) never claims success.** If `planning_state_repository.save` itself raises after `record_applied_attempt` already appended the audit entry to the in-memory `resulting_state`, that in-memory object (attempt included) is simply never persisted -- the failure is logged and an honest `FAILED` result is returned, with no cascading retry attempt (matching this codebase's existing conventions elsewhere).
+
+**Sync and async get identical attempt semantics for free (Task 8)** -- attempt recording lives inside the one shared `TargetedRegenerationApplicationService.regenerate` boundary, so neither the route nor `run_targeted_regenerate_job` needed any change; proven directly by an HTTP test asserting the async job's polled outcome and the persisted attempt are identical in shape to the sync path's.
+
+**One call, one attempt (Task 12/13).** `regenerate()` returns exactly once through exactly one branch, so exactly one `RegenerationAttempt` is ever appended per call -- Section 194's own bounded AI repair loop stays entirely internal to `TargetedRegenerationExecutor` and never surfaces as a separate attempt. Multiple pending feedback events remain the existing Section 197C "one oldest event per call" strategy; the attempt's own `pending_feedback_count` is the same whole-history count legacy already computes, since the model has no field to represent anything narrower.
+
+**Version consistency (Task 4/14/16) is proven directly, not assumed**: a dedicated test asserts `RegenerationAttempt.current_version == PlanningMetadata.current_version == VersionHistoryItem.version_label == FeedbackEvent.applied_in_version` after a successful regeneration, with no three-way disagreement -- confirmed again in real verification below.
+
+**Strict boundaries honored**: no change to 197B's execution/preservation semantics, no diff-contract change, no change to LLM interpretation or provider grounding, no Section 198, no forks, no live Postgres required, no secret exposed, nothing committed.
+
+**Tests**: 2 new (`test_provider_unavailable_during_executor_is_a_failed_attempt`, `test_targeted_async_duplicate_running_job_returns_409`), the version-conflict/lock-after-execution tests updated to assert the new save + attempt behavior instead of "never saved", and `RegenerationAttempt` assertions added directly into 9 further existing tests (successful sync/async, needs_clarification, rejected, not_connected, plan-blocked, execution-failure) across both the application-service and HTTP suites -- no new test file, since this narrowly extends already-existing coverage rather than requiring a parallel suite.
+
+**Real verification**: a real Lisbon trip, real feedback ("Remove {a real scheduled experience} please."), real Groq interpretation -- `attempts before: 0` -> interpretation `completed` -> plan `ready` -> executor `completed` -> runtime `completed` -> `v1 -> v2` -> `attempts after: 1`, `attempt status: applied`, `attempt current_version: v2` -- agreeing exactly with `metadata.current_version`, `version_history[-1].version_label`, and the feedback event's `applied_in_version` (`three-way agreement: True`).
+
+**Verification**: full suite **4025 passed + 18 skipped** (4023 + 2 new tests, zero change to any pre-existing test's outcome). `compileall`/`pytest` clean. No frontend/shared-contract file changed -- frontend checks explicitly skipped for that reason.

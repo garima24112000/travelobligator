@@ -18,6 +18,7 @@ from app.models.generation_job import (
     mark_job_succeeded,
 )
 from app.models.planning_state import PlanningStage
+from app.models.targeted_regeneration_runtime import TargetedRegenerationRuntimeStatus
 from app.repositories.factory import get_job_repository, get_planning_state_repository
 from app.schemas.errors import ErrorCode
 from app.services.planning_orchestrator import planning_orchestrator
@@ -25,6 +26,9 @@ from app.services.regeneration_attempt_service import regeneration_attempt_servi
 from app.services.regeneration_mutation_service import (
     RegenerationMutationError,
     apply_regeneration_mutation,
+)
+from app.services.targeted_regeneration_application_service import (
+    targeted_regeneration_application_service,
 )
 
 logger = logging.getLogger(__name__)
@@ -651,6 +655,114 @@ def run_regenerate_job(
         logger.warning(
             "Background regenerate job %s failed unexpectedly for trip %s "
             "(escaped the inner guards).",
+            job_id,
+            job.trip_id,
+            exc_info=True,
+            extra=_job_log_fields(job),
+        )
+        job_repo.save(job)
+
+
+# -- Section 197C: targeted-mode async regeneration -------------------------
+
+
+def start_targeted_regenerate_job(
+    *, trip_id: str, owner_id: str, background_tasks: BackgroundTasks
+) -> GenerationJob:
+    """The targeted-mode counterpart to `start_regenerate_job`. Reuses the
+    exact same duplicate-job guard/per-trip lock (`check_no_duplicate_
+    running_job`/`_lock_for_trip`) -- a targeted and a legacy regenerate
+    request for the same trip can never race each other into double-
+    creating a job either (Task 30). Unlike the legacy starter, this
+    takes no `affected_stages`/`applied_feedback_event_ids` -- the
+    background runner delegates entirely to
+    `TargetedRegenerationApplicationService.regenerate(trip_id)`, which
+    reloads state and re-derives everything itself, exactly like the
+    synchronous route does.
+    """
+    with _lock_for_trip(trip_id):
+        check_no_duplicate_running_job(trip_id, attempted_job_type=GenerationJobType.REGENERATE)
+        job = create_queued_job(trip_id=trip_id, owner_id=owner_id, job_type=GenerationJobType.REGENERATE)
+        get_job_repository().create(job)
+        logger.info(
+            "Targeted regenerate job %s queued for trip %s.",
+            job.job_id,
+            trip_id,
+            extra=_job_log_fields(job),
+        )
+    background_tasks.add_task(run_targeted_regenerate_job, job.job_id)
+    return job
+
+
+def run_targeted_regenerate_job(job_id: str) -> None:
+    """Background execution for a targeted-mode regenerate job. Calls the
+    exact same `TargetedRegenerationApplicationService.regenerate` the
+    synchronous route calls (Task 28: semantic parity by construction --
+    no regeneration/persistence/versioning logic is duplicated here).
+    Every exception is caught (mirroring `run_regenerate_job`'s own Step
+    186E guarantee) so a failure here always marks the job `failed`
+    rather than leaving it `running` forever.
+    """
+    job_repo = get_job_repository()
+    job = job_repo.get_by_job_id(job_id)
+    if job is None:
+        return
+
+    job = mark_job_running(job, progress_stage=None)
+    job_repo.save(job)
+    logger.info(
+        "Targeted regenerate job %s started for trip %s.",
+        job_id,
+        job.trip_id,
+        extra=_job_log_fields(job),
+    )
+
+    try:
+        result = targeted_regeneration_application_service.regenerate(job.trip_id)
+
+        if result.status == TargetedRegenerationRuntimeStatus.COMPLETED:
+            job = mark_job_succeeded(
+                job,
+                result_version=result.new_version,
+                changed_sections=[
+                    f"day_{day}" for day in (result.diff.affected_day_indices if result.diff else [])
+                ],
+            )
+            job_repo.save(job)
+            logger.info(
+                "Targeted regenerate job %s succeeded for trip %s.",
+                job_id,
+                job.trip_id,
+                extra=_job_log_fields(job),
+            )
+            return
+
+        error_code_by_status = {
+            TargetedRegenerationRuntimeStatus.NEEDS_CLARIFICATION: ErrorCode.REGENERATION_NEEDS_CLARIFICATION.value,
+            TargetedRegenerationRuntimeStatus.CONFLICT: ErrorCode.REGENERATION_CONFLICT.value,
+            TargetedRegenerationRuntimeStatus.PROVIDER_UNAVAILABLE: ErrorCode.REGENERATION_PROVIDER_UNAVAILABLE.value,
+        }
+        error_code = error_code_by_status.get(result.status, ErrorCode.REGENERATION_NOT_AVAILABLE.value)
+        job = mark_job_failed(job, error_code=error_code, error_message=result.message)
+        job_repo.save(job)
+        logger.info(
+            "Targeted regenerate job %s did not complete for trip %s: %s.",
+            job_id,
+            job.trip_id,
+            result.status.value,
+            extra=_job_log_fields(job),
+        )
+    except Exception as exc:
+        error_code = safe_job_error_code(exc)
+        job = mark_job_failed(
+            job,
+            error_code=error_code,
+            error_message=safe_job_error_message(
+                exc, fallback="Targeted regeneration failed unexpectedly."
+            ),
+        )
+        logger.warning(
+            "Background targeted regenerate job %s failed unexpectedly for trip %s.",
             job_id,
             job.trip_id,
             exc_info=True,
