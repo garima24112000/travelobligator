@@ -218,6 +218,19 @@ class ItineraryBranchRow(Base):
             unique=True,
             postgresql_where=text("is_default = true"),
         ),
+        # Section 199B (Task 11/48): case-insensitive unique display
+        # name per trip, enforced at the database level (an expression
+        # index on `lower(display_name)`) -- real, atomic protection
+        # against two concurrent fork-creation requests racing with the
+        # same name, not just `ItineraryForkService.create_fork`'s own
+        # read-check-then-create. `display_name` is always trimmed
+        # before it is ever stored, so no separate trim is needed here.
+        Index(
+            "uq_itinerary_branches_trip_id_display_name_lower",
+            "trip_id",
+            text("lower(display_name)"),
+            unique=True,
+        ),
     )
 
     branch_id: Mapped[str] = mapped_column(Text, primary_key=True)

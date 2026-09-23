@@ -1058,6 +1058,26 @@ class PlanningMetadata(BaseModel):
     pipeline_status: PipelineStatus = PipelineStatus.DRAFT
     active_stage: PlanningStage | None = None
 
+    # Section 199B (docs/14_backend_architecture.md, following section
+    # 152): which `ItineraryBranch` (app.models.itinerary_lineage) this
+    # live, editable PlanningState currently belongs to. `None` for
+    # every trip that has never had a branch explicitly activated --
+    # including every trip that existed before this section shipped --
+    # and is ALWAYS resolved to the trip's default ("Main") branch by
+    # `RevisionLineageService.resolve_active_branch_id`, never read
+    # directly elsewhere. Deliberately placed here rather than on
+    # `TripRecord` (`app.repositories.trip_repository`): `PlanningState`
+    # is already the one thing every generation/regeneration/consistency
+    # check already loads, so keeping this alongside `current_version`
+    # means activating a branch is a single `PlanningStateRepository.
+    # save` (Task 18's atomicity requirement, satisfied for free), and
+    # it needs zero Postgres migration (`PlanningStateRow.state` already
+    # stores this whole model as one JSONB blob). Only ever set by
+    # `RevisionLineageService.activate_branch` -- never by a
+    # generation/regeneration call itself, which only ever resolves it,
+    # never writes it.
+    active_branch_id: str | None = None
+
     created_at: datetime = Field(default_factory=_utc_now)
     updated_at: datetime = Field(default_factory=_utc_now)
 

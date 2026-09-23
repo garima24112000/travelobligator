@@ -46,10 +46,14 @@ class ErrorCode(str, Enum):
     JOB_NOT_FOUND = "JOB_NOT_FOUND"
     JOB_ALREADY_RUNNING = "JOB_ALREADY_RUNNING"
     # Section 199A: revision-snapshot/branch-lineage foundation
-    # (read-only endpoints only -- no fork-mutation code raises anything
-    # new yet).
+    # (read-only endpoints).
     BRANCH_NOT_FOUND = "BRANCH_NOT_FOUND"
     REVISION_NOT_FOUND = "REVISION_NOT_FOUND"
+    # Section 199B: real fork creation/activation.
+    REVISION_SNAPSHOT_UNAVAILABLE = "REVISION_SNAPSHOT_UNAVAILABLE"
+    BRANCH_NAME_CONFLICT = "BRANCH_NAME_CONFLICT"
+    BRANCH_SWITCH_BLOCKED = "BRANCH_SWITCH_BLOCKED"
+    BRANCH_STATE_CONFLICT = "BRANCH_STATE_CONFLICT"
 
 
 class ApiError(BaseModel):

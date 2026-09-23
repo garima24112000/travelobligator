@@ -19,6 +19,15 @@ class TargetedRegenerationRuntimeStatus(str, Enum):
     FAILED = "failed"
     CONFLICT = "conflict"
     PROVIDER_UNAVAILABLE = "provider_unavailable"
+    # Section 199B.1 (Task 7): the live state no longer semantically
+    # corresponds to its active branch's head revision (a same-version
+    # content drift the pre-existing `CONFLICT` status -- reserved for
+    # "someone else's regeneration committed a newer version during this
+    # one" -- never covered). A distinct status so this genuinely
+    # different condition is observable/debuggable on its own, never
+    # conflated with a stale-version race; never changes `CONFLICT`'s own
+    # existing meaning.
+    WORKSPACE_CONFLICT = "workspace_conflict"
 
 
 @dataclass

@@ -174,6 +174,34 @@ class TargetedRegenerationApplicationService:
 
         source_version = planning_state.metadata.current_version
 
+        # Section 199B.1 (Task 7): before anything else -- interpretation,
+        # locks, pending-feedback checks included -- require that the
+        # live workspace still semantically corresponds to its active
+        # branch's head revision. Defense-in-depth against a same-
+        # version-label content drift; never triggered by pending
+        # feedback or active locks themselves (the canonical projection
+        # this check uses already excludes both, Task 12).
+        if not self.revision_lineage_service.check_branch_head_consistency(planning_state):
+            self._record_blocked(
+                planning_state,
+                reason_code=ErrorCode.BRANCH_STATE_CONFLICT.value,
+                message=(
+                    "The current branch's live plan state does not correspond to "
+                    "its recorded head revision."
+                ),
+                status="failed",
+            )
+            self.planning_state_repository.save(planning_state)
+            return TargetedRegenerationRuntimeResult(
+                trip_id=trip_id,
+                status=TargetedRegenerationRuntimeStatus.WORKSPACE_CONFLICT,
+                message=(
+                    "The current branch's live plan state does not correspond to "
+                    "its recorded head revision."
+                ),
+                source_version=source_version,
+            )
+
         pending = pending_feedback_events(planning_state.feedback_history)
         if not pending:
             self._record_blocked(

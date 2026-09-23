@@ -300,6 +300,56 @@ def revision_not_found_error(trip_id: str, revision_id: str) -> AppError:
     )
 
 
+def revision_snapshot_unavailable_error(revision_id: str, message: str) -> AppError:
+    """409 -- a fork/activation was requested against a real, found
+    `ItineraryRevision` that has no stored `PlanningState` snapshot
+    (Section 199B, Task 8/18). Never reconstructed -- this is always a
+    hard refusal, matching this codebase's existing no-fabrication
+    policy for historical state."""
+    return AppError(
+        code=ErrorCode.REVISION_SNAPSHOT_UNAVAILABLE,
+        message=message,
+        status_code=status.HTTP_409_CONFLICT,
+        field="source_revision_id",
+    )
+
+
+def branch_name_conflict_error(message: str) -> AppError:
+    """409 -- a fork-creation request's `display_name` already names
+    another branch on the same trip (Section 199B, Task 11)."""
+    return AppError(
+        code=ErrorCode.BRANCH_NAME_CONFLICT,
+        message=message,
+        status_code=status.HTTP_409_CONFLICT,
+        field="display_name",
+    )
+
+
+def branch_switch_blocked_error(message: str) -> AppError:
+    """409 -- branch activation was refused by one of the workspace-
+    cleanliness guards (pending feedback / running job / active lock,
+    Section 199B Task 14-17) -- the current branch's workspace has real,
+    unsnapshotted state that switching away would silently strand."""
+    return AppError(
+        code=ErrorCode.BRANCH_SWITCH_BLOCKED,
+        message=message,
+        status_code=status.HTTP_409_CONFLICT,
+        field="branch_id",
+    )
+
+
+def branch_state_conflict_error(message: str) -> AppError:
+    """409 -- the current branch's recorded head revision disagrees with
+    the live `PlanningState` (Section 199B, Task 4/28/39) -- never
+    silently resolved by guessing which one should win."""
+    return AppError(
+        code=ErrorCode.BRANCH_STATE_CONFLICT,
+        message=message,
+        status_code=status.HTTP_409_CONFLICT,
+        field="branch_id",
+    )
+
+
 def auth_not_configured_error() -> AppError:
     """503 -- session signing/verification was attempted while
     `Settings.session_secret_key` is unset. Distinct from

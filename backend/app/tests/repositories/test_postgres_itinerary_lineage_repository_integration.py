@@ -190,3 +190,71 @@ def test_list_revisions_for_branch_ordered_against_real_postgres() -> None:
 
     revisions = repo.list_revisions_for_branch(branch.branch_id)
     assert [r.revision_id for r in revisions] == [r1.revision_id, r2.revision_id]
+
+
+def test_branch_display_name_unique_per_trip_case_insensitive_against_real_postgres() -> None:
+    """Section 199B: the real database-level unique index on
+    (trip_id, lower(display_name)) -- a second branch with the same
+    name (any case) for the same trip must raise, never silently
+    succeed."""
+    from sqlalchemy.exc import IntegrityError
+
+    session_factory = _session_factory()
+    trip_id, _owner_id = _seed_trip_and_owner(session_factory)
+    repo = PostgresItineraryLineageRepository(session_factory=session_factory)
+
+    repo.create_branch(ItineraryBranch(trip_id=trip_id, display_name="Option B"))
+    with pytest.raises(IntegrityError):
+        repo.create_branch(ItineraryBranch(trip_id=trip_id, display_name="option b"))
+
+
+def test_fork_and_independent_branch_advancement_against_real_postgres() -> None:
+    """Section 199B Task 47: a real fork (base=head=source revision),
+    activation, and independent head advancement, all through the real
+    Postgres repository."""
+    session_factory = _session_factory()
+    trip_id, _owner_id = _seed_trip_and_owner(session_factory)
+    repo = PostgresItineraryLineageRepository(session_factory=session_factory)
+
+    main = repo.create_branch(ItineraryBranch(trip_id=trip_id, is_default=True))
+    r1 = repo.create_revision(
+        ItineraryRevision(
+            trip_id=trip_id,
+            branch_id=main.branch_id,
+            version_label="v1",
+            created_by="system_generation",
+            snapshot_available=True,
+            snapshot={"trip_id": trip_id, "metadata": {"current_version": "v1"}},
+        )
+    )
+    repo.update_branch_head(main.branch_id, r1.revision_id)
+
+    alternate = repo.create_branch(
+        ItineraryBranch(
+            trip_id=trip_id,
+            display_name="Alternate",
+            base_revision_id=r1.revision_id,
+            head_revision_id=r1.revision_id,
+        )
+    )
+    assert alternate.head_revision_id == r1.revision_id
+
+    r2_alt = repo.create_revision(
+        ItineraryRevision(
+            trip_id=trip_id,
+            branch_id=alternate.branch_id,
+            parent_revision_id=r1.revision_id,
+            version_label="v2",
+            created_by="user_feedback",
+            snapshot_available=True,
+            snapshot={"trip_id": trip_id, "metadata": {"current_version": "v2"}},
+        )
+    )
+    repo.update_branch_head(alternate.branch_id, r2_alt.revision_id)
+
+    reloaded_main = repo.get_branch(main.branch_id)
+    reloaded_alternate = repo.get_branch(alternate.branch_id)
+    assert reloaded_main.head_revision_id == r1.revision_id
+    assert reloaded_alternate.head_revision_id == r2_alt.revision_id
+    assert repo.list_revisions_for_branch(main.branch_id) == [r1]
+    assert repo.list_revisions_for_branch(alternate.branch_id) == [r2_alt]

@@ -10,6 +10,7 @@ from app.services.itinerary_narrative_service import itinerary_narrative_service
 from app.services.plan_diff_preview_service import plan_diff_preview_service
 from app.services.planning_orchestrator import planning_orchestrator
 from app.services.regeneration_readiness_service import regeneration_readiness_service
+from app.services.revision_lineage_service import revision_lineage_service
 from app.services.versioning_service import versioning_service
 
 # Step 186C: the one real regeneration mutation path (Section 174's MVP
@@ -52,6 +53,27 @@ class RegenerationMutationError(Exception):
         super().__init__("Regeneration mutation failed unexpectedly.")
 
 
+class BranchWorkspaceConflictError(Exception):
+    """Section 199B.1 (Task 7): raised before any stage rerun happens if
+    the live `planning_state` no longer semantically corresponds to its
+    active branch's head revision (see `RevisionLineageService.
+    check_branch_head_consistency`'s strengthened canonical-content
+    check) -- defense-in-depth against a same-version-label content
+    drift that the weaker label-only check would have missed. Carries
+    `planning_state` unchanged (nothing was mutated) so the caller can
+    record a blocked attempt against the real current state, exactly
+    like `RegenerationMutationError` already does for the orchestrator-
+    failure case.
+    """
+
+    def __init__(self, planning_state: PlanningState) -> None:
+        self.planning_state = planning_state
+        super().__init__(
+            "The current branch's live plan state does not correspond to its "
+            "recorded head revision."
+        )
+
+
 def apply_regeneration_mutation(
     planning_state: PlanningState,
     affected_stages: list[PlanningStage],
@@ -73,7 +95,19 @@ def apply_regeneration_mutation(
     `RegenerationMutationError` (never swallows it) if the rerun itself
     fails -- the caller is responsible for recording that as a failed
     attempt and never creating a version or marking feedback applied.
+
+    Section 199B.1 (Task 7/8): also raises `BranchWorkspaceConflictError`
+    -- before touching anything -- if `planning_state` no longer
+    semantically corresponds to its active branch's head revision. This
+    is the ONE shared boundary both the sync route and the async job
+    runner already call through, so this single check covers both (Task
+    8: "do not duplicate a second comparison in the job runner").
+    Pending feedback/active locks never trigger this -- the canonical
+    projection this check uses already excludes them (Task 12).
     """
+    if not revision_lineage_service.check_branch_head_consistency(planning_state):
+        raise BranchWorkspaceConflictError(planning_state)
+
     previous_version = planning_state.metadata.current_version
     applied_feedback_event_ids = [event.feedback_event_id for event in pending_events]
 

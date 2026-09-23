@@ -13,7 +13,10 @@ from app.core.errors import (
     REGENERATION_NO_PENDING_FEEDBACK_MESSAGE,
     REGENERATION_NOT_AVAILABLE_MESSAGE,
     AppError,
+    branch_name_conflict_error,
     branch_not_found_error,
+    branch_state_conflict_error,
+    branch_switch_blocked_error,
     job_not_found_error,
     lock_not_found_error,
     regeneration_blocked_by_locks_error,
@@ -23,6 +26,7 @@ from app.core.errors import (
     regeneration_not_available_error,
     regeneration_provider_unavailable_error,
     revision_not_found_error,
+    revision_snapshot_unavailable_error,
     trip_not_found_error,
 )
 from app.core.response import success_response
@@ -47,6 +51,9 @@ from app.schemas.experience_plan import ExperiencePlanResponseData
 from app.schemas.generation_job import JobListResponseData, JobResponseData, StartJobResponseData
 from app.schemas.generation_progress import GenerationProgressResponseData
 from app.schemas.itinerary_lineage import (
+    ActivateItineraryBranchResponseData,
+    CreateItineraryForkRequest,
+    CreateItineraryForkResponseData,
     ItineraryBranchListResponseData,
     ItineraryBranchResponseData,
     ItineraryRevisionDetailResponseData,
@@ -72,16 +79,21 @@ from app.services import generation_job_service
 from app.services.ai_candidate_promotion_service import ai_candidate_promotion_service
 from app.services.ai_candidate_review_service import ai_candidate_review_service
 from app.services.feedback_service import derive_pending_affected_stages, pending_feedback_events
+from app.services.itinerary_fork_service import ForkCreationStatus, itinerary_fork_service
 from app.services.langgraph_planning_service import LangGraphPlanningService
 from app.services.plan_diff_preview_service import plan_diff_preview_service
 from app.services.planning_orchestrator import planning_orchestrator
 from app.services.regeneration_attempt_service import regeneration_attempt_service
 from app.services.regeneration_mutation_service import (
+    BranchWorkspaceConflictError,
     RegenerationMutationError,
     apply_regeneration_mutation,
 )
 from app.services.regeneration_readiness_service import regeneration_readiness_service
-from app.services.revision_lineage_service import revision_lineage_service
+from app.services.revision_lineage_service import (
+    BranchActivationStatus,
+    revision_lineage_service,
+)
 from app.services.targeted_regeneration_application_service import (
     targeted_regeneration_application_service,
 )
@@ -164,6 +176,11 @@ def _targeted_regenerate_response(result):
         raise regeneration_conflict_error()
     if result.status == TargetedRegenerationRuntimeStatus.PROVIDER_UNAVAILABLE:
         raise regeneration_provider_unavailable_error()
+    if result.status == TargetedRegenerationRuntimeStatus.WORKSPACE_CONFLICT:
+        # Section 199B.1 (Task 7): distinct from CONFLICT above -- see
+        # TargetedRegenerationRuntimeStatus.WORKSPACE_CONFLICT's own
+        # docstring for why these two are never merged.
+        raise branch_state_conflict_error(result.message)
     raise regeneration_not_available_error()
 
 router = APIRouter(prefix="/trips", tags=["trips"])
@@ -474,6 +491,30 @@ def regenerate_trip_plan(
         )
         get_planning_state_repository().save(planning_state)
         raise regeneration_not_available_error()
+    except BranchWorkspaceConflictError as exc:
+        # Section 199B.1 (Task 7): the live state no longer semantically
+        # corresponds to its active branch's head revision -- never
+        # silently mutated past this; recorded as a blocked attempt,
+        # exactly like the RegenerationMutationError branch above.
+        logger.warning(
+            "Branch workspace consistency check failed during "
+            "POST /trips/%s/regenerate; recording a failed attempt instead of "
+            "creating a new version or marking any feedback applied.",
+            trip_id,
+            extra={
+                "trip_id": trip_id,
+                "status": "failed",
+                "error_code": ErrorCode.BRANCH_STATE_CONFLICT.value,
+            },
+        )
+        planning_state = regeneration_attempt_service.record_blocked_attempt(
+            exc.planning_state,
+            reason_code=ErrorCode.BRANCH_STATE_CONFLICT.value,
+            message=str(exc),
+            status="failed",
+        )
+        get_planning_state_repository().save(planning_state)
+        raise branch_state_conflict_error(str(exc))
 
     final_state = regeneration_attempt_service.record_applied_attempt(result.planning_state)
     get_planning_state_repository().save(final_state)
@@ -820,26 +861,29 @@ def get_regeneration_attempts(
     return success_response(data)
 
 
-# -- Section 199A: read-only revision-snapshot/branch-lineage endpoints ----
+# -- Section 199A/199B: revision-snapshot/branch-lineage endpoints --------
 #
-# Foundation only -- no fork creation, no branch switching, no
-# regeneration from a historical revision (see this section's own scope
-# boundary, recorded in full in
-# `app.services.revision_lineage_service`'s module docstring). Every
-# route below reuses `require_trip_owner` for authentication/ownership
-# exactly like every other trip-scoped route in this file, and
-# additionally verifies the fetched branch/revision's own `trip_id`
-# actually matches the URL's `trip_id` -- never trusting a branch_id/
-# revision_id alone, since a stable id existing at all reveals nothing
-# about who owns the trip it belongs to (Task 39).
+# 199A shipped read-only foundation only. 199B adds real fork creation
+# (`POST .../branches`) and branch activation (`POST .../branches/
+# {branch_id}/activate`) on top of it -- still no merge, no branch
+# deletion, no regeneration-from-a-historical-revision, no frontend (see
+# `app.services.revision_lineage_service`/`app.services.
+# itinerary_fork_service`'s own module docstrings for the full scope
+# boundary). Every route below reuses `require_trip_owner` for
+# authentication/ownership exactly like every other trip-scoped route in
+# this file, and additionally verifies the fetched branch/revision's own
+# `trip_id` actually matches the URL's `trip_id` -- never trusting a
+# branch_id/revision_id alone, since a stable id existing at all reveals
+# nothing about who owns the trip it belongs to (Task 39/49).
 
 
-def _branch_response(branch: ItineraryBranch) -> ItineraryBranchResponseData:
+def _branch_response(branch: ItineraryBranch, *, active_branch_id: str) -> ItineraryBranchResponseData:
     return ItineraryBranchResponseData(
         branch_id=branch.branch_id,
         trip_id=branch.trip_id,
         display_name=branch.display_name,
         is_default=branch.is_default,
+        is_active=branch.branch_id == active_branch_id,
         base_revision_id=branch.base_revision_id,
         head_revision_id=branch.head_revision_id,
         created_at=branch.created_at,
@@ -860,6 +904,17 @@ def _revision_summary(revision: ItineraryRevision) -> ItineraryRevisionSummary:
     )
 
 
+def _ordered_branches_for_trip(trip_id: str) -> list:
+    """Task 41: deterministic ordering -- the default/"Main" branch
+    first, then every other branch oldest-`created_at` first, with
+    `branch_id` as a final, fully-deterministic tie-breaker. Never
+    relies on repository insertion order."""
+    branches = get_lineage_repository().list_branches_for_trip(trip_id)
+    return sorted(
+        branches, key=lambda branch: (not branch.is_default, branch.created_at, branch.branch_id)
+    )
+
+
 @router.get(
     "/{trip_id}/branches",
     response_model=ApiResponse[ItineraryBranchListResponseData],
@@ -867,18 +922,24 @@ def _revision_summary(revision: ItineraryRevision) -> ItineraryRevisionSummary:
 def list_itinerary_branches(
     trip_id: str, current_user: PublicUser = Depends(require_trip_owner)
 ) -> ApiResponse[ItineraryBranchListResponseData]:
-    """Every branch recorded for `trip_id` -- today, always exactly one
-    (the default "Main" branch), lazily created on first call if it
-    doesn't exist yet (Task 6/17: safe/cheap, never itself captures a
-    revision/snapshot). Section 199B is what will let this list grow
-    beyond one entry.
+    """Every branch recorded for `trip_id` (Task 22/41) -- the default
+    "Main" branch first, lazily created on first call if it doesn't
+    exist yet (Task 6/17: safe/cheap, never itself captures a revision/
+    snapshot), then every fork created via `POST .../branches`, oldest
+    first.
     """
     planning_state = get_planning_state_repository().get_by_trip_id(trip_id)
     if planning_state is None:
         raise trip_not_found_error(trip_id)
 
-    branch = revision_lineage_service.ensure_default_branch(trip_id)
-    data = ItineraryBranchListResponseData(trip_id=trip_id, branches=[_branch_response(branch)])
+    revision_lineage_service.ensure_default_branch(trip_id)
+    active_branch_id = revision_lineage_service.resolve_active_branch_id(planning_state)
+    branches = _ordered_branches_for_trip(trip_id)
+    data = ItineraryBranchListResponseData(
+        trip_id=trip_id,
+        active_branch_id=active_branch_id,
+        branches=[_branch_response(branch, active_branch_id=active_branch_id) for branch in branches],
+    )
     return success_response(data)
 
 
@@ -892,16 +953,22 @@ def list_itinerary_revisions(
     current_user: PublicUser = Depends(require_trip_owner),
 ) -> ApiResponse[ItineraryRevisionListResponseData]:
     """Every revision recorded for `branch_id`, oldest first -- metadata
-    only (never each revision's `snapshot`, Task 20/27). Use
-    `GET /trips/{trip_id}/revisions/{revision_id}` for one revision's
-    full detail.
+    only (never each revision's `snapshot`, Task 20/27). Strictly
+    branch-local (Task 42's "smallest truthful contract"): a freshly
+    forked branch whose head/base still points at a revision it
+    inherited from its source branch returns an EMPTY list here until
+    its own first child revision is recorded -- that inherited revision
+    is never relabeled as if it belonged to this branch. Use
+    `base_revision_id`/`head_revision_id` on the branch response, or
+    `GET /trips/{trip_id}/revisions/{revision_id}`, to look up that
+    inherited ancestry explicitly.
     """
     planning_state = get_planning_state_repository().get_by_trip_id(trip_id)
     if planning_state is None:
         raise trip_not_found_error(trip_id)
 
-    branch = revision_lineage_service.ensure_default_branch(trip_id)
-    if branch_id != branch.branch_id:
+    branch = get_lineage_repository().get_branch(branch_id)
+    if branch is None or branch.trip_id != trip_id:
         # Task 39: never reveal whether a branch_id belonging to a
         # different trip exists at all.
         raise branch_not_found_error(trip_id, branch_id)
@@ -911,6 +978,120 @@ def list_itinerary_revisions(
         trip_id=trip_id,
         branch_id=branch_id,
         revisions=[_revision_summary(revision) for revision in revisions],
+    )
+    return success_response(data)
+
+
+@router.post(
+    "/{trip_id}/branches",
+    response_model=ApiResponse[CreateItineraryForkResponseData],
+    status_code=status.HTTP_201_CREATED,
+)
+def create_itinerary_fork(
+    trip_id: str,
+    request: CreateItineraryForkRequest,
+    current_user: PublicUser = Depends(require_trip_owner),
+) -> ApiResponse[CreateItineraryForkResponseData]:
+    """Creates a new, independent branch starting from
+    `source_revision_id` (Task 6/9/20) -- the source revision is never
+    mutated or duplicated; the new branch's `base_revision_id`/
+    `head_revision_id` both start equal to it. Set
+    `activate_after_create=true` to also switch the workspace onto it
+    immediately, subject to the exact same guards a separate
+    `.../activate` call would apply (Task 33) -- creation and activation
+    are always reported honestly and separately in the response, never
+    conflated into one status.
+    """
+    planning_state = get_planning_state_repository().get_by_trip_id(trip_id)
+    if planning_state is None:
+        raise trip_not_found_error(trip_id)
+
+    result = itinerary_fork_service.create_fork(
+        trip_id,
+        request.source_revision_id,
+        request.display_name,
+        activate_after_create=request.activate_after_create,
+    )
+
+    if result.status == ForkCreationStatus.SOURCE_NOT_FOUND:
+        raise revision_not_found_error(trip_id, request.source_revision_id)
+    if result.status == ForkCreationStatus.SNAPSHOT_UNAVAILABLE:
+        raise revision_snapshot_unavailable_error(request.source_revision_id, result.message)
+    if result.status == ForkCreationStatus.INVALID_NAME:
+        raise AppError(
+            code=ErrorCode.VALIDATION_ERROR,
+            message=result.message,
+            status_code=status.HTTP_400_BAD_REQUEST,
+            field="display_name",
+        )
+    if result.status == ForkCreationStatus.NAME_CONFLICT:
+        raise branch_name_conflict_error(result.message)
+
+    assert result.branch is not None
+    data = CreateItineraryForkResponseData(
+        status=result.status.value,
+        message=result.message,
+        branch=_branch_response(
+            result.branch,
+            active_branch_id=(
+                result.activation.active_branch_id
+                if result.activation is not None and result.activation.activated
+                else revision_lineage_service.resolve_active_branch_id(planning_state)
+            ),
+        ),
+        source_revision_id=request.source_revision_id,
+        head_revision_id=result.branch.head_revision_id,
+        snapshot_available=True,
+        activated=result.activation is not None and result.activation.activated,
+        activation_status=result.activation.status.value if result.activation else None,
+        activation_message=result.activation.message if result.activation else None,
+    )
+    return success_response(data)
+
+
+@router.post(
+    "/{trip_id}/branches/{branch_id}/activate",
+    response_model=ApiResponse[ActivateItineraryBranchResponseData],
+)
+def activate_itinerary_branch(
+    trip_id: str,
+    branch_id: str,
+    current_user: PublicUser = Depends(require_trip_owner),
+) -> ApiResponse[ActivateItineraryBranchResponseData]:
+    """Switches the trip's editable working copy onto `branch_id`'s head
+    snapshot (Task 13/21) -- never creates a new revision/
+    `VersionHistoryItem`, never auto-applies feedback. Refuses (Task
+    14-18) rather than silently discarding state when the CURRENT
+    branch's workspace has pending feedback, an active lock, a running
+    generation/regeneration job, or already disagrees with its own
+    recorded head.
+    """
+    planning_state = get_planning_state_repository().get_by_trip_id(trip_id)
+    if planning_state is None:
+        raise trip_not_found_error(trip_id)
+
+    result = revision_lineage_service.activate_branch(trip_id, branch_id)
+
+    if result.status == BranchActivationStatus.BRANCH_NOT_FOUND:
+        raise branch_not_found_error(trip_id, branch_id)
+    if result.status == BranchActivationStatus.SNAPSHOT_UNAVAILABLE:
+        raise revision_snapshot_unavailable_error(branch_id, result.message)
+    if result.status in (
+        BranchActivationStatus.BLOCKED_PENDING_FEEDBACK,
+        BranchActivationStatus.BLOCKED_RUNNING_JOB,
+        BranchActivationStatus.BLOCKED_ACTIVE_LOCK,
+    ):
+        raise branch_switch_blocked_error(result.message)
+    if result.status == BranchActivationStatus.BLOCKED_STATE_CONFLICT:
+        raise branch_state_conflict_error(result.message)
+
+    data = ActivateItineraryBranchResponseData(
+        status=result.status.value,
+        message=result.message,
+        previous_branch_id=result.previous_branch_id,
+        active_branch_id=result.active_branch_id,
+        head_revision_id=result.head_revision_id,
+        current_version=result.current_version,
     )
     return success_response(data)
 

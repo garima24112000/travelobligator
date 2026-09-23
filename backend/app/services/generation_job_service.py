@@ -24,6 +24,7 @@ from app.schemas.errors import ErrorCode
 from app.services.planning_orchestrator import planning_orchestrator
 from app.services.regeneration_attempt_service import regeneration_attempt_service
 from app.services.regeneration_mutation_service import (
+    BranchWorkspaceConflictError,
     RegenerationMutationError,
     apply_regeneration_mutation,
 )
@@ -628,6 +629,31 @@ def run_regenerate_job(
             )
             job_repo.save(job)
             return
+        except BranchWorkspaceConflictError as exc:
+            # Section 199B.1 (Task 7/8): the SAME shared boundary the
+            # sync route's own `BranchWorkspaceConflictError` handling
+            # uses -- no second comparison duplicated here, just the
+            # job-shaped failure reporting around the identical check.
+            failed_state = regeneration_attempt_service.record_blocked_attempt(
+                exc.planning_state,
+                reason_code=ErrorCode.BRANCH_STATE_CONFLICT.value,
+                message=str(exc),
+                status="failed",
+            )
+            state_repo.save(failed_state)
+            job = mark_job_failed(
+                job,
+                error_code=ErrorCode.BRANCH_STATE_CONFLICT.value,
+                error_message=str(exc),
+            )
+            logger.warning(
+                "Background regenerate job %s failed unexpectedly for trip %s.",
+                job_id,
+                job.trip_id,
+                extra=_job_log_fields(job),
+            )
+            job_repo.save(job)
+            return
 
         final_state = regeneration_attempt_service.record_applied_attempt(result.planning_state)
         state_repo.save(final_state)
@@ -767,6 +793,10 @@ def run_targeted_regenerate_job(job_id: str) -> None:
             TargetedRegenerationRuntimeStatus.NEEDS_CLARIFICATION: ErrorCode.REGENERATION_NEEDS_CLARIFICATION.value,
             TargetedRegenerationRuntimeStatus.CONFLICT: ErrorCode.REGENERATION_CONFLICT.value,
             TargetedRegenerationRuntimeStatus.PROVIDER_UNAVAILABLE: ErrorCode.REGENERATION_PROVIDER_UNAVAILABLE.value,
+            # Section 199B.1 (Task 7): distinct from CONFLICT above --
+            # see TargetedRegenerationRuntimeStatus.WORKSPACE_CONFLICT's
+            # own docstring for why these two are never merged.
+            TargetedRegenerationRuntimeStatus.WORKSPACE_CONFLICT: ErrorCode.BRANCH_STATE_CONFLICT.value,
         }
         error_code = error_code_by_status.get(result.status, ErrorCode.REGENERATION_NOT_AVAILABLE.value)
         # Task 5: structured targeted failure information (interpretation/
