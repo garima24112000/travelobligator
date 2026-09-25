@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from fastapi.testclient import TestClient
 
 from app.repositories.planning_state_repository import planning_state_repository
@@ -23,6 +25,7 @@ def _head_revision_id(client: TestClient, trip_id: str, branch_id: str) -> str:
     return next(b for b in branches if b["branch_id"] == branch_id)["head_revision_id"]
 
 
+@pytest.mark.usefixtures("synthetic_legacy_regeneration_support")
 def test_legacy_regeneration_refused_on_same_label_content_drift(
     client: TestClient, generated_trip_id: str
 ) -> None:

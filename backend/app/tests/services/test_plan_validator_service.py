@@ -308,7 +308,10 @@ def _two_candidate_planning_state() -> PlanningState:
         _place("p1", "Belem Tower", "attraction", lat=38.6916, lng=-9.2160),
         _place("p2", "Lisbon Cathedral", "attraction", lat=38.7095, lng=-9.1332),
     ]
-    return _planning_state(candidate_pois=candidates)
+    # Section 202B.2: a ONE-day trip, so both candidates share a day (these
+    # tests are about per-day route legs, not day allocation -- which is now
+    # balanced across days rather than front-loaded).
+    return _planning_state(candidate_pois=candidates, end_date="2026-08-10")
 
 
 def test_no_route_feasibility_report_falls_back_to_original_not_implemented_warning() -> None:

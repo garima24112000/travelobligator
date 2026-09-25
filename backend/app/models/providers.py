@@ -40,6 +40,11 @@ class ProviderResponse(BaseModel, Generic[T]):
     retrieved_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
     message: str | None = None
+    # Section 202B.1 (Task 15): a stable, machine-readable reason for an
+    # unavailable/failed result when callers need to react to WHY without
+    # parsing `message`. Currently only "destination_unresolved" (the
+    # places provider could not confidently resolve the destination).
+    failure_reason: str | None = None
 
 
 class NormalizedPlace(BaseModel):
@@ -59,6 +64,11 @@ class NormalizedPlace(BaseModel):
     source: str
     data_status: DataStatus
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    # Section 202B.2: the whitelisted structured provider tags (tourism,
+    # historic, amenity, leisure, wikidata, ...) the place was returned
+    # with, so classification is tag-based instead of name-based. Never a
+    # rating/price/hours/review field.
+    provider_tags: dict[str, str] | None = None
 
 
 class NormalizedDailyWeather(BaseModel):

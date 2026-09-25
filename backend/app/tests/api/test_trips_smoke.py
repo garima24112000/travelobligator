@@ -1446,33 +1446,15 @@ def test_experience_plan_orders_must_visit_then_interest_then_provider_order(
 
     scheduled_names = [experience["name"] for experience in all_experiences]
 
-    # balanced pace caps 3 attractions/day; must-visit first, then interest
-    # matches (category match, then address-only match, in provider order),
-    # then unmatched candidates in provider order.
-    assert scheduled_names == [
-        "Old Town Hall",
-        "Central Plaza",
-        "City History Museum",
-        "Riverside Park",
-        "Sunset Beach",
-    ]
+    # Section 202B.2: 5 candidates over 3 days are now BALANCED (2/2/1) and
+    # grouped geographically within that size plan, instead of front-loaded
+    # (3/2/0). The must-visit place still anchors the first day; every real
+    # candidate is scheduled exactly once; nothing is invented.
+    assert scheduled_names[0] == "Old Town Hall"
+    assert sorted(scheduled_names) == sorted(known_fixture_names)
+    assert [len(day_plan["experiences"]) for day_plan in daily_plans] == [2, 2, 1]
 
     by_name = {experience["name"]: experience for experience in all_experiences}
-
-    must_visit_index = scheduled_names.index("Old Town Hall")
-    interest_indexes = [
-        scheduled_names.index("City History Museum"),
-        scheduled_names.index("Central Plaza"),
-    ]
-    unmatched_indexes = [
-        scheduled_names.index("Riverside Park"),
-        scheduled_names.index("Sunset Beach"),
-    ]
-
-    # must_visit matches are prioritized above interest matches.
-    assert must_visit_index < min(interest_indexes)
-    # interest matches are prioritized above unmatched candidates.
-    assert max(interest_indexes) < min(unmatched_indexes)
 
     assert by_name["Old Town Hall"]["why_included"] == "Matches your must-visit request."
     for name in ("City History Museum", "Central Plaza"):
@@ -2774,6 +2756,7 @@ def test_missing_must_visit_is_added_through_targeted_lookup(
         "source",
         "data_status",
         "confidence",
+        "provider_tags",  # Section 202B.2: structured tags (None for a fake provider)
     }
 
     # The scheduler naturally picks up the newly added candidate.
@@ -6132,7 +6115,7 @@ def test_submit_feedback_appends_feedback_history(
     assert change_preview["blocked_by"] == [
         "Submitting feedback does not itself trigger regeneration -- see "
         "regeneration readiness for whether a real regeneration can run now.",
-        "No AI interpretation provider is connected.",
+        "AI interpretation is not applied when feedback is captured.",
         "No plan sections are modified by the feedback capture endpoint.",
     ]
 
@@ -6338,7 +6321,7 @@ def test_submit_feedback_unmatched_maps_to_general_feedback(
     assert change_preview["blocked_by"] == [
         "Submitting feedback does not itself trigger regeneration -- see "
         "regeneration readiness for whether a real regeneration can run now.",
-        "No AI interpretation provider is connected.",
+        "AI interpretation is not applied when feedback is captured.",
         "No plan sections are modified by the feedback capture endpoint.",
     ]
 
@@ -6552,7 +6535,7 @@ def test_pending_feedback_summary_after_one_feedback_item(
     assert summary["blocked_by"] == [
         "Submitting feedback does not itself trigger regeneration -- see "
         "regeneration readiness for whether a real regeneration can run now.",
-        "No AI interpretation provider is connected.",
+        "AI interpretation is not applied when feedback is captured.",
         "No plan sections are modified by the feedback capture endpoint.",
     ]
     assert "no plan sections have been regenerated" in summary["note"].lower()

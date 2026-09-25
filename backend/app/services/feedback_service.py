@@ -175,7 +175,7 @@ _UNCHANGED_SECTIONS: tuple[str, ...] = (
 _BLOCKED_BY: tuple[str, ...] = (
     "Submitting feedback does not itself trigger regeneration -- see "
     "regeneration readiness for whether a real regeneration can run now.",
-    "No AI interpretation provider is connected.",
+    "AI interpretation is not applied when feedback is captured.",
     "No plan sections are modified by the feedback capture endpoint.",
 )
 
@@ -355,8 +355,14 @@ class FeedbackService:
             if candidate in feedback_type_counts
         ]
 
+        # Stable sort: ties keep list order, exactly like the `min(...)` the
+        # targeted regeneration service uses to pick its one event per call.
+        queue = sorted(pending_events, key=lambda event: event.created_at)
+
         return PendingFeedbackSummary(
             status="captured_not_applied",
+            queue_event_ids=[event.feedback_event_id for event in queue],
+            next_feedback_event_id=queue[0].feedback_event_id,
             total_feedback_items=len(pending_events),
             feedback_type_counts=ordered_type_counts,
             affected_stages=affected_stages,

@@ -18,6 +18,9 @@ from app.models.routing import (
     RouteFeasibilityStatus,
     TravelTimeBufferReport,
 )
+from app.core.errors import DESTINATION_UNRESOLVED_MESSAGE
+from app.services.plan_quality_findings import build_plan_quality_findings
+from app.services.experience_identity import experience_stable_key
 from app.services.base import PlanningStageService
 from app.utils.geo import haversine_distance_km
 
@@ -209,6 +212,25 @@ class PlanValidatorService(PlanningStageService):
             )
             if route_geometry_issue is not None:
                 warnings.append(route_geometry_issue)
+        elif candidate_pois_count > 0 and planning_state.experience_plan is not None:
+            # Section 202C.1A: the planner DID run, so this is a supply-quality
+            # limit (every candidate was excluded by the quality rules, e.g.
+            # isolated single objects), not a missing pipeline step.
+            critical_issues.append(
+                ValidationIssue(
+                    severity=ValidationSeverity.CRITICAL,
+                    category="scheduling",
+                    message=(
+                        f"{candidate_pois_count} provider-backed candidate(s) were found, but none "
+                        "passed the quality checks needed to schedule them."
+                    ),
+                    affected_section="experience_plan",
+                    suggested_fix="Try a broader destination name or add specific places you want to see.",
+                )
+            )
+            provider_coverage_notes.append(
+                "Provider candidates were found but none were quality-approved for scheduling."
+            )
         elif candidate_pois_count > 0:
             critical_issues.append(
                 ValidationIssue(
@@ -227,23 +249,62 @@ class PlanValidatorService(PlanningStageService):
                 "Places are available via OpenStreetMap; this plan has not scheduled "
                 "them into days yet."
             )
+        elif (
+            planning_state.destination_context is not None
+            and planning_state.destination_context.destination_resolution == "unresolved"
+        ):
+            # Section 202B.1 (Task 15): actionable and factual -- the
+            # destination itself could not be resolved, which is different
+            # from a resolved destination with no candidates.
+            critical_issues.append(
+                ValidationIssue(
+                    severity=ValidationSeverity.CRITICAL,
+                    category="destination_unresolved",
+                    message=DESTINATION_UNRESOLVED_MESSAGE,
+                    affected_section="destination_context",
+                    suggested_fix='Try including the city and country, for example "Lisbon, Portugal".',
+                )
+            )
+            provider_coverage_notes.append(
+                "The places provider could not confidently resolve this destination, so "
+                "no places, weather, holiday, or currency data were requested for it."
+            )
         else:
+            # Section 202C.1A: name the cause the pipeline already recorded.
+            # A places-provider outage is NOT the same as "nothing to see":
+            # the former is worth retrying, the latter is a supply limit.
+            places_status = (
+                (planning_state.provider_coverage.places if planning_state.provider_coverage else None) or ""
+            ).lower()
+            if places_status in {"failed", "unavailable"}:
+                message = (
+                    "No experiences were scheduled because the places provider could not be reached "
+                    "or returned an error, so no attractions could be looked up. This does not mean "
+                    "the destination has nothing to see."
+                )
+                fix = "Try generating the plan again later."
+                note = "The places provider was unavailable, so no attraction candidates were retrieved."
+            elif places_status == "not_connected":
+                message = "No experiences were scheduled because no places provider is connected."
+                fix = "Connect a places provider and regenerate the plan."
+                note = "No places provider is connected."
+            else:
+                message = (
+                    "The places provider responded but returned no attraction candidates for this "
+                    "destination, so nothing could be scheduled."
+                )
+                fix = "Try a broader destination name (city and country) and regenerate the plan."
+                note = "The places provider returned no attraction candidates for this destination."
             critical_issues.append(
                 ValidationIssue(
                     severity=ValidationSeverity.CRITICAL,
                     category="provider_coverage",
-                    message=(
-                        "No experiences have been scheduled because no provider-backed "
-                        "attraction candidates are available."
-                    ),
+                    message=message,
                     affected_section="experience_plan",
-                    suggested_fix="Connect a places provider and regenerate the plan.",
+                    suggested_fix=fix,
                 )
             )
-            provider_coverage_notes.append(
-                "No provider-backed attraction candidates are available for this "
-                "destination."
-            )
+            provider_coverage_notes.append(note)
 
         if planning_state.experience_plan:
             for day in planning_state.experience_plan.daily_plans:
@@ -272,6 +333,42 @@ class PlanValidatorService(PlanningStageService):
                             ),
                         )
                     )
+
+        # Section 202B.1 (Task 11): defense-in-depth. Prevention belongs to
+        # materialization/regeneration; this only REPORTS (never silently
+        # drops) the same provider-grounded place scheduled more than once.
+        # Identity is the stable provider place key, never the display
+        # name; an item with no provider identity is simply not checked.
+        if planning_state.experience_plan:
+            places_seen: dict[str, list[tuple[int, str]]] = {}
+            for day in planning_state.experience_plan.daily_plans:
+                for experience in day.experiences:
+                    place_key = experience_stable_key(experience)
+                    if place_key is not None:
+                        places_seen.setdefault(place_key, []).append((day.day_number, experience.name))
+            for place_key, occurrences in places_seen.items():
+                if len(occurrences) < 2:
+                    continue
+                day_list = ", ".join(str(day_number) for day_number, _ in occurrences)
+                critical_issues.append(
+                    ValidationIssue(
+                        severity=ValidationSeverity.CRITICAL,
+                        category="duplicate_experience",
+                        message=(
+                            f"'{occurrences[0][1]}' (the same provider-backed place) is "
+                            f"scheduled {len(occurrences)} times, on day(s) {day_list}. "
+                            "This product does not support repeated visits."
+                        ),
+                        affected_section="experience_plan",
+                        suggested_fix="Remove the repeated occurrence(s) or regenerate the affected day(s).",
+                    )
+                )
+
+        # Section 202B.2: factual, case-specific plan-quality findings.
+        quality_issues, quality_notes = build_plan_quality_findings(planning_state)
+        for quality_issue in quality_issues:
+            warnings.append(quality_issue)
+        provider_coverage_notes.extend(quality_notes)
 
         captured_constraints: list[str] = []
         for constraint in planning_state.trip_request.constraints:
@@ -546,7 +643,9 @@ def _build_feasibility_warning(route_feasibility_report: RouteFeasibilityReport 
         )
 
     return ValidationIssue(
-        severity=ValidationSeverity.WARNING,
+        # Section 202B.2 (Task 31): when every leg has a real provider-backed
+        # route this restates a success; it is informational, not a warning.
+        severity=ValidationSeverity.SUGGESTION if not other_legs else ValidationSeverity.WARNING,
         category="feasibility",
         message=message,
         affected_section="experience_plan",
@@ -774,7 +873,9 @@ def _build_accommodation_inventory_warning(
         )
 
     return ValidationIssue(
-        severity=ValidationSeverity.WARNING,
+        # Section 202B.2 (Task 31): stay inventory does not change the
+        # itinerary's content; disclosed as information, not a warning.
+        severity=ValidationSeverity.SUGGESTION,
         category="accommodation_inventory",
         message=message,
         affected_section="stay_transport",
@@ -1050,7 +1151,9 @@ def _build_flight_inventory_warning(
         )
 
     return ValidationIssue(
-        severity=ValidationSeverity.WARNING,
+        # Section 202B.2 (Task 31): flight availability does not change the
+        # itinerary's content; disclosed as information, not a warning.
+        severity=ValidationSeverity.SUGGESTION,
         category="flight_inventory",
         message=message,
         # Step 175D: flight inventory is a distinct bookable-search concept

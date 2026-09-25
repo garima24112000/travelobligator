@@ -1,13 +1,20 @@
 import type {
+  ActivateBranchResponse,
   AICandidatePromotionData,
   AICandidateReviewData,
   ApiResponse,
   AuthResponse,
+  CreateForkRequest,
+  CreateForkResponse,
   DestinationContextData,
   ExperiencePlanData,
   GenerateOrJobResponse,
   GenerationProgressData,
   JobListResponseData,
+  ItineraryBranchListData,
+  ItineraryRevisionComparison,
+  ItineraryRevisionDetail,
+  ItineraryRevisionListData,
   JobResponseData,
   ProviderCoverageData,
   RegenerateOrJobResponse,
@@ -319,4 +326,65 @@ export function getCurrentUser(): Promise<AuthResponse> {
 
 export function listTrips(): Promise<TripListResponseData> {
   return request<TripListResponseData>("/trips");
+}
+
+// Section 199A/199B/199C: itinerary branches. Every call goes through the
+// shared `request()` helper so a failure keeps the backend's structured
+// error `code` (BRANCH_SWITCH_BLOCKED, BRANCH_STATE_CONFLICT,
+// BRANCH_NAME_CONFLICT, REVISION_SNAPSHOT_UNAVAILABLE, ...) on
+// `ApiRequestError.code`. Identity is always branch_id/revision_id.
+export function listBranches(tripId: string): Promise<ItineraryBranchListData> {
+  return request<ItineraryBranchListData>(`/trips/${tripId}/branches`);
+}
+
+export function listBranchRevisions(
+  tripId: string,
+  branchId: string,
+): Promise<ItineraryRevisionListData> {
+  return request<ItineraryRevisionListData>(
+    `/trips/${tripId}/branches/${encodeURIComponent(branchId)}/revisions`,
+  );
+}
+
+export function getRevisionDetail(
+  tripId: string,
+  revisionId: string,
+): Promise<ItineraryRevisionDetail> {
+  return request<ItineraryRevisionDetail>(
+    `/trips/${tripId}/revisions/${encodeURIComponent(revisionId)}`,
+  );
+}
+
+export function createBranch(
+  tripId: string,
+  input: CreateForkRequest,
+): Promise<CreateForkResponse> {
+  return request<CreateForkResponse>(`/trips/${tripId}/branches`, {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function activateBranch(
+  tripId: string,
+  branchId: string,
+): Promise<ActivateBranchResponse> {
+  return request<ActivateBranchResponse>(
+    `/trips/${tripId}/branches/${encodeURIComponent(branchId)}/activate`,
+    { method: "POST" },
+  );
+}
+
+export function compareRevisions(
+  tripId: string,
+  leftRevisionId: string,
+  rightRevisionId: string,
+): Promise<ItineraryRevisionComparison> {
+  const params = new URLSearchParams({
+    left_revision_id: leftRevisionId,
+    right_revision_id: rightRevisionId,
+  });
+  return request<ItineraryRevisionComparison>(
+    `/trips/${tripId}/revisions/compare?${params.toString()}`,
+  );
 }

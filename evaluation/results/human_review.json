@@ -1,0 +1,145 @@
+{
+ "reviewer": "Claude (AI assistant) acting as QA reviewer. The 'personal_use' labels are a preference proxy, NOT the product owner's own preference -- the owner should confirm or override them.",
+ "labels": "PASS / WARN / FAIL for itinerary quality (B); personal_use YES / MAYBE / NO (C). System-correctness (A) is in the generation_*.json objective metrics.",
+ "primary_mode": "as_configured",
+ "cases": [
+  {
+   "case_id": "LIS-1",
+   "quality": "WARN",
+   "personal_use": "MAYBE",
+   "note": "Day 1 pairs Belem stops with Miradouro de Sao Pedro de Alcantara (~8 km apart, other side of the city). Day 3 is three city gates/arches (Arco Escuro, Portas do Mar, Arco de Jesus) -- low-value filler for a food+history first-timer. Torre de Belem, Jeronimos, Castelo de Sao Jorge, Alfama absent (AI proposal was rejected: schema error). Narrator invents descriptions (Arco Escuro 'a touch of modern design', Comboio do Zoo 'blends wildlife and rail history')."
+  },
+  {
+   "case_id": "LIS-2",
+   "quality": "WARN",
+   "personal_use": "MAYBE",
+   "note": "Better anchors (Torre de Belem, LX Factory, Alfama; AI proposal completed) but 'nightlife' interest is not represented at all and Day 4 is two city gates. Day 1 is a coherent Belem cluster."
+  },
+  {
+   "case_id": "NYC-1",
+   "quality": "FAIL",
+   "personal_use": "NO",
+   "note": "4-day trip: Day 3 has one stop, Day 4 none. Day 2 pairs South Street Seaport with a generic 'Food Market' on Staten Island (~25 km away) and AMNH. Central Park, Statue of Liberty, Empire State etc. absent for a first-time visitor."
+  },
+  {
+   "case_id": "NYC-2",
+   "quality": "PASS",
+   "personal_use": "YES",
+   "note": "Relaxed 2 stops/day; SoHo+Washington Sq Park, Seaport+Brooklyn Bridge, Central Park+High Line -- geographically sensible, right pace, recognisable places. Architecture interest only loosely represented."
+  },
+  {
+   "case_id": "DC-1",
+   "quality": "WARN",
+   "personal_use": "MAYBE",
+   "note": "Day 1 (Lincoln Memorial + adjacent statues) and Day 2 (three Smithsonian museums) are good for a family history/museum trip. Day 3 is three small statues (Hahnemann Monument, Scott, Thomas) -- low-value for a family; Air and Space, Archives, Capitol absent."
+  },
+  {
+   "case_id": "DC-2",
+   "quality": "WARN",
+   "personal_use": "MAYBE",
+   "note": "Union Market / The Wharf / National Mall fit food+outdoors, but 'Homeopathic Hospital' (category hospital) is scheduled as a stop -- an obviously irrelevant place. Meal ideas include McDonald's."
+  },
+  {
+   "case_id": "SF-1",
+   "quality": "WARN",
+   "personal_use": "MAYBE",
+   "note": "Day 4 empty. Day 3 puts Alcatraz second after Musee Mecanique with no ferry/timing awareness. Golden Gate Bridge and Fisherman's Wharf absent; 'Phillip Burton' (a memorial artwork) and monuments pad the plan."
+  },
+  {
+   "case_id": "SF-2",
+   "quality": "WARN",
+   "personal_use": "MAYBE",
+   "note": "Relaxed pace respected (2/day), but stops are generic (Lotta's Fountain, Phillip Burton artwork). Architecture interest thin."
+  },
+  {
+   "case_id": "CHI-1",
+   "quality": "WARN",
+   "personal_use": "MAYBE",
+   "note": "Strong architecture start (Chicago Architecture Center, river cruise) but Day 2-3 are public sculptures (Flamingo, Lilies, Batcolumn) and Lou Malnati's (~8 km north) is mixed into a Loop day."
+  },
+  {
+   "case_id": "CHI-2",
+   "quality": "WARN",
+   "personal_use": "MAYBE",
+   "note": "Day 2 (Shedd/Field Museum campus) is excellent. About 9 of 16 stops are public art pieces; Day 4 includes 'Locks' and 'Canalport' (generic places). 'Nightlife' interest not represented."
+  },
+  {
+   "case_id": "SEA-1",
+   "quality": "WARN",
+   "personal_use": "MAYBE",
+   "note": "Three West Seattle viewpoints; Pike Place, Space Needle absent (AI proposal that named them was truncated and discarded). 'Food' interest not represented."
+  },
+  {
+   "case_id": "SEA-2",
+   "quality": "WARN",
+   "personal_use": "MAYBE",
+   "note": "Family/museum request gets Klondike Gold Rush, Underground Tour, Seattle Art Museum on Day 1 but Days 2-3 are viewpoints and a sculpture; museums thin."
+  },
+  {
+   "case_id": "MIA-1",
+   "quality": "FAIL",
+   "personal_use": "NO",
+   "note": "Packed nightlife+food trip contains no nightlife or food stop. Day 2 lists four sub-exhibits of one attraction as separate stops (Lemur Encounter, Primates, Gigant Tortoise, Flamingo Encounter). Day 3 includes an artwork named 'Dropped Bowl with Scattered Slices and Peels'."
+  },
+  {
+   "case_id": "MIA-2",
+   "quality": "FAIL",
+   "personal_use": "NO",
+   "note": "Relaxed outdoors+architecture trip is museums, two monuments and two days of Jungle Island sub-exhibits split across days (Lemur Encounter, Primates / Gigant Tortoise, Flamingo Encounter). Neither interest is represented."
+  },
+  {
+   "case_id": "LA-1",
+   "quality": "FAIL",
+   "personal_use": "NO",
+   "note": "Food+outdoors request: 9 of 12 stops are small commercial art galleries clustered in one downtown block across Days 2-4. Neither interest represented; nothing outdoors."
+  },
+  {
+   "case_id": "LA-2",
+   "quality": "WARN",
+   "personal_use": "MAYBE",
+   "note": "Museum core is good (Natural History, Grammy, LACMA, The Broad). Day 3 is four small galleries. Day 2 spans Koreatown -> LACMA -> The Broad (~10 km) in a car-oriented city with no transport awareness."
+  },
+  {
+   "case_id": "LIS-BARE",
+   "quality": "FAIL",
+   "personal_use": "NO",
+   "note": "Bare 'Lisbon' is rejected by the geocode plausibility check (Nominatim returns 'Lisboa, Portugal'), so places/weather/holidays/currency are all unavailable and the plan is empty and blocked. The UI says no candidates exist but never tells the user to try 'Lisbon, Portugal'."
+  },
+  {
+   "case_id": "NYC-BARE",
+   "quality": "WARN",
+   "personal_use": "MAYBE",
+   "note": "Works without a country, 5 sensible stops (SoHo, Seaport, MoMA, Met, AMNH) but Day 3 is empty."
+  }
+ ],
+ "secondary_observations": [
+  {
+   "run": "full_ai (gpt-oss-20b) LIS-1",
+   "note": "AI reasoning completed and 2 AI-promoted candidates (Castelo de Sao Jorge, Mercado da Ribeira) improved the mix versus as_configured LIS-1, but Past\u00e9is de Bel\u00e9m still shares Day 1 with Miradouro/Pelourinho across the city."
+  },
+  {
+   "run": "full_ai_120b NYC-1",
+   "note": "Met, MoMA, AMNH, Whitney, Chelsea Market, Seaport: clearly better anchors than the as_configured NYC-1 run, Day 4 still empty."
+  },
+  {
+   "run": "full_ai_120b CHI-1",
+   "note": "Willis Tower SkyDeck, Riverwalk, Art Institute appear -- a first-timer-appropriate Chicago; Day 3 is still three artworks."
+  },
+  {
+   "run": "full_ai_120b MIA-1",
+   "note": "Only 3 stops for a 3-day packed trip (1 per day): provider variability/fallback (places=fallback_used)."
+  },
+  {
+   "run": "probe120b DC-1",
+   "note": "Days 2-3 are entirely statues/artworks (6 of 9 stops), Air and Space/Natural History absent even with AI reasoning completed."
+  }
+ ],
+ "counts_primary": {
+  "PASS": 1,
+  "WARN": 12,
+  "FAIL": 5,
+  "YES": 1,
+  "MAYBE": 12,
+  "NO": 5
+ }
+}

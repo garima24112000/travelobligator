@@ -119,6 +119,11 @@ class ItineraryNarrativeExperienceInput(BaseModel):
     name: str
     category: str | None = None
     reason: str | None = None
+    # Section 202B.3: provider-derived, deterministic evidence the narrator
+    # may state (and nothing broader): the normalized category and the
+    # requested interests this place demonstrably serves.
+    normalized_category: str | None = None
+    matched_interests: list[str] = Field(default_factory=list)
 
 
 class ItineraryNarrativeDayInput(BaseModel):
@@ -175,6 +180,12 @@ class ItineraryNarrativeRequest(BaseModel):
     travel_group_type: str | None = None
     pace: str | None = None
     interests: list[str] = Field(default_factory=list)
+    # Section 202B.3: requested interests split into "at least one scheduled
+    # place serves it" (provider-derived match) and "no scheduled place
+    # serves it", so the narrator never has to guess -- and never states a
+    # merely-requested interest as covered.
+    interests_served: list[str] = Field(default_factory=list)
+    interests_unserved: list[str] = Field(default_factory=list)
 
     days: list[ItineraryNarrativeDayInput] = Field(default_factory=list)
     stay_area_names: list[str] = Field(default_factory=list)
@@ -278,6 +289,12 @@ class ItineraryNarrativeReport(BaseModel):
     assumptions: list[str] = Field(default_factory=list)
     source_fields_used: list[str] = Field(default_factory=list)
     generated_at: datetime | None = None
+    # Section 202B.3 (Tasks 4/5): where the prose came from. "ai" for a
+    # narrator result that passed every check; "deterministic_fallback"
+    # when AI narration was unavailable/failed/rejected and the text was
+    # built purely from the final PlanningState (`status` then still
+    # describes the AI attempt, never a success).
+    narrative_source: str = "ai"
 
     @field_validator("summary")
     @classmethod

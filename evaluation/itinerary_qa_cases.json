@@ -1,0 +1,258 @@
+{
+ "schema_version": 1,
+ "description": "Section 202A baseline generation cases. Only inputs the current product supports (TripRequest fields). Dates are computed at run time as today + start_offset_days so weather forecast availability is not an accidental variable.",
+ "defaults": {
+  "start_offset_days": 10,
+  "travelers_count": 2,
+  "origin_city": "Chicago, USA"
+ },
+ "cases": [
+  {
+   "case_id": "LIS-1",
+   "destination": "Lisbon, Portugal",
+   "days": 3,
+   "group": "couple",
+   "pace": "balanced",
+   "interests": [
+    "food",
+    "history"
+   ],
+   "traits": "dense, walkable, hilly; first-time visitor",
+   "origin_city": "Madrid, Spain"
+  },
+  {
+   "case_id": "LIS-2",
+   "destination": "Lisbon, Portugal",
+   "days": 4,
+   "group": "friends",
+   "pace": "packed",
+   "interests": [
+    "architecture",
+    "nightlife"
+   ],
+   "traits": "same city, different request (packed, nightlife)",
+   "origin_city": "Madrid, Spain",
+   "travelers_count": 4
+  },
+  {
+   "case_id": "NYC-1",
+   "destination": "New York City, USA",
+   "days": 4,
+   "group": "couple",
+   "pace": "balanced",
+   "interests": [
+    "museums",
+    "food"
+   ],
+   "traits": "dense, transit-oriented; first-time visitor",
+   "free_text_preferences": "First visit to New York."
+  },
+  {
+   "case_id": "NYC-2",
+   "destination": "New York City, USA",
+   "days": 3,
+   "group": "solo",
+   "pace": "relaxed",
+   "interests": [
+    "architecture",
+    "parks"
+   ],
+   "traits": "relaxed, outdoors/architecture",
+   "travelers_count": 1
+  },
+  {
+   "case_id": "DC-1",
+   "destination": "Washington, DC, USA",
+   "days": 3,
+   "group": "family",
+   "pace": "balanced",
+   "interests": [
+    "history",
+    "museums"
+   ],
+   "traits": "attraction-heavy, compact monument core",
+   "travelers_count": 4,
+   "must_visit": [
+    "Lincoln Memorial"
+   ]
+  },
+  {
+   "case_id": "DC-2",
+   "destination": "Washington, DC, USA",
+   "days": 2,
+   "group": "couple",
+   "pace": "relaxed",
+   "interests": [
+    "food",
+    "outdoors"
+   ],
+   "traits": "short trip, food/outdoors"
+  },
+  {
+   "case_id": "SF-1",
+   "destination": "San Francisco, USA",
+   "days": 4,
+   "group": "friends",
+   "pace": "packed",
+   "interests": [
+    "outdoors",
+    "food"
+   ],
+   "traits": "hilly, geographically spread; outdoors",
+   "travelers_count": 3
+  },
+  {
+   "case_id": "SF-2",
+   "destination": "San Francisco, USA",
+   "days": 3,
+   "group": "solo",
+   "pace": "relaxed",
+   "interests": [
+    "architecture",
+    "history"
+   ],
+   "traits": "relaxed, architecture/history",
+   "travelers_count": 1
+  },
+  {
+   "case_id": "CHI-1",
+   "destination": "Chicago, USA",
+   "days": 3,
+   "group": "couple",
+   "pace": "balanced",
+   "interests": [
+    "architecture",
+    "food"
+   ],
+   "traits": "architecture-heavy, grid city",
+   "origin_city": "Denver, USA"
+  },
+  {
+   "case_id": "CHI-2",
+   "destination": "Chicago, USA",
+   "days": 4,
+   "group": "group",
+   "pace": "packed",
+   "interests": [
+    "museums",
+    "nightlife"
+   ],
+   "traits": "packed, museums/nightlife",
+   "origin_city": "Denver, USA",
+   "travelers_count": 6
+  },
+  {
+   "case_id": "SEA-1",
+   "destination": "Seattle, USA",
+   "days": 3,
+   "group": "couple",
+   "pace": "relaxed",
+   "interests": [
+    "outdoors",
+    "food"
+   ],
+   "traits": "mixed indoor/outdoor, weather-dependent"
+  },
+  {
+   "case_id": "SEA-2",
+   "destination": "Seattle, USA",
+   "days": 3,
+   "group": "family",
+   "pace": "balanced",
+   "interests": [
+    "museums"
+   ],
+   "traits": "family, indoor-leaning",
+   "travelers_count": 4
+  },
+  {
+   "case_id": "MIA-1",
+   "destination": "Miami, USA",
+   "days": 3,
+   "group": "friends",
+   "pace": "packed",
+   "interests": [
+    "nightlife",
+    "food"
+   ],
+   "traits": "car-oriented, nightlife",
+   "travelers_count": 4
+  },
+  {
+   "case_id": "MIA-2",
+   "destination": "Miami, USA",
+   "days": 4,
+   "group": "couple",
+   "pace": "relaxed",
+   "interests": [
+    "outdoors",
+    "architecture"
+   ],
+   "traits": "relaxed, beaches/art deco"
+  },
+  {
+   "case_id": "LA-1",
+   "destination": "Los Angeles, USA",
+   "days": 4,
+   "group": "couple",
+   "pace": "balanced",
+   "interests": [
+    "food",
+    "outdoors"
+   ],
+   "traits": "car-oriented, very spread out"
+  },
+  {
+   "case_id": "LA-2",
+   "destination": "Los Angeles, USA",
+   "days": 3,
+   "group": "solo",
+   "pace": "packed",
+   "interests": [
+    "museums",
+    "history"
+   ],
+   "traits": "packed, museums/history; repeat visitor",
+   "travelers_count": 1,
+   "free_text_preferences": "I have been to Los Angeles before; avoid only the most obvious tourist spots."
+  },
+  {
+   "case_id": "LIS-BARE",
+   "destination": "Lisbon",
+   "days": 3,
+   "group": "couple",
+   "pace": "balanced",
+   "interests": [
+    "food",
+    "history"
+   ],
+   "traits": "INPUT-FORMAT SENSITIVITY: bare city name (no country)",
+   "origin_city": "Madrid, Spain"
+  },
+  {
+   "case_id": "NYC-BARE",
+   "destination": "New York City",
+   "days": 3,
+   "group": "couple",
+   "pace": "balanced",
+   "interests": [
+    "museums",
+    "food"
+   ],
+   "traits": "INPUT-FORMAT SENSITIVITY: bare city name (no country)"
+  },
+  {
+   "case_id": "COR-ES",
+   "destination": "Cordoba, Spain",
+   "days": 3,
+   "group": "couple",
+   "pace": "balanced",
+   "interests": [
+    "food",
+    "history"
+   ],
+   "traits": "202B.2 addition: destination that resolved but produced an empty plan in the 202B.1 follow-up",
+   "origin_city": "Madrid, Spain"
+  }
+ ]
+}

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
@@ -34,6 +35,58 @@ class RegenerationMutationResult:
     changed_sections: list[str] = field(default_factory=list)
     preserved_sections: list[str] = field(default_factory=list)
     applied_feedback_event_ids: list[str] = field(default_factory=list)
+
+
+# Section 202B.1 (Tasks 1-3), root cause recorded here so it is never
+# re-derived from scratch: the legacy regeneration path below reruns
+# deterministic planning stages over the SAME `trip_request` -- no stage
+# service reads `feedback_history` (only `derive_pending_affected_stages`
+# does, purely to pick which stages to rerun), so free-text feedback such
+# as "Remove X" / "make day 2 less packed" / "more local food" was never
+# able to change the plan. Yet this function marked the feedback applied
+# and created a new version merely because the stages reran ("pipeline
+# reran" was being treated as "feedback applied"). The 202A baseline
+# measured 0 of 9 requested changes actually happening.
+#
+# The narrowest honest behavior: legacy regeneration may only run for a
+# feedback_type that has a REGISTERED deterministic operation, and every
+# registered operation must supply a postcondition proving the requested
+# operation actually happened. The registry is intentionally EMPTY --
+# today no keyword-classified feedback type has a mechanism that
+# guarantees an effect, and inventing one from keyword guesses is
+# explicitly out of scope. Free-text requests are handled by the targeted
+# (AI-interpreted) path, or refused honestly.
+LegacyPostcondition = Callable[[PlanningState, PlanningState, FeedbackEvent], bool]
+LEGACY_SUPPORTED_OPERATIONS: dict[str, LegacyPostcondition] = {}
+
+
+def legacy_regeneration_can_apply(pending_events: list[FeedbackEvent]) -> bool:
+    """True only when EVERY pending event has a registered deterministic
+    legacy operation (all pending events are marked applied together, so
+    one unsupported event would otherwise be silently "applied")."""
+    return bool(pending_events) and all(
+        event.feedback_type in LEGACY_SUPPORTED_OPERATIONS for event in pending_events
+    )
+
+
+class LegacyRegenerationNotInterpretableError(Exception):
+    """Raised, before anything is rerun or mutated, when a pending feedback
+    event has no registered deterministic legacy operation. Carries the
+    untouched `planning_state` so the caller can record a blocked attempt."""
+
+    def __init__(self, planning_state: PlanningState) -> None:
+        self.planning_state = planning_state
+        super().__init__("No deterministic legacy operation exists for this feedback.")
+
+
+class RegenerationNoEffectError(Exception):
+    """Raised when a registered legacy operation's postcondition did NOT
+    hold after the rerun. `planning_state` is the restored, pre-rerun
+    state -- no version is created and no feedback is marked applied."""
+
+    def __init__(self, planning_state: PlanningState) -> None:
+        self.planning_state = planning_state
+        super().__init__("The regeneration did not produce the requested change.")
 
 
 class RegenerationMutationError(Exception):
@@ -108,6 +161,12 @@ def apply_regeneration_mutation(
     if not revision_lineage_service.check_branch_head_consistency(planning_state):
         raise BranchWorkspaceConflictError(planning_state)
 
+    # Section 202B.1: honest-refusal gate, enforced at the one shared
+    # boundary the sync route and the async job runner both call.
+    if not legacy_regeneration_can_apply(pending_events):
+        raise LegacyRegenerationNotInterpretableError(planning_state)
+
+    before_state = planning_state.model_copy(deep=True)
     previous_version = planning_state.metadata.current_version
     applied_feedback_event_ids = [event.feedback_event_id for event in pending_events]
 
@@ -117,6 +176,17 @@ def apply_regeneration_mutation(
         )
     except Exception:
         raise RegenerationMutationError(planning_state) from None
+
+    # Section 202B.1 (Task 3): success requires an OBSERVABLE, proven
+    # effect -- every event's registered postcondition must hold. On
+    # failure the pre-rerun state is restored (the rerun above already
+    # saved per stage), nothing is versioned, no feedback is consumed.
+    if not all(
+        LEGACY_SUPPORTED_OPERATIONS[event.feedback_type](before_state, planning_state, event)
+        for event in pending_events
+    ):
+        planning_orchestrator.planning_state_repository.save(before_state)
+        raise RegenerationNoEffectError(before_state)
 
     changed_sections = [stage.value for stage in affected_stages]
 

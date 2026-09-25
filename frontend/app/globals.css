@@ -41,3 +41,34 @@ body {
 .leaflet-container {
   overflow: hidden;
 }
+
+/* Section 202B.3: ~44px touch targets on small / coarse-pointer screens.
+   The 202A audit measured 51 controls under 32px at phone width. Applied
+   as one rule (rather than per-element classes) so every current and
+   future control in the app shell inherits it; form checkboxes/radios keep
+   their native size, and inline text links inside sentences are exempt as
+   WCAG 2.5.8 allows. */
+@media (max-width: 640px), (pointer: coarse) {
+  main button,
+  main select,
+  main input:not([type="checkbox"]):not([type="radio"]),
+  main textarea,
+  main nav a,
+  main summary,
+  main [role="button"] {
+    min-height: 44px;
+  }
+
+  main button,
+  main nav a {
+    min-width: 44px;
+  }
+
+  .leaflet-touch .leaflet-bar a,
+  .leaflet-bar a {
+    width: 44px !important;
+    min-width: 44px !important;
+    height: 44px !important;
+    line-height: 44px !important;
+  }
+}

@@ -14,6 +14,7 @@ from app.models.candidate_quality import (
 )
 from app.models.planning_state import PlanningState
 from app.models.providers import NormalizedPlace
+from app.services import place_taxonomy as taxonomy
 
 # Deterministic candidate quality scoring (Step 156A,
 # docs/12_provider_architecture.md, docs/14_backend_architecture.md section
@@ -37,7 +38,45 @@ from app.models.providers import NormalizedPlace
 
 _MIN_ACCEPTABLE_CONFIDENCE = 0.15
 
+# Section 202B.2 (Task 6): deterministic taxonomy-based category signal.
+# Every value is a documented pre-ranking constant, never a rating,
+# popularity or "top" claim. Applied to the BEST non-flag category a place
+# carries; then capped/boosted by the signals below.
+_TAXONOMY_CATEGORY_SCORE: dict[str, float] = {
+    taxonomy.LANDMARK: 0.8,
+    taxonomy.MUSEUM: 0.85,
+    taxonomy.VIEWPOINT: 0.75,
+    taxonomy.ARCHITECTURE: 0.75,
+    taxonomy.FOOD_MARKET: 0.75,
+    taxonomy.ENTERTAINMENT: 0.75,
+    taxonomy.HISTORIC: 0.7,
+    taxonomy.GENERAL_ATTRACTION: 0.7,
+    taxonomy.PARK_NATURE: 0.6,
+    taxonomy.WATERFRONT: 0.6,
+    taxonomy.ART_CULTURE: 0.6,
+    taxonomy.NIGHTLIFE: 0.6,
+    taxonomy.RELIGIOUS: 0.6,
+    taxonomy.NEIGHBORHOOD_AREA: 0.6,
+    taxonomy.RESTAURANT: 0.5,
+    taxonomy.SHOPPING: 0.4,
+}
+_LOW_VALUE_OBJECT_SCORE_CAP = 0.4
+# Section 202C.1A: an isolated single tree is capped below the scheduling
+# threshold (total < 0.35 at typical provider confidence) so it is never
+# used as filler; only a grounded must-visit can still schedule it.
+_ISOLATED_TREE_SCORE_CAP = 0.2
+# A documented (wikipedia/heritage) small object stays a candidate but ranks
+# below real attractions; an art-focused request lifts the cap for artworks.
+_NOTABLE_OBJECT_SCORE_CAP = 0.5
+_ART_FOCUSED_OBJECT_SCORE_CAP = 0.7
+_COMMERCIAL_GALLERY_SCORE_CAP = 0.45
+_SIGNIFICANCE_BOOST_PER_SIGNAL = 0.03
+_SIGNIFICANCE_BOOST_MAX = 0.06
+_INTEREST_MATCH_BOOST = 0.1
+_STRONG_SIGNIFICANCE = frozenset({"wikipedia", "heritage", "major_historic_type"})
+
 _SEVERE_REJECT_REASONS = {
+    CandidateRejectReason.UNSUITABLE_PLACE_TYPE,
     CandidateRejectReason.MISSING_COORDINATES,
     CandidateRejectReason.INSUFFICIENT_PROVIDER_CONFIDENCE,
     CandidateRejectReason.UNSUPPORTED_ACCOMMODATION_INVENTORY,
@@ -295,6 +334,90 @@ class CandidateQualityService:
             category_score = max(category_score, 0.8)
             positive_signals.append("Matches user interest 'museum'.")
 
+        # -- Section 202B.2: taxonomy (provider-tag) evidence ------------------------
+        provider_tags = _field(place, "provider_tags")
+        structured = bool(provider_tags)
+        classification = taxonomy.classify_place(provider_tags, category)
+        canonical = taxonomy.canonical_interests(user_interests or [])
+        matched = taxonomy.matched_interests(classification, canonical)
+        if structured:
+            # Provider tags take precedence over name/category keyword
+            # heuristics: only a missing-coordinates finding and a generic
+            # "historic district" area survive from the keyword stage.
+            keep = {CandidateRejectReason.MISSING_COORDINATES}
+            if not classification.significance_signals:
+                keep.add(CandidateRejectReason.GENERIC_HISTORIC_DISTRICT)
+            reject_reasons = [reason for reason in reject_reasons if reason in keep]
+            positive_signals = []
+            negative_signals = [text for text in negative_signals if "no usable coordinates" in text or "historic district" in text]
+            usable = [c for c in classification.categories if c in _TAXONOMY_CATEGORY_SCORE]
+            category_score = max((_TAXONOMY_CATEGORY_SCORE[c] for c in usable), default=0.4)
+            if CandidateRejectReason.GENERIC_HISTORIC_DISTRICT in reject_reasons:
+                category_score = min(category_score, 0.25)
+            positive_signals.append(
+                f"Provider tags classify this place as '{classification.primary_category}'."
+            )
+        if classification.is_unsuitable:
+            category_score = min(category_score, 0.1)
+            negative_signals.append(
+                f"Provider data marks this as a non-tourist place type ({classification.unsuitable_reason})."
+            )
+            if CandidateRejectReason.UNSUITABLE_PLACE_TYPE not in reject_reasons:
+                reject_reasons.append(CandidateRejectReason.UNSUITABLE_PLACE_TYPE)
+        else:
+            art_focused_artwork = "art" in canonical and classification.object_kind == taxonomy.OBJECT_ARTWORK
+            object_cap: float | None = None
+            if classification.low_value:
+                if classification.object_kind == taxonomy.OBJECT_TREE:
+                    object_cap = _ISOLATED_TREE_SCORE_CAP
+                    negative_signals.append(
+                        "Isolated single tree: not scheduled as a general attraction "
+                        "(a park, garden or reserve would be treated differently)."
+                    )
+                else:
+                    object_cap = _ART_FOCUSED_OBJECT_SCORE_CAP if art_focused_artwork else _LOW_VALUE_OBJECT_SCORE_CAP
+                    negative_signals.append(
+                        "Small memorial/statue/sculpture-type object: kept as a candidate but ranked below major attractions."
+                    )
+                category_score = min(category_score, object_cap)
+            elif classification.notable_object:
+                object_cap = _ART_FOCUSED_OBJECT_SCORE_CAP if art_focused_artwork else _NOTABLE_OBJECT_SCORE_CAP
+                category_score = min(category_score, object_cap)
+                negative_signals.append(
+                    "Documented small object (memorial/artwork): eligible, but ranked below major attractions."
+                )
+            if classification.commercial_gallery:
+                cap = 0.7 if "art" in canonical else _COMMERCIAL_GALLERY_SCORE_CAP
+                category_score = min(category_score, cap)
+                negative_signals.append(
+                    "Commercial gallery: relevant for art-focused requests, capped for general trips."
+                )
+            # Section 202C.1A: only STRONG evidence (wikipedia / heritage /
+            # major historic type) lifts a score. A bare wikidata id is
+            # carried by countless small local features, and single
+            # objects never receive the floor (their caps stand).
+            strong_signals = [
+                sig for sig in classification.significance_signals if sig in _STRONG_SIGNIFICANCE
+            ]
+            if strong_signals and classification.object_kind is None:
+                boost = min(
+                    _SIGNIFICANCE_BOOST_MAX,
+                    _SIGNIFICANCE_BOOST_PER_SIGNAL * len(strong_signals),
+                )
+                category_score = max(category_score, 0.6) + boost
+                positive_signals.append(
+                    "Provider carries structured landmark/heritage evidence "
+                    f"({', '.join(classification.significance_signals)}): a significance signal, "
+                    "not a claim that this is best or top rated."
+                )
+            if matched:
+                category_score += _INTEREST_MATCH_BOOST
+                positive_signals.append(
+                    "Provider metadata supports requested interest(s): " + ", ".join(matched) + "."
+                )
+            if object_cap is not None:
+                category_score = min(category_score, object_cap)
+
         must_visit_lower = [term.lower() for term in (must_visit_names or []) if term]
         if must_visit_lower and any(term in haystack for term in must_visit_lower):
             category_score = max(category_score, 0.9)
@@ -310,6 +433,7 @@ class CandidateQualityService:
                     CandidateRejectReason.SCHOOL_OR_NON_TOURIST_LOCAL_USE,
                     CandidateRejectReason.ADMINISTRATIVE_OR_INFRASTRUCTURE,
                     CandidateRejectReason.WEAK_CATEGORY,
+                    CandidateRejectReason.UNSUITABLE_PLACE_TYPE,
                 )
             ]
 
@@ -322,6 +446,14 @@ class CandidateQualityService:
         quality_tier = _finalize_tier(total_score, reject_reasons)
 
         return CandidateQualityScore(
+            normalized_category=classification.primary_category,
+            categories=list(classification.categories),
+            matched_interests=matched,
+            significance_signals=list(classification.significance_signals),
+            low_value_object=classification.low_value,
+            notable_object=classification.notable_object,
+            commercial_gallery=classification.commercial_gallery,
+            sub_feature_kind=classification.sub_feature_kind,
             candidate_id=candidate_id,
             candidate_name=candidate_name,
             use_case=CandidateUseCase.ATTRACTION,

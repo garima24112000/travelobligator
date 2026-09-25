@@ -4,6 +4,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field, ValidationError
 
+from app.providers.ai_failure import classify_and_message
 from app.core.config import get_settings
 from app.models.ai_itinerary_reasoning import (
     AIItineraryReasoningGuardrailReport,
@@ -134,7 +135,8 @@ _SYSTEM_PROMPT = (
     "Use coarse time windows only (morning/midday/afternoon/evening) -- never an exact "
     "clock time or a specific transfer duration.\n\n"
     "Optimize for the traveler's stated interests, pace, trip duration, and constraints, "
-    "using each candidate's quality_score/quality_tier as a pre-ranking signal.\n\n"
+    "using each candidate's quality_score/quality_tier as a pre-ranking signal. "
+    "When several requested interests have candidates whose matched_interests include them, represent each such interest at least once across the trip, without breaking geography or pace. normalized_category and matched_interests are provider-derived facts -- never assign or infer them yourself.\n\n"
     "A candidate should appear on at most one day. Return only the structured reasoning "
     "result matching the required schema exactly -- every schema key is required, so use "
     "null or an empty list instead of omitting a key or guessing a value."
@@ -142,11 +144,19 @@ _SYSTEM_PROMPT = (
 
 
 def _format_candidate_line(candidate: Any) -> str:
-    return (
+    line = (
         f"- candidate_id={candidate.candidate_id!r} name={candidate.name!r} "
         f"category={candidate.category.value} quality_tier={candidate.quality_tier} "
         f"quality_score={candidate.quality_score:.2f}"
     )
+    # Section 202B.2 (Task 11): deterministic, provider-derived evidence only.
+    normalized_category = getattr(candidate, "normalized_category", None)
+    if normalized_category:
+        line += f" normalized_category={normalized_category}"
+    matched = getattr(candidate, "matched_interests", None)
+    if matched:
+        line += f" matched_interests={list(matched)}"
+    return line
 
 
 def _build_prompt(request: AIItineraryReasoningRequest) -> str:
@@ -345,7 +355,8 @@ class GroqAIItineraryReasoningProvider(AIItineraryReasoningProvider):
         try:
             raw_output = client.invoke(_build_prompt(request))
         except Exception as exc:  # API/runtime failure -> rejected, never fabricated
-            return self._rejected_result(request, f"Groq API call failed: {exc}")
+            kind, message = classify_and_message("Groq", exc)
+            return self._rejected_result(request, message, failure_kind=kind.value)
 
         output_dict = self._coerce_output(raw_output)
         if output_dict is None:
@@ -485,7 +496,7 @@ class GroqAIItineraryReasoningProvider(AIItineraryReasoningProvider):
         )
 
     def _rejected_result(
-        self, request: AIItineraryReasoningRequest, reason: str
+        self, request: AIItineraryReasoningRequest, reason: str, failure_kind: str | None = None
     ) -> AIItineraryReasoningResult:
         return AIItineraryReasoningResult(
             status=AIItineraryReasoningStatus.REJECTED,
@@ -498,6 +509,7 @@ class GroqAIItineraryReasoningProvider(AIItineraryReasoningProvider):
             provider_name=self.provider_name,
             model_name=self._model,
             confidence=0.0,
+            failure_kind=failure_kind,
         )
 
     # -----------------------------------------------------------------
@@ -524,7 +536,7 @@ class GroqAIItineraryReasoningProvider(AIItineraryReasoningProvider):
         try:
             raw_output = client.invoke(_build_repair_prompt(request))
         except Exception as exc:  # API/runtime failure -> rejected, never fabricated
-            return self._rejected_repair_result(request, f"Groq API call failed: {exc}")
+            return self._rejected_repair_result(request, classify_and_message("Groq", exc)[1])
 
         output_dict = self._coerce_output(raw_output)
         if output_dict is None:

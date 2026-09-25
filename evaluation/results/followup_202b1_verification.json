@@ -1,0 +1,241 @@
+{
+ "label": "Section 202B.1 follow-up verification (real network/providers). Separate from, and does not overwrite, the historical 202A baseline files.",
+ "run_date": "2026-09-24",
+ "notes": [
+  "Groq's daily token quota was exhausted again, so R02, R04 and R05 hit a REAL provider rate limit -- which doubles as the real rate-limit verification. An additive request and a preservation request could therefore NOT be executed live (NOT_EXECUTED); both are covered by deterministic tests.",
+  "R03 applied the oldest still-pending feedback (R02's removal of Ford's Theatre, unconsumed because R02 was rate-limited): its added=[] is expected and shows that a rate-limited request's feedback stays pending and is applied later. The runner's per-step expectation therefore reads 'correct=False' for R03; it is not a defect."
+ ],
+ "destination_resolution": [
+  {
+   "input": "Lisbon",
+   "http": 200,
+   "places": "success",
+   "scheduled_experiences": 9,
+   "validation": "needs_review",
+   "sample": [
+    "Mercado da Ribeira",
+    "Pelourinho de Lisboa",
+    "Past\u00e9is de Bel\u00e9m",
+    "Mosteiro dos Jer\u00f3nimos"
+   ]
+  },
+  {
+   "input": "Cordoba",
+   "http": 200,
+   "places": "success",
+   "scheduled_experiences": 9,
+   "validation": "needs_review",
+   "note": "Resolved to Nominatim's top match, C\u00f3rdoba, Argentina (provider ranking); the resolved place is not yet disclosed to the user."
+  },
+  {
+   "input": "Cordoba, Spain",
+   "http": 200,
+   "places": "fallback_used",
+   "scheduled_experiences": 0,
+   "validation": "blocked",
+   "critical": [
+    "scheduling"
+   ],
+   "note": "Destination resolved correctly (C\u00f3rdoba, Spain; 14 candidates), but the Overpass primary query failed and all fallback candidates (parks/gardens) were low_priority -- a candidate-quality issue for 202B.2, not a resolution failure."
+  },
+  {
+   "input": "Zzyzx Qwertyville",
+   "http": 422,
+   "error_code": "DESTINATION_UNRESOLVED",
+   "validation": "blocked",
+   "critical": [
+    "destination_unresolved"
+   ]
+  }
+ ],
+ "legacy_unsupported_request": [
+  {
+   "step_id": "R13-legacy-pacing",
+   "feedback_text": "Make this less packed, it's too much walking.",
+   "regenerate_http_status": 409,
+   "error_code": "REGENERATION_FEEDBACK_NOT_INTERPRETABLE",
+   "applied": false,
+   "identity_stability": {
+    "before_experience_count": 2,
+    "ids_surviving_fraction": 1.0,
+    "names_surviving_fraction": 1.0
+   },
+   "versioning": {
+    "revisions_before": 1,
+    "revisions_after": 1,
+    "revision_created_only_on_success": true,
+    "active_head_label_after": "v1",
+    "head_label_matches_current_version": null
+   }
+  },
+  {
+   "step_id": "R14-legacy-removal",
+   "feedback_text": "Remove SoHo from the itinerary.",
+   "regenerate_http_status": 409,
+   "error_code": "REGENERATION_FEEDBACK_NOT_INTERPRETABLE",
+   "applied": false,
+   "identity_stability": {
+    "before_experience_count": 2,
+    "ids_surviving_fraction": 1.0,
+    "names_surviving_fraction": 1.0
+   },
+   "versioning": {
+    "revisions_before": 1,
+    "revisions_after": 1,
+    "revision_created_only_on_success": true,
+    "active_head_label_after": "v1",
+    "head_label_matches_current_version": null
+   }
+  }
+ ],
+ "targeted_steps": [
+  {
+   "step_id": "R01-exact-removal",
+   "feedback_text": "Remove Howard University Museum from the itinerary.",
+   "regenerate_http_status": 200,
+   "applied": true,
+   "preserved_days_reported": [
+    1,
+    3
+   ],
+   "affected_days_reported": [
+    2
+   ],
+   "preserved_days_unchanged": true,
+   "cross_day_duplicates_by_provider_identity": {},
+   "identity_stability": {
+    "before_experience_count": 9,
+    "ids_surviving_fraction": 0.89,
+    "names_surviving_fraction": 0.89
+   },
+   "reported_diff_matches_independent": {
+    "added": true,
+    "removed": true,
+    "moved": true,
+    "reordered_days": true
+   },
+   "added_names": [],
+   "ungrounded_additions": [],
+   "versioning": {
+    "revisions_before": 1,
+    "revisions_after": 2,
+    "revision_created_only_on_success": true,
+    "active_head_label_after": "v2",
+    "head_label_matches_current_version": true
+   }
+  },
+  {
+   "step_id": "R02-removal-no-replace",
+   "feedback_text": "Remove Ford's Theatre and don't replace it with anything.",
+   "regenerate_http_status": 409,
+   "error_code": "REGENERATION_PROVIDER_RATE_LIMITED",
+   "applied": false,
+   "preserved_days_reported": [],
+   "affected_days_reported": [],
+   "preserved_days_unchanged": null,
+   "cross_day_duplicates_by_provider_identity": {},
+   "identity_stability": {
+    "before_experience_count": 8,
+    "ids_surviving_fraction": 1.0,
+    "names_surviving_fraction": 1.0
+   },
+   "reported_diff_matches_independent": null,
+   "added_names": [],
+   "ungrounded_additions": [],
+   "versioning": {
+    "revisions_before": 2,
+    "revisions_after": 2,
+    "revision_created_only_on_success": true,
+    "active_head_label_after": "v2",
+    "head_label_matches_current_version": null
+   }
+  },
+  {
+   "step_id": "R03-additive",
+   "feedback_text": "I also want to visit the National Air and Space Museum.",
+   "regenerate_http_status": 200,
+   "applied": true,
+   "preserved_days_reported": [
+    1,
+    2
+   ],
+   "affected_days_reported": [
+    3
+   ],
+   "preserved_days_unchanged": true,
+   "cross_day_duplicates_by_provider_identity": {},
+   "identity_stability": {
+    "before_experience_count": 8,
+    "ids_surviving_fraction": 0.88,
+    "names_surviving_fraction": 0.88
+   },
+   "reported_diff_matches_independent": {
+    "added": true,
+    "removed": true,
+    "moved": true,
+    "reordered_days": true
+   },
+   "added_names": [],
+   "ungrounded_additions": [],
+   "versioning": {
+    "revisions_before": 2,
+    "revisions_after": 3,
+    "revision_created_only_on_success": true,
+    "active_head_label_after": "v3",
+    "head_label_matches_current_version": true
+   }
+  },
+  {
+   "step_id": "R04-day-specific",
+   "feedback_text": "Change only day 2. Make it more relaxed.",
+   "regenerate_http_status": 409,
+   "error_code": "REGENERATION_PROVIDER_RATE_LIMITED",
+   "applied": false,
+   "preserved_days_reported": [],
+   "affected_days_reported": [],
+   "preserved_days_unchanged": null,
+   "cross_day_duplicates_by_provider_identity": {},
+   "identity_stability": {
+    "before_experience_count": 11,
+    "ids_surviving_fraction": 1.0,
+    "names_surviving_fraction": 1.0
+   },
+   "reported_diff_matches_independent": null,
+   "added_names": [],
+   "ungrounded_additions": [],
+   "versioning": {
+    "revisions_before": 1,
+    "revisions_after": 1,
+    "revision_created_only_on_success": true,
+    "active_head_label_after": "v1",
+    "head_label_matches_current_version": null
+   }
+  },
+  {
+   "step_id": "R05-preservation",
+   "feedback_text": "Keep day 1 exactly the same, but make day 3 less packed.",
+   "regenerate_http_status": 409,
+   "error_code": "REGENERATION_PROVIDER_RATE_LIMITED",
+   "applied": false,
+   "preserved_days_reported": [],
+   "affected_days_reported": [],
+   "preserved_days_unchanged": null,
+   "cross_day_duplicates_by_provider_identity": {},
+   "identity_stability": {
+    "before_experience_count": 11,
+    "ids_surviving_fraction": 1.0,
+    "names_surviving_fraction": 1.0
+   },
+   "reported_diff_matches_independent": null,
+   "added_names": [],
+   "ungrounded_additions": [],
+   "versioning": {
+    "revisions_before": 1,
+    "revisions_after": 1,
+    "revision_created_only_on_success": true,
+    "active_head_label_after": "v1",
+    "head_label_matches_current_version": null
+   }
+  }
+ ]
+}

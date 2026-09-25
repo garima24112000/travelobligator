@@ -573,7 +573,10 @@ def test_scheduled_promoted_candidate_preserves_provenance_metadata() -> None:
     assert promoted_experience.provider_place_id == "osm/way/999"
     assert promoted_experience.provider_source == "openstreetmap_places"
 
-    # A real (non-promoted) experience must not carry these markers.
+    # A real (non-promoted) experience carries no AI-promotion markers.
+    # Section 202B.1: it DOES carry its stable provider identity now (the
+    # same fields, restating what the candidate already had), which is
+    # what makes preservation/duplicate checks work for ordinary places.
     real_experience = next(
         experience
         for day_plan in planning_state.experience_plan.daily_plans
@@ -582,8 +585,8 @@ def test_scheduled_promoted_candidate_preserves_provenance_metadata() -> None:
     )
     assert real_experience.promoted_from_ai is False
     assert real_experience.original_ai_candidate_id is None
-    assert real_experience.provider_place_id is None
-    assert real_experience.provider_source is None
+    assert real_experience.provider_place_id == "p1"
+    assert real_experience.provider_source == "openstreetmap_places"
 
 
 # 11. Duplicate provider_place_id/name is not scheduled twice.

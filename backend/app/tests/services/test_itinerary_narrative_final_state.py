@@ -12,6 +12,7 @@ from app.models.ai_itinerary_reasoning import (
 )
 from app.models.ai_itinerary_repair import AIItineraryRepairResult, AIItineraryRepairStatus
 from app.models.common import ValidationSeverity
+from app.services.itinerary_narrative_grounding import SAFE_AI_UNAVAILABLE_MESSAGE
 from app.models.itinerary_narrative import (
     ItineraryNarrativeDayOutput,
     ItineraryNarrativeReport,
@@ -620,9 +621,12 @@ def test_failed_narrator_status_unaffected_by_disclosure_logic() -> None:
 
     report = result.itinerary_narrative_report
     assert report is not None
-    assert report.status == ItineraryNarrativeStatus.FAILED
-    assert report.warnings == []
-    assert report.message == "Simulated provider failure."
+    assert report.status == ItineraryNarrativeStatus.FAILED  # the AI attempt's status is preserved
+    # Section 202B.3: the raw provider message is replaced by a fixed safe
+    # sentence, and a deterministic fallback narrative is attached.
+    assert report.message == SAFE_AI_UNAVAILABLE_MESSAGE
+    assert report.narrative_source == "deterministic_fallback"
+    assert "Simulated provider failure" not in str(report.model_dump())
 
 
 def test_disclosure_logic_is_read_only_over_authoritative_state() -> None:

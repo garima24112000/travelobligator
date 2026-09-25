@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from fastapi.testclient import TestClient
 
 from app.tests.conftest import create_trip_payload
@@ -14,6 +16,7 @@ from app.tests.conftest import create_trip_payload
 # is stated in one place, explicitly, for Step 184D's own record.
 
 
+@pytest.mark.usefixtures("synthetic_legacy_regeneration_support")
 def test_full_authenticated_lifecycle_matches_pre_auth_behavior(client: TestClient) -> None:
     # 1. Create -- authenticated, owned by `client`'s user.
     create_response = client.post("/trips", json=create_trip_payload())

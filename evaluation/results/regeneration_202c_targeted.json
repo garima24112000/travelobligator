@@ -1,0 +1,65 @@
+{
+ "generated_on": "2026-09-24",
+ "provenance": "Assembled by hand from the 202C runs; the automated runner was stopped before it wrote its own summary. No result below is inferred: each REAL row was observed live (runner stdout, backend log, persisted state); everything else is NOT_EXECUTED_QUOTA. Configuration: TARGETED_REGENERATION_ENABLED, AI feedback interpreter (Groq gpt-oss-20b); AI proposal off and narrator off to save tokens (deviation from 202A full_ai; reasoning+repair were on only for the later attempts).",
+ "steps": [
+  {
+   "step_id": "R01-exact-removal",
+   "result": "PASS",
+   "label": "REAL",
+   "base_case": "DC-1",
+   "feedback": "Remove White House Peace Vigil from the itinerary.",
+   "rate_limit_refusals_before_success": 13,
+   "checks": {
+    "target_removed_by_id_and_name": true,
+    "other_days_unchanged": [
+     1,
+     3
+    ],
+    "day2_equals_before_minus_target": true,
+    "replacement_added": false,
+    "ids_surviving": "8/9",
+    "cross_day_duplicates": false,
+    "version": "v1->v2 exactly once",
+    "main_branch_head_advanced_once": true,
+    "revisions": 2,
+    "feedback_consumed_only_on_success": true,
+    "rate_limited_attempts_audited": 13,
+    "validation_rerun": true,
+    "route_legs_reference_only_current_experiences": true,
+    "narrator": "not_connected (disabled for this run; narrator/fallback rerun NOT verified live here)"
+   }
+  },
+  {
+   "step_id": "R10-ambiguous",
+   "result": "PASS",
+   "label": "REAL",
+   "base_case": "CHI-1",
+   "feedback": "Swap that place for something better.",
+   "observed": "AI interpretation completed with status needs_clarification; HTTP 409; plan unchanged; no version; feedback stays pending"
+  },
+  {
+   "step_id": "R03-additive",
+   "result": "NOT_EXECUTED_QUOTA",
+   "label": "REAL attempt",
+   "base_case": "DC-1",
+   "observed": "Interpretation completed, then the AI reasoning stage hit HTTP 429; the run surfaced REGENERATION_NOT_AVAILABLE ('execution did not complete') rather than a rate-limit message; nothing changed, feedback stayed pending. Never applied."
+  },
+  {
+   "step_id": "R05-preservation",
+   "result": "NOT_EXECUTED_QUOTA"
+  },
+  {
+   "step_id": "R06-move",
+   "result": "NOT_EXECUTED_QUOTA"
+  },
+  {
+   "step_id": "R07-day-pacing",
+   "result": "NOT_EXECUTED_QUOTA"
+  },
+  {
+   "step_id": "R09-interest",
+   "result": "NOT_EXECUTED_QUOTA"
+  }
+ ],
+ "earlier_all_rate_limited_run": "regeneration_202c_full_ai.json (14 steps, all REGENERATION_PROVIDER_RATE_LIMITED; refusals were correct, R10-R12 'correct' flags there are NOT evidence of ambiguity handling)"
+}

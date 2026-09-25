@@ -28,6 +28,14 @@ class TargetedRegenerationRuntimeStatus(str, Enum):
     # conflated with a stale-version race; never changes `CONFLICT`'s own
     # existing meaning.
     WORKSPACE_CONFLICT = "workspace_conflict"
+    # Section 202B.1 (Task 16/19): the AI provider rate-limited/quota-
+    # limited the interpretation call -- a distinct, honest state, never
+    # collapsed into BLOCKED ("not implemented") or generic unavailable.
+    RATE_LIMITED = "rate_limited"
+    # Section 202B.1 (Task 3): the executor produced a result identical in
+    # revision content to the source -- a semantic no-op is never a
+    # version and never consumes the feedback.
+    NO_EFFECT = "no_effect"
 
 
 @dataclass
@@ -50,6 +58,9 @@ class TargetedRegenerationRuntimeResult:
     clarification_reason: str | None = None
     clarification_possible_experience_ids: list[str] = field(default_factory=list)
     block_reasons: list[str] = field(default_factory=list)
+    # `AIProviderFailureKind` value when status is PROVIDER_UNAVAILABLE /
+    # RATE_LIMITED because of the AI provider call (Section 202B.1).
+    provider_failure_kind: str | None = None
 
     def is_completed(self) -> bool:
         return self.status == TargetedRegenerationRuntimeStatus.COMPLETED

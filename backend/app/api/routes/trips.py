@@ -10,6 +10,8 @@ from app.auth.ownership import require_trip_owner
 from app.core.config import get_settings
 from app.core.errors import (
     REGENERATION_BLOCKED_BY_LOCKS_MESSAGE,
+    REGENERATION_FEEDBACK_NOT_INTERPRETABLE_MESSAGE,
+    REGENERATION_NO_EFFECT_MESSAGE,
     REGENERATION_NO_PENDING_FEEDBACK_MESSAGE,
     REGENERATION_NOT_AVAILABLE_MESSAGE,
     AppError,
@@ -17,13 +19,18 @@ from app.core.errors import (
     branch_not_found_error,
     branch_state_conflict_error,
     branch_switch_blocked_error,
+    destination_unresolved_error,
     job_not_found_error,
     lock_not_found_error,
+    regeneration_ai_unavailable_error,
     regeneration_blocked_by_locks_error,
     regeneration_conflict_error,
+    regeneration_feedback_not_interpretable_error,
     regeneration_needs_clarification_error,
+    regeneration_no_effect_error,
     regeneration_no_pending_feedback_error,
     regeneration_not_available_error,
+    regeneration_provider_rate_limited_error,
     regeneration_provider_unavailable_error,
     revision_not_found_error,
     revision_snapshot_unavailable_error,
@@ -50,6 +57,7 @@ from app.schemas.errors import ErrorCode
 from app.schemas.experience_plan import ExperiencePlanResponseData
 from app.schemas.generation_job import JobListResponseData, JobResponseData, StartJobResponseData
 from app.schemas.generation_progress import GenerationProgressResponseData
+from app.models.itinerary_revision_comparison import ItineraryRevisionComparison
 from app.schemas.itinerary_lineage import (
     ActivateItineraryBranchResponseData,
     CreateItineraryForkRequest,
@@ -80,14 +88,21 @@ from app.services.ai_candidate_promotion_service import ai_candidate_promotion_s
 from app.services.ai_candidate_review_service import ai_candidate_review_service
 from app.services.feedback_service import derive_pending_affected_stages, pending_feedback_events
 from app.services.itinerary_fork_service import ForkCreationStatus, itinerary_fork_service
+from app.services.itinerary_revision_comparison_service import (
+    RevisionComparisonStatus,
+    itinerary_revision_comparison_service,
+)
 from app.services.langgraph_planning_service import LangGraphPlanningService
 from app.services.plan_diff_preview_service import plan_diff_preview_service
 from app.services.planning_orchestrator import planning_orchestrator
 from app.services.regeneration_attempt_service import regeneration_attempt_service
 from app.services.regeneration_mutation_service import (
     BranchWorkspaceConflictError,
+    LegacyRegenerationNotInterpretableError,
     RegenerationMutationError,
+    RegenerationNoEffectError,
     apply_regeneration_mutation,
+    legacy_regeneration_can_apply,
 )
 from app.services.regeneration_readiness_service import regeneration_readiness_service
 from app.services.revision_lineage_service import (
@@ -174,8 +189,14 @@ def _targeted_regenerate_response(result):
         raise regeneration_needs_clarification_error()
     if result.status == TargetedRegenerationRuntimeStatus.CONFLICT:
         raise regeneration_conflict_error()
+    if result.status == TargetedRegenerationRuntimeStatus.RATE_LIMITED:
+        raise regeneration_provider_rate_limited_error()
     if result.status == TargetedRegenerationRuntimeStatus.PROVIDER_UNAVAILABLE:
+        if result.provider_failure_kind is not None:
+            raise regeneration_ai_unavailable_error(result.provider_failure_kind)
         raise regeneration_provider_unavailable_error()
+    if result.status == TargetedRegenerationRuntimeStatus.NO_EFFECT:
+        raise regeneration_no_effect_error()
     if result.status == TargetedRegenerationRuntimeStatus.WORKSPACE_CONFLICT:
         # Section 199B.1 (Task 7): distinct from CONFLICT above -- see
         # TargetedRegenerationRuntimeStatus.WORKSPACE_CONFLICT's own
@@ -295,6 +316,15 @@ def generate_trip_plan(
         planning_state = planning_orchestrator.generate_full_plan_via_langgraph(trip_id)
     else:
         planning_state = planning_orchestrator.generate_full_plan(trip_id)
+    # Section 202B.1 (Task 15): the (blocked) state is already persisted
+    # -- reloading the trip still shows it -- but a destination the
+    # provider could not resolve is reported as an actionable error, not
+    # as an ordinary successful plan.
+    if (
+        planning_state.destination_context is not None
+        and planning_state.destination_context.destination_resolution == "unresolved"
+    ):
+        raise destination_unresolved_error()
     data = TripResponseData(trip_id=trip_id, planning_state=planning_state)
     return success_response(data)
 
@@ -449,6 +479,19 @@ def regenerate_trip_plan(
         get_planning_state_repository().save(planning_state)
         raise regeneration_not_available_error()
 
+    # Section 202B.1 (Tasks 2/4): the legacy path only reruns deterministic
+    # stages -- it cannot interpret free text. Unless every pending event
+    # has a registered deterministic operation, refuse honestly: no
+    # rerun, no version, feedback stays pending, no async job started.
+    if not legacy_regeneration_can_apply(pending_events):
+        planning_state = regeneration_attempt_service.record_blocked_attempt(
+            planning_state,
+            reason_code=ErrorCode.REGENERATION_FEEDBACK_NOT_INTERPRETABLE.value,
+            message=REGENERATION_FEEDBACK_NOT_INTERPRETABLE_MESSAGE,
+        )
+        get_planning_state_repository().save(planning_state)
+        raise regeneration_feedback_not_interpretable_error()
+
     applied_feedback_event_ids = [event.feedback_event_id for event in pending_events]
 
     if get_settings().async_generation_enabled:
@@ -491,6 +534,22 @@ def regenerate_trip_plan(
         )
         get_planning_state_repository().save(planning_state)
         raise regeneration_not_available_error()
+    except LegacyRegenerationNotInterpretableError as exc:
+        planning_state = regeneration_attempt_service.record_blocked_attempt(
+            exc.planning_state,
+            reason_code=ErrorCode.REGENERATION_FEEDBACK_NOT_INTERPRETABLE.value,
+            message=REGENERATION_FEEDBACK_NOT_INTERPRETABLE_MESSAGE,
+        )
+        get_planning_state_repository().save(planning_state)
+        raise regeneration_feedback_not_interpretable_error()
+    except RegenerationNoEffectError as exc:
+        planning_state = regeneration_attempt_service.record_blocked_attempt(
+            exc.planning_state,
+            reason_code=ErrorCode.REGENERATION_NO_EFFECT.value,
+            message=REGENERATION_NO_EFFECT_MESSAGE,
+        )
+        get_planning_state_repository().save(planning_state)
+        raise regeneration_no_effect_error()
     except BranchWorkspaceConflictError as exc:
         # Section 199B.1 (Task 7): the live state no longer semantically
         # corresponds to its active branch's head revision -- never
@@ -878,7 +937,21 @@ def get_regeneration_attempts(
 
 
 def _branch_response(branch: ItineraryBranch, *, active_branch_id: str) -> ItineraryBranchResponseData:
+    repository = get_lineage_repository()
+    head_revision = (
+        repository.get_revision(branch.head_revision_id) if branch.head_revision_id else None
+    )
+    base_revision = (
+        repository.get_revision(branch.base_revision_id) if branch.base_revision_id else None
+    )
+    head_owner = repository.get_branch(head_revision.branch_id) if head_revision else None
+    base_owner = repository.get_branch(base_revision.branch_id) if base_revision else None
     return ItineraryBranchResponseData(
+        head_version_label=head_revision.version_label if head_revision else None,
+        head_branch_display_name=head_owner.display_name if head_owner else None,
+        base_version_label=base_revision.version_label if base_revision else None,
+        base_branch_id=base_revision.branch_id if base_revision else None,
+        base_branch_display_name=base_owner.display_name if base_owner else None,
         branch_id=branch.branch_id,
         trip_id=branch.trip_id,
         display_name=branch.display_name,
@@ -1094,6 +1167,40 @@ def activate_itinerary_branch(
         current_version=result.current_version,
     )
     return success_response(data)
+
+
+@router.get(
+    "/{trip_id}/revisions/compare",
+    response_model=ApiResponse[ItineraryRevisionComparison],
+)
+def compare_itinerary_revisions(
+    trip_id: str,
+    left_revision_id: str,
+    right_revision_id: str,
+    current_user: PublicUser = Depends(require_trip_owner),
+) -> ApiResponse[ItineraryRevisionComparison]:
+    """Section 199C (Task 20-23): a factual, deterministic comparison of
+    two real, snapshot-backed revisions of this trip -- registered BEFORE
+    `/revisions/{revision_id}` so "compare" is never captured as a
+    revision id. Read-only: never mutates either revision or any live
+    state, never returns either full snapshot, and carries no ranking/
+    recommendation field of any kind.
+    """
+    planning_state = get_planning_state_repository().get_by_trip_id(trip_id)
+    if planning_state is None:
+        raise trip_not_found_error(trip_id)
+
+    result = itinerary_revision_comparison_service.compare(
+        trip_id, left_revision_id, right_revision_id
+    )
+    if result.status == RevisionComparisonStatus.REVISION_NOT_FOUND:
+        raise revision_not_found_error(trip_id, result.missing_revision_id or left_revision_id)
+    if result.status == RevisionComparisonStatus.SNAPSHOT_UNAVAILABLE:
+        raise revision_snapshot_unavailable_error(
+            result.missing_revision_id or left_revision_id, result.message
+        )
+    assert result.comparison is not None
+    return success_response(result.comparison)
 
 
 @router.get(

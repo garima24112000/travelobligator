@@ -164,7 +164,7 @@ def test_feedback_endpoint_behavior_unchanged(client: TestClient) -> None:
     assert event["feedback_type"] == "remove_or_avoid"
     assert event["interpretation"]["method"] == "deterministic_rule_based"
     assert (
-        "No AI interpretation provider is connected."
+        "AI interpretation is not applied when feedback is captured."
         in event["interpretation"]["change_preview"]["blocked_by"]
     )
 
@@ -181,6 +181,7 @@ def test_regenerate_refuses_without_confirm_exactly_as_before(client: TestClient
     assert response.json()["errors"][0]["code"] == "REGENERATION_NOT_AVAILABLE"
 
 
+@pytest.mark.usefixtures("synthetic_legacy_regeneration_support")
 def test_regenerate_success_path_unchanged(client: TestClient) -> None:
     trip_id = _create_trip(client)
     generate_response = client.post(f"/trips/{trip_id}/generate")

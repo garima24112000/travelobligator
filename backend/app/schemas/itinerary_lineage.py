@@ -35,6 +35,18 @@ class ItineraryBranchResponseData(BaseModel):
     is_active: bool
     base_revision_id: str | None
     head_revision_id: str | None
+    # Section 199C (Task 15/28): human-readable context resolved from the
+    # branch's OWN stable `head_revision_id`/`base_revision_id` (never a
+    # trip-wide label search) so a client can show "Main · v3" /
+    # "Created from Main · v2" without a second request -- display only,
+    # the ids above stay authoritative. `*_branch_*` name the branch that
+    # OWNS that revision, which for a fresh fork's inherited head/base is
+    # the SOURCE branch, not this one.
+    head_version_label: str | None = None
+    head_branch_display_name: str | None = None
+    base_version_label: str | None = None
+    base_branch_id: str | None = None
+    base_branch_display_name: str | None = None
     created_at: datetime
 
 

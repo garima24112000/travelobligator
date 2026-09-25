@@ -42,6 +42,71 @@ from app.storage.local_json_store import LocalJsonStore
 from app.storage.provider_cache_store import ProviderCacheStore
 
 
+@pytest.fixture()
+def synthetic_legacy_regeneration_support(monkeypatch: pytest.MonkeyPatch) -> None:
+    """EXPLICIT, test-only scaffolding: makes legacy `POST /regenerate`
+    succeed so a test can exercise the machinery AROUND a regeneration --
+    versioning, revisions/branches, async jobs, persistence, locks.
+
+    Production registers NO deterministic legacy operation
+    (`regeneration_mutation_service.LEGACY_SUPPORTED_OPERATIONS` is empty)
+    because legacy regeneration cannot interpret free text, so by default a
+    legacy request is refused with `REGENERATION_FEEDBACK_NOT_INTERPRETABLE`
+    -- which is what every test gets unless it requests THIS fixture. A
+    test that uses it is NOT testing feedback semantics and must never
+    assert that a user's request was honored.
+
+    The synthetic operation is registered under every classified
+    `feedback_type`, including unclassified (no keyword guessing -- it never inspects the feedback
+    text) and has a deterministic postcondition: the rerun must leave a
+    generated experience plan on the resulting state. `monkeypatch.setitem`
+    restores the (empty) production registry after the test, so nothing
+    leaks into other tests regardless of ordering.
+    """
+    from app.services import regeneration_mutation_service
+    from app.services.feedback_service import _FEEDBACK_TYPE_RULES
+
+    def _synthetic_postcondition(before: Any, after: Any, event: Any) -> bool:
+        return after.experience_plan is not None
+
+    # `None` covers hand-built FeedbackEvents that were never classified.
+    for feedback_type in (*_FEEDBACK_TYPE_RULES, "general_feedback", None):
+        monkeypatch.setitem(
+            regeneration_mutation_service.LEGACY_SUPPORTED_OPERATIONS,
+            feedback_type,
+            _synthetic_postcondition,
+        )
+
+
+@pytest.fixture(autouse=True)
+def _legacy_registry_starts_as_production() -> None:
+    """Section 202B.1.1 leak guard (start half). Production registers NO
+    deterministic legacy operation, so EVERY test must start with an empty
+    registry. Only asserts -- never installs anything."""
+    from app.services import regeneration_mutation_service
+
+    assert dict(regeneration_mutation_service.LEGACY_SUPPORTED_OPERATIONS) == {}, (
+        "legacy regeneration registry is not empty at test start (leaked state)"
+    )
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_runtest_teardown(item: pytest.Item) -> Any:
+    """Leak guard (end half). Runs AFTER every function-scoped fixture
+    finalizer (including `monkeypatch` undoing the synthetic fixture's
+    registration), so anything still registered is a genuine leak: it is
+    cleared and the offending test is failed at its own teardown, so test
+    ordering can never quietly change what a later test exercises."""
+    result = yield
+    from app.services import regeneration_mutation_service
+
+    leaked = sorted(map(str, regeneration_mutation_service.LEGACY_SUPPORTED_OPERATIONS))
+    if leaked:
+        regeneration_mutation_service.LEGACY_SUPPORTED_OPERATIONS.clear()
+        raise AssertionError(f"test leaked legacy regeneration operations: {leaked}")
+    return result
+
+
 @pytest.fixture(autouse=True)
 def _isolate_ai_candidate_proposal_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Isolates the automated test suite from whatever a developer's local

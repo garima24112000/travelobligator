@@ -84,6 +84,7 @@ def test_async_regenerate_no_pending_feedback_stays_synchronous_refusal(
     assert job_repository.list_by_trip_id(generated_trip_id) == []
 
 
+@pytest.mark.usefixtures("synthetic_legacy_regeneration_support")
 def test_async_regenerate_allowed_returns_202_with_queued_job(
     client: TestClient, generated_trip_id: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -99,6 +100,7 @@ def test_async_regenerate_allowed_returns_202_with_queued_job(
     assert data["progress_stage"] is not None
 
 
+@pytest.mark.usefixtures("synthetic_legacy_regeneration_support")
 def test_async_regenerate_success_creates_version_and_marks_feedback_applied(
     client: TestClient, generated_trip_id: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -123,6 +125,7 @@ def test_async_regenerate_success_creates_version_and_marks_feedback_applied(
     assert applied_events
 
 
+@pytest.mark.usefixtures("synthetic_legacy_regeneration_support")
 def test_async_regenerate_failure_marks_job_failed_and_does_not_fake_success(
     client: TestClient, generated_trip_id: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -152,6 +155,7 @@ def test_async_regenerate_failure_marks_job_failed_and_does_not_fake_success(
     assert after_state["regeneration_attempts"][-1]["status"] == "failed"
 
 
+@pytest.mark.usefixtures("synthetic_legacy_regeneration_support")
 def test_async_regenerate_duplicate_running_job_returns_409(
     client: TestClient, generated_trip_id: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -150,6 +150,11 @@ class ItineraryCandidateReference(BaseModel):
     quality_score: float = Field(ge=0.0, le=1.0)
     quality_tier: str
     origin: CandidateOrigin
+    # Section 202B.2 (Task 11): deterministic, provider-tag-derived
+    # evidence LLM #2 may use but never invent -- normalized category and
+    # the traveler's canonical interests this candidate demonstrably serves.
+    normalized_category: str | None = None
+    matched_interests: list[str] = Field(default_factory=list)
 
     @field_validator("candidate_id", "name", "provider_name", "provider_place_id", "quality_tier")
     @classmethod
@@ -411,6 +416,10 @@ class AIItineraryReasoningResult(BaseModel):
     provider_name: str | None = None
     model_name: str | None = None
     confidence: float = Field(ge=0.0, le=1.0)
+    # Section 202C.1A: set ONLY when the provider CALL itself failed, from the
+    # structured failure taxonomy (`ai_failure.AIProviderFailureKind` value),
+    # never parsed from message text. None for model-output/guardrail rejections.
+    failure_kind: str | None = None
 
     @field_validator("overall_tradeoffs")
     @classmethod

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from fastapi.testclient import TestClient
 
 from app.repositories.planning_state_repository import planning_state_repository
@@ -157,6 +159,7 @@ def test_activation_blocked_by_pending_feedback_via_api(
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("synthetic_legacy_regeneration_support")
 def test_legacy_regeneration_on_activated_fork_updates_only_that_branch(
     client: TestClient, generated_trip_id: str
 ) -> None:

@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
+import statistics
 from datetime import timedelta
 from typing import Any
 
+from app.services.experience_identity import deterministic_experience_id
 from app.core.config import get_settings
 from app.models.ai_candidate_promotion import PromotedAICandidate
 from app.models.ai_itinerary_reasoning import (
@@ -37,6 +40,7 @@ from app.models.planning_state import (
     StayAreaGuidance,
     TripPace,
 )
+from app.services import place_taxonomy as taxonomy
 from app.services.base import PlanningStageService
 from app.utils.geo import haversine_distance_km
 
@@ -374,6 +378,9 @@ def _promoted_candidate_to_poi_dict(promoted: PromotedAICandidate) -> dict[str, 
         "data_status": promoted.data_status or DataStatus.LIVE.value,
         "confidence": promoted.confidence if promoted.confidence is not None else 0.0,
         "promoted_from_ai": True,
+        # Its quality was verified once during promotion (Step 170D); carried
+        # so the shared selection rules rank it like any other candidate.
+        "quality_tier": promoted.quality_bucket,
         "original_ai_candidate_id": promoted.original_ai_candidate_id,
         "provider_source": promoted.provider_source,
     }
@@ -714,11 +721,23 @@ class ExperiencePlannerService(PlanningStageService):
             max_per_day,
         )
         used_ai_reasoning = ai_day_groups is not None
-        day_groups = (
-            ai_day_groups
-            if ai_day_groups is not None
-            else _group_candidates_into_days(ordered_pois, num_days, max_per_day)
-        )
+        canonical_interests = taxonomy.canonical_interests(interest_terms)
+        profiles = {
+            id(poi): _candidate_profile(poi, attraction_quality_lookup.get(id(poi)), canonical_interests)
+            for poi in scheduling_candidate_pois
+        }
+        if ai_day_groups is not None:
+            # Section 202B.2 (Task 22): a valid AI grouping may still leave
+            # a day empty; fill only from unused quality-eligible candidates.
+            day_groups = _fill_empty_days(ai_day_groups, scheduling_candidate_pois, profiles)
+        else:
+            # Section 202B.2: shared candidate-quality evidence drives the
+            # deterministic fallback too -- interest coverage, diversity
+            # pressure, outlier control, then balanced geographic days.
+            selected = _select_diverse_scheduling_set(
+                ordered_pois, profiles, num_days * max_per_day, canonical_interests, must_visit_ids
+            )
+            day_groups = _group_candidates_into_balanced_days(selected, num_days, max_per_day)
 
         reasoning_result = planning_state.ai_itinerary_reasoning_result
         logger.info(
@@ -738,6 +757,7 @@ class ExperiencePlannerService(PlanningStageService):
         )
 
         daily_plans: list[DailyPlan] = []
+        used_experience_ids: set[str] = set()
         for day_number in range(1, num_days + 1):
             day_date = trip_request.start_date + timedelta(days=day_number - 1)
             # Section 193C: an AI-guided day keeps LLM #2's own chosen
@@ -789,7 +809,15 @@ class ExperiencePlannerService(PlanningStageService):
                     )
 
             experiences = [
-                _build_experience_item(poi, must_visit_ids, interest_ids) for poi in day_pois
+                _build_experience_item(
+                    poi,
+                    must_visit_ids,
+                    interest_ids,
+                    trip_id=planning_state.trip_id,
+                    used_experience_ids=used_experience_ids,
+                    profile=profiles.get(id(poi)),
+                )
+                for poi in day_pois
             ]
             # Step 172A: stable ordering metadata, restating this day's own
             # already-decided schedule position -- see ExperienceItem's own
@@ -1125,6 +1153,326 @@ def _group_candidates_into_days(
         day_groups.append(day_group)
 
     return day_groups
+
+
+# -- Section 202B.2: diversity-aware selection, balanced allocation -------------------
+#
+# Audit (docs/14 section 157): the old scheduler took the top-N candidates
+# by tier, then filled each day with the geographically NEAREST remaining
+# candidate regardless of quality, front-loaded whole days (so a short
+# candidate supply left the last day empty), and let requested interests
+# participate only through a name/category substring match. This section
+# keeps the same inputs (quality-approved candidates, pace caps, geography)
+# and adds deterministic, general rules -- no city or place names.
+
+_LOW_VALUE_SHARE_OF_CAPACITY = 0.25  # soft cap for "diluted" categories in a general itinerary
+_ART_FOCUSED_LOW_VALUE_SHARE = 0.6
+_SAME_CATEGORY_REPEAT_PENALTY = 0.03
+_OUTLIER_MIN_KM = 8.0
+_OUTLIER_MEDIAN_FACTOR = 2.5
+_CLUSTER_CELL_DEGREES = 0.02  # ~2 km grid for structurally tagged sub-feature complexes
+
+
+@dataclass
+class _CandidateProfile:
+    score: float
+    tier_rank: int
+    primary: str
+    categories: frozenset[str]
+    low_value: bool
+    commercial_gallery: bool
+    sub_feature_cluster: str | None
+    matched_interests: list[str]
+    tier: str | None
+    # Section 202C.1A
+    object_kind: str | None = None
+    notable_object: bool = False
+
+
+def _candidate_profile(
+    poi: dict[str, Any],
+    score: CandidateQualityScore | None,
+    canonical_interests: list[str],
+) -> _CandidateProfile:
+    classification = taxonomy.classify_candidate(poi)
+    matched = taxonomy.matched_interests(classification, canonical_interests)
+    point = _poi_coordinates(poi)
+    cluster = None
+    if classification.sub_feature_kind and point is not None:
+        cluster = (
+            f"{classification.sub_feature_kind}:{round(point.lat / _CLUSTER_CELL_DEGREES)}:"
+            f"{round(point.lng / _CLUSTER_CELL_DEGREES)}"
+        )
+    rank, total = _quality_rank_and_score(score)
+    if score is None and poi.get("quality_tier"):
+        rank = {"primary_anchor": 4, "good_candidate": 3, "secondary_candidate": 2}.get(
+            str(poi["quality_tier"]), rank
+        )
+        total = 0.6
+    return _CandidateProfile(
+        score=total,
+        tier_rank=rank,
+        primary=classification.primary_category,
+        categories=frozenset(classification.categories),
+        low_value=classification.low_value,
+        commercial_gallery=classification.commercial_gallery,
+        sub_feature_cluster=cluster,
+        matched_interests=matched,
+        object_kind=classification.object_kind,
+        notable_object=classification.notable_object,
+        tier=(
+            score.quality_tier.value
+            if score is not None
+            else (str(poi["quality_tier"]) if poi.get("quality_tier") else None)
+        ),
+    )
+
+
+def _select_diverse_scheduling_set(
+    pool: list[dict[str, Any]],
+    profiles: dict[int, _CandidateProfile],
+    capacity: int,
+    canonical_interests: list[str],
+    must_visit_ids: set[int],
+) -> list[dict[str, Any]]:
+    """Deterministically chooses up to `capacity` candidates from the
+    quality-eligible `pool`:
+
+    1. grounded must-visit candidates;
+    2. requested-interest coverage: for each requested interest that has at
+       least one eligible matching candidate, the best-ranked match (a
+       requested interest with no eligible supply is simply skipped -- no
+       place is ever fabricated for it);
+    3. remaining slots by quality, with diversity pressure: "diluted"
+       candidates (small memorial/sculpture objects, commercial galleries
+       for a non-art request, and repeated sub-features of one tagged
+       complex) may fill slots only up to a soft share of the capacity
+       while non-diluted alternatives remain, and a repeated primary
+       category pays a small penalty;
+    4. an isolated geographic outlier is replaced by the best remaining
+       non-diluted candidate when one exists.
+    """
+    if capacity <= 0 or not pool:
+        return []
+
+    def base_key(poi: dict[str, Any]) -> tuple[int, float]:
+        profile = profiles[id(poi)]
+        return (profile.tier_rank, profile.score)
+
+    ranked = sorted(pool, key=base_key, reverse=True)  # stable: provider order breaks ties
+    art_focused = "art" in canonical_interests
+    diluted_cap = max(
+        1,
+        int(capacity * (_ART_FOCUSED_LOW_VALUE_SHARE if art_focused else _LOW_VALUE_SHARE_OF_CAPACITY)),
+    )
+
+    selected: list[dict[str, Any]] = []
+    selected_ids: set[int] = set()
+    selected_clusters: set[str] = set()
+
+    def is_diluted(poi: dict[str, Any]) -> bool:
+        profile = profiles[id(poi)]
+        if profile.sub_feature_cluster is not None and profile.sub_feature_cluster in selected_clusters:
+            return True
+        if profile.low_value:
+            # Section 202C.1A: art-focused trips may keep artworks.
+            return not (art_focused and profile.object_kind == "artwork")
+        # Documented (notable) objects are NOT diluted: their score cap already
+        # ranks them below real attractions, so they fill slots only after
+        # stronger candidates run out (a hard share cap would push far-away
+        # areas into a compact-city plan).
+        return profile.commercial_gallery and not art_focused
+
+    def take(poi: dict[str, Any]) -> None:
+        selected.append(poi)
+        selected_ids.add(id(poi))
+        cluster = profiles[id(poi)].sub_feature_cluster
+        if cluster is not None:
+            selected_clusters.add(cluster)
+
+    for poi in ranked:
+        if len(selected) >= capacity:
+            break
+        if id(poi) in must_visit_ids:
+            take(poi)
+
+    for interest in canonical_interests:
+        if len(selected) >= capacity:
+            break
+        if any(interest in profiles[id(p)].matched_interests for p in selected):
+            continue
+        matches = [
+            p for p in ranked if id(p) not in selected_ids and interest in profiles[id(p)].matched_interests
+        ]
+        # Prefer a non-diluted match; a diluted one only if nothing else serves the interest.
+        chosen = next((p for p in matches if not is_diluted(p)), matches[0] if matches else None)
+        if chosen is not None:
+            take(chosen)
+
+    def is_junk(poi: dict[str, Any]) -> bool:
+        profile = profiles[id(poi)]
+        return profile.low_value and not (art_focused and profile.object_kind == "artwork")
+
+    while len(selected) < capacity:
+        diluted_count = sum(1 for p in selected if profiles[id(p)].low_value or (
+            profiles[id(p)].commercial_gallery and not art_focused))
+        remaining = [p for p in ranked if id(p) not in selected_ids]
+        # Section 202C.1A (sparse supply): low-value single objects
+        # (plaques, plain statues, ...) may never exceed the diluted share
+        # of the itinerary, even when nothing better remains -- the day is
+        # left lighter and the validator reports the real supply limit
+        # instead of padding with junk. Must-visits were taken above.
+        junk_count = sum(1 for p in selected if is_junk(p))
+        if junk_count >= diluted_cap:
+            remaining = [p for p in remaining if not is_junk(p)]
+        if not remaining:
+            break
+        # Parent/child collapse (Task 5): a second sub-feature of an
+        # already-selected structurally tagged complex is never scheduled --
+        # the day is left lighter rather than repeating one attraction.
+        no_repeat = [
+            p for p in remaining
+            if not (profiles[id(p)].sub_feature_cluster is not None
+                    and profiles[id(p)].sub_feature_cluster in selected_clusters)
+        ]
+        remaining = no_repeat  # siblings are never scheduled: same attraction, not a new place
+        if not remaining:
+            break
+        non_diluted = [p for p in remaining if not is_diluted(p)]
+        if diluted_count >= diluted_cap and non_diluted:
+            pool_for_pick = non_diluted
+        else:
+            pool_for_pick = remaining
+
+        def adjusted(p: dict[str, Any]) -> tuple[float, int]:
+            profile = profiles[id(p)]
+            repeats = sum(1 for q in selected if profiles[id(q)].primary == profile.primary)
+            penalty = _SAME_CATEGORY_REPEAT_PENALTY * repeats
+            if is_diluted(p):
+                penalty += 0.05
+            return (profile.tier_rank * 1.0 + profile.score - penalty, -ranked.index(p))
+
+        take(max(pool_for_pick, key=adjusted))
+
+    return _replace_isolated_outliers(selected, ranked, selected_ids, profiles, is_diluted, canonical_interests)
+
+
+def _replace_isolated_outliers(
+    selected: list[dict[str, Any]],
+    ranked: list[dict[str, Any]],
+    selected_ids: set[int],
+    profiles: dict[int, _CandidateProfile],
+    is_diluted: Any,
+    canonical_interests: list[str],
+) -> list[dict[str, Any]]:
+    points = [(poi, _poi_coordinates(poi)) for poi in selected]
+    coords = [pt for _, pt in points if pt is not None]
+    if len(coords) < 4:
+        return selected
+    center = GeoPoint(
+        lat=statistics.median(pt.lat for pt in coords), lng=statistics.median(pt.lng for pt in coords)
+    )
+    distances = {id(poi): haversine_distance_km(center, pt) for poi, pt in points if pt is not None}
+    median_distance = statistics.median(distances.values())
+    threshold = max(_OUTLIER_MIN_KM, _OUTLIER_MEDIAN_FACTOR * median_distance)
+
+    result = list(selected)
+    used = set(selected_ids)
+    for poi in sorted(selected, key=lambda p: -distances.get(id(p), 0.0)):
+        if distances.get(id(poi), 0.0) <= threshold:
+            break
+        # Never drop the only selected place that serves a requested interest.
+        sole_cover = any(
+            interest in profiles[id(poi)].matched_interests
+            and not any(
+                interest in profiles[id(other)].matched_interests for other in result if other is not poi
+            )
+            for interest in canonical_interests
+        )
+        if sole_cover:
+            continue
+        replacement = next(
+            (
+                p
+                for p in ranked
+                if id(p) not in used
+                and not is_diluted(p)
+                and (pt := _poi_coordinates(p)) is not None
+                and haversine_distance_km(center, pt) <= threshold
+            ),
+            None,
+        )
+        if replacement is None:
+            continue
+        result[result.index(poi)] = replacement
+        used.add(id(replacement))
+    return result
+
+
+def _group_candidates_into_balanced_days(
+    selected: list[dict[str, Any]], num_days: int, max_per_day: int
+) -> list[list[dict[str, Any]]]:
+    """Balanced, geographically grouped allocation (Task 21). The selected
+    set is spread as evenly as the pace cap allows (no whole-day
+    front-loading, so a short supply never leaves the FINAL day empty while
+    earlier days are full); within that size plan, each day is an anchor
+    (best-ranked remaining) plus its nearest remaining coordinate-backed
+    candidates -- the same geographic rule as `_group_candidates_into_days`.
+    Deterministic; never shuffles."""
+    total = min(len(selected), num_days * max_per_day)
+    if num_days <= 0:
+        return []
+    base, extra = divmod(total, num_days)
+    sizes = [min(max_per_day, base + (1 if index < extra else 0)) for index in range(num_days)]
+
+    remaining = list(selected[:total])
+    day_groups: list[list[dict[str, Any]]] = []
+    for size in sizes:
+        if size <= 0 or not remaining:
+            day_groups.append([])
+            continue
+        anchor = remaining.pop(0)
+        group = [anchor]
+        anchor_point = _poi_coordinates(anchor)
+        slots = size - 1
+        if slots > 0 and anchor_point is not None:
+            with_coords = [(p, pt) for p in remaining if (pt := _poi_coordinates(p)) is not None]
+            with_coords.sort(key=lambda item: haversine_distance_km(anchor_point, item[1]))
+            chosen = [p for p, _ in with_coords[:slots]]
+        else:
+            chosen = remaining[:slots]
+        chosen_ids = {id(p) for p in chosen}
+        group.extend(chosen)
+        remaining = [p for p in remaining if id(p) not in chosen_ids]
+        # Not enough coordinate-backed neighbours: fall back to priority order.
+        while len(group) < size and remaining:
+            group.append(remaining.pop(0))
+        day_groups.append(group)
+    return day_groups
+
+
+def _fill_empty_days(
+    day_groups: list[list[dict[str, Any]]],
+    pool: list[dict[str, Any]],
+    profiles: dict[int, _CandidateProfile],
+) -> list[list[dict[str, Any]]]:
+    """Task 22: an EMPTY day is filled with the best-ranked unused
+    quality-eligible candidate (never a rejected/low-priority one, never a
+    duplicate). Used for AI-guided groupings, which may leave a day empty
+    while eligible candidates remain. With no eligible candidate left the
+    day stays empty (the validator then reports the real limitation)."""
+    used = {id(p) for group in day_groups for p in group}
+    unused = sorted(
+        (p for p in pool if id(p) not in used),
+        key=lambda p: (profiles[id(p)].tier_rank, profiles[id(p)].score),
+        reverse=True,
+    )
+    filled = [list(group) for group in day_groups]
+    for index, group in enumerate(filled):
+        if group or not unused:
+            continue
+        filled[index] = [unused.pop(0)]
+    return filled
 
 
 def _poi_coordinates(poi: dict[str, Any]) -> GeoPoint | None:
@@ -1991,7 +2339,12 @@ def _build_route_feasibility_context() -> RouteFeasibilityContext:
 
 
 def _build_experience_item(
-    poi: dict[str, Any], must_visit_ids: set[int], interest_ids: set[int]
+    poi: dict[str, Any],
+    must_visit_ids: set[int],
+    interest_ids: set[int],
+    trip_id: str | None = None,
+    used_experience_ids: set[str] | None = None,
+    profile: "_CandidateProfile | None" = None,
 ) -> ExperienceItem:
     name = poi.get("name") or ""
     coordinates = _poi_coordinates(poi)
@@ -2034,6 +2387,28 @@ def _build_experience_item(
         claim = f"{name} is a real place from destination_context.candidate_pois."
         based_on = ["destination_context.candidate_pois"]
 
+    # Section 202B.1 (Tasks 5/6): every provider-backed place carries its
+    # stable provider identity (not only AI-promoted ones), and its
+    # `experience_id` is derived from it -- see `experience_identity`.
+    provider_place_id = poi.get("provider_place_id") or poi.get("place_id")
+    provider_source = poi.get("provider_source") or poi.get("source")
+    identity_kwargs: dict[str, Any] = {}
+    if provider_place_id and provider_source:
+        identity_kwargs["provider_place_id"] = str(provider_place_id)
+        identity_kwargs["provider_source"] = str(provider_source)
+        stable_id = (
+            deterministic_experience_id(trip_id, provider_source, str(provider_place_id))
+            if trip_id
+            else None
+        )
+        # Never emit two items with the same id in one plan; a repeat
+        # (which the planner's own de-duplication should already prevent)
+        # falls back to a random id rather than colliding.
+        if stable_id and (used_experience_ids is None or stable_id not in used_experience_ids):
+            identity_kwargs["experience_id"] = stable_id
+            if used_experience_ids is not None:
+                used_experience_ids.add(stable_id)
+
     return ExperienceItem(
         name=name,
         category=poi.get("category") or _DEFAULT_CATEGORY,
@@ -2053,6 +2428,11 @@ def _build_experience_item(
         ],
         promoted_from_ai=promoted_from_ai,
         original_ai_candidate_id=poi.get("original_ai_candidate_id") if promoted_from_ai else None,
-        provider_place_id=poi.get("provider_place_id") if promoted_from_ai else None,
-        provider_source=poi.get("provider_source") if promoted_from_ai else None,
+        normalized_category=profile.primary if profile is not None else None,
+        matched_interests=list(profile.matched_interests) if profile is not None else [],
+        quality_tier=profile.tier if profile is not None else None,
+        low_value_object=profile.low_value if profile is not None else False,
+        notable_object=profile.notable_object if profile is not None else False,
+        commercial_gallery=profile.commercial_gallery if profile is not None else False,
+        **identity_kwargs,
     )

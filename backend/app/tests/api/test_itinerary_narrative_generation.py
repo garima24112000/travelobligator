@@ -116,6 +116,7 @@ def test_generation_narrator_failure_does_not_affect_validation_report(
     assert validation_response.json()["data"]["validation_report"]["readiness_status"] is not None
 
 
+@pytest.mark.usefixtures("synthetic_legacy_regeneration_support")
 def test_regeneration_succeeds_when_narrator_disabled(
     client: TestClient, generated_trip_id: str
 ) -> None:
@@ -131,6 +132,7 @@ def test_regeneration_succeeds_when_narrator_disabled(
     assert "itinerary_narrative" not in regenerate_response.json()["data"]["changed_sections"]
 
 
+@pytest.mark.usefixtures("synthetic_legacy_regeneration_support")
 def test_regeneration_succeeds_when_narrator_fails(
     client: TestClient, generated_trip_id: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -152,6 +154,7 @@ def test_regeneration_succeeds_when_narrator_fails(
     assert narrative_report["status"] == "failed"
 
 
+@pytest.mark.usefixtures("synthetic_legacy_regeneration_support")
 def test_regeneration_reports_itinerary_narrative_in_changed_sections_when_it_succeeds(
     client: TestClient, generated_trip_id: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:

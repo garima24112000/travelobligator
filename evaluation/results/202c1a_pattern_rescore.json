@@ -1,0 +1,1105 @@
+{
+ "label": "DETERMINISTIC re-plan of the saved 202C candidate pools (no provider call, no Groq). Pattern check, not a city expectation.",
+ "cases": {
+  "CHI-1": {
+   "interests": [
+    "architecture",
+    "food"
+   ],
+   "before_202c": [
+    [
+     "Nuclear Energy",
+     "White City Amusement Park",
+     "Haymarket Police Memorial"
+    ],
+    [
+     "Haymarket Memorial",
+     "Batcolumn",
+     "Home Insurance Building Site"
+    ],
+    [
+     "Union Stock Yards Fire Memorial",
+     "William McKinley Memorial",
+     "Vietnam Veterans Memorial"
+    ]
+   ],
+   "after": [
+    [
+     [
+      "Locks",
+      "historic",
+      [
+       "architecture"
+      ]
+     ],
+     [
+      "Canalport",
+      "historic",
+      [
+       "architecture"
+      ]
+     ],
+     [
+      "Whiskey Point",
+      "historic",
+      [
+       "architecture"
+      ]
+     ]
+    ],
+    [
+     [
+      "Marshall Field",
+      "landmark",
+      [
+       "architecture"
+      ]
+     ],
+     [
+      "Cuyler",
+      "historic",
+      [
+       "architecture"
+      ]
+     ],
+     [
+      "Winnemac",
+      "historic",
+      [
+       "architecture"
+      ]
+     ]
+    ],
+    [
+     [
+      "Summerdale",
+      "historic",
+      [
+       "architecture"
+      ]
+     ],
+     [
+      "Pennock",
+      "historic",
+      [
+       "architecture"
+      ]
+     ],
+     [
+      "Monument of the Millenium",
+      "historic",
+      [
+       "architecture"
+      ]
+     ]
+    ]
+   ],
+   "after_low_value_or_notable": 0,
+   "after_stops": 9,
+   "empty_days": [],
+   "max_pairwise_km_per_day": [
+    3.8,
+    2.1,
+    11.1
+   ]
+  },
+  "CHI-2": {
+   "interests": [
+    "museums",
+    "nightlife"
+   ],
+   "before_202c": [
+    [
+     "Money Museum",
+     "Home Insurance Building Site",
+     "Begin Route 66",
+     "The Museum of Contemporary Photography"
+    ],
+    [
+     "McCormick Bridgehouse & Chicago River Museum",
+     "American Writers Museum",
+     "Chicago Architecture Center",
+     "Richard H. Driehaus Museum"
+    ],
+    [
+     "National Museum of Puerto Rican Arts & Culture",
+     "Ukrainian National Museum",
+     "Polish Museum of America",
+     "Haymarket Memorial"
+    ],
+    [
+     "Loyola University Museum of Art",
+     "Chicago Children's Museum",
+     "Batcolumn",
+     "Union Stock Yards Fire Memorial"
+    ]
+   ],
+   "after": [
+    [
+     [
+      "Money Museum",
+      "museum",
+      [
+       "museum"
+      ]
+     ],
+     [
+      "Begin Route 66",
+      "landmark",
+      []
+     ],
+     [
+      "The Museum of Contemporary Photography",
+      "museum",
+      [
+       "museum"
+      ]
+     ],
+     [
+      "American Writers Museum",
+      "museum",
+      [
+       "museum"
+      ]
+     ]
+    ],
+    [
+     [
+      "McCormick Bridgehouse & Chicago River Museum",
+      "museum",
+      [
+       "museum"
+      ]
+     ],
+     [
+      "Chicago Architecture Center",
+      "museum",
+      [
+       "museum"
+      ]
+     ],
+     [
+      "Richard H. Driehaus Museum",
+      "museum",
+      [
+       "museum"
+      ]
+     ],
+     [
+      "Loyola University Museum of Art",
+      "museum",
+      [
+       "museum"
+      ]
+     ]
+    ],
+    [
+     [
+      "National Museum of Puerto Rican Arts & Culture",
+      "museum",
+      [
+       "museum"
+      ]
+     ],
+     [
+      "Central Observatory",
+      "viewpoint",
+      []
+     ],
+     [
+      "Busy Beaver Button Museum",
+      "museum",
+      [
+       "museum"
+      ]
+     ],
+     [
+      "Ukrainian National Museum",
+      "museum",
+      [
+       "museum"
+      ]
+     ]
+    ],
+    [
+     [
+      "Polish Museum of America",
+      "museum",
+      [
+       "museum"
+      ]
+     ],
+     [
+      "360 Chicago",
+      "viewpoint",
+      []
+     ],
+     [
+      "Chicago Children's Museum",
+      "museum",
+      [
+       "museum"
+      ]
+     ],
+     [
+      "Dreihaus Gallery of Stained Glass",
+      "museum",
+      [
+       "museum"
+      ]
+     ]
+    ]
+   ],
+   "after_low_value_or_notable": 0,
+   "after_stops": 16,
+   "empty_days": [],
+   "max_pairwise_km_per_day": [
+    1.3,
+    1.0,
+    3.4,
+    5.0
+   ]
+  },
+  "LIS-1": {
+   "interests": [
+    "food",
+    "history"
+   ],
+   "before_202c": [
+    [
+     "Mercado da Ribeira",
+     "Tamareira-do-Senegal",
+     "Pelourinho de Lisboa"
+    ],
+    [
+     "Museu Geológico",
+     "Museu da Marioneta",
+     "Tipuana"
+    ],
+    [
+     "Museu do Aljube - Resistência e Liberdade",
+     "Mercado de Santa Clara",
+     "Museu Bordalo Pinheiro"
+    ]
+   ],
+   "after": [
+    [
+     [
+      "Mercado da Ribeira",
+      "food_market",
+      [
+       "food"
+      ]
+     ],
+     [
+      "Pelourinho de Lisboa",
+      "landmark",
+      [
+       "history"
+      ]
+     ],
+     [
+      "Museu Geológico",
+      "museum",
+      [
+       "history"
+      ]
+     ]
+    ],
+    [
+     [
+      "Museu da Marioneta",
+      "museum",
+      [
+       "history"
+      ]
+     ],
+     [
+      "Museu do Aljube - Resistência e Liberdade",
+      "museum",
+      [
+       "history"
+      ]
+     ],
+     [
+      "Museu do Centro Científico e Cultural de Macau",
+      "museum",
+      [
+       "history"
+      ]
+     ]
+    ],
+    [
+     [
+      "Museu Bordalo Pinheiro",
+      "museum",
+      [
+       "history"
+      ]
+     ],
+     [
+      "Mercado de Arroios",
+      "food_market",
+      [
+       "food"
+      ]
+     ],
+     [
+      "Mercado de Santa Clara",
+      "food_market",
+      [
+       "food"
+      ]
+     ]
+    ]
+   ],
+   "after_low_value_or_notable": 0,
+   "after_stops": 9,
+   "empty_days": [],
+   "max_pairwise_km_per_day": [
+    1.1,
+    4.5,
+    5.4
+   ]
+  },
+  "LIS-2": {
+   "interests": [
+    "architecture",
+    "nightlife"
+   ],
+   "before_202c": [
+    [
+     "Pelourinho de Lisboa",
+     "Tamareira-do-Senegal",
+     "Teatro Nacional de São Carlos",
+     "Leitaria A Camponeza"
+    ],
+    [
+     "Hot Club Portugal",
+     "Miradouro de São Pedro de Alcântara",
+     "Museu Maçónico Português",
+     "Museu Geológico"
+    ],
+    [
+     "Tipuana",
+     "Museu da Marioneta",
+     "Mercado da Ribeira",
+     "Animatógrafo do Rossio"
+    ],
+    [
+     "Ginkgo",
+     "Museu do Aljube - Resistência e Liberdade",
+     "Museu do Centro Científico e Cultural de Macau",
+     "Museu Bordalo Pinheiro"
+    ]
+   ],
+   "after": [
+    [
+     [
+      "Pelourinho de Lisboa",
+      "landmark",
+      [
+       "architecture"
+      ]
+     ],
+     [
+      "Teatro Nacional de São Carlos",
+      "entertainment",
+      []
+     ],
+     [
+      "Leitaria A Camponeza",
+      "historic",
+      [
+       "architecture"
+      ]
+     ],
+     [
+      "Animatógrafo do Rossio",
+      "historic",
+      [
+       "architecture"
+      ]
+     ]
+    ],
+    [
+     [
+      "Hot Club Portugal",
+      "nightlife",
+      [
+       "nightlife"
+      ]
+     ],
+     [
+      "Miradouro de São Pedro de Alcântara",
+      "viewpoint",
+      []
+     ],
+     [
+      "Museu Maçónico Português",
+      "museum",
+      []
+     ],
+     [
+      "Miradouro do Torel",
+      "viewpoint",
+      []
+     ]
+    ],
+    [
+     [
+      "Museu Geológico",
+      "museum",
+      []
+     ],
+     [
+      "Mercado da Ribeira",
+      "food_market",
+      []
+     ],
+     [
+      "Museu da Marioneta",
+      "museum",
+      []
+     ],
+     [
+      "Museu do Aljube - Resistência e Liberdade",
+      "museum",
+      []
+     ]
+    ],
+    [
+     [
+      "Museu Bordalo Pinheiro",
+      "museum",
+      []
+     ],
+     [
+      "Jardim Zoológico de Lisboa",
+      "entertainment",
+      []
+     ],
+     [
+      "Culturgest",
+      "art_culture",
+      []
+     ],
+     [
+      "Museu do Centro Científico e Cultural de Macau",
+      "museum",
+      []
+     ]
+    ]
+   ],
+   "after_low_value_or_notable": 0,
+   "after_stops": 16,
+   "empty_days": [],
+   "max_pairwise_km_per_day": [
+    0.5,
+    0.7,
+    2.0,
+    6.9
+   ]
+  },
+  "LIS-BARE": {
+   "interests": [
+    "food",
+    "history"
+   ],
+   "before_202c": [
+    [
+     "Mercado da Ribeira",
+     "Tamareira-do-Senegal",
+     "Pelourinho de Lisboa"
+    ],
+    [
+     "Museu Geológico",
+     "Museu da Marioneta",
+     "Tipuana"
+    ],
+    [
+     "Museu do Aljube - Resistência e Liberdade",
+     "Mercado de Santa Clara",
+     "Museu Bordalo Pinheiro"
+    ]
+   ],
+   "after": [
+    [
+     [
+      "Mercado da Ribeira",
+      "food_market",
+      [
+       "food"
+      ]
+     ],
+     [
+      "Pelourinho de Lisboa",
+      "landmark",
+      [
+       "history"
+      ]
+     ],
+     [
+      "Museu Geológico",
+      "museum",
+      [
+       "history"
+      ]
+     ]
+    ],
+    [
+     [
+      "Museu da Marioneta",
+      "museum",
+      [
+       "history"
+      ]
+     ],
+     [
+      "Museu do Aljube - Resistência e Liberdade",
+      "museum",
+      [
+       "history"
+      ]
+     ],
+     [
+      "Museu do Centro Científico e Cultural de Macau",
+      "museum",
+      [
+       "history"
+      ]
+     ]
+    ],
+    [
+     [
+      "Museu Bordalo Pinheiro",
+      "museum",
+      [
+       "history"
+      ]
+     ],
+     [
+      "Mercado de Arroios",
+      "food_market",
+      [
+       "food"
+      ]
+     ],
+     [
+      "Mercado de Santa Clara",
+      "food_market",
+      [
+       "food"
+      ]
+     ]
+    ]
+   ],
+   "after_low_value_or_notable": 0,
+   "after_stops": 9,
+   "empty_days": [],
+   "max_pairwise_km_per_day": [
+    1.1,
+    4.5,
+    5.4
+   ]
+  },
+  "DC-1": {
+   "interests": [
+    "history",
+    "museums"
+   ],
+   "before_202c": [
+    [
+     "Lincoln Memorial",
+     "56 Signers of the Declaration of Independence Memorial",
+     "Bernardo de Galvez"
+    ],
+    [
+     "Dupont Circle",
+     "Hahnemann Monument",
+     "National Law Enforcement Officers Memorial"
+    ],
+    [
+     "Capitol Hill",
+     "American Legion Freedom Bell",
+     "Tomb of the Unknown Soldier"
+    ]
+   ],
+   "after": [
+    [
+     [
+      "Lincoln Memorial",
+      "park_nature",
+      []
+     ],
+     [
+      "Warner Theatre",
+      "entertainment",
+      []
+     ],
+     [
+      "Dupont Circle",
+      "landmark",
+      [
+       "history"
+      ]
+     ]
+    ],
+    [
+     [
+      "Capitol Hill",
+      "landmark",
+      [
+       "history"
+      ]
+     ],
+     [
+      "Theodore Hagans Cultural Center",
+      "art_culture",
+      []
+     ],
+     [
+      "Mount Rainier Historic District",
+      "historic",
+      [
+       "history"
+      ]
+     ]
+    ],
+    [
+     [
+      "Bay-Eva Castle",
+      "landmark",
+      [
+       "history"
+      ]
+     ],
+     [
+      "Alexandria Historic District",
+      "historic",
+      [
+       "history"
+      ]
+     ],
+     [
+      "Saint Cecilia Chapel (ruin)",
+      "landmark",
+      [
+       "history"
+      ]
+     ]
+    ]
+   ],
+   "after_low_value_or_notable": 0,
+   "after_stops": 9,
+   "empty_days": [],
+   "max_pairwise_km_per_day": [
+    2.5,
+    6.7,
+    19.5
+   ]
+  },
+  "DC-2": {
+   "interests": [
+    "food",
+    "outdoors"
+   ],
+   "before_202c": [
+    [
+     "National Guard Memorial Museum",
+     "Howard University Museum"
+    ],
+    [
+     "All Hallows Guild Traveling Carousel",
+     "Dupont Circle"
+    ]
+   ],
+   "after": [
+    [
+     [
+      "National Guard Memorial Museum",
+      "museum",
+      []
+     ],
+     [
+      "Capitol Hill",
+      "landmark",
+      []
+     ]
+    ],
+    [
+     [
+      "Dupont Circle",
+      "landmark",
+      []
+     ],
+     [
+      "Howard University Museum",
+      "museum",
+      []
+     ]
+    ]
+   ],
+   "after_low_value_or_notable": 0,
+   "after_stops": 4,
+   "empty_days": [],
+   "max_pairwise_km_per_day": [
+    1.3,
+    2.4
+   ]
+  },
+  "LA-2": {
+   "interests": [
+    "museums",
+    "history"
+   ],
+   "before_202c": [
+    [
+     "Natural History Museum of Los Angeles County",
+     "California African American Museum",
+     "Shrine Auditorium",
+     "Koreatown"
+    ],
+    [
+     "Neutra Studio and Residences (VDL Research House)",
+     "LA Plaza De Culturas Y Artes",
+     "Thien Hau Temple",
+     "Heritage Square"
+    ],
+    [
+     "Angels Flight",
+     "Museum of Contemporary Art",
+     "El Pueblo de Los Angeles Historical Monument",
+     "Institute of Contemporary Art, Los Angeles"
+    ]
+   ],
+   "after": [
+    [
+     [
+      "Neutra Studio and Residences (VDL Research House)",
+      "landmark",
+      [
+       "museum",
+       "history"
+      ]
+     ],
+     [
+      "Thien Hau Temple",
+      "landmark",
+      [
+       "history"
+      ]
+     ],
+     [
+      "LA Plaza De Culturas Y Artes",
+      "museum",
+      [
+       "museum",
+       "history"
+      ]
+     ],
+     [
+      "Heritage Square",
+      "museum",
+      [
+       "museum",
+       "history"
+      ]
+     ]
+    ],
+    [
+     [
+      "Natural History Museum of Los Angeles County",
+      "museum",
+      [
+       "museum",
+       "history"
+      ]
+     ],
+     [
+      "California African American Museum",
+      "museum",
+      [
+       "museum",
+       "history"
+      ]
+     ],
+     [
+      "Shrine Auditorium",
+      "landmark",
+      [
+       "history"
+      ]
+     ],
+     [
+      "Cole's P.E. Buffet",
+      "landmark",
+      [
+       "history"
+      ]
+     ]
+    ],
+    [
+     [
+      "Angels Flight",
+      "landmark",
+      [
+       "history"
+      ]
+     ],
+     [
+      "Museum of Contemporary Art",
+      "museum",
+      [
+       "museum",
+       "history"
+      ]
+     ],
+     [
+      "Institute of Contemporary Art, Los Angeles",
+      "museum",
+      [
+       "museum",
+       "history"
+      ]
+     ],
+     [
+      "Koreatown",
+      "landmark",
+      [
+       "history"
+      ]
+     ]
+    ]
+   ],
+   "after_low_value_or_notable": 0,
+   "after_stops": 12,
+   "empty_days": [],
+   "max_pairwise_km_per_day": [
+    5.0,
+    4.8,
+    7.1
+   ]
+  },
+  "SEA-2": {
+   "interests": [
+    "museums"
+   ],
+   "before_202c": [
+    [
+     "Seattle Art Museum",
+     "Center for Wooden Boats",
+     "Seattle Children's Museum"
+    ],
+    [
+     "Museum of History and Industry",
+     "Swiftsure (LV-83)",
+     "Arthur Foss"
+    ],
+    [
+     "Seattle Asian Art Museum",
+     "Virginia V",
+     "Henry Art Gallery"
+    ]
+   ],
+   "after": [
+    [
+     [
+      "Seattle Art Museum",
+      "museum",
+      [
+       "museum"
+      ]
+     ],
+     [
+      "Seattle Children's Museum",
+      "museum",
+      [
+       "museum"
+      ]
+     ],
+     [
+      "Center for Wooden Boats",
+      "museum",
+      [
+       "museum"
+      ]
+     ]
+    ],
+    [
+     [
+      "Museum of History and Industry",
+      "museum",
+      [
+       "museum"
+      ]
+     ],
+     [
+      "Swiftsure (LV-83)",
+      "landmark",
+      []
+     ],
+     [
+      "Arthur Foss",
+      "landmark",
+      []
+     ]
+    ],
+    [
+     [
+      "Seattle Asian Art Museum",
+      "museum",
+      [
+       "museum"
+      ]
+     ],
+     [
+      "Virginia V",
+      "landmark",
+      []
+     ],
+     [
+      "Henry Art Gallery",
+      "museum",
+      [
+       "museum"
+      ]
+     ]
+    ]
+   ],
+   "after_low_value_or_notable": 0,
+   "after_stops": 9,
+   "empty_days": [],
+   "max_pairwise_km_per_day": [
+    2.2,
+    0.1,
+    3.7
+   ]
+  },
+  "NYC-1": {
+   "interests": [
+    "museums",
+    "food"
+   ],
+   "before_202c": [
+    [
+     "Yeshiva University Museum",
+     "Union Square Green Market",
+     "Rubin Museum of Art"
+    ],
+    [
+     "Lower East Side Tenement Museum",
+     "SoHo",
+     "South Street Seaport"
+    ],
+    [
+     "Skyscraper Museum",
+     "Stonewall Inn",
+     "Gagosian"
+    ],
+    [
+     "Museum of Sex",
+     "The Morgan Library & Museum",
+     "Bryant Park"
+    ]
+   ],
+   "after": [
+    [
+     [
+      "Yeshiva University Museum",
+      "museum",
+      [
+       "museum"
+      ]
+     ],
+     [
+      "Union Square Green Market",
+      "food_market",
+      [
+       "food"
+      ]
+     ],
+     [
+      "Rubin Museum of Art",
+      "museum",
+      [
+       "museum"
+      ]
+     ]
+    ],
+    [
+     [
+      "Lower East Side Tenement Museum",
+      "museum",
+      [
+       "museum"
+      ]
+     ],
+     [
+      "Mmuseumm",
+      "museum",
+      [
+       "museum"
+      ]
+     ],
+     [
+      "Stonewall Inn",
+      "landmark",
+      []
+     ]
+    ],
+    [
+     [
+      "Skyscraper Museum",
+      "museum",
+      [
+       "museum"
+      ]
+     ],
+     [
+      "Gagosian",
+      "museum",
+      [
+       "museum"
+      ]
+     ],
+     [
+      "Museum of Sex",
+      "museum",
+      [
+       "museum"
+      ]
+     ]
+    ],
+    [
+     [
+      "Bryant Park",
+      "landmark",
+      []
+     ],
+     [
+      "The Morgan Library & Museum",
+      "museum",
+      [
+       "museum"
+      ]
+     ],
+     [
+      "Palace Theater",
+      "entertainment",
+      []
+     ]
+    ]
+   ],
+   "after_low_value_or_notable": 0,
+   "after_stops": 12,
+   "empty_days": [],
+   "max_pairwise_km_per_day": [
+    0.8,
+    2.0,
+    5.0,
+    1.1
+   ]
+  }
+ }
+}

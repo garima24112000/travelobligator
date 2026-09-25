@@ -1,0 +1,127 @@
+{
+ "schema_version": 1,
+ "description": "Section 202C: original 202A step definitions reused VERBATIM, one step per fresh trip (a rate-limited step leaves feedback pending, so steps are not chained here). Base cases are the original 202A cases.",
+ "chains": [
+  {
+   "chain_id": "C202-R01",
+   "base_case_id": "DC-1",
+   "mode": "full_ai",
+   "steps": [
+    {
+     "step_id": "R01-exact-removal",
+     "kind": "exact removal",
+     "feedback": "Remove {d2s2} from the itinerary.",
+     "expect": {
+      "type": "remove",
+      "target": "d2s2",
+      "replace": true
+     }
+    }
+   ]
+  },
+  {
+   "chain_id": "C202-R03",
+   "base_case_id": "DC-1",
+   "mode": "full_ai",
+   "steps": [
+    {
+     "step_id": "R03-additive",
+     "kind": "additive request",
+     "feedback": "I also want to visit the National Air and Space Museum.",
+     "expect": {
+      "type": "add",
+      "name_contains": [
+       "air and space",
+       "air & space"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "chain_id": "C202-R05",
+   "base_case_id": "LIS-2",
+   "mode": "full_ai",
+   "steps": [
+    {
+     "step_id": "R05-preservation",
+     "kind": "preservation",
+     "feedback": "Keep day 1 exactly the same, but make day 3 less packed.",
+     "expect": {
+      "type": "preserve_day",
+      "day": 1
+     }
+    }
+   ]
+  },
+  {
+   "chain_id": "C202-R06",
+   "base_case_id": "LIS-2",
+   "mode": "full_ai",
+   "steps": [
+    {
+     "step_id": "R06-move",
+     "kind": "move",
+     "feedback": "Move {d4s1} to day 2.",
+     "expect": {
+      "type": "move",
+      "target": "d4s1",
+      "to_day": 2
+     }
+    }
+   ]
+  },
+  {
+   "chain_id": "C202-R07",
+   "base_case_id": "SF-1",
+   "mode": "full_ai",
+   "steps": [
+    {
+     "step_id": "R07-day-pacing",
+     "kind": "pacing (one day)",
+     "feedback": "Make day 2 less packed.",
+     "expect": {
+      "type": "less_packed_day",
+      "day": 2
+     }
+    }
+   ]
+  },
+  {
+   "chain_id": "C202-R09",
+   "base_case_id": "SF-1",
+   "mode": "full_ai",
+   "steps": [
+    {
+     "step_id": "R09-interest",
+     "kind": "interest change",
+     "feedback": "I want more local food.",
+     "expect": {
+      "type": "interest",
+      "tokens": [
+       "food",
+       "restaurant",
+       "market"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "chain_id": "C202-R10",
+   "base_case_id": "CHI-1",
+   "mode": "full_ai",
+   "steps": [
+    {
+     "step_id": "R10-ambiguous",
+     "kind": "ambiguous request",
+     "feedback": "Swap that place for something better.",
+     "expect": {
+      "type": "expect_refusal",
+      "reason": "ambiguous target; a clarification or refusal with no plan change is the correct outcome"
+     }
+    }
+   ]
+  }
+ ]
+}

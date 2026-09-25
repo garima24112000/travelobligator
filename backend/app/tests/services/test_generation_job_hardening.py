@@ -448,6 +448,7 @@ def test_safe_job_error_message_never_returns_exception_text() -> None:
     assert "sk-leaked-secret" not in result
 
 
+@pytest.mark.usefixtures("synthetic_legacy_regeneration_support")
 def test_run_regenerate_job_unexpected_exception_after_mutation_still_marks_failed(
     generated_trip_id: str, client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:

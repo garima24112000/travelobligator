@@ -60,6 +60,9 @@ class TargetedRegenerationExecutionResult:
     block_reasons: list[str] = field(default_factory=list)
     failure_reason: str | None = None
     clarification_reason: str | None = None
+    # Section 202C.1A: structured cause when the AI reasoning provider CALL
+    # failed during execution (an `AIProviderFailureKind` value); None otherwise.
+    provider_failure_kind: str | None = None
 
     def is_completed(self) -> bool:
         return self.status == TargetedRegenerationExecutionStatus.COMPLETED

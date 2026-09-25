@@ -1181,3 +1181,30 @@ def test_task21_additive_execution_never_mutates_source() -> None:
     executor.execute(planning_state, _additive_plan())
 
     assert planning_state.model_dump() == before.model_dump()
+
+
+# ---------------------------------------------------------------------------
+# Section 202B.1 (Task 10): the same provider-grounded place is never
+# scheduled twice -- an additive request for a place already on the
+# itinerary inserts nothing (the commit boundary then reports no effect).
+# ---------------------------------------------------------------------------
+
+
+def test_202b1_additive_request_for_an_already_scheduled_place_inserts_nothing() -> None:
+    planning_state = _planning_state()
+    existing = _day(1, planning_state).experiences[0]
+    existing.provider_source = "openstreetmap_places"
+    existing.provider_place_id = "node/5000"  # the identity the requested place will resolve to
+    before_dump = planning_state.experience_plan.model_dump()
+
+    fake_provider = _FakeReasoningProvider(result=_insertion_day_result(2, "openstreetmap_places:node/5000"))
+    executor = TargetedRegenerationExecutor(
+        gateway=_FakeGateway(_place_response(found=True)), reasoning_provider=fake_provider
+    )
+    result = executor.execute(planning_state, _additive_plan())
+
+    assert result.status == TargetedRegenerationExecutionStatus.COMPLETED
+    final = result.resulting_planning_state
+    assert final is not None
+    assert final.experience_plan.model_dump() == before_dump  # nothing added, nothing changed
+    assert any("already scheduled" in edit for edit in result.deterministic_edits_applied)

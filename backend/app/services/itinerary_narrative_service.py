@@ -11,6 +11,14 @@ from app.models.itinerary_narrative import (
 )
 from app.models.planning_state import PlanningState
 from app.providers.itinerary_narrator import ItineraryNarratorProvider, get_itinerary_narrator_provider
+from app.services.itinerary_narrative_grounding import (
+    SAFE_AI_UNAVAILABLE_MESSAGE,
+    build_deterministic_narrative,
+    find_ungrounded_terms,
+    grounding_rejected_report,
+    normalize_day_titles,
+    safe_narrator_message,
+)
 from app.services.itinerary_narrative_request_builder import (
     ItineraryNarrativeRequestBuilder,
     itinerary_narrative_request_builder,
@@ -187,6 +195,13 @@ class ItineraryNarrativeService:
         try:
             request = self.request_builder.build_request(planning_state)
             report = provider.narrate(request)
+            if report.status == ItineraryNarrativeStatus.SUCCESS:
+                # Section 202B.3: neutral deterministic titles, then a
+                # structural grounding check; a rejected narration falls
+                # back rather than surfacing unsupported wording.
+                report = normalize_day_titles(report)
+                if find_ungrounded_terms(request, report):
+                    report = grounding_rejected_report(report)
             report = _apply_final_validation_disclosure(report, request)
         except Exception:
             duration_ms = (time.monotonic() - started_at) * 1000
@@ -205,7 +220,7 @@ class ItineraryNarrativeService:
                 status=ItineraryNarrativeStatus.FAILED,
                 message=_UNEXPECTED_FAILURE_MESSAGE,
             )
-            planning_state.itinerary_narrative_report = report
+            planning_state.itinerary_narrative_report = self._with_fallback(planning_state, report)
             return planning_state
 
         duration_ms = (time.monotonic() - started_at) * 1000
@@ -223,8 +238,25 @@ class ItineraryNarrativeService:
             # exception (e.g. not_connected/unavailable) -- never logged
             # as if it were a success.
             logger.warning("ItineraryNarrativeService.generate did not succeed.", extra=fields)
+            report = self._with_fallback(planning_state, report)
         planning_state.itinerary_narrative_report = report
         return planning_state
+
+
+    @staticmethod
+    def _with_fallback(
+        planning_state: PlanningState, attempt: ItineraryNarrativeReport
+    ) -> ItineraryNarrativeReport:
+        """Section 202B.3 (Tasks 4/5): AI narration did not succeed -- keep the
+        plan untouched and attach a fact-only narrative from the final state,
+        with a fixed, safe status message. Never raises."""
+        try:
+            return build_deterministic_narrative(planning_state, attempt)
+        except Exception:
+            logger.warning("Deterministic narrative fallback failed.", exc_info=True)
+            return ItineraryNarrativeReport(
+                status=attempt.status, message=safe_narrator_message(attempt) or SAFE_AI_UNAVAILABLE_MESSAGE
+            )
 
 
 itinerary_narrative_service = ItineraryNarrativeService()

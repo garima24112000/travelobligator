@@ -366,6 +366,8 @@ def _references_from_scores(
                 quality_score=score.total_score,
                 quality_tier=score.quality_tier.value,
                 origin=origin,
+                normalized_category=score.normalized_category,
+                matched_interests=list(score.matched_interests),
             )
         )
     return references

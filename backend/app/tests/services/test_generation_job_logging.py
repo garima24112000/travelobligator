@@ -129,6 +129,7 @@ def test_generate_job_queued_log_has_expected_fields(
     assert parsed["status"] == "queued"
 
 
+@pytest.mark.usefixtures("synthetic_legacy_regeneration_support")
 def test_regenerate_job_queued_log_has_expected_job_type(
     created_trip_id: str,
     client: TestClient,
@@ -424,6 +425,7 @@ def test_job_log_emitted_via_request_id_scope_carries_that_id(capture: _CaptureH
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("synthetic_legacy_regeneration_support")
 def test_sync_regenerate_failure_logs_structured_fields(
     client: TestClient,
     generated_trip_id: str,

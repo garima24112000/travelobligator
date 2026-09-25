@@ -199,6 +199,16 @@ class DestinationContext(BaseModel):
 
     destination_name: str
     resolved_coordinates: GeoPoint | None = None
+    # Section 202B.1 (Task 15): "unresolved" only when the places provider
+    # itself reported (structurally, `ProviderResponse.failure_reason`) that
+    # it could not confidently resolve the destination -- never inferred
+    # from merely having zero candidates. `None` = not determined.
+    destination_resolution: str | None = None
+    # Section 202B.2 (Task 33): the destination the provider actually
+    # resolved the user's text to (display name + structured components as
+    # returned by the provider), so an ambiguous bare name is never
+    # silently interpreted. `None` when the provider gave no resolution.
+    resolved_destination: dict[str, str] | None = None
 
     destination_overview: str | None = None
     candidate_pois: list[dict[str, Any]] = Field(default_factory=list)
@@ -530,6 +540,15 @@ class ExperienceItem(BaseModel):
     original_ai_candidate_id: str | None = None
     provider_place_id: str | None = None
     provider_source: str | None = None
+    # Section 202B.2: provider-tag-derived classification of this scheduled
+    # place (see `app.services.place_taxonomy`). Deterministic evidence for
+    # validation/evaluation only -- never an AI or name-derived claim.
+    normalized_category: str | None = None
+    matched_interests: list[str] = Field(default_factory=list)
+    quality_tier: str | None = None
+    low_value_object: bool = False
+    notable_object: bool = False
+    commercial_gallery: bool = False
 
     # Stable itinerary ordering metadata (Step 172A,
     # docs/13_llm_reasoning_pipeline.md, docs/14_backend_architecture.md),
@@ -918,6 +937,13 @@ class PendingFeedbackSummary(BaseModel):
     summary_items: list[PendingFeedbackSummaryItem] = Field(default_factory=list)
     blocked_by: list[str] = Field(default_factory=list)
     note: str = "No feedback has been captured yet."
+    # Section 202C.1A: the deterministic processing order of pending feedback.
+    # Targeted regeneration handles exactly ONE pending event per call, the
+    # OLDEST first (`created_at`, list order on ties). This is the single
+    # source of truth the UI reads, so "next to apply" can never disagree
+    # with what `POST /regenerate` will actually process.
+    queue_event_ids: list[str] = Field(default_factory=list)
+    next_feedback_event_id: str | None = None
 
 
 class UserLock(BaseModel):
@@ -1046,11 +1072,7 @@ class RegenerationAttempt(BaseModel):
     pending_feedback_count: int = 0
     active_lock_count: int = 0
     reason_code: str = "REGENERATION_NOT_AVAILABLE"
-    message: str = (
-        "Feedback-driven regeneration is not available yet. The "
-        "regeneration engine has not been implemented, so no plan "
-        "changes were made."
-    )
+    message: str = "Regeneration was not applied, so no plan changes were made."
 
 
 class PlanningMetadata(BaseModel):

@@ -14,6 +14,7 @@ from app.models.targeted_regeneration_runtime import (
     TargetedRegenerationRuntimeStatus,
 )
 from app.repositories.planning_state_repository import planning_state_repository as default_planning_state_repository
+from app.core.errors import REGENERATION_NO_EFFECT_MESSAGE, REGENERATION_PROVIDER_FAILURE_MESSAGES
 from app.schemas.errors import ErrorCode
 from app.services.ai_feedback_interpretation_request_builder import (
     ai_feedback_interpretation_request_builder as default_request_builder,
@@ -31,7 +32,11 @@ from app.services.regeneration_readiness_service import (
 from app.services.revision_lineage_service import (
     revision_lineage_service as default_revision_lineage_service,
 )
-from app.services.targeted_regeneration_diff_builder import build_targeted_regeneration_diff
+from app.services.targeted_regeneration_diff_builder import (
+    build_targeted_regeneration_diff,
+    partition_days_by_final_equality,
+    traveler_profile_unchanged,
+)
 from app.services.targeted_regeneration_executor import targeted_regeneration_executor as default_executor
 from app.services.targeted_regeneration_plan_builder import (
     targeted_regeneration_plan_builder as default_plan_builder,
@@ -290,29 +295,36 @@ class TargetedRegenerationApplicationService:
             # BEFORE the plan compiler or executor ever run -- "blocked",
             # never "failed", the same distinction legacy draws between a
             # pre-execution refusal and an actual mutation attempt.
-            self._record_blocked(
-                planning_state,
-                reason_code=(
-                    ErrorCode.REGENERATION_PROVIDER_UNAVAILABLE.value
-                    if interpretation.status == AIFeedbackInterpretationStatus.NOT_CONNECTED
-                    else ErrorCode.REGENERATION_NOT_AVAILABLE.value
-                ),
-                message="AI feedback interpretation is not available; targeted regeneration was not attempted.",
-            )
+            #
+            # Section 202B.1 (Tasks 16/17/19): the WHY is classified from
+            # structured data (`interpretation.failure_kind`), never by
+            # parsing `blocked_reasons`. A rate limit gets its own status
+            # and code; a REJECTED result with no provider-call failure
+            # kind means the model's answer failed structure/guardrail
+            # validation ("malformed_output"). Feedback is never consumed
+            # (the event stays pending), no version, no plan mutation.
+            if interpretation.status == AIFeedbackInterpretationStatus.NOT_CONNECTED:
+                failure_kind = "not_connected"
+            else:
+                failure_kind = interpretation.failure_kind or "malformed_output"
+            if failure_kind == "rate_limited":
+                reason_code = ErrorCode.REGENERATION_PROVIDER_RATE_LIMITED.value
+                status = TargetedRegenerationRuntimeStatus.RATE_LIMITED
+            else:
+                reason_code = ErrorCode.REGENERATION_AI_UNAVAILABLE.value
+                status = TargetedRegenerationRuntimeStatus.PROVIDER_UNAVAILABLE
+            failure_message = REGENERATION_PROVIDER_FAILURE_MESSAGES[failure_kind]
+            self._record_blocked(planning_state, reason_code=reason_code, message=failure_message)
             self.planning_state_repository.save(planning_state)
-            status = (
-                TargetedRegenerationRuntimeStatus.PROVIDER_UNAVAILABLE
-                if interpretation.status == AIFeedbackInterpretationStatus.NOT_CONNECTED
-                else TargetedRegenerationRuntimeStatus.BLOCKED
-            )
             return TargetedRegenerationRuntimeResult(
                 trip_id=trip_id,
                 status=status,
-                message="AI feedback interpretation is not available; targeted regeneration was not attempted.",
+                message=failure_message,
                 feedback_event_id=target_event.feedback_event_id,
                 interpretation_status=interpretation.status.value,
                 source_version=source_version,
                 block_reasons=list(interpretation.blocked_reasons),
+                provider_failure_kind=failure_kind,
             )
 
         # Task 7: compile the plan; require READY before ever calling the
@@ -353,6 +365,36 @@ class TargetedRegenerationApplicationService:
         # edit/provider/reasoning/preservation/routing/validation/repair/
         # narration logic is reproduced here.
         execution_result = self.executor.execute(planning_state, plan)
+        if (
+            execution_result.status == TargetedRegenerationExecutionStatus.REASONING_FAILED
+            and execution_result.provider_failure_kind in REGENERATION_PROVIDER_FAILURE_MESSAGES
+        ):
+            # Section 202C.1A: the AI reasoning provider CALL failed (its
+            # structured kind, never message text). Same truthful copy/codes
+            # as an interpreter-stage failure: a rate limit says so, and
+            # nothing was changed, versioned or consumed.
+            failure_kind = execution_result.provider_failure_kind
+            if failure_kind == "rate_limited":
+                reason_code = ErrorCode.REGENERATION_PROVIDER_RATE_LIMITED.value
+                status = TargetedRegenerationRuntimeStatus.RATE_LIMITED
+            else:
+                reason_code = ErrorCode.REGENERATION_AI_UNAVAILABLE.value
+                status = TargetedRegenerationRuntimeStatus.PROVIDER_UNAVAILABLE
+            failure_message = REGENERATION_PROVIDER_FAILURE_MESSAGES[failure_kind]
+            self._record_blocked(planning_state, reason_code=reason_code, message=failure_message)
+            self.planning_state_repository.save(planning_state)
+            return TargetedRegenerationRuntimeResult(
+                trip_id=trip_id,
+                status=status,
+                message=failure_message,
+                feedback_event_id=target_event.feedback_event_id,
+                interpretation_status=interpretation.status.value,
+                plan_status=plan.status.value,
+                execution_status=execution_result.status.value,
+                source_version=source_version,
+                block_reasons=list(execution_result.block_reasons),
+                provider_failure_kind=failure_kind,
+            )
         if execution_result.status != TargetedRegenerationExecutionStatus.COMPLETED:
             # Task 5/11: the executor WAS actually invoked here (unlike
             # every branch above) -- this is "failed", not "blocked",
@@ -509,6 +551,30 @@ class TargetedRegenerationApplicationService:
         resulting_state = execution_result.resulting_planning_state
         assert resulting_state is not None
 
+        # Section 202B.1 (Tasks 3/8/9): affected/preserved days are derived
+        # from the FINAL states, never from planned metadata, and a result
+        # that changes nothing is a semantic no-op -- never a version.
+        actual_affected_days, actual_preserved_days = partition_days_by_final_equality(
+            source_planning_state, resulting_state
+        )
+        if not actual_affected_days and traveler_profile_unchanged(source_planning_state, resulting_state):
+            self._record_blocked(
+                source_planning_state,
+                reason_code=ErrorCode.REGENERATION_NO_EFFECT.value,
+                message=REGENERATION_NO_EFFECT_MESSAGE,
+            )
+            self.planning_state_repository.save(source_planning_state)
+            return TargetedRegenerationRuntimeResult(
+                trip_id=trip_id,
+                status=TargetedRegenerationRuntimeStatus.NO_EFFECT,
+                message=REGENERATION_NO_EFFECT_MESSAGE,
+                feedback_event_id=target_event.feedback_event_id,
+                interpretation_status=interpretation.status.value,
+                plan_status=plan.status.value,
+                execution_status=execution_result.status.value,
+                source_version=source_version,
+            )
+
         changed_sections = self._changed_sections(plan)
 
         # Task 12: version increment via the existing canonical helper --
@@ -517,7 +583,7 @@ class TargetedRegenerationApplicationService:
             resulting_state,
             feedback_event_id=target_event.feedback_event_id,
             changed_sections=changed_sections,
-            preserved_sections=[f"day_{day}" for day in plan.preserved_day_indices],
+            preserved_sections=[f"day_{day}" for day in actual_preserved_days],
             summary=self._version_summary(plan),
         )
         new_version = resulting_state.metadata.current_version
@@ -593,8 +659,8 @@ class TargetedRegenerationApplicationService:
             trip_id=trip_id,
             source_version=source_version,
             new_version=new_version,
-            affected_day_indices=plan.affected_day_indices,
-            preserved_day_indices=plan.preserved_day_indices,
+            affected_day_indices=actual_affected_days,
+            preserved_day_indices=actual_preserved_days,
         )
 
         return TargetedRegenerationRuntimeResult(

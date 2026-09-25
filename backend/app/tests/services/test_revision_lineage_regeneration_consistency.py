@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from datetime import date
 from typing import Any
 
@@ -213,6 +215,7 @@ def test_targeted_regeneration_revision_agrees_with_every_other_version_record()
     assert r2.parent_revision_id == r1.revision_id
 
 
+@pytest.mark.usefixtures("synthetic_legacy_regeneration_support")
 def test_legacy_regeneration_revision_agrees_with_every_other_version_record() -> None:
     """Same Task 33 agreement check, for the legacy (non-targeted)
     mutation path -- `apply_regeneration_mutation`, the exact function

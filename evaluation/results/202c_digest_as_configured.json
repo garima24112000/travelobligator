@@ -1,0 +1,4549 @@
+{
+ "mode": "202c_as_configured",
+ "aggregate": {
+  "cases": 19,
+  "http_200": 19,
+  "empty_day_count": 0,
+  "cases_with_empty_day": 0,
+  "cross_day_duplicate_count": 0,
+  "unsupported_identity_count": 0,
+  "scheduled_total": 189,
+  "scheduled_with_provider_place_id": 189,
+  "scheduled_with_coordinates": 189,
+  "days_far_apart_cases": [
+   "SF-1"
+  ],
+  "low_value_or_gallery_total": 0,
+  "proposal_status": {
+   "rejected": 19
+  },
+  "proposal_structural_retry_used": 15,
+  "narrator": {
+   "deterministic_fallback": 9,
+   "ai": 10
+  },
+  "places_status": {
+   "success": 13,
+   "fallback_used": 6
+  },
+  "restaurants_status": {
+   "fallback_used": 7,
+   "success": 8,
+   "failed": 4
+  },
+  "routes_status": {
+   "success": 19
+  },
+  "readiness": {
+   "needs_review": 19
+  },
+  "latency_median_s": 62.9,
+  "latency_mean_s": 61.6,
+  "latency_min_max_s": [
+   14.2,
+   120.2
+  ],
+  "interest_supply_limited_cases": 6,
+  "interest_undercoverage_cases": 0,
+  "narration_flagged_sentences": 0
+ },
+ "cases": [
+  {
+   "case_id": "LIS-1",
+   "requested_destination": "Lisbon, Portugal",
+   "resolved_destination": "Lisbon, Portugal",
+   "interests": [
+    "food",
+    "history"
+   ],
+   "pace": "balanced",
+   "days_requested": 3,
+   "latency_seconds": 75.1,
+   "http": 200,
+   "provider_status": {
+    "places": "success",
+    "restaurants": "fallback_used",
+    "routes": "success",
+    "weather": "success",
+    "holidays": "success",
+    "currency": "success",
+    "flights": "failed",
+    "accommodations": "not_connected"
+   },
+   "ai": {
+    "proposal": {
+     "status": "rejected",
+     "proposal_count": 0,
+     "attempts_reported": 2,
+     "structural_retry_used": true,
+     "rejection_reason": "Groq API call failed: the provider returned an output that did not match the required structure. (after 2 attempt(s))",
+     "rejected_raw_items": 0,
+     "grounding_status": "skipped",
+     "grounded_count": 0,
+     "promotion_status": "no_candidates_reviewed",
+     "reviewed": 0,
+     "promoted": 0
+    },
+    "reasoning": "not_connected",
+    "repair": null,
+    "repair_attempts": 0,
+    "narrator": {
+     "status": "failed",
+     "source": "deterministic_fallback",
+     "provider": "groq_itinerary_narrator_provider",
+     "message": "Groq API call failed: the provider returned an output that did not match the required structure."
+    }
+   },
+   "route": {
+    "status": "success",
+    "legs": {
+     "feasible": 6
+    },
+    "sequencing": "success"
+   },
+   "days": [
+    {
+     "day": 1,
+     "places": [
+      {
+       "name": "Mercado da Ribeira",
+       "category": "marketplace",
+       "normalized_category": "food_market",
+       "matched_interests": [
+        "food"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "Tamareira-do-Senegal",
+       "category": "attraction",
+       "normalized_category": "landmark",
+       "matched_interests": [
+        "history"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "Pelourinho de Lisboa",
+       "category": "attraction",
+       "normalized_category": "landmark",
+       "matched_interests": [
+        "history"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      }
+     ]
+    },
+    {
+     "day": 2,
+     "places": [
+      {
+       "name": "Museu Geol\u00f3gico",
+       "category": "museum",
+       "normalized_category": "museum",
+       "matched_interests": [
+        "history"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "Museu da Marioneta",
+       "category": "museum",
+       "normalized_category": "museum",
+       "matched_interests": [
+        "history"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "Tipuana",
+       "category": "attraction",
+       "normalized_category": "landmark",
+       "matched_interests": [
+        "history"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      }
+     ]
+    },
+    {
+     "day": 3,
+     "places": [
+      {
+       "name": "Museu do Aljube - Resist\u00eancia e Liberdade",
+       "category": "museum",
+       "normalized_category": "museum",
+       "matched_interests": [
+        "history"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "Mercado de Santa Clara",
+       "category": "marketplace",
+       "normalized_category": "food_market",
+       "matched_interests": [
+        "food"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "Museu Bordalo Pinheiro",
+       "category": "museum",
+       "normalized_category": "museum",
+       "matched_interests": [
+        "history"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      }
+     ]
+    }
+   ],
+   "stops_per_day": [
+    3,
+    3,
+    3
+   ],
+   "empty_days": [],
+   "duplicates": {},
+   "days_far_apart": [],
+   "max_pairwise_km": [
+    0.6,
+    0.8,
+    5.7
+   ],
+   "unsupported_identity_count": 0,
+   "all_stable_ids": true,
+   "coordinates": "9/9",
+   "claim_sources": "9/9",
+   "supply_per_interest": {
+    "history": 13,
+    "food": 5
+   },
+   "interests_matched": [
+    "food",
+    "history"
+   ],
+   "low_value_or_gallery": 0,
+   "quality_finding_categories": [],
+   "readiness": "needs_review",
+   "findings": [
+    {
+     "severity": "warning",
+     "category": "weather",
+     "message": "Provider-backed weather data is available for this trip, but the itinerary has not been adjusted around weather yet -- review outdoor/long-walk days manually."
+    },
+    {
+     "severity": "warning",
+     "category": "holidays",
+     "message": "Provider-backed public holiday data is available for this trip, but the itinerary has not been checked against venue closures, opening hours, or crowd context yet -- review these dates manually: 2026-"
+    }
+   ],
+   "factual_fields_non_null": [
+    "experience_plan.provider_coverage.hotel_prices=unavailable"
+   ],
+   "narration_trace": {
+    "source": "deterministic_fallback",
+    "sentence_count": 5,
+    "flagged": []
+   },
+   "candidate_pool": {
+    "attractions": 55,
+    "restaurants": 19,
+    "accommodation_pois": 0
+   }
+  },
+  {
+   "case_id": "LIS-2",
+   "requested_destination": "Lisbon, Portugal",
+   "resolved_destination": "Lisbon, Portugal",
+   "interests": [
+    "architecture",
+    "nightlife"
+   ],
+   "pace": "packed",
+   "days_requested": 4,
+   "latency_seconds": 39.1,
+   "http": 200,
+   "provider_status": {
+    "places": "success",
+    "restaurants": "fallback_used",
+    "routes": "success",
+    "weather": "success",
+    "holidays": "success",
+    "currency": "success",
+    "flights": "failed",
+    "accommodations": "open_poi_available"
+   },
+   "ai": {
+    "proposal": {
+     "status": "rejected",
+     "proposal_count": 0,
+     "attempts_reported": 2,
+     "structural_retry_used": true,
+     "rejection_reason": "Groq API call failed: the provider returned an output that did not match the required structure. (after 2 attempt(s))",
+     "rejected_raw_items": 0,
+     "grounding_status": "skipped",
+     "grounded_count": 0,
+     "promotion_status": "no_candidates_reviewed",
+     "reviewed": 0,
+     "promoted": 0
+    },
+    "reasoning": "not_connected",
+    "repair": null,
+    "repair_attempts": 0,
+    "narrator": {
+     "status": "success",
+     "source": "ai",
+     "provider": "groq_itinerary_narrator_provider",
+     "message": null
+    }
+   },
+   "route": {
+    "status": "success",
+    "legs": {
+     "feasible": 12
+    },
+    "sequencing": "success"
+   },
+   "days": [
+    {
+     "day": 1,
+     "places": [
+      {
+       "name": "Pelourinho de Lisboa",
+       "category": "attraction",
+       "normalized_category": "landmark",
+       "matched_interests": [
+        "architecture"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "Tamareira-do-Senegal",
+       "category": "attraction",
+       "normalized_category": "landmark",
+       "matched_interests": [
+        "architecture"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "Teatro Nacional de S\u00e3o Carlos",
+       "category": "theatre",
+       "normalized_category": "entertainment",
+       "matched_interests": [],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "Leitaria A Camponeza",
+       "category": "restaurant",
+       "normalized_category": "historic",
+       "matched_interests": [
+        "architecture"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      }
+     ]
+    },
+    {
+     "day": 2,
+     "places": [
+      {
+       "name": "Hot Club Portugal",
+       "category": "nightclub",
+       "normalized_category": "nightlife",
+       "matched_interests": [
+        "nightlife"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "Miradouro de S\u00e3o Pedro de Alc\u00e2ntara",
+       "category": "viewpoint",
+       "normalized_category": "viewpoint",
+       "matched_interests": [],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "Museu Ma\u00e7\u00f3nico Portugu\u00eas",
+       "category": "museum",
+       "normalized_category": "museum",
+       "matched_interests": [],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "Museu Geol\u00f3gico",
+       "category": "museum",
+       "normalized_category": "museum",
+       "matched_interests": [],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      }
+     ]
+    },
+    {
+     "day": 3,
+     "places": [
+      {
+       "name": "Tipuana",
+       "category": "attraction",
+       "normalized_category": "landmark",
+       "matched_interests": [
+        "architecture"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "Museu da Marioneta",
+       "category": "museum",
+       "normalized_category": "museum",
+       "matched_interests": [],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "Mercado da Ribeira",
+       "category": "marketplace",
+       "normalized_category": "food_market",
+       "matched_interests": [],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "Animat\u00f3grafo do Rossio",
+       "category": "yes",
+       "normalized_category": "historic",
+       "matched_interests": [
+        "architecture"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      }
+     ]
+    },
+    {
+     "day": 4,
+     "places": [
+      {
+       "name": "Ginkgo",
+       "category": "attraction",
+       "normalized_category": "landmark",
+       "matched_interests": [
+        "architecture"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "Museu do Aljube - Resist\u00eancia e Liberdade",
+       "category": "museum",
+       "normalized_category": "museum",
+       "matched_interests": [],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "Museu do Centro Cient\u00edfico e Cultural de Macau",
+       "category": "museum",
+       "normalized_category": "museum",
+       "matched_interests": [],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "Museu Bordalo Pinheiro",
+       "category": "museum",
+       "normalized_category": "museum",
+       "matched_interests": [],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      }
+     ]
+    }
+   ],
+   "stops_per_day": [
+    4,
+    4,
+    4,
+    4
+   ],
+   "empty_days": [],
+   "duplicates": {},
+   "days_far_apart": [],
+   "max_pairwise_km": [
+    0.5,
+    0.7,
+    1.6,
+    6.9
+   ],
+   "unsupported_identity_count": 0,
+   "all_stable_ids": true,
+   "coordinates": "16/16",
+   "claim_sources": "16/16",
+   "supply_per_interest": {
+    "architecture": 7,
+    "nightlife": 6
+   },
+   "interests_matched": [
+    "architecture",
+    "nightlife"
+   ],
+   "low_value_or_gallery": 0,
+   "quality_finding_categories": [],
+   "readiness": "needs_review",
+   "findings": [
+    {
+     "severity": "warning",
+     "category": "geographic_spread",
+     "message": "Day 4's scheduled experiences are geographically spread out: consecutive coordinate-backed experiences sum to about 13.7 km of straight-line distance. This is straight-line distance only, not walking "
+    },
+    {
+     "severity": "warning",
+     "category": "weather",
+     "message": "Provider-backed weather data is available for this trip, but the itinerary has not been adjusted around weather yet -- review outdoor/long-walk days manually."
+    }
+   ],
+   "factual_fields_non_null": [
+    "experience_plan.provider_coverage.hotel_prices=unavailable"
+   ],
+   "narration_trace": {
+    "source": "ai",
+    "sentence_count": 9,
+    "flagged": []
+   },
+   "candidate_pool": {
+    "attractions": 55,
+    "restaurants": 19,
+    "accommodation_pois": 20
+   }
+  },
+  {
+   "case_id": "NYC-1",
+   "requested_destination": "New York City, USA",
+   "resolved_destination": "New York, United States",
+   "interests": [
+    "museums",
+    "food"
+   ],
+   "pace": "balanced",
+   "days_requested": 4,
+   "latency_seconds": 62.9,
+   "http": 200,
+   "provider_status": {
+    "places": "success",
+    "restaurants": "success",
+    "routes": "success",
+    "weather": "success",
+    "holidays": "success",
+    "currency": "success",
+    "flights": "unavailable",
+    "accommodations": "open_poi_available"
+   },
+   "ai": {
+    "proposal": {
+     "status": "rejected",
+     "proposal_count": 0,
+     "attempts_reported": 2,
+     "structural_retry_used": true,
+     "rejection_reason": "Groq API call failed: the provider returned an output that did not match the required structure. (after 2 attempt(s))",
+     "rejected_raw_items": 0,
+     "grounding_status": "skipped",
+     "grounded_count": 0,
+     "promotion_status": "no_candidates_reviewed",
+     "reviewed": 0,
+     "promoted": 0
+    },
+    "reasoning": "not_connected",
+    "repair": null,
+    "repair_attempts": 0,
+    "narrator": {
+     "status": "failed",
+     "source": "deterministic_fallback",
+     "provider": "groq_itinerary_narrator_provider",
+     "message": "AI narration included wording that is not in the itinerary data and was not used; a factual summary built from the itinerary data is shown instead."
+    }
+   },
+   "route": {
+    "status": "success",
+    "legs": {
+     "feasible": 8
+    },
+    "sequencing": "success"
+   },
+   "days": [
+    {
+     "day": 1,
+     "places": [
+      {
+       "name": "Yeshiva University Museum",
+       "category": "museum",
+       "normalized_category": "museum",
+       "matched_interests": [
+        "museum"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "Union Square Green Market",
+       "category": "marketplace",
+       "normalized_category": "food_market",
+       "matched_interests": [
+        "food"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "Rubin Museum of Art",
+       "category": "museum",
+       "normalized_category": "museum",
+       "matched_interests": [
+        "museum"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      }
+     ]
+    },
+    {
+     "day": 2,
+     "places": [
+      {
+       "name": "Lower East Side Tenement Museum",
+       "category": "museum",
+       "normalized_category": "museum",
+       "matched_interests": [
+        "museum"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "SoHo",
+       "category": "attraction",
+       "normalized_category": "landmark",
+       "matched_interests": [],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "South Street Seaport",
+       "category": "attraction",
+       "normalized_category": "landmark",
+       "matched_interests": [],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      }
+     ]
+    },
+    {
+     "day": 3,
+     "places": [
+      {
+       "name": "Skyscraper Museum",
+       "category": "museum",
+       "normalized_category": "museum",
+       "matched_interests": [
+        "museum"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "Stonewall Inn",
+       "category": "attraction",
+       "normalized_category": "landmark",
+       "matched_interests": [],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "Gagosian",
+       "category": "museum",
+       "normalized_category": "museum",
+       "matched_interests": [
+        "museum"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      }
+     ]
+    },
+    {
+     "day": 4,
+     "places": [
+      {
+       "name": "Museum of Sex",
+       "category": "museum",
+       "normalized_category": "museum",
+       "matched_interests": [
+        "museum"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "The Morgan Library & Museum",
+       "category": "museum",
+       "normalized_category": "museum",
+       "matched_interests": [
+        "museum"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "Bryant Park",
+       "category": "attraction",
+       "normalized_category": "landmark",
+       "matched_interests": [],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      }
+     ]
+    }
+   ],
+   "stops_per_day": [
+    3,
+    3,
+    3,
+    3
+   ],
+   "empty_days": [],
+   "duplicates": {},
+   "days_far_apart": [],
+   "max_pairwise_km": [
+    0.8,
+    1.9,
+    5.0,
+    1.1
+   ],
+   "unsupported_identity_count": 0,
+   "all_stable_ids": true,
+   "coordinates": "12/12",
+   "claim_sources": "12/12",
+   "supply_per_interest": {
+    "museum": 8,
+    "food": 1
+   },
+   "interests_matched": [
+    "food",
+    "museum"
+   ],
+   "low_value_or_gallery": 0,
+   "quality_finding_categories": [],
+   "readiness": "needs_review",
+   "findings": [
+    {
+     "severity": "warning",
+     "category": "weather",
+     "message": "Provider-backed weather data is available for this trip, but the itinerary has not been adjusted around weather yet -- review outdoor/long-walk days manually."
+    },
+    {
+     "severity": "warning",
+     "category": "holidays",
+     "message": "Provider-backed public holiday data was checked for this trip's date range, but no public holidays fall within it. The itinerary still has not been checked against venue closures, opening hours, or cr"
+    }
+   ],
+   "factual_fields_non_null": [
+    "experience_plan.provider_coverage.hotel_prices=unavailable"
+   ],
+   "narration_trace": {
+    "source": "deterministic_fallback",
+    "sentence_count": 6,
+    "flagged": []
+   },
+   "candidate_pool": {
+    "attractions": 60,
+    "restaurants": 19,
+    "accommodation_pois": 20
+   }
+  },
+  {
+   "case_id": "NYC-2",
+   "requested_destination": "New York City, USA",
+   "resolved_destination": "New York, United States",
+   "interests": [
+    "architecture",
+    "parks"
+   ],
+   "pace": "relaxed",
+   "days_requested": 3,
+   "latency_seconds": 39.2,
+   "http": 200,
+   "provider_status": {
+    "places": "success",
+    "restaurants": "success",
+    "routes": "success",
+    "weather": "success",
+    "holidays": "success",
+    "currency": "success",
+    "flights": "unavailable",
+    "accommodations": "open_poi_available"
+   },
+   "ai": {
+    "proposal": {
+     "status": "rejected",
+     "proposal_count": 0,
+     "attempts_reported": 2,
+     "structural_retry_used": true,
+     "rejection_reason": "Groq API call failed: the provider returned an output that did not match the required structure. (after 2 attempt(s))",
+     "rejected_raw_items": 0,
+     "grounding_status": "skipped",
+     "grounded_count": 0,
+     "promotion_status": "no_candidates_reviewed",
+     "reviewed": 0,
+     "promoted": 0
+    },
+    "reasoning": "not_connected",
+    "repair": null,
+    "repair_attempts": 0,
+    "narrator": {
+     "status": "success",
+     "source": "ai",
+     "provider": "groq_itinerary_narrator_provider",
+     "message": null
+    }
+   },
+   "route": {
+    "status": "success",
+    "legs": {
+     "feasible": 3
+    },
+    "sequencing": "success"
+   },
+   "days": [
+    {
+     "day": 1,
+     "places": [
+      {
+       "name": "Stonewall Inn",
+       "category": "attraction",
+       "normalized_category": "landmark",
+       "matched_interests": [
+        "architecture"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "Yeshiva University Museum",
+       "category": "museum",
+       "normalized_category": "museum",
+       "matched_interests": [],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      }
+     ]
+    },
+    {
+     "day": 2,
+     "places": [
+      {
+       "name": "Bryant Park",
+       "category": "attraction",
+       "normalized_category": "landmark",
+       "matched_interests": [
+        "architecture",
+        "outdoors"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "SoHo",
+       "category": "attraction",
+       "normalized_category": "landmark",
+       "matched_interests": [
+        "architecture"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      }
+     ]
+    },
+    {
+     "day": 3,
+     "places": [
+      {
+       "name": "One World Observatory",
+       "category": "viewpoint",
+       "normalized_category": "viewpoint",
+       "matched_interests": [
+        "outdoors"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "Lower East Side Tenement Museum",
+       "category": "museum",
+       "normalized_category": "museum",
+       "matched_interests": [],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      }
+     ]
+    }
+   ],
+   "stops_per_day": [
+    2,
+    2,
+    2
+   ],
+   "empty_days": [],
+   "duplicates": {},
+   "days_far_apart": [],
+   "max_pairwise_km": [
+    0.8,
+    3.7,
+    2.0
+   ],
+   "unsupported_identity_count": 0,
+   "all_stable_ids": true,
+   "coordinates": "6/6",
+   "claim_sources": "6/6",
+   "supply_per_interest": {
+    "architecture": 15,
+    "outdoors": 15
+   },
+   "interests_matched": [
+    "architecture",
+    "outdoors"
+   ],
+   "low_value_or_gallery": 0,
+   "quality_finding_categories": [],
+   "readiness": "needs_review",
+   "findings": [
+    {
+     "severity": "warning",
+     "category": "weather",
+     "message": "Provider-backed weather data is available for this trip, but the itinerary has not been adjusted around weather yet -- review outdoor/long-walk days manually."
+    }
+   ],
+   "factual_fields_non_null": [
+    "experience_plan.provider_coverage.hotel_prices=unavailable"
+   ],
+   "narration_trace": {
+    "source": "ai",
+    "sentence_count": 17,
+    "flagged": []
+   },
+   "candidate_pool": {
+    "attractions": 60,
+    "restaurants": 19,
+    "accommodation_pois": 20
+   }
+  },
+  {
+   "case_id": "DC-1",
+   "requested_destination": "Washington, DC, USA",
+   "resolved_destination": "Washington, District of Columbia, United States",
+   "interests": [
+    "history",
+    "museums"
+   ],
+   "pace": "balanced",
+   "days_requested": 3,
+   "latency_seconds": 120.2,
+   "http": 200,
+   "provider_status": {
+    "places": "fallback_used",
+    "restaurants": "failed",
+    "routes": "success",
+    "weather": "success",
+    "holidays": "success",
+    "currency": "success",
+    "flights": "failed",
+    "accommodations": "open_poi_available"
+   },
+   "ai": {
+    "proposal": {
+     "status": "rejected",
+     "proposal_count": 0,
+     "attempts_reported": 2,
+     "structural_retry_used": true,
+     "rejection_reason": "Groq API call failed: the provider returned an output that did not match the required structure. (after 2 attempt(s))",
+     "rejected_raw_items": 0,
+     "grounding_status": "skipped",
+     "grounded_count": 0,
+     "promotion_status": "no_candidates_reviewed",
+     "reviewed": 0,
+     "promoted": 0
+    },
+    "reasoning": "not_connected",
+    "repair": null,
+    "repair_attempts": 0,
+    "narrator": {
+     "status": "failed",
+     "source": "deterministic_fallback",
+     "provider": "groq_itinerary_narrator_provider",
+     "message": "Groq API call failed: the provider returned an output that did not match the required structure."
+    }
+   },
+   "route": {
+    "status": "success",
+    "legs": {
+     "feasible": 6
+    },
+    "sequencing": "success"
+   },
+   "days": [
+    {
+     "day": 1,
+     "places": [
+      {
+       "name": "Lincoln Memorial",
+       "category": "park",
+       "normalized_category": "park_nature",
+       "matched_interests": [],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "56 Signers of the Declaration of Independence Memorial",
+       "category": "memorial",
+       "normalized_category": "landmark",
+       "matched_interests": [
+        "history"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "Bernardo de Galvez",
+       "category": "artwork",
+       "normalized_category": "landmark",
+       "matched_interests": [
+        "history"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      }
+     ]
+    },
+    {
+     "day": 2,
+     "places": [
+      {
+       "name": "Dupont Circle",
+       "category": "heritage",
+       "normalized_category": "landmark",
+       "matched_interests": [
+        "history"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "Hahnemann Monument",
+       "category": "artwork",
+       "normalized_category": "landmark",
+       "matched_interests": [
+        "history"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "National Law Enforcement Officers Memorial",
+       "category": "memorial",
+       "normalized_category": "landmark",
+       "matched_interests": [
+        "history"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      }
+     ]
+    },
+    {
+     "day": 3,
+     "places": [
+      {
+       "name": "Capitol Hill",
+       "category": "heritage",
+       "normalized_category": "landmark",
+       "matched_interests": [
+        "history"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "American Legion Freedom Bell",
+       "category": "memorial",
+       "normalized_category": "landmark",
+       "matched_interests": [
+        "history"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "Tomb of the Unknown Soldier",
+       "category": "memorial",
+       "normalized_category": "landmark",
+       "matched_interests": [
+        "history"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      }
+     ]
+    }
+   ],
+   "stops_per_day": [
+    3,
+    3,
+    3
+   ],
+   "empty_days": [],
+   "duplicates": {},
+   "days_far_apart": [],
+   "max_pairwise_km": [
+    0.7,
+    2.7,
+    6.4
+   ],
+   "unsupported_identity_count": 0,
+   "all_stable_ids": true,
+   "coordinates": "9/9",
+   "claim_sources": "9/9",
+   "supply_per_interest": {
+    "history": 18
+   },
+   "interests_matched": [
+    "history"
+   ],
+   "low_value_or_gallery": 0,
+   "quality_finding_categories": [
+    "interest_supply_limited"
+   ],
+   "readiness": "needs_review",
+   "findings": [
+    {
+     "severity": "warning",
+     "category": "weather",
+     "message": "Provider-backed weather data is available for this trip, but the itinerary has not been adjusted around weather yet -- review outdoor/long-walk days manually. High temperature (>=30\u00b0C) forecast on: 20"
+    }
+   ],
+   "factual_fields_non_null": [
+    "experience_plan.provider_coverage.hotel_prices=unavailable"
+   ],
+   "narration_trace": {
+    "source": "deterministic_fallback",
+    "sentence_count": 6,
+    "flagged": []
+   },
+   "candidate_pool": {
+    "attractions": 56,
+    "restaurants": 0,
+    "accommodation_pois": 20
+   }
+  },
+  {
+   "case_id": "DC-2",
+   "requested_destination": "Washington, DC, USA",
+   "resolved_destination": "Washington, District of Columbia, United States",
+   "interests": [
+    "food",
+    "outdoors"
+   ],
+   "pace": "relaxed",
+   "days_requested": 2,
+   "latency_seconds": 71.1,
+   "http": 200,
+   "provider_status": {
+    "places": "fallback_used",
+    "restaurants": "failed",
+    "routes": "success",
+    "weather": "success",
+    "holidays": "success",
+    "currency": "success",
+    "flights": "failed",
+    "accommodations": "open_poi_available"
+   },
+   "ai": {
+    "proposal": {
+     "status": "rejected",
+     "proposal_count": 0,
+     "attempts_reported": 2,
+     "structural_retry_used": true,
+     "rejection_reason": "Groq API call failed: the provider returned an output that did not match the required structure. (after 2 attempt(s))",
+     "rejected_raw_items": 0,
+     "grounding_status": "skipped",
+     "grounded_count": 0,
+     "promotion_status": "no_candidates_reviewed",
+     "reviewed": 0,
+     "promoted": 0
+    },
+    "reasoning": "not_connected",
+    "repair": null,
+    "repair_attempts": 0,
+    "narrator": {
+     "status": "success",
+     "source": "ai",
+     "provider": "groq_itinerary_narrator_provider",
+     "message": null
+    }
+   },
+   "route": {
+    "status": "success",
+    "legs": {
+     "feasible": 2
+    },
+    "sequencing": "success"
+   },
+   "days": [
+    {
+     "day": 1,
+     "places": [
+      {
+       "name": "National Guard Memorial Museum",
+       "category": "museum",
+       "normalized_category": "museum",
+       "matched_interests": [],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "Howard University Museum",
+       "category": "museum",
+       "normalized_category": "museum",
+       "matched_interests": [],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      }
+     ]
+    },
+    {
+     "day": 2,
+     "places": [
+      {
+       "name": "All Hallows Guild Traveling Carousel",
+       "category": "attraction",
+       "normalized_category": "landmark",
+       "matched_interests": [],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "Dupont Circle",
+       "category": "heritage",
+       "normalized_category": "landmark",
+       "matched_interests": [],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      }
+     ]
+    }
+   ],
+   "stops_per_day": [
+    2,
+    2
+   ],
+   "empty_days": [],
+   "duplicates": {},
+   "days_far_apart": [],
+   "max_pairwise_km": [
+    2.8,
+    3.2
+   ],
+   "unsupported_identity_count": 0,
+   "all_stable_ids": true,
+   "coordinates": "4/4",
+   "claim_sources": "4/4",
+   "supply_per_interest": {},
+   "interests_matched": [],
+   "low_value_or_gallery": 0,
+   "quality_finding_categories": [
+    "interest_supply_limited"
+   ],
+   "readiness": "needs_review",
+   "findings": [
+    {
+     "severity": "warning",
+     "category": "weather",
+     "message": "Provider-backed weather data is available for this trip, but the itinerary has not been adjusted around weather yet -- review outdoor/long-walk days manually. High temperature (>=30\u00b0C) forecast on: 20"
+    }
+   ],
+   "factual_fields_non_null": [
+    "experience_plan.provider_coverage.hotel_prices=unavailable"
+   ],
+   "narration_trace": {
+    "source": "ai",
+    "sentence_count": 9,
+    "flagged": []
+   },
+   "candidate_pool": {
+    "attractions": 60,
+    "restaurants": 0,
+    "accommodation_pois": 20
+   }
+  },
+  {
+   "case_id": "SF-1",
+   "requested_destination": "San Francisco, USA",
+   "resolved_destination": "San Francisco, California, United States",
+   "interests": [
+    "outdoors",
+    "food"
+   ],
+   "pace": "packed",
+   "days_requested": 4,
+   "latency_seconds": 106.3,
+   "http": 200,
+   "provider_status": {
+    "places": "fallback_used",
+    "restaurants": "failed",
+    "routes": "success",
+    "weather": "success",
+    "holidays": "success",
+    "currency": "success",
+    "flights": "failed",
+    "accommodations": "not_connected"
+   },
+   "ai": {
+    "proposal": {
+     "status": "rejected",
+     "proposal_count": 0,
+     "attempts_reported": 2,
+     "structural_retry_used": true,
+     "rejection_reason": "Groq API call failed: the provider returned an output that did not match the required structure. (after 2 attempt(s))",
+     "rejected_raw_items": 0,
+     "grounding_status": "skipped",
+     "grounded_count": 0,
+     "promotion_status": "no_candidates_reviewed",
+     "reviewed": 0,
+     "promoted": 0
+    },
+    "reasoning": "not_connected",
+    "repair": null,
+    "repair_attempts": 0,
+    "narrator": {
+     "status": "success",
+     "source": "ai",
+     "provider": "groq_itinerary_narrator_provider",
+     "message": null
+    }
+   },
+   "route": {
+    "status": "success",
+    "legs": {
+     "feasible": 12
+    },
+    "sequencing": "success"
+   },
+   "days": [
+    {
+     "day": 1,
+     "places": [
+      {
+       "name": "Hawk Hill",
+       "category": "viewpoint",
+       "normalized_category": "park_nature",
+       "matched_interests": [
+        "outdoors"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "Golden Gate Bridge Vista Point",
+       "category": "viewpoint",
+       "normalized_category": "viewpoint",
+       "matched_interests": [
+        "outdoors"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "Bay Area Discovery Museum",
+       "category": "museum",
+       "normalized_category": "museum",
+       "matched_interests": [],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "Point Bonita Viewpoint",
+       "category": "viewpoint",
+       "normalized_category": "viewpoint",
+       "matched_interests": [
+        "outdoors"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      }
+     ]
+    },
+    {
+     "day": 2,
+     "places": [
+      {
+       "name": "Mus\u00e9e M\u00e9canique",
+       "category": "museum",
+       "normalized_category": "museum",
+       "matched_interests": [],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "Truhlsen-Marmor Museum of the Eye",
+       "category": "museum",
+       "normalized_category": "museum",
+       "matched_interests": [],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "Dragon Gate",
+       "category": "attraction",
+       "normalized_category": "landmark",
+       "matched_interests": [],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "Exploratorium",
+       "category": "museum",
+       "normalized_category": "museum",
+       "matched_interests": [],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      }
+     ]
+    },
+    {
+     "day": 3,
+     "places": [
+      {
+       "name": "Inspiration Point",
+       "category": "viewpoint",
+       "normalized_category": "viewpoint",
+       "matched_interests": [
+        "outdoors"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "California Society of Pioneers Museum and Library",
+       "category": "museum",
+       "normalized_category": "museum",
+       "matched_interests": [],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "Alamo Square Historic District",
+       "category": "attraction",
+       "normalized_category": "landmark",
+       "matched_interests": [],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "Painted Ladies",
+       "category": "attraction",
+       "normalized_category": "landmark",
+       "matched_interests": [],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      }
+     ]
+    },
+    {
+     "day": 4,
+     "places": [
+      {
+       "name": "Lands End Point",
+       "category": "viewpoint",
+       "normalized_category": "viewpoint",
+       "matched_interests": [
+        "outdoors"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "Christmas Tree Point",
+       "category": "viewpoint",
+       "normalized_category": "viewpoint",
+       "matched_interests": [
+        "outdoors"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "San Francisco Railway Museum",
+       "category": "museum",
+       "normalized_category": "museum",
+       "matched_interests": [],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "Bird Island Overlook",
+       "category": "viewpoint",
+       "normalized_category": "viewpoint",
+       "matched_interests": [
+        "outdoors"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      }
+     ]
+    }
+   ],
+   "stops_per_day": [
+    4,
+    4,
+    4,
+    4
+   ],
+   "empty_days": [],
+   "duplicates": {},
+   "days_far_apart": [
+    4
+   ],
+   "max_pairwise_km": [
+    4.4,
+    2.2,
+    3.5,
+    12.7
+   ],
+   "unsupported_identity_count": 0,
+   "all_stable_ids": true,
+   "coordinates": "16/16",
+   "claim_sources": "16/16",
+   "supply_per_interest": {
+    "outdoors": 32
+   },
+   "interests_matched": [
+    "outdoors"
+   ],
+   "low_value_or_gallery": 0,
+   "quality_finding_categories": [
+    "interest_supply_limited"
+   ],
+   "readiness": "needs_review",
+   "findings": [
+    {
+     "severity": "warning",
+     "category": "geographic_spread",
+     "message": "Day 4's scheduled experiences are geographically spread out: consecutive coordinate-backed experiences sum to about 25.4 km of straight-line distance. This is straight-line distance only, not walking "
+    },
+    {
+     "severity": "warning",
+     "category": "weather",
+     "message": "Provider-backed weather data is available for this trip, but the itinerary has not been adjusted around weather yet -- review outdoor/long-walk days manually."
+    }
+   ],
+   "factual_fields_non_null": [
+    "experience_plan.provider_coverage.hotel_prices=unavailable"
+   ],
+   "narration_trace": {
+    "source": "ai",
+    "sentence_count": 16,
+    "flagged": []
+   },
+   "candidate_pool": {
+    "attractions": 49,
+    "restaurants": 0,
+    "accommodation_pois": 0
+   }
+  },
+  {
+   "case_id": "SF-2",
+   "requested_destination": "San Francisco, USA",
+   "resolved_destination": "San Francisco, California, United States",
+   "interests": [
+    "architecture",
+    "history"
+   ],
+   "pace": "relaxed",
+   "days_requested": 3,
+   "latency_seconds": 62.0,
+   "http": 200,
+   "provider_status": {
+    "places": "success",
+    "restaurants": "failed",
+    "routes": "success",
+    "weather": "success",
+    "holidays": "success",
+    "currency": "success",
+    "flights": "failed",
+    "accommodations": "open_poi_available"
+   },
+   "ai": {
+    "proposal": {
+     "status": "rejected",
+     "proposal_count": 0,
+     "attempts_reported": 2,
+     "structural_retry_used": true,
+     "rejection_reason": "Groq API call failed: the provider returned an output that did not match the required structure. (after 2 attempt(s))",
+     "rejected_raw_items": 0,
+     "grounding_status": "skipped",
+     "grounded_count": 0,
+     "promotion_status": "no_candidates_reviewed",
+     "reviewed": 0,
+     "promoted": 0
+    },
+    "reasoning": "not_connected",
+    "repair": null,
+    "repair_attempts": 0,
+    "narrator": {
+     "status": "success",
+     "source": "ai",
+     "provider": "groq_itinerary_narrator_provider",
+     "message": null
+    }
+   },
+   "route": {
+    "status": "success",
+    "legs": {
+     "feasible": 3
+    },
+    "sequencing": "success"
+   },
+   "days": [
+    {
+     "day": 1,
+     "places": [
+      {
+       "name": "Conservatory of Flowers",
+       "category": "attraction",
+       "normalized_category": "landmark",
+       "matched_interests": [
+        "architecture",
+        "history"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "Alamo Square Historic District",
+       "category": "attraction",
+       "normalized_category": "landmark",
+       "matched_interests": [
+        "architecture",
+        "history"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      }
+     ]
+    },
+    {
+     "day": 2,
+     "places": [
+      {
+       "name": "GLBT History Museum",
+       "category": "museum",
+       "normalized_category": "museum",
+       "matched_interests": [
+        "history"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "Dragon Gate",
+       "category": "attraction",
+       "normalized_category": "landmark",
+       "matched_interests": [
+        "architecture",
+        "history"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      }
+     ]
+    },
+    {
+     "day": 3,
+     "places": [
+      {
+       "name": "Mus\u00e9e M\u00e9canique",
+       "category": "museum",
+       "normalized_category": "museum",
+       "matched_interests": [
+        "history"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "Exploratorium",
+       "category": "museum",
+       "normalized_category": "museum",
+       "matched_interests": [
+        "history"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      }
+     ]
+    }
+   ],
+   "stops_per_day": [
+    2,
+    2,
+    2
+   ],
+   "empty_days": [],
+   "duplicates": {},
+   "days_far_apart": [],
+   "max_pairwise_km": [
+    2.3,
+    4.2,
+    1.8
+   ],
+   "unsupported_identity_count": 0,
+   "all_stable_ids": true,
+   "coordinates": "6/6",
+   "claim_sources": "6/6",
+   "supply_per_interest": {
+    "history": 20,
+    "architecture": 13
+   },
+   "interests_matched": [
+    "architecture",
+    "history"
+   ],
+   "low_value_or_gallery": 0,
+   "quality_finding_categories": [],
+   "readiness": "needs_review",
+   "findings": [
+    {
+     "severity": "warning",
+     "category": "weather",
+     "message": "Provider-backed weather data is available for this trip, but the itinerary has not been adjusted around weather yet -- review outdoor/long-walk days manually."
+    }
+   ],
+   "factual_fields_non_null": [
+    "experience_plan.provider_coverage.hotel_prices=unavailable"
+   ],
+   "narration_trace": {
+    "source": "ai",
+    "sentence_count": 10,
+    "flagged": []
+   },
+   "candidate_pool": {
+    "attractions": 60,
+    "restaurants": 0,
+    "accommodation_pois": 20
+   }
+  },
+  {
+   "case_id": "CHI-1",
+   "requested_destination": "Chicago, USA",
+   "resolved_destination": "Chicago, South Chicago Township, Cook County, Illinois, United States",
+   "interests": [
+    "architecture",
+    "food"
+   ],
+   "pace": "balanced",
+   "days_requested": 3,
+   "latency_seconds": 91.6,
+   "http": 200,
+   "provider_status": {
+    "places": "fallback_used",
+    "restaurants": "success",
+    "routes": "success",
+    "weather": "success",
+    "holidays": "success",
+    "currency": "success",
+    "flights": "unavailable",
+    "accommodations": "open_poi_available"
+   },
+   "ai": {
+    "proposal": {
+     "status": "rejected",
+     "proposal_count": 0,
+     "attempts_reported": 2,
+     "structural_retry_used": true,
+     "rejection_reason": "Groq API call failed: the provider returned an output that did not match the required structure. (after 2 attempt(s))",
+     "rejected_raw_items": 0,
+     "grounding_status": "skipped",
+     "grounded_count": 0,
+     "promotion_status": "no_candidates_reviewed",
+     "reviewed": 0,
+     "promoted": 0
+    },
+    "reasoning": "not_connected",
+    "repair": null,
+    "repair_attempts": 0,
+    "narrator": {
+     "status": "success",
+     "source": "ai",
+     "provider": "groq_itinerary_narrator_provider",
+     "message": null
+    }
+   },
+   "route": {
+    "status": "success",
+    "legs": {
+     "feasible": 6
+    },
+    "sequencing": "success"
+   },
+   "days": [
+    {
+     "day": 1,
+     "places": [
+      {
+       "name": "Nuclear Energy",
+       "category": "artwork",
+       "normalized_category": "landmark",
+       "matched_interests": [
+        "architecture"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "White City Amusement Park",
+       "category": "abandoned_park",
+       "normalized_category": "landmark",
+       "matched_interests": [
+        "architecture"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "Haymarket Police Memorial",
+       "category": "memorial",
+       "normalized_category": "landmark",
+       "matched_interests": [
+        "architecture"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      }
+     ]
+    },
+    {
+     "day": 2,
+     "places": [
+      {
+       "name": "Haymarket Memorial",
+       "category": "memorial",
+       "normalized_category": "landmark",
+       "matched_interests": [
+        "architecture"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "Batcolumn",
+       "category": "artwork",
+       "normalized_category": "landmark",
+       "matched_interests": [
+        "architecture"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "Home Insurance Building Site",
+       "category": "memorial",
+       "normalized_category": "landmark",
+       "matched_interests": [
+        "architecture"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      }
+     ]
+    },
+    {
+     "day": 3,
+     "places": [
+      {
+       "name": "Union Stock Yards Fire Memorial",
+       "category": "memorial",
+       "normalized_category": "landmark",
+       "matched_interests": [
+        "architecture"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "William McKinley Memorial",
+       "category": "memorial",
+       "normalized_category": "landmark",
+       "matched_interests": [
+        "architecture"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "Vietnam Veterans Memorial",
+       "category": "memorial",
+       "normalized_category": "landmark",
+       "matched_interests": [
+        "architecture"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      }
+     ]
+    }
+   ],
+   "stops_per_day": [
+    3,
+    3,
+    3
+   ],
+   "empty_days": [],
+   "duplicates": {},
+   "days_far_apart": [],
+   "max_pairwise_km": [
+    5.5,
+    1.2,
+    8.2
+   ],
+   "unsupported_identity_count": 0,
+   "all_stable_ids": true,
+   "coordinates": "9/9",
+   "claim_sources": "9/9",
+   "supply_per_interest": {
+    "architecture": 24
+   },
+   "interests_matched": [
+    "architecture"
+   ],
+   "low_value_or_gallery": 0,
+   "quality_finding_categories": [
+    "interest_supply_limited"
+   ],
+   "readiness": "needs_review",
+   "findings": [
+    {
+     "severity": "warning",
+     "category": "geographic_spread",
+     "message": "Day 3's scheduled experiences are geographically spread out: consecutive coordinate-backed experiences sum to about 11.3 km of straight-line distance. This is straight-line distance only, not walking "
+    },
+    {
+     "severity": "warning",
+     "category": "weather",
+     "message": "Provider-backed weather data is available for this trip, but the itinerary has not been adjusted around weather yet -- review outdoor/long-walk days manually."
+    }
+   ],
+   "factual_fields_non_null": [
+    "experience_plan.provider_coverage.hotel_prices=unavailable"
+   ],
+   "narration_trace": {
+    "source": "ai",
+    "sentence_count": 10,
+    "flagged": []
+   },
+   "candidate_pool": {
+    "attractions": 32,
+    "restaurants": 20,
+    "accommodation_pois": 20
+   }
+  },
+  {
+   "case_id": "CHI-2",
+   "requested_destination": "Chicago, USA",
+   "resolved_destination": "Chicago, South Chicago Township, Cook County, Illinois, United States",
+   "interests": [
+    "museums",
+    "nightlife"
+   ],
+   "pace": "packed",
+   "days_requested": 4,
+   "latency_seconds": 69.2,
+   "http": 200,
+   "provider_status": {
+    "places": "fallback_used",
+    "restaurants": "success",
+    "routes": "success",
+    "weather": "success",
+    "holidays": "success",
+    "currency": "success",
+    "flights": "failed",
+    "accommodations": "open_poi_available"
+   },
+   "ai": {
+    "proposal": {
+     "status": "rejected",
+     "proposal_count": 0,
+     "attempts_reported": 2,
+     "structural_retry_used": true,
+     "rejection_reason": "Groq API call failed: the provider returned an output that did not match the required structure. (after 2 attempt(s))",
+     "rejected_raw_items": 0,
+     "grounding_status": "skipped",
+     "grounded_count": 0,
+     "promotion_status": "no_candidates_reviewed",
+     "reviewed": 0,
+     "promoted": 0
+    },
+    "reasoning": "not_connected",
+    "repair": null,
+    "repair_attempts": 0,
+    "narrator": {
+     "status": "failed",
+     "source": "deterministic_fallback",
+     "provider": "groq_itinerary_narrator_provider",
+     "message": "Groq API call failed: the provider returned an output that did not match the required structure."
+    }
+   },
+   "route": {
+    "status": "success",
+    "legs": {
+     "feasible": 12
+    },
+    "sequencing": "success"
+   },
+   "days": [
+    {
+     "day": 1,
+     "places": [
+      {
+       "name": "Money Museum",
+       "category": "museum",
+       "normalized_category": "museum",
+       "matched_interests": [
+        "museum"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "Home Insurance Building Site",
+       "category": "memorial",
+       "normalized_category": "landmark",
+       "matched_interests": [],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "Begin Route 66",
+       "category": "attraction",
+       "normalized_category": "landmark",
+       "matched_interests": [],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "The Museum of Contemporary Photography",
+       "category": "museum",
+       "normalized_category": "museum",
+       "matched_interests": [
+        "museum"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      }
+     ]
+    },
+    {
+     "day": 2,
+     "places": [
+      {
+       "name": "McCormick Bridgehouse & Chicago River Museum",
+       "category": "museum",
+       "normalized_category": "museum",
+       "matched_interests": [
+        "museum"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "American Writers Museum",
+       "category": "museum",
+       "normalized_category": "museum",
+       "matched_interests": [
+        "museum"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "Chicago Architecture Center",
+       "category": "museum",
+       "normalized_category": "museum",
+       "matched_interests": [
+        "museum"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "Richard H. Driehaus Museum",
+       "category": "museum",
+       "normalized_category": "museum",
+       "matched_interests": [
+        "museum"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      }
+     ]
+    },
+    {
+     "day": 3,
+     "places": [
+      {
+       "name": "National Museum of Puerto Rican Arts & Culture",
+       "category": "museum",
+       "normalized_category": "museum",
+       "matched_interests": [
+        "museum"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "Ukrainian National Museum",
+       "category": "museum",
+       "normalized_category": "museum",
+       "matched_interests": [
+        "museum"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "Polish Museum of America",
+       "category": "museum",
+       "normalized_category": "museum",
+       "matched_interests": [
+        "museum"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "Haymarket Memorial",
+       "category": "memorial",
+       "normalized_category": "landmark",
+       "matched_interests": [],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      }
+     ]
+    },
+    {
+     "day": 4,
+     "places": [
+      {
+       "name": "Loyola University Museum of Art",
+       "category": "museum",
+       "normalized_category": "museum",
+       "matched_interests": [
+        "museum"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "Chicago Children's Museum",
+       "category": "museum",
+       "normalized_category": "museum",
+       "matched_interests": [
+        "museum"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "Batcolumn",
+       "category": "artwork",
+       "normalized_category": "landmark",
+       "matched_interests": [],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "Union Stock Yards Fire Memorial",
+       "category": "memorial",
+       "normalized_category": "landmark",
+       "matched_interests": [],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      }
+     ]
+    }
+   ],
+   "stops_per_day": [
+    4,
+    4,
+    4,
+    4
+   ],
+   "empty_days": [],
+   "duplicates": {},
+   "days_far_apart": [],
+   "max_pairwise_km": [
+    0.9,
+    1.0,
+    5.3,
+    9.0
+   ],
+   "unsupported_identity_count": 0,
+   "all_stable_ids": true,
+   "coordinates": "16/16",
+   "claim_sources": "16/16",
+   "supply_per_interest": {
+    "museum": 14
+   },
+   "interests_matched": [
+    "museum"
+   ],
+   "low_value_or_gallery": 0,
+   "quality_finding_categories": [
+    "interest_supply_limited"
+   ],
+   "readiness": "needs_review",
+   "findings": [
+    {
+     "severity": "warning",
+     "category": "geographic_spread",
+     "message": "Day 4's scheduled experiences are geographically spread out: consecutive coordinate-backed experiences sum to about 11.5 km of straight-line distance. This is straight-line distance only, not walking "
+    },
+    {
+     "severity": "warning",
+     "category": "weather",
+     "message": "Provider-backed weather data is available for this trip, but the itinerary has not been adjusted around weather yet -- review outdoor/long-walk days manually."
+    }
+   ],
+   "factual_fields_non_null": [
+    "experience_plan.provider_coverage.hotel_prices=unavailable"
+   ],
+   "narration_trace": {
+    "source": "deterministic_fallback",
+    "sentence_count": 8,
+    "flagged": []
+   },
+   "candidate_pool": {
+    "attractions": 60,
+    "restaurants": 20,
+    "accommodation_pois": 20
+   }
+  },
+  {
+   "case_id": "SEA-1",
+   "requested_destination": "Seattle, USA",
+   "resolved_destination": "Seattle, King County, Washington, United States",
+   "interests": [
+    "outdoors",
+    "food"
+   ],
+   "pace": "relaxed",
+   "days_requested": 3,
+   "latency_seconds": 71.7,
+   "http": 200,
+   "provider_status": {
+    "places": "success",
+    "restaurants": "fallback_used",
+    "routes": "success",
+    "weather": "success",
+    "holidays": "success",
+    "currency": "success",
+    "flights": "failed",
+    "accommodations": "open_poi_available"
+   },
+   "ai": {
+    "proposal": {
+     "status": "rejected",
+     "proposal_count": 0,
+     "attempts_reported": 2,
+     "structural_retry_used": true,
+     "rejection_reason": "Groq API call failed: the provider returned an output that did not match the required structure. (after 2 attempt(s))",
+     "rejected_raw_items": 0,
+     "grounding_status": "skipped",
+     "grounded_count": 0,
+     "promotion_status": "no_candidates_reviewed",
+     "reviewed": 0,
+     "promoted": 0
+    },
+    "reasoning": "not_connected",
+    "repair": null,
+    "repair_attempts": 0,
+    "narrator": {
+     "status": "failed",
+     "source": "deterministic_fallback",
+     "provider": "groq_itinerary_narrator_provider",
+     "message": "Groq API call failed: the provider rate-limited the request (HTTP 429)."
+    }
+   },
+   "route": {
+    "status": "success",
+    "legs": {
+     "feasible": 3
+    },
+    "sequencing": "success"
+   },
+   "days": [
+    {
+     "day": 1,
+     "places": [
+      {
+       "name": "Seattle Center",
+       "category": "attraction",
+       "normalized_category": "landmark",
+       "matched_interests": [
+        "outdoors"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "Seattle Children's Museum",
+       "category": "museum",
+       "normalized_category": "museum",
+       "matched_interests": [],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      }
+     ]
+    },
+    {
+     "day": 2,
+     "places": [
+      {
+       "name": "Seattle Art Museum",
+       "category": "museum",
+       "normalized_category": "museum",
+       "matched_interests": [],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "Museum of History and Industry",
+       "category": "museum",
+       "normalized_category": "museum",
+       "matched_interests": [],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      }
+     ]
+    },
+    {
+     "day": 3,
+     "places": [
+      {
+       "name": "Admiral Way Viewpoint",
+       "category": "viewpoint",
+       "normalized_category": "viewpoint",
+       "matched_interests": [
+        "outdoors"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "Swiftsure (LV-83)",
+       "category": "attraction",
+       "normalized_category": "landmark",
+       "matched_interests": [],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      }
+     ]
+    }
+   ],
+   "stops_per_day": [
+    2,
+    2,
+    2
+   ],
+   "empty_days": [],
+   "duplicates": {},
+   "days_far_apart": [],
+   "max_pairwise_km": [
+    0.1,
+    2.2,
+    6.1
+   ],
+   "unsupported_identity_count": 0,
+   "all_stable_ids": true,
+   "coordinates": "6/6",
+   "claim_sources": "6/6",
+   "supply_per_interest": {
+    "outdoors": 15
+   },
+   "interests_matched": [
+    "outdoors"
+   ],
+   "low_value_or_gallery": 0,
+   "quality_finding_categories": [
+    "interest_supply_limited"
+   ],
+   "readiness": "needs_review",
+   "findings": [
+    {
+     "severity": "warning",
+     "category": "weather",
+     "message": "Provider-backed weather data is available for this trip, but the itinerary has not been adjusted around weather yet -- review outdoor/long-walk days manually."
+    }
+   ],
+   "factual_fields_non_null": [
+    "experience_plan.provider_coverage.hotel_prices=unavailable"
+   ],
+   "narration_trace": {
+    "source": "deterministic_fallback",
+    "sentence_count": 6,
+    "flagged": []
+   },
+   "candidate_pool": {
+    "attractions": 60,
+    "restaurants": 19,
+    "accommodation_pois": 20
+   }
+  },
+  {
+   "case_id": "SEA-2",
+   "requested_destination": "Seattle, USA",
+   "resolved_destination": "Seattle, King County, Washington, United States",
+   "interests": [
+    "museums"
+   ],
+   "pace": "balanced",
+   "days_requested": 3,
+   "latency_seconds": 27.1,
+   "http": 200,
+   "provider_status": {
+    "places": "success",
+    "restaurants": "fallback_used",
+    "routes": "success",
+    "weather": "success",
+    "holidays": "success",
+    "currency": "success",
+    "flights": "unavailable",
+    "accommodations": "open_poi_available"
+   },
+   "ai": {
+    "proposal": {
+     "status": "rejected",
+     "proposal_count": 0,
+     "attempts_reported": 2,
+     "structural_retry_used": true,
+     "rejection_reason": "Groq API call failed: the provider returned an output that did not match the required structure. (after 2 attempt(s))",
+     "rejected_raw_items": 0,
+     "grounding_status": "skipped",
+     "grounded_count": 0,
+     "promotion_status": "no_candidates_reviewed",
+     "reviewed": 0,
+     "promoted": 0
+    },
+    "reasoning": "not_connected",
+    "repair": null,
+    "repair_attempts": 0,
+    "narrator": {
+     "status": "success",
+     "source": "ai",
+     "provider": "groq_itinerary_narrator_provider",
+     "message": null
+    }
+   },
+   "route": {
+    "status": "success",
+    "legs": {
+     "feasible": 6
+    },
+    "sequencing": "success"
+   },
+   "days": [
+    {
+     "day": 1,
+     "places": [
+      {
+       "name": "Seattle Art Museum",
+       "category": "museum",
+       "normalized_category": "museum",
+       "matched_interests": [
+        "museum"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "Center for Wooden Boats",
+       "category": "museum",
+       "normalized_category": "museum",
+       "matched_interests": [
+        "museum"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "Seattle Children's Museum",
+       "category": "museum",
+       "normalized_category": "museum",
+       "matched_interests": [
+        "museum"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      }
+     ]
+    },
+    {
+     "day": 2,
+     "places": [
+      {
+       "name": "Museum of History and Industry",
+       "category": "museum",
+       "normalized_category": "museum",
+       "matched_interests": [
+        "museum"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "Swiftsure (LV-83)",
+       "category": "attraction",
+       "normalized_category": "landmark",
+       "matched_interests": [],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "Arthur Foss",
+       "category": "attraction",
+       "normalized_category": "landmark",
+       "matched_interests": [],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      }
+     ]
+    },
+    {
+     "day": 3,
+     "places": [
+      {
+       "name": "Seattle Asian Art Museum",
+       "category": "museum",
+       "normalized_category": "museum",
+       "matched_interests": [
+        "museum"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "Virginia V",
+       "category": "attraction",
+       "normalized_category": "landmark",
+       "matched_interests": [],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "Henry Art Gallery",
+       "category": "museum",
+       "normalized_category": "museum",
+       "matched_interests": [
+        "museum"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      }
+     ]
+    }
+   ],
+   "stops_per_day": [
+    3,
+    3,
+    3
+   ],
+   "empty_days": [],
+   "duplicates": {},
+   "days_far_apart": [],
+   "max_pairwise_km": [
+    2.2,
+    0.1,
+    3.7
+   ],
+   "unsupported_identity_count": 0,
+   "all_stable_ids": true,
+   "coordinates": "9/9",
+   "claim_sources": "9/9",
+   "supply_per_interest": {
+    "museum": 7
+   },
+   "interests_matched": [
+    "museum"
+   ],
+   "low_value_or_gallery": 0,
+   "quality_finding_categories": [],
+   "readiness": "needs_review",
+   "findings": [
+    {
+     "severity": "warning",
+     "category": "weather",
+     "message": "Provider-backed weather data is available for this trip, but the itinerary has not been adjusted around weather yet -- review outdoor/long-walk days manually."
+    }
+   ],
+   "factual_fields_non_null": [
+    "experience_plan.provider_coverage.hotel_prices=unavailable"
+   ],
+   "narration_trace": {
+    "source": "ai",
+    "sentence_count": 7,
+    "flagged": []
+   },
+   "candidate_pool": {
+    "attractions": 60,
+    "restaurants": 19,
+    "accommodation_pois": 20
+   }
+  },
+  {
+   "case_id": "MIA-1",
+   "requested_destination": "Miami, USA",
+   "resolved_destination": "Miami, Miami-Dade County, Florida, United States",
+   "interests": [
+    "nightlife",
+    "food"
+   ],
+   "pace": "packed",
+   "days_requested": 3,
+   "latency_seconds": 61.6,
+   "http": 200,
+   "provider_status": {
+    "places": "success",
+    "restaurants": "success",
+    "routes": "success",
+    "weather": "success",
+    "holidays": "success",
+    "currency": "success",
+    "flights": "failed",
+    "accommodations": "open_poi_available"
+   },
+   "ai": {
+    "proposal": {
+     "status": "rejected",
+     "proposal_count": 0,
+     "attempts_reported": 2,
+     "structural_retry_used": true,
+     "rejection_reason": "Groq API call failed: the provider returned an output that did not match the required structure. (after 2 attempt(s))",
+     "rejected_raw_items": 0,
+     "grounding_status": "skipped",
+     "grounded_count": 0,
+     "promotion_status": "no_candidates_reviewed",
+     "reviewed": 0,
+     "promoted": 0
+    },
+    "reasoning": "not_connected",
+    "repair": null,
+    "repair_attempts": 0,
+    "narrator": {
+     "status": "success",
+     "source": "ai",
+     "provider": "groq_itinerary_narrator_provider",
+     "message": null
+    }
+   },
+   "route": {
+    "status": "success",
+    "legs": {
+     "feasible": 9
+    },
+    "sequencing": "success"
+   },
+   "days": [
+    {
+     "day": 1,
+     "places": [
+      {
+       "name": "Club Space",
+       "category": "nightclub",
+       "normalized_category": "nightlife",
+       "matched_interests": [
+        "nightlife"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "Patricia and Phillip Frost Museum of Science",
+       "category": "museum",
+       "normalized_category": "museum",
+       "matched_interests": [],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "P\u00e9rez Art Museum Miami",
+       "category": "museum",
+       "normalized_category": "museum",
+       "matched_interests": [],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "Freedom Tower at Miami Dade College",
+       "category": "attraction",
+       "normalized_category": "landmark",
+       "matched_interests": [],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      }
+     ]
+    },
+    {
+     "day": 2,
+     "places": [
+      {
+       "name": "Loft Sofa - Modern Furniture Store",
+       "category": "marketplace",
+       "normalized_category": "food_market",
+       "matched_interests": [
+        "food"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "Venetian Way",
+       "category": "yes",
+       "normalized_category": "landmark",
+       "matched_interests": [],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "The Congress Building",
+       "category": "building",
+       "normalized_category": "landmark",
+       "matched_interests": [],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "HistoryMiami Museum",
+       "category": "museum",
+       "normalized_category": "museum",
+       "matched_interests": [],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      }
+     ]
+    },
+    {
+     "day": 3,
+     "places": [
+      {
+       "name": "Villa Vizcaya",
+       "category": "museum",
+       "normalized_category": "museum",
+       "matched_interests": [],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "Vizcaya Farmer\u2019s Market",
+       "category": "marketplace",
+       "normalized_category": "food_market",
+       "matched_interests": [
+        "food"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "Daily Bread Marketplace",
+       "category": "marketplace",
+       "normalized_category": "food_market",
+       "matched_interests": [
+        "food"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "5 Diamond Delicacies",
+       "category": "marketplace",
+       "normalized_category": "food_market",
+       "matched_interests": [
+        "food"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      }
+     ]
+    }
+   ],
+   "stops_per_day": [
+    4,
+    4,
+    4
+   ],
+   "empty_days": [],
+   "duplicates": {},
+   "days_far_apart": [],
+   "max_pairwise_km": [
+    0.7,
+    3.0,
+    10.0
+   ],
+   "unsupported_identity_count": 0,
+   "all_stable_ids": true,
+   "coordinates": "12/12",
+   "claim_sources": "12/12",
+   "supply_per_interest": {
+    "nightlife": 7,
+    "food": 4
+   },
+   "interests_matched": [
+    "food",
+    "nightlife"
+   ],
+   "low_value_or_gallery": 0,
+   "quality_finding_categories": [],
+   "readiness": "needs_review",
+   "findings": [
+    {
+     "severity": "warning",
+     "category": "geographic_spread",
+     "message": "Day 3's scheduled experiences are geographically spread out: consecutive coordinate-backed experiences sum to about 12.9 km of straight-line distance. This is straight-line distance only, not walking "
+    },
+    {
+     "severity": "warning",
+     "category": "weather",
+     "message": "Provider-backed weather data is available for this trip, but the itinerary has not been adjusted around weather yet -- review outdoor/long-walk days manually. High temperature (>=30\u00b0C) forecast on: 20"
+    }
+   ],
+   "factual_fields_non_null": [
+    "experience_plan.provider_coverage.hotel_prices=unavailable"
+   ],
+   "narration_trace": {
+    "source": "ai",
+    "sentence_count": 19,
+    "flagged": []
+   },
+   "candidate_pool": {
+    "attractions": 56,
+    "restaurants": 20,
+    "accommodation_pois": 16
+   }
+  },
+  {
+   "case_id": "MIA-2",
+   "requested_destination": "Miami, USA",
+   "resolved_destination": "Miami, Miami-Dade County, Florida, United States",
+   "interests": [
+    "outdoors",
+    "architecture"
+   ],
+   "pace": "relaxed",
+   "days_requested": 4,
+   "latency_seconds": 48.5,
+   "http": 200,
+   "provider_status": {
+    "places": "success",
+    "restaurants": "success",
+    "routes": "success",
+    "weather": "success",
+    "holidays": "success",
+    "currency": "success",
+    "flights": "unavailable",
+    "accommodations": "open_poi_available"
+   },
+   "ai": {
+    "proposal": {
+     "status": "rejected",
+     "proposal_count": 0,
+     "attempts_reported": 2,
+     "structural_retry_used": true,
+     "rejection_reason": "Groq API call failed: the provider returned an output that did not match the required structure. (after 2 attempt(s))",
+     "rejected_raw_items": 0,
+     "grounding_status": "skipped",
+     "grounded_count": 0,
+     "promotion_status": "no_candidates_reviewed",
+     "reviewed": 0,
+     "promoted": 0
+    },
+    "reasoning": "not_connected",
+    "repair": null,
+    "repair_attempts": 0,
+    "narrator": {
+     "status": "success",
+     "source": "ai",
+     "provider": "groq_itinerary_narrator_provider",
+     "message": null
+    }
+   },
+   "route": {
+    "status": "success",
+    "legs": {
+     "feasible": 4
+    },
+    "sequencing": "success"
+   },
+   "days": [
+    {
+     "day": 1,
+     "places": [
+      {
+       "name": "Miami Circle at Brickell Point",
+       "category": "park",
+       "normalized_category": "park_nature",
+       "matched_interests": [
+        "outdoors"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "The Congress Building",
+       "category": "building",
+       "normalized_category": "landmark",
+       "matched_interests": [
+        "architecture"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      }
+     ]
+    },
+    {
+     "day": 2,
+     "places": [
+      {
+       "name": "Freedom Tower at Miami Dade College",
+       "category": "attraction",
+       "normalized_category": "landmark",
+       "matched_interests": [
+        "architecture"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "P\u00e9rez Art Museum Miami",
+       "category": "museum",
+       "normalized_category": "museum",
+       "matched_interests": [],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      }
+     ]
+    },
+    {
+     "day": 3,
+     "places": [
+      {
+       "name": "Venetian Way",
+       "category": "yes",
+       "normalized_category": "landmark",
+       "matched_interests": [
+        "architecture"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "HistoryMiami Museum",
+       "category": "museum",
+       "normalized_category": "museum",
+       "matched_interests": [],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      }
+     ]
+    },
+    {
+     "day": 4,
+     "places": [
+      {
+       "name": "Villa Vizcaya",
+       "category": "museum",
+       "normalized_category": "museum",
+       "matched_interests": [],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "Tower Theater",
+       "category": "cinema",
+       "normalized_category": "historic",
+       "matched_interests": [
+        "architecture"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      }
+     ]
+    }
+   ],
+   "stops_per_day": [
+    2,
+    2,
+    2,
+    2
+   ],
+   "empty_days": [],
+   "duplicates": {},
+   "days_far_apart": [],
+   "max_pairwise_km": [
+    0.7,
+    0.7,
+    2.1,
+    2.5
+   ],
+   "unsupported_identity_count": 0,
+   "all_stable_ids": true,
+   "coordinates": "8/8",
+   "claim_sources": "8/8",
+   "supply_per_interest": {
+    "architecture": 11,
+    "outdoors": 6
+   },
+   "interests_matched": [
+    "architecture",
+    "outdoors"
+   ],
+   "low_value_or_gallery": 0,
+   "quality_finding_categories": [],
+   "readiness": "needs_review",
+   "findings": [
+    {
+     "severity": "warning",
+     "category": "weather",
+     "message": "Provider-backed weather data is available for this trip, but the itinerary has not been adjusted around weather yet -- review outdoor/long-walk days manually. High temperature (>=30\u00b0C) forecast on: 20"
+    }
+   ],
+   "factual_fields_non_null": [
+    "experience_plan.provider_coverage.hotel_prices=unavailable"
+   ],
+   "narration_trace": {
+    "source": "ai",
+    "sentence_count": 13,
+    "flagged": []
+   },
+   "candidate_pool": {
+    "attractions": 56,
+    "restaurants": 20,
+    "accommodation_pois": 16
+   }
+  },
+  {
+   "case_id": "LA-1",
+   "requested_destination": "Los Angeles, USA",
+   "resolved_destination": "Los Angeles, Los Angeles County, California, United States",
+   "interests": [
+    "food",
+    "outdoors"
+   ],
+   "pace": "balanced",
+   "days_requested": 4,
+   "latency_seconds": 71.5,
+   "http": 200,
+   "provider_status": {
+    "places": "success",
+    "restaurants": "fallback_used",
+    "routes": "success",
+    "weather": "success",
+    "holidays": "success",
+    "currency": "success",
+    "flights": "unavailable",
+    "accommodations": "open_poi_available"
+   },
+   "ai": {
+    "proposal": {
+     "status": "rejected",
+     "proposal_count": 0,
+     "attempts_reported": 2,
+     "structural_retry_used": true,
+     "rejection_reason": "Groq API call failed: the provider returned an output that did not match the required structure. (after 2 attempt(s))",
+     "rejected_raw_items": 0,
+     "grounding_status": "skipped",
+     "grounded_count": 0,
+     "promotion_status": "no_candidates_reviewed",
+     "reviewed": 0,
+     "promoted": 0
+    },
+    "reasoning": "not_connected",
+    "repair": null,
+    "repair_attempts": 0,
+    "narrator": {
+     "status": "success",
+     "source": "ai",
+     "provider": "groq_itinerary_narrator_provider",
+     "message": null
+    }
+   },
+   "route": {
+    "status": "success",
+    "legs": {
+     "feasible": 8
+    },
+    "sequencing": "success"
+   },
+   "days": [
+    {
+     "day": 1,
+     "places": [
+      {
+       "name": "Cole's P.E. Buffet",
+       "category": "restaurant",
+       "normalized_category": "landmark",
+       "matched_interests": [
+        "food"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "Angels Flight",
+       "category": "attraction",
+       "normalized_category": "landmark",
+       "matched_interests": [],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "Museum of Contemporary Art",
+       "category": "museum",
+       "normalized_category": "museum",
+       "matched_interests": [],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      }
+     ]
+    },
+    {
+     "day": 2,
+     "places": [
+      {
+       "name": "Point Grandview",
+       "category": "viewpoint",
+       "normalized_category": "viewpoint",
+       "matched_interests": [
+        "outdoors"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "Heritage Square",
+       "category": "museum",
+       "normalized_category": "museum",
+       "matched_interests": [],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "LA Plaza De Culturas Y Artes",
+       "category": "museum",
+       "normalized_category": "museum",
+       "matched_interests": [],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      }
+     ]
+    },
+    {
+     "day": 3,
+     "places": [
+      {
+       "name": "Neutra Studio and Residences (VDL Research House)",
+       "category": "museum",
+       "normalized_category": "landmark",
+       "matched_interests": [],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "City Hall Observation Deck",
+       "category": "viewpoint",
+       "normalized_category": "viewpoint",
+       "matched_interests": [
+        "outdoors"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "Koreatown",
+       "category": "attraction",
+       "normalized_category": "landmark",
+       "matched_interests": [],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      }
+     ]
+    },
+    {
+     "day": 4,
+     "places": [
+      {
+       "name": "Institute of Contemporary Art, Los Angeles",
+       "category": "museum",
+       "normalized_category": "museum",
+       "matched_interests": [],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "California African American Museum",
+       "category": "museum",
+       "normalized_category": "museum",
+       "matched_interests": [],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "Natural History Museum of Los Angeles County",
+       "category": "museum",
+       "normalized_category": "museum",
+       "matched_interests": [],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      }
+     ]
+    }
+   ],
+   "stops_per_day": [
+    3,
+    3,
+    3,
+    3
+   ],
+   "empty_days": [],
+   "duplicates": {},
+   "days_far_apart": [],
+   "max_pairwise_km": [
+    0.9,
+    4.5,
+    5.8,
+    5.3
+   ],
+   "unsupported_identity_count": 0,
+   "all_stable_ids": true,
+   "coordinates": "12/12",
+   "claim_sources": "12/12",
+   "supply_per_interest": {
+    "outdoors": 10,
+    "food": 1
+   },
+   "interests_matched": [
+    "food",
+    "outdoors"
+   ],
+   "low_value_or_gallery": 0,
+   "quality_finding_categories": [],
+   "readiness": "needs_review",
+   "findings": [
+    {
+     "severity": "warning",
+     "category": "geographic_spread",
+     "message": "Day 3's scheduled experiences are geographically spread out: consecutive coordinate-backed experiences sum to about 11.1 km of straight-line distance. This is straight-line distance only, not walking "
+    },
+    {
+     "severity": "warning",
+     "category": "weather",
+     "message": "Provider-backed weather data is available for this trip, but the itinerary has not been adjusted around weather yet -- review outdoor/long-walk days manually. High temperature (>=30\u00b0C) forecast on: 20"
+    }
+   ],
+   "factual_fields_non_null": [
+    "experience_plan.provider_coverage.hotel_prices=unavailable"
+   ],
+   "narration_trace": {
+    "source": "ai",
+    "sentence_count": 11,
+    "flagged": []
+   },
+   "candidate_pool": {
+    "attractions": 60,
+    "restaurants": 18,
+    "accommodation_pois": 18
+   }
+  },
+  {
+   "case_id": "LA-2",
+   "requested_destination": "Los Angeles, USA",
+   "resolved_destination": "Los Angeles, Los Angeles County, California, United States",
+   "interests": [
+    "museums",
+    "history"
+   ],
+   "pace": "packed",
+   "days_requested": 3,
+   "latency_seconds": 30.1,
+   "http": 200,
+   "provider_status": {
+    "places": "success",
+    "restaurants": "fallback_used",
+    "routes": "success",
+    "weather": "success",
+    "holidays": "success",
+    "currency": "success",
+    "flights": "unavailable",
+    "accommodations": "open_poi_available"
+   },
+   "ai": {
+    "proposal": {
+     "status": "rejected",
+     "proposal_count": 0,
+     "attempts_reported": 1,
+     "structural_retry_used": false,
+     "rejection_reason": "Groq API call failed: the provider rate-limited the request (HTTP 429).",
+     "rejected_raw_items": 0,
+     "grounding_status": "skipped",
+     "grounded_count": 0,
+     "promotion_status": "no_candidates_reviewed",
+     "reviewed": 0,
+     "promoted": 0
+    },
+    "reasoning": "not_connected",
+    "repair": null,
+    "repair_attempts": 0,
+    "narrator": {
+     "status": "failed",
+     "source": "deterministic_fallback",
+     "provider": "groq_itinerary_narrator_provider",
+     "message": "Groq API call failed: the provider returned an output that did not match the required structure."
+    }
+   },
+   "route": {
+    "status": "success",
+    "legs": {
+     "feasible": 9
+    },
+    "sequencing": "success"
+   },
+   "days": [
+    {
+     "day": 1,
+     "places": [
+      {
+       "name": "Natural History Museum of Los Angeles County",
+       "category": "museum",
+       "normalized_category": "museum",
+       "matched_interests": [
+        "museum",
+        "history"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "California African American Museum",
+       "category": "museum",
+       "normalized_category": "museum",
+       "matched_interests": [
+        "museum",
+        "history"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "Shrine Auditorium",
+       "category": "theatre",
+       "normalized_category": "landmark",
+       "matched_interests": [
+        "history"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "Koreatown",
+       "category": "attraction",
+       "normalized_category": "landmark",
+       "matched_interests": [
+        "history"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      }
+     ]
+    },
+    {
+     "day": 2,
+     "places": [
+      {
+       "name": "Neutra Studio and Residences (VDL Research House)",
+       "category": "museum",
+       "normalized_category": "landmark",
+       "matched_interests": [
+        "museum",
+        "history"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "LA Plaza De Culturas Y Artes",
+       "category": "museum",
+       "normalized_category": "museum",
+       "matched_interests": [
+        "museum",
+        "history"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "Thien Hau Temple",
+       "category": "attraction",
+       "normalized_category": "landmark",
+       "matched_interests": [
+        "history"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "Heritage Square",
+       "category": "museum",
+       "normalized_category": "museum",
+       "matched_interests": [
+        "museum",
+        "history"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      }
+     ]
+    },
+    {
+     "day": 3,
+     "places": [
+      {
+       "name": "Angels Flight",
+       "category": "attraction",
+       "normalized_category": "landmark",
+       "matched_interests": [
+        "history"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "Museum of Contemporary Art",
+       "category": "museum",
+       "normalized_category": "museum",
+       "matched_interests": [
+        "museum",
+        "history"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "El Pueblo de Los Angeles Historical Monument",
+       "category": "attraction",
+       "normalized_category": "historic",
+       "matched_interests": [
+        "history"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "Institute of Contemporary Art, Los Angeles",
+       "category": "museum",
+       "normalized_category": "museum",
+       "matched_interests": [
+        "museum",
+        "history"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      }
+     ]
+    }
+   ],
+   "stops_per_day": [
+    4,
+    4,
+    4
+   ],
+   "empty_days": [],
+   "duplicates": {},
+   "days_far_apart": [],
+   "max_pairwise_km": [
+    5.5,
+    5.0,
+    2.4
+   ],
+   "unsupported_identity_count": 0,
+   "all_stable_ids": true,
+   "coordinates": "12/12",
+   "claim_sources": "12/12",
+   "supply_per_interest": {
+    "museum": 9,
+    "history": 24
+   },
+   "interests_matched": [
+    "history",
+    "museum"
+   ],
+   "low_value_or_gallery": 0,
+   "quality_finding_categories": [],
+   "readiness": "needs_review",
+   "findings": [
+    {
+     "severity": "warning",
+     "category": "geographic_spread",
+     "message": "Day 2's scheduled experiences are geographically spread out: consecutive coordinate-backed experiences sum to about 9.8 km of straight-line distance. This is straight-line distance only, not walking o"
+    },
+    {
+     "severity": "warning",
+     "category": "weather",
+     "message": "Provider-backed weather data is available for this trip, but the itinerary has not been adjusted around weather yet -- review outdoor/long-walk days manually. High temperature (>=30\u00b0C) forecast on: 20"
+    }
+   ],
+   "factual_fields_non_null": [
+    "experience_plan.provider_coverage.hotel_prices=unavailable"
+   ],
+   "narration_trace": {
+    "source": "deterministic_fallback",
+    "sentence_count": 5,
+    "flagged": []
+   },
+   "candidate_pool": {
+    "attractions": 60,
+    "restaurants": 18,
+    "accommodation_pois": 18
+   }
+  },
+  {
+   "case_id": "LIS-BARE",
+   "requested_destination": "Lisbon",
+   "resolved_destination": "Lisbon, Portugal",
+   "interests": [
+    "food",
+    "history"
+   ],
+   "pace": "balanced",
+   "days_requested": 3,
+   "latency_seconds": 14.3,
+   "http": 200,
+   "provider_status": {
+    "places": "success",
+    "restaurants": "success",
+    "routes": "success",
+    "weather": "success",
+    "holidays": "unavailable",
+    "currency": "unavailable",
+    "flights": "failed",
+    "accommodations": "open_poi_available"
+   },
+   "ai": {
+    "proposal": {
+     "status": "rejected",
+     "proposal_count": 0,
+     "attempts_reported": 1,
+     "structural_retry_used": false,
+     "rejection_reason": "Groq API call failed: the provider rate-limited the request (HTTP 429).",
+     "rejected_raw_items": 0,
+     "grounding_status": "skipped",
+     "grounded_count": 0,
+     "promotion_status": "no_candidates_reviewed",
+     "reviewed": 0,
+     "promoted": 0
+    },
+    "reasoning": "not_connected",
+    "repair": null,
+    "repair_attempts": 0,
+    "narrator": {
+     "status": "failed",
+     "source": "deterministic_fallback",
+     "provider": "groq_itinerary_narrator_provider",
+     "message": "Groq API call failed: the provider rate-limited the request (HTTP 429)."
+    }
+   },
+   "route": {
+    "status": "success",
+    "legs": {
+     "feasible": 6
+    },
+    "sequencing": "success"
+   },
+   "days": [
+    {
+     "day": 1,
+     "places": [
+      {
+       "name": "Mercado da Ribeira",
+       "category": "marketplace",
+       "normalized_category": "food_market",
+       "matched_interests": [
+        "food"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "Tamareira-do-Senegal",
+       "category": "attraction",
+       "normalized_category": "landmark",
+       "matched_interests": [
+        "history"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "Pelourinho de Lisboa",
+       "category": "attraction",
+       "normalized_category": "landmark",
+       "matched_interests": [
+        "history"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      }
+     ]
+    },
+    {
+     "day": 2,
+     "places": [
+      {
+       "name": "Museu Geol\u00f3gico",
+       "category": "museum",
+       "normalized_category": "museum",
+       "matched_interests": [
+        "history"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "Museu da Marioneta",
+       "category": "museum",
+       "normalized_category": "museum",
+       "matched_interests": [
+        "history"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "Tipuana",
+       "category": "attraction",
+       "normalized_category": "landmark",
+       "matched_interests": [
+        "history"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      }
+     ]
+    },
+    {
+     "day": 3,
+     "places": [
+      {
+       "name": "Museu do Aljube - Resist\u00eancia e Liberdade",
+       "category": "museum",
+       "normalized_category": "museum",
+       "matched_interests": [
+        "history"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "Mercado de Santa Clara",
+       "category": "marketplace",
+       "normalized_category": "food_market",
+       "matched_interests": [
+        "food"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "Museu Bordalo Pinheiro",
+       "category": "museum",
+       "normalized_category": "museum",
+       "matched_interests": [
+        "history"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      }
+     ]
+    }
+   ],
+   "stops_per_day": [
+    3,
+    3,
+    3
+   ],
+   "empty_days": [],
+   "duplicates": {},
+   "days_far_apart": [],
+   "max_pairwise_km": [
+    0.6,
+    0.8,
+    5.7
+   ],
+   "unsupported_identity_count": 0,
+   "all_stable_ids": true,
+   "coordinates": "9/9",
+   "claim_sources": "9/9",
+   "supply_per_interest": {
+    "history": 13,
+    "food": 5
+   },
+   "interests_matched": [
+    "food",
+    "history"
+   ],
+   "low_value_or_gallery": 0,
+   "quality_finding_categories": [],
+   "readiness": "needs_review",
+   "findings": [
+    {
+     "severity": "warning",
+     "category": "weather",
+     "message": "Provider-backed weather data is available for this trip, but the itinerary has not been adjusted around weather yet -- review outdoor/long-walk days manually."
+    }
+   ],
+   "factual_fields_non_null": [
+    "experience_plan.provider_coverage.hotel_prices=unavailable"
+   ],
+   "narration_trace": {
+    "source": "deterministic_fallback",
+    "sentence_count": 5,
+    "flagged": []
+   },
+   "candidate_pool": {
+    "attractions": 55,
+    "restaurants": 20,
+    "accommodation_pois": 20
+   }
+  },
+  {
+   "case_id": "NYC-BARE",
+   "requested_destination": "New York City",
+   "resolved_destination": "New York, United States",
+   "interests": [
+    "museums",
+    "food"
+   ],
+   "pace": "balanced",
+   "days_requested": 3,
+   "latency_seconds": 14.2,
+   "http": 200,
+   "provider_status": {
+    "places": "success",
+    "restaurants": "success",
+    "routes": "success",
+    "weather": "success",
+    "holidays": "unavailable",
+    "currency": "unavailable",
+    "flights": "success",
+    "accommodations": "open_poi_available"
+   },
+   "ai": {
+    "proposal": {
+     "status": "rejected",
+     "proposal_count": 0,
+     "attempts_reported": 1,
+     "structural_retry_used": false,
+     "rejection_reason": "Groq API call failed: the provider rate-limited the request (HTTP 429).",
+     "rejected_raw_items": 0,
+     "grounding_status": "skipped",
+     "grounded_count": 0,
+     "promotion_status": "no_candidates_reviewed",
+     "reviewed": 0,
+     "promoted": 0
+    },
+    "reasoning": "not_connected",
+    "repair": null,
+    "repair_attempts": 0,
+    "narrator": {
+     "status": "failed",
+     "source": "deterministic_fallback",
+     "provider": "groq_itinerary_narrator_provider",
+     "message": "Groq API call failed: the provider rate-limited the request (HTTP 429)."
+    }
+   },
+   "route": {
+    "status": "success",
+    "legs": {
+     "feasible": 6
+    },
+    "sequencing": "success"
+   },
+   "days": [
+    {
+     "day": 1,
+     "places": [
+      {
+       "name": "Yeshiva University Museum",
+       "category": "museum",
+       "normalized_category": "museum",
+       "matched_interests": [
+        "museum"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "Union Square Green Market",
+       "category": "marketplace",
+       "normalized_category": "food_market",
+       "matched_interests": [
+        "food"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "Rubin Museum of Art",
+       "category": "museum",
+       "normalized_category": "museum",
+       "matched_interests": [
+        "museum"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      }
+     ]
+    },
+    {
+     "day": 2,
+     "places": [
+      {
+       "name": "Lower East Side Tenement Museum",
+       "category": "museum",
+       "normalized_category": "museum",
+       "matched_interests": [
+        "museum"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "Stonewall Inn",
+       "category": "attraction",
+       "normalized_category": "landmark",
+       "matched_interests": [],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "Skyscraper Museum",
+       "category": "museum",
+       "normalized_category": "museum",
+       "matched_interests": [
+        "museum"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      }
+     ]
+    },
+    {
+     "day": 3,
+     "places": [
+      {
+       "name": "Museum of Sex",
+       "category": "museum",
+       "normalized_category": "museum",
+       "matched_interests": [
+        "museum"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "The Morgan Library & Museum",
+       "category": "museum",
+       "normalized_category": "museum",
+       "matched_interests": [
+        "museum"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "Bryant Park",
+       "category": "attraction",
+       "normalized_category": "landmark",
+       "matched_interests": [],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      }
+     ]
+    }
+   ],
+   "stops_per_day": [
+    3,
+    3,
+    3
+   ],
+   "empty_days": [],
+   "duplicates": {},
+   "days_far_apart": [],
+   "max_pairwise_km": [
+    0.8,
+    3.4,
+    1.1
+   ],
+   "unsupported_identity_count": 0,
+   "all_stable_ids": true,
+   "coordinates": "9/9",
+   "claim_sources": "9/9",
+   "supply_per_interest": {
+    "museum": 8,
+    "food": 1
+   },
+   "interests_matched": [
+    "food",
+    "museum"
+   ],
+   "low_value_or_gallery": 0,
+   "quality_finding_categories": [],
+   "readiness": "needs_review",
+   "findings": [
+    {
+     "severity": "warning",
+     "category": "weather",
+     "message": "Provider-backed weather data is available for this trip, but the itinerary has not been adjusted around weather yet -- review outdoor/long-walk days manually."
+    }
+   ],
+   "factual_fields_non_null": [
+    "experience_plan.provider_coverage.hotel_prices=unavailable"
+   ],
+   "narration_trace": {
+    "source": "deterministic_fallback",
+    "sentence_count": 5,
+    "flagged": []
+   },
+   "candidate_pool": {
+    "attractions": 60,
+    "restaurants": 19,
+    "accommodation_pois": 20
+   }
+  },
+  {
+   "case_id": "COR-ES",
+   "requested_destination": "Cordoba, Spain",
+   "resolved_destination": "C\u00f3rdoba, Andalusia, Spain",
+   "interests": [
+    "food",
+    "history"
+   ],
+   "pace": "balanced",
+   "days_requested": 3,
+   "latency_seconds": 94.0,
+   "http": 200,
+   "provider_status": {
+    "places": "fallback_used",
+    "restaurants": "fallback_used",
+    "routes": "success",
+    "weather": "success",
+    "holidays": "success",
+    "currency": "success",
+    "flights": "failed",
+    "accommodations": "open_poi_available"
+   },
+   "ai": {
+    "proposal": {
+     "status": "rejected",
+     "proposal_count": 0,
+     "attempts_reported": 1,
+     "structural_retry_used": false,
+     "rejection_reason": "Groq API call failed: the provider rate-limited the request (HTTP 429).",
+     "rejected_raw_items": 0,
+     "grounding_status": "skipped",
+     "grounded_count": 0,
+     "promotion_status": "no_candidates_reviewed",
+     "reviewed": 0,
+     "promoted": 0
+    },
+    "reasoning": "not_connected",
+    "repair": null,
+    "repair_attempts": 0,
+    "narrator": {
+     "status": "failed",
+     "source": "deterministic_fallback",
+     "provider": "groq_itinerary_narrator_provider",
+     "message": "Groq API call failed: the provider rate-limited the request (HTTP 429)."
+    }
+   },
+   "route": {
+    "status": "success",
+    "legs": {
+     "feasible": 6
+    },
+    "sequencing": "success"
+   },
+   "days": [
+    {
+     "day": 1,
+     "places": [
+      {
+       "name": "Zoco Municipal",
+       "category": "attraction",
+       "normalized_category": "landmark",
+       "matched_interests": [
+        "food",
+        "history"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "Museo Taurino de C\u00f3rdoba",
+       "category": "museum",
+       "normalized_category": "museum",
+       "matched_interests": [
+        "history"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "Casa de Sefarad",
+       "category": "museum",
+       "normalized_category": "museum",
+       "matched_interests": [
+        "history"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      }
+     ]
+    },
+    {
+     "day": 2,
+     "places": [
+      {
+       "name": "Centro de Arte Moderno Rafael Bot\u00ed",
+       "category": "museum",
+       "normalized_category": "museum",
+       "matched_interests": [
+        "history"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "Alc\u00e1zar de los Reyes Cristianos",
+       "category": "attraction",
+       "normalized_category": "landmark",
+       "matched_interests": [
+        "history"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "Torre de la Calahorra - Museo Vivo de Al-\u00c1ndalus",
+       "category": "museum",
+       "normalized_category": "landmark",
+       "matched_interests": [
+        "history"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      }
+     ]
+    },
+    {
+     "day": 3,
+     "places": [
+      {
+       "name": "Mercado Victoria",
+       "category": "marketplace",
+       "normalized_category": "food_market",
+       "matched_interests": [
+        "food"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "Templo romano",
+       "category": "attraction",
+       "normalized_category": "landmark",
+       "matched_interests": [
+        "history"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      },
+      {
+       "name": "Museo de Julio Romero de Torres",
+       "category": "museum",
+       "normalized_category": "museum",
+       "matched_interests": [
+        "history"
+       ],
+       "provider_source": "openstreetmap_places",
+       "has_provider_place_id": true,
+       "has_coordinates": true,
+       "promoted_from_ai": false
+      }
+     ]
+    }
+   ],
+   "stops_per_day": [
+    3,
+    3,
+    3
+   ],
+   "empty_days": [],
+   "duplicates": {},
+   "days_far_apart": [],
+   "max_pairwise_km": [
+    0.1,
+    0.6,
+    1.0
+   ],
+   "unsupported_identity_count": 0,
+   "all_stable_ids": true,
+   "coordinates": "9/9",
+   "claim_sources": "9/9",
+   "supply_per_interest": {
+    "history": 19,
+    "food": 6
+   },
+   "interests_matched": [
+    "food",
+    "history"
+   ],
+   "low_value_or_gallery": 0,
+   "quality_finding_categories": [],
+   "readiness": "needs_review",
+   "findings": [
+    {
+     "severity": "warning",
+     "category": "weather",
+     "message": "Provider-backed weather data is available for this trip, but the itinerary has not been adjusted around weather yet -- review outdoor/long-walk days manually. High temperature (>=30\u00b0C) forecast on: 20"
+    },
+    {
+     "severity": "warning",
+     "category": "holidays",
+     "message": "Provider-backed public holiday data was checked for this trip's date range, but no public holidays fall within it. The itinerary still has not been checked against venue closures, opening hours, or cr"
+    }
+   ],
+   "factual_fields_non_null": [
+    "experience_plan.provider_coverage.hotel_prices=unavailable"
+   ],
+   "narration_trace": {
+    "source": "deterministic_fallback",
+    "sentence_count": 5,
+    "flagged": []
+   },
+   "candidate_pool": {
+    "attractions": 57,
+    "restaurants": 20,
+    "accommodation_pois": 20
+   }
+  }
+ ]
+}

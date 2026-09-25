@@ -1,5 +1,8 @@
 # 17. Regeneration Manual QA Checklist
 
+> **Section 202B.1 update (read first).** The "legacy MVP success" described below no longer applies to free-text feedback: with `TARGETED_REGENERATION_ENABLED` off, `POST /regenerate` with `confirm: true` and pending feedback now refuses with `REGENERATION_FEEDBACK_NOT_INTERPRETABLE` (409) -- no rerun, no version, feedback stays pending -- because legacy regeneration cannot interpret free text (see docs/14 section 156). The checklist items that expect a legacy `200 applied` describe the machinery (versioning/attempts/revisions), which is only reachable when a deterministic legacy operation is registered. A targeted result that changes nothing is `REGENERATION_NO_EFFECT`; AI rate limits/outages are `REGENERATION_PROVIDER_RATE_LIMITED` / `REGENERATION_AI_UNAVAILABLE`. None of these may ever show "Applied in vN".
+
+
 ## 1. Purpose
 
 This checklist verifies the **current safety contract only**. It does not

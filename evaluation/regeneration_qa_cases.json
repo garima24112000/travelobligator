@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "description": "Section 202A regeneration chains. Each chain generates a FRESH trip from `base_case_id` (itinerary_qa_cases.json) on the backend whose flags match `mode`, then applies the steps in order (a realistic v1 -> v2 -> v3 sequence). Templates like {d2s1} resolve, at run time, to the name of day 2 / stop 1 in the CURRENT itinerary. `expect.type` selects the objective check in run_regeneration_qa.py; the check restates the user's request, it never grades quality.",
+  "modes": {
+    "full_ai": "AI feedback interpreter (Groq) + TARGETED_REGENERATION_ENABLED=true (targeted path)",
+    "as_configured": "developer's normal .env: targeted regeneration off, legacy keyword-classified regeneration"
+  },
+  "chains": [
+    {"chain_id": "R-DC1", "base_case_id": "DC-1", "mode": "full_ai", "steps": [
+      {"step_id": "R01-exact-removal", "kind": "exact removal", "feedback": "Remove {d2s2} from the itinerary.", "expect": {"type": "remove", "target": "d2s2", "replace": true}},
+      {"step_id": "R02-removal-no-replace", "kind": "removal without replacement", "feedback": "Remove {d3s1} and don't replace it with anything.", "expect": {"type": "remove", "target": "d3s1", "replace": false}},
+      {"step_id": "R03-additive", "kind": "additive request", "feedback": "I also want to visit the National Air and Space Museum.", "expect": {"type": "add", "name_contains": ["air and space", "air & space"]}}
+    ]},
+    {"chain_id": "R-LIS2", "base_case_id": "LIS-2", "mode": "full_ai", "steps": [
+      {"step_id": "R04-day-specific", "kind": "day-specific change", "feedback": "Change only day 2. Make it more relaxed.", "expect": {"type": "day_specific", "day": 2}},
+      {"step_id": "R05-preservation", "kind": "preservation", "feedback": "Keep day 1 exactly the same, but make day 3 less packed.", "expect": {"type": "preserve_day", "day": 1}},
+      {"step_id": "R06-move", "kind": "move", "feedback": "Move {d4s1} to day 2.", "expect": {"type": "move", "target": "d4s1", "to_day": 2}}
+    ]},
+    {"chain_id": "R-SF1", "base_case_id": "SF-1", "mode": "full_ai", "steps": [
+      {"step_id": "R07-day-pacing", "kind": "pacing (one day)", "feedback": "Make day 2 less packed.", "expect": {"type": "less_packed_day", "day": 2}},
+      {"step_id": "R08-global-pacing", "kind": "pacing (global)", "feedback": "Make the whole trip more relaxed.", "expect": {"type": "global_relaxed"}},
+      {"step_id": "R09-interest", "kind": "interest change", "feedback": "I want more local food.", "expect": {"type": "interest", "tokens": ["food", "restaurant", "market"]}}
+    ]},
+    {"chain_id": "R-CHI1", "base_case_id": "CHI-1", "mode": "full_ai", "steps": [
+      {"step_id": "R10-ambiguous", "kind": "ambiguous request", "feedback": "Swap that place for something better.", "expect": {"type": "expect_refusal", "reason": "ambiguous target; a clarification or refusal with no plan change is the correct outcome"}},
+      {"step_id": "R11-impossible-move", "kind": "impossible structural request", "feedback": "Move {d1s1} to day 9.", "expect": {"type": "expect_refusal", "reason": "the trip has fewer than 9 days"}},
+      {"step_id": "R12-ungroundable-add", "kind": "provider-grounding failure (honest, not controlled)", "feedback": "I also want to visit the Zzyzx Fictional Observatory Tower.", "expect": {"type": "expect_no_ungrounded_addition"}}
+    ]},
+    {"chain_id": "R-NYC2-legacy", "base_case_id": "NYC-2", "mode": "as_configured", "steps": [
+      {"step_id": "R13-legacy-pacing", "kind": "pacing via legacy keyword path", "feedback": "Make this less packed, it's too much walking.", "expect": {"type": "global_relaxed"}},
+      {"step_id": "R14-legacy-removal", "kind": "exact removal via legacy keyword path", "feedback": "Remove {d1s1} from the itinerary.", "expect": {"type": "remove", "target": "d1s1", "replace": true}}
+    ]}
+  ]
+}

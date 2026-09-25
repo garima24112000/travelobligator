@@ -342,7 +342,7 @@ def test_feedback_history_is_persisted_and_reloadable(client: TestClient) -> Non
     assert change_preview["blocked_by"] == [
         "Submitting feedback does not itself trigger regeneration -- see "
         "regeneration readiness for whether a real regeneration can run now.",
-        "No AI interpretation provider is connected.",
+        "AI interpretation is not applied when feedback is captured.",
         "No plan sections are modified by the feedback capture endpoint.",
     ]
 
@@ -665,11 +665,7 @@ def test_regeneration_attempts_are_persisted_and_reloadable(client: TestClient) 
     assert attempt.pending_feedback_count == 1
     assert attempt.active_lock_count == 0
     assert attempt.reason_code == "REGENERATION_NOT_AVAILABLE"
-    assert attempt.message == (
-        "Feedback-driven regeneration is not available yet. The "
-        "regeneration engine has not been implemented, so no plan "
-        "changes were made."
-    )
+    assert attempt.message == "Regeneration was not applied, so no plan changes were made."
 
     # Everything else this step must not touch also round-trips unchanged.
     assert len(reloaded_state.version_history) == 1

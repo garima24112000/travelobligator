@@ -1024,8 +1024,7 @@ Response behavior:
   `REGENERATION_NOT_AVAILABLE` and this exact message:
 
   ```text
-  Feedback-driven regeneration is not available yet. The regeneration
-  engine has not been implemented, so no plan changes were made.
+  Regeneration was not applied, so no plan changes were made.
   ```
 
 Mutation behavior: the only state change is appending one
@@ -1043,12 +1042,12 @@ Error response shape (same envelope as every other error):
 {
   "success": false,
   "data": null,
-  "message": "Feedback-driven regeneration is not available yet. The regeneration engine has not been implemented, so no plan changes were made.",
+  "message": "Regeneration was not applied, so no plan changes were made.",
   "errors": [
     {
       "code": "REGENERATION_NOT_AVAILABLE",
       "field": "regeneration",
-      "message": "Feedback-driven regeneration is not available yet. The regeneration engine has not been implemented, so no plan changes were made."
+      "message": "Regeneration was not applied, so no plan changes were made."
     }
   ],
   "metadata": {}
@@ -1079,7 +1078,7 @@ Response data:
       "pending_feedback_count": 1,
       "active_lock_count": 0,
       "reason_code": "REGENERATION_NOT_AVAILABLE",
-      "message": "Feedback-driven regeneration is not available yet. The regeneration engine has not been implemented, so no plan changes were made."
+      "message": "Regeneration was not applied, so no plan changes were made."
     }
   ]
 }

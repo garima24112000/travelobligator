@@ -736,7 +736,11 @@ def test_real_groq_400_tool_choice_error_is_classified_and_sanitized() -> None:
     assert result.proposals == []
     assert result.guardrail_report.passed is False
     full_message = " ".join(result.guardrail_report.blocked_reasons)
-    assert "tool_use_failed" in full_message  # the real, honest Groq error is preserved
+    # Section 202B.1 (Task 16): the raw provider response body is no longer
+    # echoed at all -- only a fixed, classified sentence.
+    assert "Groq API call failed" in full_message
+    assert "tool_use_failed" not in full_message
+    assert "failed_generation" not in full_message
     assert "gsk_fake_should_not_leak" not in full_message
     assert "Authorization" not in full_message
     assert "Bearer" not in full_message
@@ -827,3 +831,180 @@ def test_valid_json_schema_response_still_goes_through_pydantic_validation() -> 
 
     assert result.status == AICandidateProposalStatus.REJECTED
     assert result.proposals == []
+
+
+# ---------------------------------------------------------------------------
+# Section 202B.2 (Tasks 14-16, 37): bounded retry for STRUCTURAL output
+# failures only. 202A evidence: proposal calls failed with HTTP 400
+# `json_validate_failed` (token truncation / a missing required key / an
+# empty generation) and once with a 429.
+# ---------------------------------------------------------------------------
+
+
+class _StructuralError(Exception):
+    def __init__(self, status_code: int = 400, code: str | None = "json_validate_failed") -> None:
+        super().__init__("provider body that must never be echoed")
+        self.status_code = status_code
+        self.code = code
+
+
+class _ScriptedClient:
+    """Each call pops the next scripted outcome (an exception is raised, a
+    value is returned) and records the prompt."""
+
+    def __init__(self, outcomes: list[Any]) -> None:
+        self._outcomes = list(outcomes)
+        self.prompts: list[str] = []
+
+    def invoke(self, prompt: str) -> Any:
+        self.prompts.append(prompt)
+        outcome = self._outcomes.pop(0)
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
+
+
+def _provider(client: _ScriptedClient) -> GroqAICandidateProposalProvider:
+    return GroqAICandidateProposalProvider(client=client, api_key="gsk_fake")
+
+
+def test_one_structural_failure_then_valid_output_succeeds_with_a_smaller_batch() -> None:
+    client = _ScriptedClient([_StructuralError(), _valid_output()])
+
+    result = _provider(client).propose(_request(max_candidates=15))
+
+    assert result.status == AICandidateProposalStatus.COMPLETED
+    assert len(client.prompts) == 2
+    assert "Maximum candidates to propose: 15" in client.prompts[0]
+    assert "Maximum candidates to propose: 7" in client.prompts[1]
+
+
+def test_two_structural_failures_are_rejected_after_exactly_two_attempts() -> None:
+    client = _ScriptedClient([_StructuralError(), _StructuralError()])
+
+    result = _provider(client).propose(_request())
+
+    assert result.status == AICandidateProposalStatus.REJECTED
+    assert len(client.prompts) == 2  # never a third call
+    joined = " ".join(result.guardrail_report.blocked_reasons)
+    assert "2 attempt" in joined
+    assert "must never be echoed" not in joined
+
+
+def test_a_rate_limit_is_never_retried() -> None:
+    client = _ScriptedClient([_StructuralError(status_code=429, code="rate_limit_exceeded"), _valid_output()])
+
+    result = _provider(client).propose(_request())
+
+    assert result.status == AICandidateProposalStatus.REJECTED
+    assert len(client.prompts) == 1
+
+
+def test_a_non_structural_provider_error_is_never_retried() -> None:
+    client = _ScriptedClient([_StructuralError(status_code=500, code=None), _valid_output()])
+
+    assert _provider(client).propose(_request()).status == AICandidateProposalStatus.REJECTED
+    assert len(client.prompts) == 1
+
+
+def test_a_semantically_invalid_candidate_is_never_retried() -> None:
+    # Parses as structured output, but the proposal itself is invalid (a
+    # forbidden factual overclaim) -> rejected by validation, single call.
+    bad = _valid_output(proposals=[_valid_proposal_dict(why_consider="Rated 4.9 stars, open until 9pm")])
+    client = _ScriptedClient([bad, _valid_output()])
+
+    result = _provider(client).propose(_request())
+
+    assert len(client.prompts) == 1
+    assert result.status != AICandidateProposalStatus.COMPLETED or not result.proposals
+
+
+# ---------------------------------------------------------------------------
+# Section 202C.1A: permanent regression guard for the 202C live finding.
+# 202B.2 forced `reasoning_effort="low"` on gpt-oss models; at production size
+# (15 proposals) the model then omitted the required per-proposal
+# `confidence` key and Groq returned HTTP 400 `json_validate_failed` in 15/15
+# live runs. The model's default reasoning behaviour returned a valid batch.
+# Correct structured output outranks token savings: do NOT re-add a forced
+# low effort, and do NOT "fix" a future truncation by inflating max_tokens.
+# No live Groq call is made here.
+# ---------------------------------------------------------------------------
+
+
+class _FakeChatGroq:
+    instances: list["_FakeChatGroq"] = []
+
+    def __init__(self, **kwargs: Any) -> None:
+        self.kwargs = kwargs
+        self.structured: dict[str, Any] | None = None
+        _FakeChatGroq.instances.append(self)
+
+    def with_structured_output(self, schema: Any, **kwargs: Any) -> str:
+        self.structured = {"schema": schema, **kwargs}
+        return "bound-client"
+
+
+def _build_with_fake_groq(monkeypatch: pytest.MonkeyPatch, model: str) -> _FakeChatGroq:
+    import sys
+    import types
+
+    _FakeChatGroq.instances.clear()
+    fake_module = types.ModuleType("langchain_groq")
+    fake_module.ChatGroq = _FakeChatGroq  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "langchain_groq", fake_module)
+    provider = GroqAICandidateProposalProvider(api_key="gsk_fake", model=model)
+    assert provider._build_client() == "bound-client"
+    return _FakeChatGroq.instances[-1]
+
+
+@pytest.mark.parametrize("model", ["openai/gpt-oss-20b", "openai/gpt-oss-120b", "llama-3.3-70b-versatile"])
+def test_production_client_never_forces_a_reasoning_effort(monkeypatch: pytest.MonkeyPatch, model: str) -> None:
+    chat = _build_with_fake_groq(monkeypatch, model)
+
+    assert "reasoning_effort" not in chat.kwargs
+    assert "reasoning_effort" not in (chat.kwargs.get("model_kwargs") or {})
+    assert chat.kwargs["model"] == model  # the configured model, never substituted
+
+
+def test_production_client_keeps_the_normal_token_budget_and_structured_output(monkeypatch: pytest.MonkeyPatch) -> None:
+    chat = _build_with_fake_groq(monkeypatch, "openai/gpt-oss-20b")
+
+    assert chat.kwargs["max_tokens"] == 4000  # unchanged: the fix is not a token-budget increase
+    assert chat.kwargs["temperature"] == 0.2
+    assert chat.structured is not None
+    assert chat.structured["method"] == "json_schema" and chat.structured["strict"] is True
+
+
+def test_groq_proposal_schema_still_requires_every_proposal_field_including_confidence() -> None:
+    from app.providers.ai_candidate_proposal.groq_adapter import _GroqProposalBatchSchema
+
+    schema = _GroqProposalBatchSchema.model_json_schema()
+    proposal = schema["$defs"]["_GroqProposalSchema"]
+    assert set(proposal["required"]) == set(proposal["properties"])  # nothing optional: strict mode
+    assert "confidence" in proposal["required"]
+    assert set(schema["required"]) == {"proposals", "rejected_raw_items", "confidence"}
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        _StructuralError(status_code=401, code="invalid_api_key"),
+        _StructuralError(status_code=403, code=None),
+        _StructuralError(status_code=408, code=None),
+        _StructuralError(status_code=504, code=None),
+    ],
+)
+def test_auth_and_timeout_failures_are_never_retried(error: Exception) -> None:
+    client = _ScriptedClient([error, _valid_output()])
+
+    result = _provider(client).propose(_request())
+
+    assert result.status == AICandidateProposalStatus.REJECTED
+    assert len(client.prompts) == 1
+
+
+def test_the_bounded_retry_policy_is_exactly_one_extra_structural_attempt() -> None:
+    from app.providers.ai_candidate_proposal import groq_adapter
+
+    assert groq_adapter._MAX_STRUCTURAL_ATTEMPTS == 2
+    assert groq_adapter._RETRY_MIN_CANDIDATES == 5

@@ -7,7 +7,13 @@ from datetime import datetime, timezone
 from fastapi import BackgroundTasks
 
 from app.core.config import get_settings
-from app.core.errors import REGENERATION_NOT_AVAILABLE_MESSAGE, job_already_running_error
+from app.core.errors import (
+    DESTINATION_UNRESOLVED_MESSAGE,
+    REGENERATION_FEEDBACK_NOT_INTERPRETABLE_MESSAGE,
+    REGENERATION_NO_EFFECT_MESSAGE,
+    REGENERATION_NOT_AVAILABLE_MESSAGE,
+    job_already_running_error,
+)
 from app.models.generation_job import (
     GenerationJob,
     GenerationJobType,
@@ -25,7 +31,9 @@ from app.services.planning_orchestrator import planning_orchestrator
 from app.services.regeneration_attempt_service import regeneration_attempt_service
 from app.services.regeneration_mutation_service import (
     BranchWorkspaceConflictError,
+    LegacyRegenerationNotInterpretableError,
     RegenerationMutationError,
+    RegenerationNoEffectError,
     apply_regeneration_mutation,
 )
 from app.services.revision_lineage_service import revision_lineage_service
@@ -488,6 +496,20 @@ def run_generate_job(job_id: str) -> None:
         job_repo.save(job)
         return
 
+    if (
+        planning_state.destination_context is not None
+        and planning_state.destination_context.destination_resolution == "unresolved"
+    ):
+        # Section 202B.1 (Task 15): same actionable outcome as the sync
+        # route -- the blocked state is persisted, the job reports why.
+        job = mark_job_failed(
+            job,
+            error_code=ErrorCode.DESTINATION_UNRESOLVED.value,
+            error_message=DESTINATION_UNRESOLVED_MESSAGE,
+        )
+        job_repo.save(job)
+        return
+
     result_version = planning_state.metadata.current_version
     changed_sections = (
         list(planning_state.version_history[-1].changed_sections)
@@ -625,6 +647,30 @@ def run_regenerate_job(
                 job_id,
                 job.trip_id,
                 exc_info=True,
+                extra=_job_log_fields(job),
+            )
+            job_repo.save(job)
+            return
+        except (LegacyRegenerationNotInterpretableError, RegenerationNoEffectError) as exc:
+            # Section 202B.1: the same honest refusals the sync route
+            # raises -- no version, feedback left pending, job failed with
+            # the precise structured code (never the generic
+            # REGENERATION_NOT_AVAILABLE).
+            if isinstance(exc, RegenerationNoEffectError):
+                code, message = ErrorCode.REGENERATION_NO_EFFECT.value, REGENERATION_NO_EFFECT_MESSAGE
+            else:
+                code = ErrorCode.REGENERATION_FEEDBACK_NOT_INTERPRETABLE.value
+                message = REGENERATION_FEEDBACK_NOT_INTERPRETABLE_MESSAGE
+            refused_state = regeneration_attempt_service.record_blocked_attempt(
+                exc.planning_state, reason_code=code, message=message
+            )
+            state_repo.save(refused_state)
+            job = mark_job_failed(job, error_code=code, error_message=message)
+            logger.info(
+                "Regenerate job %s refused for trip %s: %s.",
+                job_id,
+                job.trip_id,
+                code,
                 extra=_job_log_fields(job),
             )
             job_repo.save(job)
@@ -793,12 +839,22 @@ def run_targeted_regenerate_job(job_id: str) -> None:
             TargetedRegenerationRuntimeStatus.NEEDS_CLARIFICATION: ErrorCode.REGENERATION_NEEDS_CLARIFICATION.value,
             TargetedRegenerationRuntimeStatus.CONFLICT: ErrorCode.REGENERATION_CONFLICT.value,
             TargetedRegenerationRuntimeStatus.PROVIDER_UNAVAILABLE: ErrorCode.REGENERATION_PROVIDER_UNAVAILABLE.value,
+            # Section 202B.1: distinct, honest outcomes -- never the
+            # generic REGENERATION_NOT_AVAILABLE fallback below.
+            TargetedRegenerationRuntimeStatus.RATE_LIMITED: ErrorCode.REGENERATION_PROVIDER_RATE_LIMITED.value,
+            TargetedRegenerationRuntimeStatus.NO_EFFECT: ErrorCode.REGENERATION_NO_EFFECT.value,
             # Section 199B.1 (Task 7): distinct from CONFLICT above --
             # see TargetedRegenerationRuntimeStatus.WORKSPACE_CONFLICT's
             # own docstring for why these two are never merged.
             TargetedRegenerationRuntimeStatus.WORKSPACE_CONFLICT: ErrorCode.BRANCH_STATE_CONFLICT.value,
         }
         error_code = error_code_by_status.get(result.status, ErrorCode.REGENERATION_NOT_AVAILABLE.value)
+        if (
+            result.status == TargetedRegenerationRuntimeStatus.PROVIDER_UNAVAILABLE
+            and result.provider_failure_kind is not None
+        ):
+            # Section 202B.1: the AI interpreter (not a place lookup) failed.
+            error_code = ErrorCode.REGENERATION_AI_UNAVAILABLE.value
         # Task 5: structured targeted failure information (interpretation/
         # execution status, and clarification detail when the runtime
         # result carried one) is preserved on the job record rather than

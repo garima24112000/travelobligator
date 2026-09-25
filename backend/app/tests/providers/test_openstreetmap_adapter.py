@@ -39,7 +39,18 @@ def _isolated_default_provider_cache(tmp_path: Path, monkeypatch: pytest.MonkeyP
 
 
 def _geocode_query_hash(query: str) -> str:
-    return make_query_hash({"query": query.strip().lower(), "format": "jsonv2", "limit": 1})
+    # Section 202B.1: the geocode request now asks for structural provider
+    # evidence, which is part of the cache key.
+    return make_query_hash(
+        {
+            "query": query.strip().lower(),
+            "format": "jsonv2",
+            "limit": 1,
+            "addressdetails": 1,
+            "namedetails": 1,
+            "accept-language": "en",
+        }
+    )
 
 
 def _poi_query_hash(
@@ -55,7 +66,12 @@ def _poi_query_hash(
             "lon": lon,
             "radius_meters": radius_meters,
             "tags": sorted(tags),
-            "limit": openstreetmap_adapter._MAX_RESULTS,
+            "limit": (
+                openstreetmap_adapter._MAX_ATTRACTION_RESULTS
+                if tags is openstreetmap_adapter._ATTRACTION_TAG_FILTERS
+                else openstreetmap_adapter._MAX_RESULTS
+            ),
+            "schema": openstreetmap_adapter._POI_CACHE_SCHEMA,
         }
     )
 
@@ -404,6 +420,8 @@ def test_fallback_stops_once_max_results_reached(
     # the one fallback tag query that fills the cap are provided, so an
     # extra call would raise an IndexError.
     monkeypatch.setattr(openstreetmap_adapter, "_MAX_RESULTS", 2)
+    # Section 202B.2: attractions use their own (wider) cap.
+    monkeypatch.setattr(openstreetmap_adapter, "_MAX_ATTRACTION_RESULTS", 2)
     fake_client = _install_fake_client(
         monkeypatch,
         geocode_response=_geocode_ok(),
@@ -506,6 +524,7 @@ def test_fallback_result_creates_no_fake_rating_price_review_or_hours(
             "source",
             "data_status",
             "confidence",
+            "provider_tags",
         }
         for forbidden_field in ("rating", "price", "review", "opening_hours", "booking_url", "availability"):
             assert forbidden_field not in dumped
@@ -637,6 +656,7 @@ def test_accommodation_fallback_result_creates_no_fake_price_rating_review_or_ho
             "source",
             "data_status",
             "confidence",
+            "provider_tags",
         }
         for forbidden_field in (
             "rating",
@@ -782,6 +802,7 @@ def test_search_must_visit_place_result_has_no_fake_rating_price_review_or_hours
         "source",
         "data_status",
         "confidence",
+        "provider_tags",  # Section 202B.2: structured tags only, never a fact field
     }
     for forbidden_field in ("rating", "price", "review", "opening_hours", "booking_url", "availability"):
         assert forbidden_field not in dumped
@@ -1094,6 +1115,7 @@ def test_geocode_cache_miss_calls_http_once_and_writes_normalized_response(
         "lng": -118.2437,
         "bounding_box": [33.5, 34.5, -118.8, -117.5],
         "display_name": "Los Angeles, California, United States",
+        "address": {},  # Section 202B.2: provider address components (none in this fake)
     }
 
 
@@ -1715,6 +1737,7 @@ def test_poi_cache_introduces_no_forbidden_fields(
             "source",
             "data_status",
             "confidence",
+            "provider_tags",
         }
         for forbidden_field in (
             "rating",

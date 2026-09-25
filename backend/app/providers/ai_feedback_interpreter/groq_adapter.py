@@ -4,6 +4,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field, ValidationError
 
+from app.providers.ai_failure import classify_and_message
 from app.core.config import get_settings
 from app.models.ai_feedback_interpretation import (
     AdjustInterestAction,
@@ -262,7 +263,8 @@ class GroqAIFeedbackInterpreterProvider(AIFeedbackInterpreterProvider):
         try:
             raw_output = client.invoke(_build_prompt(request))
         except Exception as exc:  # API/runtime failure -> rejected, never fabricated
-            return self._rejected_result(f"Groq API call failed: {exc}")
+            kind, message = classify_and_message("Groq", exc)
+            return self._rejected_result(message, failure_kind=kind.value)
 
         output_dict = self._coerce_output(raw_output)
         if output_dict is None:
@@ -478,9 +480,12 @@ class GroqAIFeedbackInterpreterProvider(AIFeedbackInterpreterProvider):
             confidence=0.0,
         )
 
-    def _rejected_result(self, reason: str) -> AIFeedbackInterpretationResult:
+    def _rejected_result(
+        self, reason: str, failure_kind: str | None = None
+    ) -> AIFeedbackInterpretationResult:
         return AIFeedbackInterpretationResult(
             status=AIFeedbackInterpretationStatus.REJECTED,
+            failure_kind=failure_kind,
             blocked_reasons=[reason],
             provider_name=self.provider_name,
             model_name=self._model,

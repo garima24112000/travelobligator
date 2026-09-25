@@ -1,0 +1,939 @@
+{
+ "generated_on": "2026-09-23",
+ "steps": [
+  {
+   "chain_id": "R-DC1",
+   "step_id": "R01-exact-removal",
+   "kind": "exact removal",
+   "mode": "as_configured",
+   "base_case_id": "DC-1",
+   "trip_id": "trip_9cc120daa14d4aa9bc9fe24283074ca2",
+   "feedback_text": "Remove Lieutenant General Winfield Brevet Scott Statue from the itinerary.",
+   "feedback_http_status": 200,
+   "regenerate_latency_seconds": 3.3,
+   "regenerate_http_status": 200,
+   "applied": true,
+   "identity_stability": {
+    "before_experience_count": 9,
+    "ids_surviving_fraction": 0.0,
+    "names_surviving_fraction": 1.0
+   },
+   "targeted": false,
+   "interpretation_status": null,
+   "execution_status": null,
+   "previous_version": "v1",
+   "current_version": "v2",
+   "changed_sections": [
+    "traveler_profile",
+    "experience_plan",
+    "validation"
+   ],
+   "message": "Regeneration applied. Rerun stages: traveler_profile, experience_plan, validation.",
+   "request_correct": false,
+   "request_check_note": "target (id and name) absent after=False",
+   "independent_diff": {
+    "added": 9,
+    "removed": 9,
+    "moved": 0,
+    "reordered_days": [],
+    "changed_days": [
+     1,
+     2,
+     3
+    ]
+   },
+   "preserved_days_reported": [],
+   "affected_days_reported": [],
+   "preserved_days_unchanged": null,
+   "unexpected_changed_days": [],
+   "days_changed_beyond_request_scope": [
+    1,
+    2,
+    3
+   ],
+   "added_names": [
+    "Lieutenant General Winfield Brevet Scott Statue",
+    "Major General George Thomas Statue",
+    "Arts of War: Valor",
+    "Bernardo de Galvez",
+    "Bay-Eva Castle",
+    "Arts of Peace: Aspiration and Literature",
+    "Hahnemann Monument",
+    "Lincoln Memorial",
+    "Dupont Circle"
+   ],
+   "ungrounded_additions": [],
+   "added_without_coordinates": [],
+   "reported_diff_matches_independent": null,
+   "downstream": {
+    "route_legs_reference_only_current_experiences": true,
+    "route_leg_count": 6,
+    "validation_rerun": true,
+    "narrative_references_only_current_experiences": true,
+    "narrative_status": "failed",
+    "narrative_changed": false
+   },
+   "versioning": {
+    "revisions_before": 1,
+    "revisions_after": 2,
+    "revision_created_only_on_success": true,
+    "active_head_label_after": "v2",
+    "head_label_matches_current_version": true
+   },
+   "feedback_marked_applied": true
+  },
+  {
+   "chain_id": "R-DC1",
+   "step_id": "R02-removal-no-replace",
+   "kind": "removal without replacement",
+   "mode": "as_configured",
+   "base_case_id": "DC-1",
+   "trip_id": "trip_9cc120daa14d4aa9bc9fe24283074ca2",
+   "feedback_text": "Remove Bernardo de Galvez and don't replace it with anything.",
+   "feedback_http_status": 200,
+   "regenerate_latency_seconds": 3.2,
+   "regenerate_http_status": 200,
+   "applied": true,
+   "identity_stability": {
+    "before_experience_count": 9,
+    "ids_surviving_fraction": 0.0,
+    "names_surviving_fraction": 1.0
+   },
+   "targeted": false,
+   "interpretation_status": null,
+   "execution_status": null,
+   "previous_version": "v2",
+   "current_version": "v3",
+   "changed_sections": [
+    "traveler_profile",
+    "experience_plan",
+    "validation"
+   ],
+   "message": "Regeneration applied. Rerun stages: traveler_profile, experience_plan, validation.",
+   "request_correct": false,
+   "request_check_note": "target (id and name) absent after=False; total 9->9; added=9",
+   "independent_diff": {
+    "added": 9,
+    "removed": 9,
+    "moved": 0,
+    "reordered_days": [],
+    "changed_days": [
+     1,
+     2,
+     3
+    ]
+   },
+   "preserved_days_reported": [],
+   "affected_days_reported": [],
+   "preserved_days_unchanged": null,
+   "unexpected_changed_days": [],
+   "days_changed_beyond_request_scope": [
+    1,
+    2,
+    3
+   ],
+   "added_names": [
+    "Lieutenant General Winfield Brevet Scott Statue",
+    "Arts of War: Valor",
+    "Major General George Thomas Statue",
+    "Dupont Circle",
+    "Bernardo de Galvez",
+    "Arts of Peace: Aspiration and Literature",
+    "Lincoln Memorial",
+    "Bay-Eva Castle",
+    "Hahnemann Monument"
+   ],
+   "ungrounded_additions": [],
+   "added_without_coordinates": [],
+   "reported_diff_matches_independent": null,
+   "downstream": {
+    "route_legs_reference_only_current_experiences": true,
+    "route_leg_count": 6,
+    "validation_rerun": true,
+    "narrative_references_only_current_experiences": true,
+    "narrative_status": "failed",
+    "narrative_changed": false
+   },
+   "versioning": {
+    "revisions_before": 2,
+    "revisions_after": 3,
+    "revision_created_only_on_success": true,
+    "active_head_label_after": "v3",
+    "head_label_matches_current_version": true
+   },
+   "feedback_marked_applied": true
+  },
+  {
+   "chain_id": "R-DC1",
+   "step_id": "R03-additive",
+   "kind": "additive request",
+   "mode": "as_configured",
+   "base_case_id": "DC-1",
+   "trip_id": "trip_9cc120daa14d4aa9bc9fe24283074ca2",
+   "feedback_text": "I also want to visit the National Air and Space Museum.",
+   "feedback_http_status": 200,
+   "regenerate_latency_seconds": 3.9,
+   "regenerate_http_status": 200,
+   "applied": true,
+   "identity_stability": {
+    "before_experience_count": 9,
+    "ids_surviving_fraction": 0.0,
+    "names_surviving_fraction": 1.0
+   },
+   "targeted": false,
+   "interpretation_status": null,
+   "execution_status": null,
+   "previous_version": "v3",
+   "current_version": "v4",
+   "changed_sections": [
+    "traveler_profile",
+    "destination_context",
+    "experience_plan",
+    "validation"
+   ],
+   "message": "Regeneration applied. Rerun stages: traveler_profile, destination_context, experience_plan, validation.",
+   "request_correct": false,
+   "request_check_note": "added=['Bay-Eva Castle', 'Major General George Thomas Statue', 'Arts of War: Valor', 'Hahnemann Monument', 'Arts of Peace: Aspiration and Literature', 'Lieutenant General Winfield Brevet Scott Statue', 'Lincoln Memorial', 'Bernardo de Galvez', 'Dupont Circle']",
+   "independent_diff": {
+    "added": 9,
+    "removed": 9,
+    "moved": 0,
+    "reordered_days": [],
+    "changed_days": [
+     1,
+     2,
+     3
+    ]
+   },
+   "preserved_days_reported": [],
+   "affected_days_reported": [],
+   "preserved_days_unchanged": null,
+   "unexpected_changed_days": [],
+   "added_names": [
+    "Bay-Eva Castle",
+    "Major General George Thomas Statue",
+    "Arts of War: Valor",
+    "Hahnemann Monument",
+    "Arts of Peace: Aspiration and Literature",
+    "Lieutenant General Winfield Brevet Scott Statue",
+    "Lincoln Memorial",
+    "Bernardo de Galvez",
+    "Dupont Circle"
+   ],
+   "ungrounded_additions": [],
+   "added_without_coordinates": [],
+   "reported_diff_matches_independent": null,
+   "downstream": {
+    "route_legs_reference_only_current_experiences": true,
+    "route_leg_count": 6,
+    "validation_rerun": true,
+    "narrative_references_only_current_experiences": true,
+    "narrative_status": "failed",
+    "narrative_changed": false
+   },
+   "versioning": {
+    "revisions_before": 3,
+    "revisions_after": 4,
+    "revision_created_only_on_success": true,
+    "active_head_label_after": "v4",
+    "head_label_matches_current_version": true
+   },
+   "feedback_marked_applied": true
+  },
+  {
+   "chain_id": "R-LIS2",
+   "step_id": "R04-day-specific",
+   "kind": "day-specific change",
+   "mode": "as_configured",
+   "base_case_id": "LIS-2",
+   "trip_id": "trip_b2d139b7e1e34b5488d31eaaa94a3e5a",
+   "feedback_text": "Change only day 2. Make it more relaxed.",
+   "feedback_http_status": 200,
+   "regenerate_latency_seconds": 3.0,
+   "regenerate_http_status": 200,
+   "applied": true,
+   "identity_stability": {
+    "before_experience_count": 11,
+    "ids_surviving_fraction": 0.0,
+    "names_surviving_fraction": 1.0
+   },
+   "targeted": false,
+   "interpretation_status": null,
+   "execution_status": null,
+   "previous_version": "v1",
+   "current_version": "v2",
+   "changed_sections": [
+    "experience_plan",
+    "validation"
+   ],
+   "message": "Regeneration applied. Rerun stages: experience_plan, validation.",
+   "request_correct": false,
+   "request_check_note": "changed_days=[1, 2, 3]",
+   "independent_diff": {
+    "added": 11,
+    "removed": 11,
+    "moved": 0,
+    "reordered_days": [],
+    "changed_days": [
+     1,
+     2,
+     3
+    ]
+   },
+   "preserved_days_reported": [],
+   "affected_days_reported": [],
+   "preserved_days_unchanged": null,
+   "unexpected_changed_days": [],
+   "days_changed_beyond_request_scope": [
+    1,
+    2,
+    3
+   ],
+   "added_names": [
+    "Past\u00e9is de Bel\u00e9m",
+    "Arco Escuro",
+    "Pelourinho de Lisboa",
+    "Torre de S\u00e3o Louren\u00e7o",
+    "Portas do Mar",
+    "Afonso de Albuquerque",
+    "Miradouro de S\u00e3o Pedro de Alc\u00e2ntara",
+    "Comboio do Zoo",
+    "Arco de Jesus",
+    "Antiga Fabrica de Polvora",
+    "Arco do Ros\u00e1rio"
+   ],
+   "ungrounded_additions": [],
+   "added_without_coordinates": [],
+   "reported_diff_matches_independent": null,
+   "downstream": {
+    "route_legs_reference_only_current_experiences": true,
+    "route_leg_count": 8,
+    "validation_rerun": true,
+    "narrative_references_only_current_experiences": true,
+    "narrative_status": "failed",
+    "narrative_changed": false
+   },
+   "versioning": {
+    "revisions_before": 1,
+    "revisions_after": 2,
+    "revision_created_only_on_success": true,
+    "active_head_label_after": "v2",
+    "head_label_matches_current_version": true
+   },
+   "feedback_marked_applied": true
+  },
+  {
+   "chain_id": "R-LIS2",
+   "step_id": "R05-preservation",
+   "kind": "preservation",
+   "mode": "as_configured",
+   "base_case_id": "LIS-2",
+   "trip_id": "trip_b2d139b7e1e34b5488d31eaaa94a3e5a",
+   "feedback_text": "Keep day 1 exactly the same, but make day 3 less packed.",
+   "feedback_http_status": 200,
+   "regenerate_latency_seconds": 3.1,
+   "regenerate_http_status": 200,
+   "applied": true,
+   "identity_stability": {
+    "before_experience_count": 11,
+    "ids_surviving_fraction": 0.0,
+    "names_surviving_fraction": 1.0
+   },
+   "targeted": false,
+   "interpretation_status": null,
+   "execution_status": null,
+   "previous_version": "v2",
+   "current_version": "v3",
+   "changed_sections": [
+    "experience_plan",
+    "validation"
+   ],
+   "message": "Regeneration applied. Rerun stages: experience_plan, validation.",
+   "request_correct": false,
+   "request_check_note": "day1 identical=False; other days changed=[2, 3]",
+   "independent_diff": {
+    "added": 11,
+    "removed": 11,
+    "moved": 0,
+    "reordered_days": [],
+    "changed_days": [
+     1,
+     2,
+     3
+    ]
+   },
+   "preserved_days_reported": [],
+   "affected_days_reported": [],
+   "preserved_days_unchanged": null,
+   "unexpected_changed_days": [],
+   "days_changed_beyond_request_scope": [
+    1,
+    2,
+    3
+   ],
+   "added_names": [
+    "Past\u00e9is de Bel\u00e9m",
+    "Arco do Ros\u00e1rio",
+    "Arco de Jesus",
+    "Antiga Fabrica de Polvora",
+    "Afonso de Albuquerque",
+    "Miradouro de S\u00e3o Pedro de Alc\u00e2ntara",
+    "Comboio do Zoo",
+    "Pelourinho de Lisboa",
+    "Arco Escuro",
+    "Torre de S\u00e3o Louren\u00e7o",
+    "Portas do Mar"
+   ],
+   "ungrounded_additions": [],
+   "added_without_coordinates": [],
+   "reported_diff_matches_independent": null,
+   "downstream": {
+    "route_legs_reference_only_current_experiences": true,
+    "route_leg_count": 8,
+    "validation_rerun": true,
+    "narrative_references_only_current_experiences": true,
+    "narrative_status": "failed",
+    "narrative_changed": false
+   },
+   "versioning": {
+    "revisions_before": 2,
+    "revisions_after": 3,
+    "revision_created_only_on_success": true,
+    "active_head_label_after": "v3",
+    "head_label_matches_current_version": true
+   },
+   "feedback_marked_applied": true
+  },
+  {
+   "chain_id": "R-LIS2",
+   "step_id": "R06-move",
+   "kind": "move",
+   "mode": "as_configured",
+   "base_case_id": "LIS-2",
+   "trip_id": "trip_b2d139b7e1e34b5488d31eaaa94a3e5a",
+   "skipped": "template target did not exist in the current itinerary (e.g. baseline had too few stops)"
+  },
+  {
+   "chain_id": "R-SF1",
+   "step_id": "R07-day-pacing",
+   "kind": "pacing (one day)",
+   "mode": "as_configured",
+   "base_case_id": "SF-1",
+   "trip_id": "trip_3f07d207cc7745d79c310a7bc279d480",
+   "feedback_text": "Make day 2 less packed.",
+   "feedback_http_status": 200,
+   "regenerate_latency_seconds": 3.2,
+   "regenerate_http_status": 200,
+   "applied": true,
+   "identity_stability": {
+    "before_experience_count": 8,
+    "ids_surviving_fraction": 0.0,
+    "names_surviving_fraction": 1.0
+   },
+   "targeted": false,
+   "interpretation_status": null,
+   "execution_status": null,
+   "previous_version": "v1",
+   "current_version": "v2",
+   "changed_sections": [
+    "experience_plan",
+    "validation"
+   ],
+   "message": "Regeneration applied. Rerun stages: experience_plan, validation.",
+   "request_correct": false,
+   "request_check_note": "day2 stops 4->4",
+   "independent_diff": {
+    "added": 8,
+    "removed": 8,
+    "moved": 0,
+    "reordered_days": [],
+    "changed_days": [
+     1,
+     2
+    ]
+   },
+   "preserved_days_reported": [],
+   "affected_days_reported": [],
+   "preserved_days_unchanged": null,
+   "unexpected_changed_days": [],
+   "days_changed_beyond_request_scope": [
+    1,
+    2
+   ],
+   "added_names": [
+    "Mechanics Monument",
+    "Dragon Gate",
+    "Lotta's Fountain",
+    "California Society of Pioneers Museum and Library",
+    "Phillip Burton",
+    "Mus\u00e9e M\u00e9canique",
+    "Inspiration Point",
+    "Willie McCovey Statue"
+   ],
+   "ungrounded_additions": [],
+   "added_without_coordinates": [],
+   "reported_diff_matches_independent": null,
+   "downstream": {
+    "route_legs_reference_only_current_experiences": true,
+    "route_leg_count": 6,
+    "validation_rerun": true,
+    "narrative_references_only_current_experiences": true,
+    "narrative_status": "failed",
+    "narrative_changed": false
+   },
+   "versioning": {
+    "revisions_before": 1,
+    "revisions_after": 2,
+    "revision_created_only_on_success": true,
+    "active_head_label_after": "v2",
+    "head_label_matches_current_version": true
+   },
+   "feedback_marked_applied": true
+  },
+  {
+   "chain_id": "R-SF1",
+   "step_id": "R08-global-pacing",
+   "kind": "pacing (global)",
+   "mode": "as_configured",
+   "base_case_id": "SF-1",
+   "trip_id": "trip_3f07d207cc7745d79c310a7bc279d480",
+   "feedback_text": "Make the whole trip more relaxed.",
+   "feedback_http_status": 200,
+   "regenerate_latency_seconds": 3.2,
+   "regenerate_http_status": 200,
+   "applied": true,
+   "identity_stability": {
+    "before_experience_count": 8,
+    "ids_surviving_fraction": 0.0,
+    "names_surviving_fraction": 1.0
+   },
+   "targeted": false,
+   "interpretation_status": null,
+   "execution_status": null,
+   "previous_version": "v2",
+   "current_version": "v3",
+   "changed_sections": [
+    "experience_plan",
+    "validation"
+   ],
+   "message": "Regeneration applied. Rerun stages: experience_plan, validation.",
+   "request_correct": false,
+   "request_check_note": "pace packed->packed; total stops 8->8",
+   "independent_diff": {
+    "added": 8,
+    "removed": 8,
+    "moved": 0,
+    "reordered_days": [],
+    "changed_days": [
+     1,
+     2
+    ]
+   },
+   "preserved_days_reported": [],
+   "affected_days_reported": [],
+   "preserved_days_unchanged": null,
+   "unexpected_changed_days": [],
+   "added_names": [
+    "Willie McCovey Statue",
+    "Mus\u00e9e M\u00e9canique",
+    "Lotta's Fountain",
+    "Phillip Burton",
+    "Inspiration Point",
+    "Dragon Gate",
+    "California Society of Pioneers Museum and Library",
+    "Mechanics Monument"
+   ],
+   "ungrounded_additions": [],
+   "added_without_coordinates": [],
+   "reported_diff_matches_independent": null,
+   "downstream": {
+    "route_legs_reference_only_current_experiences": true,
+    "route_leg_count": 6,
+    "validation_rerun": true,
+    "narrative_references_only_current_experiences": true,
+    "narrative_status": "failed",
+    "narrative_changed": false
+   },
+   "versioning": {
+    "revisions_before": 2,
+    "revisions_after": 3,
+    "revision_created_only_on_success": true,
+    "active_head_label_after": "v3",
+    "head_label_matches_current_version": true
+   },
+   "feedback_marked_applied": true
+  },
+  {
+   "chain_id": "R-SF1",
+   "step_id": "R09-interest",
+   "kind": "interest change",
+   "mode": "as_configured",
+   "base_case_id": "SF-1",
+   "trip_id": "trip_3f07d207cc7745d79c310a7bc279d480",
+   "feedback_text": "I want more local food.",
+   "feedback_http_status": 200,
+   "regenerate_latency_seconds": 4.6,
+   "regenerate_http_status": 200,
+   "applied": true,
+   "identity_stability": {
+    "before_experience_count": 8,
+    "ids_surviving_fraction": 0.0,
+    "names_surviving_fraction": 1.0
+   },
+   "targeted": false,
+   "interpretation_status": null,
+   "execution_status": null,
+   "previous_version": "v3",
+   "current_version": "v4",
+   "changed_sections": [
+    "traveler_profile",
+    "destination_context",
+    "experience_plan",
+    "validation"
+   ],
+   "message": "Regeneration applied. Rerun stages: traveler_profile, destination_context, experience_plan, validation.",
+   "request_correct": false,
+   "request_check_note": "interests=['outdoors', 'food']; food-like added=[]",
+   "independent_diff": {
+    "added": 8,
+    "removed": 8,
+    "moved": 0,
+    "reordered_days": [],
+    "changed_days": [
+     1,
+     2
+    ]
+   },
+   "preserved_days_reported": [],
+   "affected_days_reported": [],
+   "preserved_days_unchanged": null,
+   "unexpected_changed_days": [],
+   "added_names": [
+    "California Society of Pioneers Museum and Library",
+    "Willie McCovey Statue",
+    "Dragon Gate",
+    "Mus\u00e9e M\u00e9canique",
+    "Mechanics Monument",
+    "Phillip Burton",
+    "Lotta's Fountain",
+    "Inspiration Point"
+   ],
+   "ungrounded_additions": [],
+   "added_without_coordinates": [],
+   "reported_diff_matches_independent": null,
+   "downstream": {
+    "route_legs_reference_only_current_experiences": true,
+    "route_leg_count": 6,
+    "validation_rerun": true,
+    "narrative_references_only_current_experiences": true,
+    "narrative_status": "failed",
+    "narrative_changed": false
+   },
+   "versioning": {
+    "revisions_before": 3,
+    "revisions_after": 4,
+    "revision_created_only_on_success": true,
+    "active_head_label_after": "v4",
+    "head_label_matches_current_version": true
+   },
+   "feedback_marked_applied": true
+  },
+  {
+   "chain_id": "R-CHI1",
+   "step_id": "R10-ambiguous",
+   "kind": "ambiguous request",
+   "mode": "as_configured",
+   "base_case_id": "CHI-1",
+   "trip_id": "trip_bfd4a120605b40c2a32ced9e4da33c39",
+   "feedback_text": "Swap that place for something better.",
+   "feedback_http_status": 200,
+   "regenerate_latency_seconds": 0.7,
+   "regenerate_http_status": 409,
+   "error_code": "REGENERATION_NOT_AVAILABLE",
+   "error_message": "Feedback-driven regeneration is not available yet. The regeneration engine has not been implemented, so no plan changes were made.",
+   "applied": false,
+   "identity_stability": {
+    "before_experience_count": 9,
+    "ids_surviving_fraction": 1.0,
+    "names_surviving_fraction": 1.0
+   },
+   "request_correct": true,
+   "request_check_note": "http=409, plan unchanged=True",
+   "independent_diff": {
+    "added": 0,
+    "removed": 0,
+    "moved": 0,
+    "reordered_days": [],
+    "changed_days": []
+   },
+   "preserved_days_reported": [],
+   "affected_days_reported": [],
+   "preserved_days_unchanged": null,
+   "unexpected_changed_days": null,
+   "added_names": [],
+   "ungrounded_additions": [],
+   "added_without_coordinates": [],
+   "reported_diff_matches_independent": null,
+   "downstream": {
+    "route_legs_reference_only_current_experiences": true,
+    "route_leg_count": 6,
+    "validation_rerun": false,
+    "narrative_references_only_current_experiences": true,
+    "narrative_status": "failed",
+    "narrative_changed": false
+   },
+   "versioning": {
+    "revisions_before": 1,
+    "revisions_after": 1,
+    "revision_created_only_on_success": true,
+    "active_head_label_after": "v1",
+    "head_label_matches_current_version": null
+   },
+   "feedback_marked_applied": null
+  },
+  {
+   "chain_id": "R-CHI1",
+   "step_id": "R11-impossible-move",
+   "kind": "impossible structural request",
+   "mode": "as_configured",
+   "base_case_id": "CHI-1",
+   "trip_id": "trip_bfd4a120605b40c2a32ced9e4da33c39",
+   "feedback_text": "Move Shoreline Sightseeing to day 9.",
+   "feedback_http_status": 200,
+   "regenerate_latency_seconds": 0.6,
+   "regenerate_http_status": 409,
+   "error_code": "REGENERATION_NOT_AVAILABLE",
+   "error_message": "Feedback-driven regeneration is not available yet. The regeneration engine has not been implemented, so no plan changes were made.",
+   "applied": false,
+   "identity_stability": {
+    "before_experience_count": 9,
+    "ids_surviving_fraction": 1.0,
+    "names_surviving_fraction": 1.0
+   },
+   "request_correct": true,
+   "request_check_note": "http=409, plan unchanged=True",
+   "independent_diff": {
+    "added": 0,
+    "removed": 0,
+    "moved": 0,
+    "reordered_days": [],
+    "changed_days": []
+   },
+   "preserved_days_reported": [],
+   "affected_days_reported": [],
+   "preserved_days_unchanged": null,
+   "unexpected_changed_days": null,
+   "added_names": [],
+   "ungrounded_additions": [],
+   "added_without_coordinates": [],
+   "reported_diff_matches_independent": null,
+   "downstream": {
+    "route_legs_reference_only_current_experiences": true,
+    "route_leg_count": 6,
+    "validation_rerun": false,
+    "narrative_references_only_current_experiences": true,
+    "narrative_status": "failed",
+    "narrative_changed": false
+   },
+   "versioning": {
+    "revisions_before": 1,
+    "revisions_after": 1,
+    "revision_created_only_on_success": true,
+    "active_head_label_after": "v1",
+    "head_label_matches_current_version": null
+   },
+   "feedback_marked_applied": null
+  },
+  {
+   "chain_id": "R-CHI1",
+   "step_id": "R12-ungroundable-add",
+   "kind": "provider-grounding failure (honest, not controlled)",
+   "mode": "as_configured",
+   "base_case_id": "CHI-1",
+   "trip_id": "trip_bfd4a120605b40c2a32ced9e4da33c39",
+   "feedback_text": "I also want to visit the Zzyzx Fictional Observatory Tower.",
+   "feedback_http_status": 200,
+   "regenerate_latency_seconds": 0.6,
+   "regenerate_http_status": 409,
+   "error_code": "REGENERATION_NOT_AVAILABLE",
+   "error_message": "Feedback-driven regeneration is not available yet. The regeneration engine has not been implemented, so no plan changes were made.",
+   "applied": false,
+   "identity_stability": {
+    "before_experience_count": 9,
+    "ids_surviving_fraction": 1.0,
+    "names_surviving_fraction": 1.0
+   },
+   "request_correct": true,
+   "request_check_note": "added=[], ungrounded=[], fictional_present=[]",
+   "independent_diff": {
+    "added": 0,
+    "removed": 0,
+    "moved": 0,
+    "reordered_days": [],
+    "changed_days": []
+   },
+   "preserved_days_reported": [],
+   "affected_days_reported": [],
+   "preserved_days_unchanged": null,
+   "unexpected_changed_days": null,
+   "added_names": [],
+   "ungrounded_additions": [],
+   "added_without_coordinates": [],
+   "reported_diff_matches_independent": null,
+   "downstream": {
+    "route_legs_reference_only_current_experiences": true,
+    "route_leg_count": 6,
+    "validation_rerun": false,
+    "narrative_references_only_current_experiences": true,
+    "narrative_status": "failed",
+    "narrative_changed": false
+   },
+   "versioning": {
+    "revisions_before": 1,
+    "revisions_after": 1,
+    "revision_created_only_on_success": true,
+    "active_head_label_after": "v1",
+    "head_label_matches_current_version": null
+   },
+   "feedback_marked_applied": null
+  },
+  {
+   "chain_id": "R-NYC2-legacy",
+   "step_id": "R13-legacy-pacing",
+   "kind": "pacing via legacy keyword path",
+   "mode": "as_configured",
+   "base_case_id": "NYC-2",
+   "trip_id": "trip_b93b9c0bebe3424c940579e59de3c131",
+   "feedback_text": "Make this less packed, it's too much walking.",
+   "feedback_http_status": 200,
+   "regenerate_latency_seconds": 7.2,
+   "regenerate_http_status": 200,
+   "applied": true,
+   "identity_stability": {
+    "before_experience_count": 2,
+    "ids_surviving_fraction": 0.0,
+    "names_surviving_fraction": 1.0
+   },
+   "targeted": false,
+   "interpretation_status": null,
+   "execution_status": null,
+   "previous_version": "v1",
+   "current_version": "v2",
+   "changed_sections": [
+    "stay_transport",
+    "experience_plan",
+    "validation"
+   ],
+   "message": "Regeneration applied. Rerun stages: stay_transport, experience_plan, validation.",
+   "request_correct": null,
+   "request_check_note": "not evaluable: baseline pace was already relaxed and total stops unchanged (2)",
+   "independent_diff": {
+    "added": 2,
+    "removed": 2,
+    "moved": 0,
+    "reordered_days": [],
+    "changed_days": [
+     1
+    ]
+   },
+   "preserved_days_reported": [],
+   "affected_days_reported": [],
+   "preserved_days_unchanged": null,
+   "unexpected_changed_days": [],
+   "added_names": [
+    "SoHo",
+    "South Street Seaport"
+   ],
+   "ungrounded_additions": [],
+   "added_without_coordinates": [],
+   "reported_diff_matches_independent": null,
+   "downstream": {
+    "route_legs_reference_only_current_experiences": true,
+    "route_leg_count": 1,
+    "validation_rerun": true,
+    "narrative_references_only_current_experiences": true,
+    "narrative_status": "failed",
+    "narrative_changed": false
+   },
+   "versioning": {
+    "revisions_before": 1,
+    "revisions_after": 2,
+    "revision_created_only_on_success": true,
+    "active_head_label_after": "v2",
+    "head_label_matches_current_version": true
+   },
+   "feedback_marked_applied": true
+  },
+  {
+   "chain_id": "R-NYC2-legacy",
+   "step_id": "R14-legacy-removal",
+   "kind": "exact removal via legacy keyword path",
+   "mode": "as_configured",
+   "base_case_id": "NYC-2",
+   "trip_id": "trip_b93b9c0bebe3424c940579e59de3c131",
+   "feedback_text": "Remove SoHo from the itinerary.",
+   "feedback_http_status": 200,
+   "regenerate_latency_seconds": 4.6,
+   "regenerate_http_status": 200,
+   "applied": true,
+   "identity_stability": {
+    "before_experience_count": 2,
+    "ids_surviving_fraction": 0.0,
+    "names_surviving_fraction": 1.0
+   },
+   "targeted": false,
+   "interpretation_status": null,
+   "execution_status": null,
+   "previous_version": "v2",
+   "current_version": "v3",
+   "changed_sections": [
+    "traveler_profile",
+    "experience_plan",
+    "validation"
+   ],
+   "message": "Regeneration applied. Rerun stages: traveler_profile, experience_plan, validation.",
+   "request_correct": false,
+   "request_check_note": "target (id and name) absent after=False",
+   "independent_diff": {
+    "added": 2,
+    "removed": 2,
+    "moved": 0,
+    "reordered_days": [],
+    "changed_days": [
+     1
+    ]
+   },
+   "preserved_days_reported": [],
+   "affected_days_reported": [],
+   "preserved_days_unchanged": null,
+   "unexpected_changed_days": [],
+   "days_changed_beyond_request_scope": [
+    1
+   ],
+   "added_names": [
+    "South Street Seaport",
+    "SoHo"
+   ],
+   "ungrounded_additions": [],
+   "added_without_coordinates": [],
+   "reported_diff_matches_independent": null,
+   "downstream": {
+    "route_legs_reference_only_current_experiences": true,
+    "route_leg_count": 1,
+    "validation_rerun": true,
+    "narrative_references_only_current_experiences": true,
+    "narrative_status": "failed",
+    "narrative_changed": false
+   },
+   "versioning": {
+    "revisions_before": 2,
+    "revisions_after": 3,
+    "revision_created_only_on_success": true,
+    "active_head_label_after": "v3",
+    "head_label_matches_current_version": true
+   },
+   "feedback_marked_applied": true
+  }
+ ],
+ "validity_note": "Legacy (keyword-classified, non-targeted) regeneration on the developer's normal configuration; all 14 planned steps across 5 chains (R06 skipped: target absent from the degraded baseline). Groq quota was exhausted during this run, so baselines/narrator are AI-degraded."
+}

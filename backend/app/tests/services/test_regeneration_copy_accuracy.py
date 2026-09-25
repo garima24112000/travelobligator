@@ -89,7 +89,7 @@ def test_feedback_service_blocked_by_constant_has_no_stale_claim() -> None:
     # does/doesn't do -- never a claim about whether regeneration exists.
     assert len(FEEDBACK_BLOCKED_BY) == 3
     assert "does not itself trigger regeneration" in FEEDBACK_BLOCKED_BY[0]
-    assert "No AI interpretation provider is connected." in FEEDBACK_BLOCKED_BY
+    assert "AI interpretation is not applied when feedback is captured." in FEEDBACK_BLOCKED_BY
     assert "No plan sections are modified by the feedback capture endpoint." in FEEDBACK_BLOCKED_BY
 
 

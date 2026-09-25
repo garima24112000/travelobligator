@@ -28,6 +28,7 @@ from app.models.targeted_regeneration_execution import (
 from app.models.targeted_regeneration_plan import TargetedRegenerationPlan, TargetedRegenerationPlanStatus
 from app.providers.ai_itinerary_reasoning import AIItineraryReasoningProvider, get_ai_itinerary_reasoning_provider
 from app.providers.gateway import ProviderGateway, provider_gateway
+from app.services.experience_identity import deterministic_experience_id, experience_stable_key
 from app.services.ai_itinerary_repair_request_builder import AIItineraryRepairRequestBuilder
 from app.services.ai_itinerary_repair_service import AIItineraryRepairService
 from app.services.ai_itinerary_reasoning_request_builder import AIItineraryReasoningRequestBuilder
@@ -337,10 +338,14 @@ class TargetedRegenerationExecutor:
 
         # Task 12-14: scoped AI reasoning, only when the plan requires it.
         if plan.requires_ai_itinerary_reasoning:
-            reasoning_result = self._run_scoped_reasoning(working_state, plan, hard_preserved_days, grounded_candidates)
+            reasoning_failure_kind: list[str] = []
+            reasoning_result = self._run_scoped_reasoning(
+                working_state, plan, hard_preserved_days, grounded_candidates, reasoning_failure_kind
+            )
             if reasoning_result is None:
                 return TargetedRegenerationExecutionResult(
                     status=TargetedRegenerationExecutionStatus.REASONING_FAILED,
+                    provider_failure_kind=reasoning_failure_kind[0] if reasoning_failure_kind else None,
                     provider_lookup_status=provider_lookup_status,
                     reasoning_status="failed_or_rejected",
                     block_reasons=[
@@ -361,6 +366,7 @@ class TargetedRegenerationExecutor:
         # validation always agree with the final, actually-returned
         # content.
         self._splice_preserved_days(working_state, preserved_day_snapshot)
+        self._enforce_unique_places(working_state, preserved_day_snapshot)
 
         # Task 24/25/26: routing / sequencing / buffers, recomputed fresh.
         self._rerun_routing_reports(working_state, hard_preserved_days)
@@ -382,6 +388,7 @@ class TargetedRegenerationExecutor:
             repair_attempted, repair_status = self._attempt_bounded_repair(working_state, plan, hard_preserved_days)
             if repair_attempted and repair_status == AIItineraryRepairStatus.COMPLETED.value:
                 self._splice_preserved_days(working_state, preserved_day_snapshot)
+                self._enforce_unique_places(working_state, preserved_day_snapshot)
                 self._rerun_routing_reports(working_state, hard_preserved_days)
                 self.plan_validator_service.run(working_state)
                 validation_status = (
@@ -511,9 +518,29 @@ class TargetedRegenerationExecutor:
         daily_plans_by_number = {day.day_number: day for day in working_state.experience_plan.daily_plans}
         deterministic_edits_applied: list[str] = []
         affected_days: set[int] = set()
+        inserted_count = 0
+        already_scheduled_keys = {
+            key
+            for original_day in working_state.experience_plan.daily_plans
+            for experience in original_day.experiences
+            if (key := experience_stable_key(experience)) is not None
+        }
         for target_day_index, candidate in insertions:
             day = daily_plans_by_number[target_day_index]
-            new_item = self._build_experience_item_from_candidate(candidate)
+            new_item = self._build_experience_item_from_candidate(working_state.trip_id, candidate)
+            # Section 202B.1 (Task 10): the requested place is already on
+            # the itinerary (same stable provider identity) -- never a
+            # second occurrence. Nothing is inserted; with no other change
+            # the commit boundary reports a no-effect outcome.
+            new_key = experience_stable_key(new_item)
+            if new_key is not None and new_key in already_scheduled_keys:
+                deterministic_edits_applied.append(
+                    f"{candidate.name!r} is already scheduled; not added again"
+                )
+                continue
+            if new_key is not None:
+                already_scheduled_keys.add(new_key)
+            inserted_count += 1
             # Deliberately does NOT call `_restamp_stop_order` here --
             # that would rewrite every pre-existing item's `stop_order`
             # bookkeeping field too, and Task 21's preservation audit
@@ -564,7 +591,11 @@ class TargetedRegenerationExecutor:
 
         # Task 21: additive-specific preservation audit.
         audit_passed, audit_reasons = self._additive_preservation_audit(
-            working_state, original_snapshot, original_experience_ids, grounded_candidates
+            working_state,
+            original_snapshot,
+            original_experience_ids,
+            grounded_candidates,
+            expected_new_count=inserted_count,
         )
         if not audit_passed:
             return TargetedRegenerationExecutionResult(
@@ -663,8 +694,13 @@ class TargetedRegenerationExecutor:
         )
 
     @staticmethod
-    def _build_experience_item_from_candidate(candidate: ItineraryCandidateReference) -> ExperienceItem:
+    def _build_experience_item_from_candidate(trip_id: str, candidate: ItineraryCandidateReference) -> ExperienceItem:
+        identity_kwargs: dict[str, Any] = {}
+        stable_id = deterministic_experience_id(trip_id, candidate.provider_name, candidate.provider_place_id)
+        if stable_id:
+            identity_kwargs["experience_id"] = stable_id
         return ExperienceItem(
+            **identity_kwargs,
             name=candidate.name,
             category=candidate.category.value,
             coordinates=candidate.coordinates,
@@ -690,6 +726,7 @@ class TargetedRegenerationExecutor:
         original_snapshot: list[tuple[int, list[ExperienceItem]]],
         original_experience_ids: set[str],
         grounded_candidates: list[ItineraryCandidateReference],
+        expected_new_count: int | None = None,
     ) -> tuple[bool, list[str]]:
         """Task 21: every original item must still exist, on its original
         day, in its original relative order, byte-for-byte unchanged.
@@ -727,9 +764,13 @@ class TargetedRegenerationExecutor:
             experience.experience_id for day in experience_plan.daily_plans for experience in day.experiences
         }
         new_experience_ids = all_current_ids - original_experience_ids
-        if len(new_experience_ids) != len(grounded_candidates):
+        # Section 202B.1: a requested place that is already scheduled is
+        # (correctly) not inserted a second time, so the expected count is
+        # what was actually inserted, never blindly the number requested.
+        expected_new = len(grounded_candidates) if expected_new_count is None else expected_new_count
+        if len(new_experience_ids) != expected_new:
             reasons.append(
-                f"expected exactly {len(grounded_candidates)} new experience(s), found "
+                f"expected exactly {expected_new} new experience(s), found "
                 f"{len(new_experience_ids)}."
             )
         for day in experience_plan.daily_plans:
@@ -971,6 +1012,7 @@ class TargetedRegenerationExecutor:
         plan: TargetedRegenerationPlan,
         hard_preserved_days: set[int],
         grounded_candidates: list[ItineraryCandidateReference],
+        failure_kind_out: list[str] | None = None,
     ) -> AIItineraryReasoningResult | None:
         if not get_settings().ai_itinerary_reasoning_enabled:
             return None
@@ -998,6 +1040,8 @@ class TargetedRegenerationExecutor:
             return None
 
         if result.status != AIItineraryReasoningStatus.COMPLETED:
+            if failure_kind_out is not None and result.failure_kind:
+                failure_kind_out.append(result.failure_kind)
             return None
 
         # Task 39: reasoning may only ever return the day(s) the plan
@@ -1024,6 +1068,50 @@ class TargetedRegenerationExecutor:
         working_state.experience_plan.daily_plans = [
             preserved_day_snapshot.get(day.day_number, day) for day in working_state.experience_plan.daily_plans
         ]
+
+    # -- final-state place uniqueness (Section 202B.1, Task 10) -------------
+
+    @staticmethod
+    def _enforce_unique_places(working_state: PlanningState, preserved_day_snapshot: dict[int, DailyPlan]) -> None:
+        """Deterministic prevention (identity = stable provider place key,
+        never a display name): a provider-grounded place already
+        scheduled on a preserved day, or on an earlier day of this
+        result, is not scheduled a second time. The repeated occurrence
+        is dropped from the NON-preserved day that would have repeated it
+        and that day says so in its own warnings -- never silently.
+        Preserved days are never edited here.
+        """
+        experience_plan = working_state.experience_plan
+        if experience_plan is None:
+            return
+        seen: set[str] = set()
+        for day in experience_plan.daily_plans:
+            if day.day_number in preserved_day_snapshot:
+                for experience in day.experiences:
+                    key = experience_stable_key(experience)
+                    if key is not None:
+                        seen.add(key)
+        for day in sorted(experience_plan.daily_plans, key=lambda d: d.day_number):
+            if day.day_number in preserved_day_snapshot:
+                continue
+            kept: list[ExperienceItem] = []
+            dropped: list[str] = []
+            for experience in day.experiences:
+                key = experience_stable_key(experience)
+                if key is not None and key in seen:
+                    dropped.append(experience.name)
+                    continue
+                if key is not None:
+                    seen.add(key)
+                kept.append(experience)
+            if dropped:
+                day.experiences = kept
+                _restamp_stop_order(day)
+                day.warnings.append(
+                    "A place already scheduled on another day was not repeated here: "
+                    + ", ".join(dropped)
+                    + "."
+                )
 
     # -- routing / sequencing / buffers (Task 24/25/26) --------------------
 

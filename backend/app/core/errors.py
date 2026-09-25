@@ -50,9 +50,7 @@ def lock_not_found_error(trip_id: str, lock_id: str) -> AppError:
 # `message` and app.services.regeneration_attempt_service so the audit trail
 # can never drift from the error response it's recording.
 REGENERATION_NOT_AVAILABLE_MESSAGE = (
-    "Feedback-driven regeneration is not available yet. The "
-    "regeneration engine has not been implemented, so no plan "
-    "changes were made."
+    "Regeneration was not applied, so no plan changes were made."
 )
 
 
@@ -169,13 +167,121 @@ REGENERATION_PROVIDER_UNAVAILABLE_MESSAGE = (
     "regeneration was not attempted. No plan section was changed."
 )
 
+# Section 202B.1 (Task 17): one truthful sentence per AI-provider failure
+# kind (`app.providers.ai_failure.AIProviderFailureKind` values). Keyed by
+# the plain string value so this module never imports the providers
+# package. Never claims a recovery time, never includes provider detail.
+REGENERATION_PROVIDER_FAILURE_MESSAGES: dict[str, str] = {
+    "not_connected": (
+        "AI feedback interpretation is not currently connected, so the request "
+        "could not be interpreted. No plan section was changed."
+    ),
+    "authentication": (
+        "The AI model provider rejected the configured credentials, so the request "
+        "could not be interpreted. No plan section was changed."
+    ),
+    "rate_limited": (
+        "AI regeneration is temporarily unavailable because the configured model "
+        "provider rate-limited the request. No plan section was changed and your "
+        "feedback is still pending."
+    ),
+    "timeout_or_network": (
+        "The AI model provider could not be reached in time, so the request could "
+        "not be interpreted. No plan section was changed and your feedback is still "
+        "pending."
+    ),
+    "malformed_output": (
+        "The AI model returned an answer that could not be used, so the request "
+        "could not be interpreted. No plan section was changed and your feedback is "
+        "still pending."
+    ),
+    "provider_error": (
+        "The AI model provider returned an error, so the request could not be "
+        "interpreted. No plan section was changed and your feedback is still pending."
+    ),
+}
+
 
 def regeneration_provider_unavailable_error() -> AppError:
+    """A requested PLACE could not be looked up (places provider)."""
     return AppError(
         code=ErrorCode.REGENERATION_PROVIDER_UNAVAILABLE,
         message=REGENERATION_PROVIDER_UNAVAILABLE_MESSAGE,
         status_code=status.HTTP_409_CONFLICT,
         field="regeneration",
+    )
+
+
+def regeneration_ai_unavailable_error(failure_kind: str | None = None) -> AppError:
+    """The AI feedback interpreter could not be used -- copy is per
+    failure kind (`app.providers.ai_failure.AIProviderFailureKind`)."""
+    return AppError(
+        code=ErrorCode.REGENERATION_AI_UNAVAILABLE,
+        message=REGENERATION_PROVIDER_FAILURE_MESSAGES.get(
+            failure_kind or "", REGENERATION_PROVIDER_FAILURE_MESSAGES["provider_error"]
+        ),
+        status_code=status.HTTP_409_CONFLICT,
+        field="regeneration",
+    )
+
+
+def regeneration_provider_rate_limited_error() -> AppError:
+    return AppError(
+        code=ErrorCode.REGENERATION_PROVIDER_RATE_LIMITED,
+        message=REGENERATION_PROVIDER_FAILURE_MESSAGES["rate_limited"],
+        status_code=status.HTTP_409_CONFLICT,
+        field="regeneration",
+    )
+
+
+REGENERATION_FEEDBACK_NOT_INTERPRETABLE_MESSAGE = (
+    "This request needs AI interpretation to change the itinerary, and AI "
+    "regeneration is not enabled, so it was not applied. No plan section was "
+    "changed and your feedback is still pending."
+)
+
+
+def regeneration_feedback_not_interpretable_error() -> AppError:
+    """Section 202B.1 (Task 2): legacy (non-targeted) regeneration never
+    understood free text -- see docs/14 section "202B.1". Refused honestly
+    instead of re-running unchanged stages and calling it applied."""
+    return AppError(
+        code=ErrorCode.REGENERATION_FEEDBACK_NOT_INTERPRETABLE,
+        message=REGENERATION_FEEDBACK_NOT_INTERPRETABLE_MESSAGE,
+        status_code=status.HTTP_409_CONFLICT,
+        field="regeneration",
+    )
+
+
+REGENERATION_NO_EFFECT_MESSAGE = (
+    "The request would not change the itinerary, so no new version was created "
+    "and your feedback is still pending."
+)
+
+
+def regeneration_no_effect_error() -> AppError:
+    return AppError(
+        code=ErrorCode.REGENERATION_NO_EFFECT,
+        message=REGENERATION_NO_EFFECT_MESSAGE,
+        status_code=status.HTTP_409_CONFLICT,
+        field="regeneration",
+    )
+
+
+DESTINATION_UNRESOLVED_MESSAGE = (
+    "We couldn't confidently resolve this destination, so no itinerary was "
+    "planned. Try including the city and country (for example, \"Lisbon, "
+    "Portugal\")."
+)
+
+
+def destination_unresolved_error() -> AppError:
+    """Section 202B.1 (Task 15): generation found no usable destination."""
+    return AppError(
+        code=ErrorCode.DESTINATION_UNRESOLVED,
+        message=DESTINATION_UNRESOLVED_MESSAGE,
+        status_code=422,
+        field="primary_destination",
     )
 
 

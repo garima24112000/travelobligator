@@ -106,6 +106,9 @@ def test_request_experience_input_has_only_name_category_reason_and_experience_i
         "name",
         "category",
         "reason",
+        # Section 202B.3: provider-derived evidence the narrator may state.
+        "normalized_category",
+        "matched_interests",
     }
     assert experience.name == "Belem Tower"
     assert experience.experience_id

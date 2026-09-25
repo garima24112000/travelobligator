@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import logging
 import re
+import unicodedata
 from typing import Any, NamedTuple
 
 import httpx
 
+from app.services.place_taxonomy import classify_place, filter_provider_tags
 from app.core.config import get_settings
 from app.models.common import DataStatus, GeoPoint, ProviderStatus
 from app.models.providers import NormalizedPlace, ProviderResponse
@@ -35,8 +37,16 @@ _POI_CACHE_SOURCE = "openstreetmap_poi"
 _SEARCH_RADIUS_METERS = 6000
 _FALLBACK_SEARCH_RADIUS_METERS = 12000
 _MAX_RESULTS = 20
+# Section 202B.2: attractions are fetched wider and ranked locally by
+# structured provider evidence before being capped, because Overpass
+# returns an arbitrary (id-ordered) first-N of a union -- which is how
+# small statues/memorials/gates crowded landmarks out of a 20-element pool.
+_MAX_ATTRACTION_RESULTS = 60
+_SIGNIFICANT_FETCH_LIMIT = 15  # per tag family
+_GENERAL_FETCH_LIMIT = 25  # per tag family
+_POI_CACHE_SCHEMA = "202b2-tags-v1"
 _PARTIAL_RESULT_THRESHOLD = 3
-_REQUEST_TIMEOUT_SECONDS = 15.0
+_REQUEST_TIMEOUT_SECONDS = 30.0  # Section 202B.2: > the 25 s Overpass query timeout of the wider attraction query
 
 # Minimum word length counted as "significant" when checking whether a
 # geocode result actually relates to the requested destination (Step
@@ -45,8 +55,17 @@ _REQUEST_TIMEOUT_SECONDS = 15.0
 _MIN_PLAUSIBLE_TOKEN_LENGTH = 3
 
 _ATTRACTION_TAG_FILTERS = [
-    '"tourism"~"attraction|museum|gallery|viewpoint|artwork|zoo|theme_park"',
+    # Section 202B.2: one filter per FAMILY, each with its own quota in the
+    # single Overpass request (see `_query_overpass`), so a family with
+    # thousands of elements (`historic=*`) cannot crowd out museums, sights,
+    # viewpoints, parks or markets before scoring.
+    '"tourism"="museum"',
+    '"tourism"~"attraction|zoo|theme_park|aquarium"',
+    '"tourism"="viewpoint"',
+    '"tourism"~"gallery|artwork"',
     '"historic"',
+    '"leisure"~"park|garden|nature_reserve"',
+    '"amenity"~"marketplace|theatre|nightclub|arts_centre"',
 ]
 _RESTAURANT_TAG_FILTERS = [
     '"amenity"~"restaurant|cafe|fast_food|bar|pub"',
@@ -70,7 +89,7 @@ _ACCOMMODATION_TAG_FILTERS = [
 _ATTRACTION_FALLBACK_TAG_FILTERS = [
     '"tourism"~"attraction|museum|viewpoint"',
     '"historic"',
-    '"amenity"="arts_centre"',
+    '"amenity"~"arts_centre|marketplace|theatre|nightclub"',
     '"leisure"="park"',
 ]
 _RESTAURANT_FALLBACK_TAG_FILTERS = [
@@ -92,34 +111,142 @@ class _ResolvedDestination(NamedTuple):
     point: GeoPoint
     bounding_box: tuple[float, float, float, float] | None
     display_name: str
+    # Section 202B.2 (Task 33): the provider's own structured address
+    # components for the resolved place (city/region/country ...), exactly
+    # as returned -- never inferred.
+    address: dict[str, str] = {}
+
+
+def _normalize_text(text: str) -> str:
+    """Unicode-normalizes for comparison only: NFKD, strip combining marks
+    (Córdoba == Cordoba), casefold, punctuation -> single spaces. Never
+    used to *change* a stored/displayed name."""
+    decomposed = unicodedata.normalize("NFKD", text or "")
+    stripped = "".join(ch for ch in decomposed if not unicodedata.combining(ch))
+    return re.sub(r"[^a-z0-9]+", " ", stripped.casefold()).strip()
 
 
 def _significant_tokens(text: str) -> set[str]:
     return {
         token
-        for token in re.findall(r"[a-z0-9]+", text.lower())
+        for token in _normalize_text(text).split()
         if len(token) >= _MIN_PLAUSIBLE_TOKEN_LENGTH
     }
 
 
 def _is_plausible_geocode_match(query: str, display_name: str) -> bool:
-    """Conservative plausibility check for a Nominatim geocode result
-    (Step 155C).
-
-    Requires at least one significant (3+ character) word from `query` to
-    also appear in the resolved `display_name`. This is deliberately
-    simple -- no fuzzy matching, no LLM -- but is enough to reject a
-    geocode result that shares nothing in common with what was actually
-    asked for (e.g. a vague/degenerate query resolving to an unrelated
-    place in a different country, with a `display_name` that shares no
-    words with the query at all). Returns False (never a guessed match)
-    when `query` has no significant tokens to check against, since there
-    is nothing conservative left to verify.
+    """LEGACY, display-name-only plausibility check (Step 155C), kept as
+    the fallback for a Nominatim result that carries no structural
+    fields (no `category`). Requires at least one significant (3+
+    character, diacritic/case-normalized) word from `query` to also
+    appear in `display_name`. See `_is_plausible_geocode_result` for the
+    structural rule used for real Nominatim results.
     """
     query_tokens = _significant_tokens(query)
     if not query_tokens:
         return False
     return bool(query_tokens & _significant_tokens(display_name))
+
+
+# Section 202B.1 (Tasks 12-14). Audit of the old rule: display-name token
+# overlap only. It rejected legitimate localized/accented names ("Lisbon"
+# vs a provider display name of "Lisboa, Portugal"; "Cordoba" vs
+# "Córdoba", because the ASCII-only tokenizer split "Córdoba" into "c" +
+# "rdoba"), while at the same time accepting any result -- including a
+# business/POI in another country -- that merely shared one word.
+#
+# New rule for a real Nominatim result (requested with addressdetails/
+# namedetails/accept-language=en): provider evidence is authoritative.
+#   1. the FEATURE must be a place/administrative boundary (city, town,
+#      municipality, ...), never an amenity/shop/tourism POI;
+#   2. the first segment of the query must be compatible (token-subset in
+#      either direction, after Unicode/diacritic normalization) with a
+#      NAME the provider itself reports for that feature -- its primary
+#      name, its `namedetails` (incl. `name:en`/`int_name`/`alt_name`), or
+#      an address component -- so an exonym is accepted only when the
+#      provider says it is a name of that place, with no alias table;
+#   3. every further query segment that is long enough to be verifiable
+#      must match a provider address/display component (country, region,
+#      ...); 1-3 letter segments ("US", "DC") are unverifiable
+#      abbreviations and neither confirm nor contradict.
+_ACCEPTED_GEOCODE_CATEGORIES = frozenset({"place", "boundary"})
+_UNVERIFIABLE_SEGMENT_MAX_LENGTH = 3
+
+
+def _tokens(text: str) -> frozenset[str]:
+    return frozenset(_normalize_text(text).split())
+
+
+def _compatible(a: frozenset[str], b: frozenset[str]) -> bool:
+    return bool(a) and bool(b) and (a <= b or b <= a)
+
+
+def _provider_place_names(result: dict[str, Any]) -> list[frozenset[str]]:
+    names: list[str] = []
+    for key in ("name",):
+        if isinstance(result.get(key), str):
+            names.append(result[key])
+    namedetails = result.get("namedetails")
+    if isinstance(namedetails, dict):
+        names.extend(v for v in namedetails.values() if isinstance(v, str))
+    address = result.get("address")
+    if isinstance(address, dict):
+        for key in ("city", "town", "village", "municipality", "hamlet", "suburb", "city_district", "borough"):
+            if isinstance(address.get(key), str):
+                names.append(address[key])
+    display_name = result.get("display_name")
+    if isinstance(display_name, str) and display_name:
+        names.append(display_name.split(",")[0])
+    return [t for t in (_tokens(n) for n in names) if t]
+
+
+def _provider_context_components(result: dict[str, Any]) -> list[frozenset[str]]:
+    values: list[str] = []
+    address = result.get("address")
+    if isinstance(address, dict):
+        values.extend(v for v in address.values() if isinstance(v, str))
+    display_name = result.get("display_name")
+    if isinstance(display_name, str):
+        values.extend(part for part in display_name.split(","))
+    return [t for t in (_tokens(v) for v in values) if t]
+
+
+def _is_plausible_geocode_result(query: str, result: dict[str, Any]) -> bool:
+    category = result.get("category") or result.get("class")
+    if category is None:
+        # No structural evidence at all (older/minimal response shape).
+        return _is_plausible_geocode_match(query, str(result.get("display_name") or ""))
+    if category not in _ACCEPTED_GEOCODE_CATEGORIES:
+        return False
+
+    segments = [segment for segment in (part.strip() for part in query.split(",")) if segment]
+    if not segments:
+        return False
+    place_tokens = _tokens(segments[0])
+    if not any(_compatible(place_tokens, name) for name in _provider_place_names(result)):
+        return False
+
+    components = _provider_context_components(result)
+    for segment in segments[1:]:
+        segment_tokens = _tokens(segment)
+        if not segment_tokens:
+            continue
+        if len("".join(segment_tokens)) <= _UNVERIFIABLE_SEGMENT_MAX_LENGTH:
+            continue
+        if not any(_compatible(segment_tokens, component) for component in components):
+            return False
+    return True
+
+
+_DESTINATION_ADDRESS_KEYS = (
+    "city", "town", "village", "municipality", "county", "state", "region", "country", "country_code",
+)
+
+
+def _destination_address(raw: Any) -> dict[str, str]:
+    if not isinstance(raw, dict):
+        return {}
+    return {key: str(raw[key]) for key in _DESTINATION_ADDRESS_KEYS if isinstance(raw.get(key), str) and raw[key]}
 
 
 def _parse_bounding_box(raw: Any) -> tuple[float, float, float, float] | None:
@@ -416,6 +543,23 @@ class OpenStreetMapPlacesAdapter(PlacesProvider):
             logger.warning("OpenStreetMap geocoding failed for %s: %s", destination, exc)
             return None
 
+    def describe_destination(self, destination: str) -> dict[str, str] | None:
+        """Section 202B.2 (Task 33): the provider's own description of what
+        `destination` resolved to -- display name plus whichever structured
+        components (city, region, country) it returned. Reuses the cached,
+        plausibility-checked resolution; returns None (never a guess) when
+        unresolved."""
+        try:
+            with httpx.Client(
+                timeout=_REQUEST_TIMEOUT_SECONDS, headers={"User-Agent": _USER_AGENT}
+            ) as client:
+                resolved = self._resolve_destination(client, destination)
+        except (httpx.HTTPError, ValueError):
+            return None
+        if resolved is None:
+            return None
+        return {"display_name": resolved.display_name, **resolved.address}
+
     def _lookup_named_place(self, client: httpx.Client, query: str) -> NormalizedPlace | None:
         """Look up exactly one named, coordinate-backed place for `query` via
         Nominatim's search endpoint. Returns None (never a guessed place) if
@@ -483,7 +627,7 @@ class OpenStreetMapPlacesAdapter(PlacesProvider):
             ) as client:
                 resolved = self._resolve_destination(client, place_name)
                 if resolved is None:
-                    return unavailable_response(
+                    unresolved = unavailable_response(
                         self.provider_name,
                         self.provider_type,
                         unavailable_fields=[field_name],
@@ -492,9 +636,13 @@ class OpenStreetMapPlacesAdapter(PlacesProvider):
                             f"'{place_name}' via Nominatim."
                         ),
                     )
+                    unresolved.failure_reason = "destination_unresolved"
+                    return unresolved
 
+                is_attraction_search = tag_filters is _ATTRACTION_TAG_FILTERS
                 primary_places, primary_failed = self._try_query(
-                    client, resolved, tag_filters, _SEARCH_RADIUS_METERS, place_name
+                    client, resolved, tag_filters, _SEARCH_RADIUS_METERS, place_name,
+                    attraction=is_attraction_search,
                 )
                 if primary_places:
                     return self._named_results_response(
@@ -507,7 +655,8 @@ class OpenStreetMapPlacesAdapter(PlacesProvider):
                     )
 
                 fallback_places, fallback_failed = self._try_fallback_queries(
-                    client, resolved, fallback_tag_filters, _FALLBACK_SEARCH_RADIUS_METERS, place_name
+                    client, resolved, fallback_tag_filters, _FALLBACK_SEARCH_RADIUS_METERS, place_name,
+                    attraction=is_attraction_search,
                 )
                 if fallback_places:
                     return self._named_results_response(
@@ -538,6 +687,7 @@ class OpenStreetMapPlacesAdapter(PlacesProvider):
         tag_filters: list[str],
         radius_meters: int,
         place_name: str,
+        attraction: bool = False,
     ) -> tuple[list[NormalizedPlace], bool]:
         """Run one Overpass query, normalize it, and keep only results
         geographically contained within `resolved` (see
@@ -554,13 +704,15 @@ class OpenStreetMapPlacesAdapter(PlacesProvider):
         successful, non-empty result. A cache hit returns `(places, False)`
         without calling Overpass at all.
         """
+        is_attraction_query = attraction or tag_filters is _ATTRACTION_TAG_FILTERS
         poi_query_hash = make_query_hash(
             {
                 "lat": resolved.point.lat,
                 "lon": resolved.point.lng,
                 "radius_meters": radius_meters,
                 "tags": sorted(tag_filters),
-                "limit": _MAX_RESULTS,
+                "limit": _MAX_ATTRACTION_RESULTS if is_attraction_query else _MAX_RESULTS,
+                "schema": _POI_CACHE_SCHEMA,
             }
         )
         cache_store = self._resolve_cache_store()
@@ -571,12 +723,18 @@ class OpenStreetMapPlacesAdapter(PlacesProvider):
                 return cached_places, False
 
         try:
-            elements = self._query_overpass(client, resolved.point, tag_filters, radius_meters)
+            elements = self._query_overpass(
+                client, resolved.point, tag_filters, radius_meters, significance_first=is_attraction_query
+            )
         except (httpx.HTTPError, ValueError) as exc:
             logger.warning("OpenStreetMap Overpass query failed for %s: %s", place_name, exc)
             return [], True
 
-        places = self._normalize(elements)
+        places = (
+            self._normalize(elements, limit=_MAX_ATTRACTION_RESULTS, rank=True)
+            if is_attraction_query
+            else self._normalize(elements)
+        )
         contained_places = [
             place
             for place in places
@@ -596,6 +754,7 @@ class OpenStreetMapPlacesAdapter(PlacesProvider):
         tag_filters: list[str],
         radius_meters: int,
         place_name: str,
+        attraction: bool = False,
     ) -> tuple[list[NormalizedPlace], bool]:
         """Run each fallback tag filter as its own Overpass query, one at a
         time, instead of combining them into a single large query.
@@ -618,9 +777,10 @@ class OpenStreetMapPlacesAdapter(PlacesProvider):
         seen_ids: set[str] = set()
         any_request_failed = False
 
+        cap = _MAX_ATTRACTION_RESULTS if attraction else _MAX_RESULTS
         for tag in tag_filters:
             tag_places, tag_failed = self._try_query(
-                client, resolved, [tag], radius_meters, place_name
+                client, resolved, [tag], radius_meters, place_name, attraction=attraction
             )
             if tag_failed:
                 any_request_failed = True
@@ -631,9 +791,16 @@ class OpenStreetMapPlacesAdapter(PlacesProvider):
                     continue
                 places.append(place)
                 seen_ids.add(place.place_id)
-                if len(places) >= _MAX_RESULTS:
+                if len(places) >= cap:
+                    if attraction:
+                        places = _rank_attractions(places, cap)
                     return places, any_request_failed
 
+        if attraction:
+            # Section 202B.2: aggregate ALL tag queries, then rank by the
+            # structured provider evidence before capping (same rule as the
+            # primary query), instead of first-come-first-capped.
+            places = _rank_attractions(places, cap)
         return places, any_request_failed
 
     def _named_results_response(
@@ -733,6 +900,9 @@ class OpenStreetMapPlacesAdapter(PlacesProvider):
                 "query": place_name.strip().lower(),
                 "format": "jsonv2",
                 "limit": 1,
+                "addressdetails": 1,
+                "namedetails": 1,
+                "accept-language": "en",
             }
         )
         cache_store = self._resolve_cache_store()
@@ -745,7 +915,17 @@ class OpenStreetMapPlacesAdapter(PlacesProvider):
 
         response = client.get(
             f"{self._nominatim_url}/search",
-            params={"q": place_name, "format": "jsonv2", "limit": 1},
+            params={
+                "q": place_name,
+                "format": "jsonv2",
+                "limit": 1,
+                # Section 202B.1: structural provider evidence for the
+                # plausibility decision, in English so an English query
+                # compares against English provider names.
+                "addressdetails": 1,
+                "namedetails": 1,
+                "accept-language": "en",
+            },
         )
         response.raise_for_status()
         results = response.json()
@@ -759,7 +939,7 @@ class OpenStreetMapPlacesAdapter(PlacesProvider):
             return None
 
         display_name = result.get("display_name") or ""
-        if not _is_plausible_geocode_match(place_name, display_name):
+        if not _is_plausible_geocode_result(place_name, result):
             logger.warning(
                 "Rejecting implausible OpenStreetMap/Nominatim geocode match for %r: "
                 "display_name=%r",
@@ -772,6 +952,7 @@ class OpenStreetMapPlacesAdapter(PlacesProvider):
             point=GeoPoint(lat=float(lat), lng=float(lon)),
             bounding_box=_parse_bounding_box(result.get("boundingbox")),
             display_name=display_name,
+            address=_destination_address(result.get("address")),
         )
         self._destination_cache[place_name] = resolved
         if cache_store is not None:
@@ -802,6 +983,7 @@ class OpenStreetMapPlacesAdapter(PlacesProvider):
                 point=GeoPoint(lat=payload["lat"], lng=payload["lng"]),
                 bounding_box=tuple(bounding_box) if bounding_box is not None else None,
                 display_name=payload["display_name"],
+                address=_destination_address(payload.get("address")),
             )
         except (KeyError, TypeError, ValueError):
             logger.warning(
@@ -828,6 +1010,7 @@ class OpenStreetMapPlacesAdapter(PlacesProvider):
                         list(resolved.bounding_box) if resolved.bounding_box is not None else None
                     ),
                     "display_name": resolved.display_name,
+                    "address": dict(resolved.address),
                 },
                 ttl_seconds=self._geocode_cache_ttl_seconds,
             )
@@ -889,20 +1072,42 @@ class OpenStreetMapPlacesAdapter(PlacesProvider):
         point: GeoPoint,
         tag_filters: list[str],
         radius_meters: int = _SEARCH_RADIUS_METERS,
+        significance_first: bool = False,
     ) -> list[dict[str, Any]]:
-        clauses = "".join(
-            f"node(around:{radius_meters},{point.lat},{point.lng})[{tag}];"
-            f"way(around:{radius_meters},{point.lat},{point.lng})[{tag}];"
-            for tag in tag_filters
-        )
-        query = f"[out:json][timeout:20];({clauses});out center {_MAX_RESULTS};"
+        def _clauses(extra: str = "") -> str:
+            return "".join(
+                f"node(around:{radius_meters},{point.lat},{point.lng})[{tag}]{extra};"
+                f"way(around:{radius_meters},{point.lat},{point.lng})[{tag}]{extra};"
+                for tag in tag_filters
+            )
+
+        if significance_first:
+            # One request, per-family output statements: for EACH tag family,
+            # elements carrying structured landmark evidence (a `wikidata`
+            # tag) are emitted first under their own limit, then the ordinary
+            # elements of that family under theirs. Overpass returns an
+            # id-ordered first-N per statement, so per-family quotas are what
+            # keep every family represented.
+            statements: list[str] = []
+            for tag in tag_filters:
+                for extra, per_family in (('["wikidata"]', _SIGNIFICANT_FETCH_LIMIT), ("", _GENERAL_FETCH_LIMIT)):
+                    statements.append(
+                        f"(node(around:{radius_meters},{point.lat},{point.lng})[{tag}]{extra};"
+                        f"way(around:{radius_meters},{point.lat},{point.lng})[{tag}]{extra};);"
+                        f"out center {per_family};"
+                    )
+            query = "[out:json][timeout:25];" + "".join(statements)
+        else:
+            query = f"[out:json][timeout:20];({_clauses()});out center {_MAX_RESULTS};"
 
         response = client.post(self._overpass_url, data={"data": query})
         response.raise_for_status()
         payload = response.json()
         return payload.get("elements", [])
 
-    def _normalize(self, elements: list[dict[str, Any]]) -> list[NormalizedPlace]:
+    def _normalize(
+        self, elements: list[dict[str, Any]], limit: int = _MAX_RESULTS, rank: bool = False
+    ) -> list[NormalizedPlace]:
         places: list[NormalizedPlace] = []
         seen_ids: set[str] = set()
 
@@ -925,7 +1130,14 @@ class OpenStreetMapPlacesAdapter(PlacesProvider):
             if lat is None or lon is None:
                 continue
 
-            category = tags.get("tourism") or tags.get("amenity") or tags.get("historic")
+            category = (
+                tags.get("tourism")
+                or tags.get("amenity")
+                or tags.get("historic")
+                or tags.get("leisure")
+                or tags.get("natural")
+                or tags.get("man_made")
+            )
             address = _format_address(tags)
 
             places.append(
@@ -938,14 +1150,61 @@ class OpenStreetMapPlacesAdapter(PlacesProvider):
                     source=self.provider_name,
                     data_status=DataStatus.LIVE,
                     confidence=0.6,
+                    provider_tags=filter_provider_tags(tags) or None,
                 )
             )
             seen_ids.add(place_id)
 
-            if len(places) >= _MAX_RESULTS:
+            if not rank and len(places) >= limit:
                 break
 
+        if rank:
+            # Deterministic: structured landmark evidence first, small
+            # objects last; original (provider) order breaks ties.
+            places = _rank_attractions(places, limit)
         return places
+
+
+def _attraction_rank_key(place: NormalizedPlace) -> tuple[int, int, int]:
+    classification = classify_place(place.provider_tags, place.category)
+    return (
+        1 if classification.is_unsuitable else 0,
+        -len(classification.significance_signals),
+        1 if classification.low_value else 0,
+    )
+
+
+def _rank_attractions(places: list[NormalizedPlace], limit: int) -> list[NormalizedPlace]:
+    """Deterministic pool selection: structured significance first WITHIN each
+    normalized category, then round-robin across categories, so a category with
+    many well-tagged elements (say museums) cannot crowd out the supply for a
+    requested interest (parks, markets, nightlife). Small objects come after
+    every other category, unsuitable places last; original order breaks ties."""
+    classified = [(place, classify_place(place.provider_tags, place.category)) for place in places]
+    groups: dict[str, list[NormalizedPlace]] = {}
+    low_value: list[NormalizedPlace] = []
+    unsuitable: list[NormalizedPlace] = []
+    for place, classification in classified:
+        if classification.is_unsuitable:
+            unsuitable.append(place)
+        elif classification.low_value:
+            low_value.append(place)
+        else:
+            groups.setdefault(classification.primary_category, []).append(place)
+    for members in groups.values():
+        members.sort(key=lambda p: -len(classify_place(p.provider_tags, p.category).significance_signals))
+    ranked: list[NormalizedPlace] = []
+    queues = [list(members) for members in groups.values()]
+    while queues and len(ranked) < limit:
+        for queue in queues:
+            if queue and len(ranked) < limit:
+                ranked.append(queue.pop(0))
+        queues = [queue for queue in queues if queue]
+    for leftover in (low_value, unsuitable):
+        for place in leftover:
+            if len(ranked) < limit:
+                ranked.append(place)
+    return ranked
 
 
 def _format_address(tags: dict[str, str]) -> str | None:

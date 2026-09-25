@@ -42,6 +42,9 @@ class CandidateRejectReason(str, Enum):
     UNSUPPORTED_ACCOMMODATION_INVENTORY = "unsupported_accommodation_inventory"
     DUPLICATE_OR_NEAR_DUPLICATE = "duplicate_or_near_duplicate"
     INSUFFICIENT_PROVIDER_CONFIDENCE = "insufficient_provider_confidence"
+    # Section 202B.2: a structurally unsuitable place type (hospital,
+    # clinic, office, parking, ...) per `app.services.place_taxonomy`.
+    UNSUITABLE_PLACE_TYPE = "unsuitable_place_type"
 
 
 _NON_REJECTED_LOW_TIERS = {CandidateQualityTier.LOW_PRIORITY, CandidateQualityTier.REJECTED}
@@ -68,6 +71,19 @@ class CandidateQualityScore(BaseModel):
     source: str | None = None
     data_status: str | None = None
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    # Section 202B.2 (Tasks 2/6/8/32): deterministic, provider-tag-derived
+    # classification evidence. All optional/defaulted, so older persisted
+    # reports still load. `matched_interests` are CANONICAL interest keys
+    # supported by provider metadata; never claimed without it.
+    normalized_category: str | None = None
+    categories: list[str] = Field(default_factory=list)
+    matched_interests: list[str] = Field(default_factory=list)
+    significance_signals: list[str] = Field(default_factory=list)
+    low_value_object: bool = False
+    # Section 202C.1A: documented (wikipedia/heritage) small object.
+    notable_object: bool = False
+    commercial_gallery: bool = False
+    sub_feature_kind: str | None = None
 
     @field_validator("candidate_id", "candidate_name")
     @classmethod

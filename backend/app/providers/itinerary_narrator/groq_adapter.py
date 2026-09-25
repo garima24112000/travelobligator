@@ -5,6 +5,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field, ValidationError
 
+from app.providers.itinerary_narrator.contract import NARRATOR_SYSTEM_PROMPT, build_grounded_prompt_body
+from app.providers.ai_failure import classify_and_message
 from app.core.config import get_settings
 from app.models.itinerary_narrative import (
     ItineraryNarrativeDayOutput,
@@ -89,96 +91,17 @@ class _NarratorBatchSchema(BaseModel):
     )
 
 
-_SYSTEM_PROMPT = (
-    "You are an itinerary narrator for a travel planning system. You write polished, "
-    "traveler-facing prose that summarizes an already-finalized draft itinerary -- you are "
-    "a writer, never a source of new travel facts, and you never make a new planning "
-    "decision.\n\n"
-    "Use only the information given to you below. Do not invent, guess, or embellish a "
-    "hotel, flight, price, rating, review count, route or travel-time duration, booking "
-    "confirmation, opening hour, or clock time that isn't already present in the input. If "
-    "something is marked unavailable or missing, acknowledge that honestly in a caveat "
-    "instead of inventing a replacement fact. Never claim a place is booked, a route exists, "
-    "or a plan is finalized/production-ready/optimal/verified/guaranteed/the safest option. "
-    "Every day_number you return must exactly match one of the day_number values given in "
-    "the input -- never invent a new day.\n\n"
-    "Each scheduled place below is given with its own experience_id. For each day, set "
-    "referenced_experience_ids to exactly the experience_id value(s) your narrative for that "
-    "day is actually about -- never an id from a different day, and never an id you made up.\n\n"
-    "Some days include an 'AI reasoning rationale' line -- this is context explaining why "
-    "those places were grouped together, not a verified fact. You may draw on it for tone/"
-    "phrasing, but every specific factual claim you make must still come from the scheduled "
-    "places themselves. If a day has no rationale, do not invent one.\n\n"
-    "If 'Plan adjusted after feasibility checks' is stated, you may mention once, briefly and "
-    "in plain traveler-facing language, that the plan was adjusted after feasibility checks "
-    "(e.g. 'the plan was adjusted after feasibility checks to keep the days manageable') -- "
-    "never mention any internal system, model, or provider name, never a repair attempt "
-    "number, and never say this when that line is absent."
+_VALIDATION_FAILED_MESSAGE = (
+    "AI narration output did not meet the required structure or grounding rules and was not used."
 )
+
+_SYSTEM_PROMPT = NARRATOR_SYSTEM_PROMPT
 
 
 def _build_prompt(request: ItineraryNarrativeRequest) -> str:
-    """Builds a minimal, controlled prompt from `request` fields only --
-    the exact same allow-listed fields `ItineraryNarrativeRequest` itself
-    carries, nothing else.
-    """
-    lines = [
-        _SYSTEM_PROMPT,
-        "",
-        f"Destination: {request.destination}",
-        f"Dates: {request.start_date} to {request.end_date}",
-        f"Travelers: {request.travelers_count}"
-        + (f" ({request.travel_group_type})" if request.travel_group_type else ""),
-        f"Pace: {request.pace or 'unspecified'}",
-        f"Interests: {', '.join(request.interests) if request.interests else 'none specified'}",
-    ]
-    if request.weather_available and request.weather_summary:
-        lines.append(f"Weather: {request.weather_summary}")
-    if request.stay_area_names:
-        lines.append(f"Stay-area ideas under consideration: {', '.join(request.stay_area_names)}")
-    lines.append(f"Bookable accommodation offers on file: {request.accommodation_offer_count}")
-    lines.append(f"Bookable flight offers on file: {request.flight_offer_count}")
-    if request.validation_status:
-        lines.append(
-            f"Validation status: {request.validation_status} "
-            f"({request.critical_issue_count} critical issue(s), {request.warning_count} warning(s))"
-        )
-    if request.unavailable_data_fields:
-        lines.append(f"Known-unavailable data: {', '.join(request.unavailable_data_fields)}")
-    if request.reasoning_strategy_summary:
-        lines.append(f"Overall AI reasoning strategy (context only): {request.reasoning_strategy_summary}")
-    if request.was_adjusted_after_feasibility_checks:
-        lines.append("Plan adjusted after feasibility checks: yes")
+    """Section 202B.3: the shared, grounded prompt body (see `contract.py`)."""
+    return "\n".join([_SYSTEM_PROMPT, "", build_grounded_prompt_body(request)])
 
-    lines.append("")
-    lines.append("Days:")
-    for day in request.days:
-        lines.append(f"- day_number {day.day_number} ({day.date}):")
-        if day.experiences:
-            for experience in day.experiences:
-                piece = f"[experience_id={experience.experience_id}] {experience.name}"
-                if experience.category:
-                    piece += f" ({experience.category})"
-                if experience.reason:
-                    piece += f" -- {experience.reason}"
-                lines.append(f"    * {piece}")
-        else:
-            lines.append("    * No scheduled places for this day.")
-        if day.restaurant_names:
-            lines.append(f"    Nearby food ideas: {', '.join(day.restaurant_names)}")
-        lines.append(
-            f"    Movement/route data available: {'yes' if day.has_movement_data else 'no'}"
-        )
-        if day.reasoning_rationale:
-            lines.append(f"    AI reasoning rationale for this day (context only): {day.reasoning_rationale}")
-
-    if request.truncated:
-        lines.append("")
-        lines.append(
-            "Note: this input was truncated for length -- some days/items were omitted."
-        )
-
-    return "\n".join(lines)
 
 
 class GroqItineraryNarratorProvider(ItineraryNarratorProvider):
@@ -239,7 +162,7 @@ class GroqItineraryNarratorProvider(ItineraryNarratorProvider):
         try:
             raw_output = client.invoke(_build_prompt(request))
         except Exception as exc:  # API/runtime/timeout failure -> failed, never fabricated
-            return self._failed_result(f"Groq API call failed: {exc}")
+            return self._failed_result(classify_and_message("Groq", exc)[1])
 
         output_dict = self._coerce_output(raw_output)
         if output_dict is None:
@@ -323,7 +246,7 @@ class GroqItineraryNarratorProvider(ItineraryNarratorProvider):
                     )
                 )
             except ValidationError as exc:
-                return self._failed_result(f"Groq day output failed validation: {exc}")
+                return self._failed_result(_VALIDATION_FAILED_MESSAGE)
 
         assumptions = [a for a in output.get("assumptions", []) if isinstance(a, str)]
         warnings = [w for w in output.get("warnings", []) if isinstance(w, str)]
@@ -345,7 +268,7 @@ class GroqItineraryNarratorProvider(ItineraryNarratorProvider):
                 generated_at=datetime.now(timezone.utc),
             )
         except ValidationError as exc:
-            return self._failed_result(f"Groq output failed validation: {exc}")
+            return self._failed_result(_VALIDATION_FAILED_MESSAGE)
 
         # Section 195 (Task 12): structural place-identity safety check --
         # even schema-valid, domain-valid output must still be checked
@@ -401,10 +324,8 @@ def _source_fields_used(request: ItineraryNarrativeRequest) -> list[str]:
         used.append("validation_status")
     if request.unavailable_data_fields:
         used.append("unavailable_data_fields")
-    if request.reasoning_strategy_summary:
-        used.append("reasoning_strategy_summary")
-    if any(day.reasoning_rationale for day in request.days):
-        used.append("reasoning_rationale")
+    # Section 202B.3: reasoning rationale/strategy prose is no longer sent to
+    # the narrator, so it is never reported as a used source field.
     if request.was_adjusted_after_feasibility_checks:
         used.append("was_adjusted_after_feasibility_checks")
     return used

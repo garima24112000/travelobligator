@@ -1,0 +1,347 @@
+{
+ "CHI-1": {
+  "source": "ai",
+  "status": "success",
+  "model": "openai/gpt-oss-20b",
+  "audit": {
+   "served": [
+    "architecture"
+   ],
+   "unserved": [
+    "food"
+   ],
+   "requested": [
+    "architecture",
+    "food"
+   ],
+   "summary": "The trip covers architecture interest in Chicago over three days with route data available each day.",
+   "summary_mentions": [
+    [
+     "architecture",
+     "architecture"
+    ]
+   ],
+   "summary_claims_unserved_interest_as_covered": [],
+   "traced_sentences": 9,
+   "unclassified_sentences": [],
+   "issues": []
+  }
+ },
+ "CHI-2": {
+  "source": "deterministic_fallback",
+  "status": "failed",
+  "model": "openai/gpt-oss-20b"
+ },
+ "COR-ES": {
+  "source": "deterministic_fallback",
+  "status": "failed",
+  "model": "openai/gpt-oss-20b"
+ },
+ "DC-1": {
+  "source": "deterministic_fallback",
+  "status": "failed",
+  "model": "openai/gpt-oss-20b"
+ },
+ "DC-2": {
+  "source": "ai",
+  "status": "success",
+  "model": "openai/gpt-oss-20b",
+  "audit": {
+   "served": [],
+   "unserved": [
+    "food",
+    "outdoors"
+   ],
+   "requested": [
+    "food",
+    "outdoors"
+   ],
+   "summary": "Two-day relaxed trip in Washington, DC.",
+   "summary_mentions": [],
+   "summary_claims_unserved_interest_as_covered": [],
+   "traced_sentences": 8,
+   "unclassified_sentences": [],
+   "issues": []
+  }
+ },
+ "LA-1": {
+  "source": "ai",
+  "status": "success",
+  "model": "openai/gpt-oss-20b",
+  "audit": {
+   "served": [
+    "food",
+    "outdoors"
+   ],
+   "unserved": [],
+   "requested": [
+    "food",
+    "outdoors"
+   ],
+   "summary": "Trip covers food and outdoors interests in Los Angeles over four days. Known limitations: transit feasibility, accommodation options.",
+   "summary_mentions": [
+    [
+     "food",
+     "food"
+    ],
+    [
+     "outdoors",
+     "outdoors"
+    ]
+   ],
+   "summary_claims_unserved_interest_as_covered": [],
+   "traced_sentences": 8,
+   "unclassified_sentences": [
+    {
+     "day": 1,
+     "sentence": "Buffet (landmark) serves food, then Angels Flight (landmark), then Museum of Contemporary Art (museum)."
+    }
+   ],
+   "issues": [
+    {
+     "day": 1,
+     "issue": "serves-sentence subject not a scheduled place of the day",
+     "subject": "Buffet (landmark)"
+    }
+   ]
+  }
+ },
+ "LA-2": {
+  "source": "deterministic_fallback",
+  "status": "failed",
+  "model": "openai/gpt-oss-20b"
+ },
+ "LIS-1": {
+  "source": "deterministic_fallback",
+  "status": "failed",
+  "model": "openai/gpt-oss-20b"
+ },
+ "LIS-2": {
+  "source": "ai",
+  "status": "success",
+  "model": "openai/gpt-oss-20b",
+  "audit": {
+   "served": [
+    "architecture",
+    "nightlife"
+   ],
+   "unserved": [],
+   "requested": [
+    "architecture",
+    "nightlife"
+   ],
+   "summary": "Lisbon trip covering architecture and nightlife over four days.",
+   "summary_mentions": [
+    [
+     "architecture",
+     "architecture"
+    ],
+    [
+     "nightlife",
+     "nightlife"
+    ]
+   ],
+   "summary_claims_unserved_interest_as_covered": [],
+   "traced_sentences": 8,
+   "unclassified_sentences": [],
+   "issues": []
+  }
+ },
+ "LIS-BARE": {
+  "source": "deterministic_fallback",
+  "status": "failed",
+  "model": "openai/gpt-oss-20b"
+ },
+ "MIA-1": {
+  "source": "ai",
+  "status": "success",
+  "model": "openai/gpt-oss-20b",
+  "audit": {
+   "served": [
+    "nightlife",
+    "food"
+   ],
+   "unserved": [],
+   "requested": [
+    "nightlife",
+    "food"
+   ],
+   "summary": "The itinerary covers nightlife and food across three days in Miami.",
+   "summary_mentions": [
+    [
+     "nightlife",
+     "nightlife"
+    ],
+    [
+     "food",
+     "food"
+    ]
+   ],
+   "summary_claims_unserved_interest_as_covered": [],
+   "traced_sentences": 18,
+   "unclassified_sentences": [],
+   "issues": []
+  }
+ },
+ "MIA-2": {
+  "source": "ai",
+  "status": "success",
+  "model": "openai/gpt-oss-20b",
+  "audit": {
+   "served": [
+    "outdoors",
+    "architecture"
+   ],
+   "unserved": [],
+   "requested": [
+    "outdoors",
+    "architecture"
+   ],
+   "summary": "The itinerary covers four days in Miami, visiting places that serve the requested interests outdoors and architecture.",
+   "summary_mentions": [
+    [
+     "outdoors",
+     "outdoors"
+    ],
+    [
+     "architecture",
+     "architecture"
+    ]
+   ],
+   "summary_claims_unserved_interest_as_covered": [],
+   "traced_sentences": 12,
+   "unclassified_sentences": [],
+   "issues": []
+  }
+ },
+ "NYC-1": {
+  "source": "deterministic_fallback",
+  "status": "failed",
+  "model": "openai/gpt-oss-20b"
+ },
+ "NYC-2": {
+  "source": "ai",
+  "status": "success",
+  "model": "openai/gpt-oss-20b",
+  "audit": {
+   "served": [
+    "architecture",
+    "outdoors"
+   ],
+   "unserved": [],
+   "requested": [
+    "architecture",
+    "parks"
+   ],
+   "summary": "The itinerary covers architecture and outdoors interests across three days in New York City.",
+   "summary_mentions": [
+    [
+     "architecture",
+     "architecture"
+    ],
+    [
+     "parks",
+     "outdoors"
+    ]
+   ],
+   "summary_claims_unserved_interest_as_covered": [],
+   "traced_sentences": 16,
+   "unclassified_sentences": [],
+   "issues": []
+  }
+ },
+ "NYC-BARE": {
+  "source": "deterministic_fallback",
+  "status": "failed",
+  "model": "openai/gpt-oss-20b"
+ },
+ "SEA-1": {
+  "source": "deterministic_fallback",
+  "status": "failed",
+  "model": "openai/gpt-oss-20b"
+ },
+ "SEA-2": {
+  "source": "ai",
+  "status": "success",
+  "model": "openai/gpt-oss-20b",
+  "audit": {
+   "served": [
+    "museum"
+   ],
+   "unserved": [],
+   "requested": [
+    "museums"
+   ],
+   "summary": "Three-day Seattle museum itinerary covering requested interests.",
+   "summary_mentions": [
+    [
+     "museums",
+     "museum"
+    ]
+   ],
+   "summary_claims_unserved_interest_as_covered": [],
+   "traced_sentences": 6,
+   "unclassified_sentences": [],
+   "issues": []
+  }
+ },
+ "SF-1": {
+  "source": "ai",
+  "status": "success",
+  "model": "openai/gpt-oss-20b",
+  "audit": {
+   "served": [
+    "outdoors"
+   ],
+   "unserved": [
+    "food"
+   ],
+   "requested": [
+    "outdoors",
+    "food"
+   ],
+   "summary": "A packed four-day San Francisco itinerary focusing on outdoor experiences.",
+   "summary_mentions": [
+    [
+     "outdoors",
+     "outdoors"
+    ]
+   ],
+   "summary_claims_unserved_interest_as_covered": [],
+   "traced_sentences": 15,
+   "unclassified_sentences": [],
+   "issues": []
+  }
+ },
+ "SF-2": {
+  "source": "ai",
+  "status": "success",
+  "model": "openai/gpt-oss-20b",
+  "audit": {
+   "served": [
+    "architecture",
+    "history"
+   ],
+   "unserved": [],
+   "requested": [
+    "architecture",
+    "history"
+   ],
+   "summary": "The itinerary covers architecture and history in San Francisco over three days.",
+   "summary_mentions": [
+    [
+     "architecture",
+     "architecture"
+    ],
+    [
+     "history",
+     "history"
+    ]
+   ],
+   "summary_claims_unserved_interest_as_covered": [],
+   "traced_sentences": 9,
+   "unclassified_sentences": [],
+   "issues": []
+  }
+ }
+}

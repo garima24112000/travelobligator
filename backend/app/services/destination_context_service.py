@@ -178,8 +178,19 @@ class DestinationContextService(PlanningStageService):
                 "destination."
             )
 
+        # Section 202B.2 (Task 33): show how the provider interpreted the
+        # destination text (only when the places provider can say).
+        describe = getattr(self.gateway.places, "describe_destination", None)
+        resolved_destination = describe(destination_name) if callable(describe) else None
+
         context = DestinationContext(
             destination_name=destination_name,
+            resolved_destination=resolved_destination or None,
+            destination_resolution=(
+                "unresolved"
+                if attractions_response.failure_reason == "destination_unresolved"
+                else None
+            ),
             candidate_pois=candidate_pois,
             candidate_restaurants=candidate_restaurants,
             candidate_accommodation_pois=candidate_accommodation_pois,

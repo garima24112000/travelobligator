@@ -184,6 +184,7 @@ def _submit_feedback_with_affected_stage(client: TestClient, trip_id: str) -> No
     assert response.status_code == 200
 
 
+@pytest.mark.usefixtures("synthetic_legacy_regeneration_support")
 def test_run_regenerate_job_success_creates_version_and_marks_feedback_applied(
     generated_trip_id: str, client: TestClient
 ) -> None:
@@ -230,6 +231,7 @@ def test_run_regenerate_job_success_creates_version_and_marks_feedback_applied(
             assert event.handling_status == "applied"
 
 
+@pytest.mark.usefixtures("synthetic_legacy_regeneration_support")
 def test_run_regenerate_job_failure_does_not_create_version_or_mark_feedback_applied(
     generated_trip_id: str, client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:

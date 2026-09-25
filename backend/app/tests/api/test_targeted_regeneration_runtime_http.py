@@ -209,7 +209,7 @@ def test_targeted_interpreter_unavailable_never_falls_back_to_legacy(
     response = client.post(f"/trips/{trip_id}/regenerate", json={"confirm": True})
 
     assert response.status_code == 409
-    assert response.json()["errors"][0]["code"] == "REGENERATION_PROVIDER_UNAVAILABLE"
+    assert response.json()["errors"][0]["code"] == "REGENERATION_AI_UNAVAILABLE"
     reloaded = client.get(f"/trips/{trip_id}").json()["data"]["planning_state"]
     # No legacy coarse stage rerun happened either -- version unchanged.
     assert reloaded["metadata"]["current_version"] == "v1"

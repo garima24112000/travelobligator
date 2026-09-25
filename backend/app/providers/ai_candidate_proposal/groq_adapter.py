@@ -4,6 +4,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field, ValidationError
 
+from app.providers.ai_failure import AIProviderFailureKind, classify_and_message
 from app.core.config import get_settings
 from app.models.ai_candidate_proposal import (
     AICandidateProposal,
@@ -179,6 +180,10 @@ class _GroqProposalBatchSchema(BaseModel):
     )
 
 
+# Section 202B.2 (Task 15): at most one retry, structural failures only.
+_MAX_STRUCTURAL_ATTEMPTS = 2
+_RETRY_MIN_CANDIDATES = 5
+
 _SYSTEM_PROMPT = (
     "You are proposing things to investigate for a travel planning system. You are NOT "
     "supplying verified travel facts -- every idea you submit is a proposal only, and a "
@@ -298,18 +303,42 @@ class GroqAICandidateProposalProvider(AICandidateProposalProvider):
                     request, f"Groq client could not be initialized: {exc}"
                 )
 
-        try:
-            raw_output = client.invoke(_build_prompt(request))
-        except Exception as exc:  # API/runtime failure -> rejected, never fabricated
-            return self._rejected_result(request, f"Groq API call failed: {exc}")
+        # Section 202B.2 (Tasks 14-16). 202A evidence (18 baseline runs + pilot):
+        # the proposal call failed in 5-6 cases -- 3x `max completion tokens
+        # reached` (gpt-oss spends hidden reasoning tokens against the same
+        # budget, cutting the JSON off before the required trailing keys),
+        # 1x a proposal missing a required key, 1x an empty generation
+        # (all HTTP 400 `json_validate_failed`, i.e. STRUCTURAL output
+        # failures) and 1x a 429. So: exactly ONE bounded retry, only for a
+        # structural output failure, with a smaller batch. Never retried:
+        # rate limits, auth, timeouts, provider errors, and any semantic /
+        # grounding / factual rejection (those come from
+        # `_build_result_from_output`, after this loop).
+        attempts = 0
+        active_request = request
+        while True:
+            attempts += 1
+            structural_failure: str | None = None
+            try:
+                raw_output = client.invoke(_build_prompt(active_request))
+            except Exception as exc:  # API/runtime failure -> rejected, never fabricated
+                kind, message = classify_and_message("Groq", exc)
+                if kind != AIProviderFailureKind.MALFORMED_OUTPUT:
+                    return self._rejected_result(request, message)
+                structural_failure = message
+            else:
+                output_dict = self._coerce_output(raw_output)
+                if output_dict is not None:
+                    return self._build_result_from_output(request, output_dict)
+                structural_failure = "Groq did not return a structured response."
 
-        output_dict = self._coerce_output(raw_output)
-        if output_dict is None:
-            return self._rejected_result(
-                request, "Groq did not return a structured response."
+            if attempts >= _MAX_STRUCTURAL_ATTEMPTS:
+                return self._rejected_result(
+                    request, f"{structural_failure} (after {attempts} attempt(s))"
+                )
+            active_request = request.model_copy(
+                update={"max_candidates": max(_RETRY_MIN_CANDIDATES, request.max_candidates // 2)}
             )
-
-        return self._build_result_from_output(request, output_dict)
 
     def _build_client(self) -> Any:
         """Lazily imports and constructs the real Groq client, bound to the
@@ -344,6 +373,14 @@ class GroqAICandidateProposalProvider(AICandidateProposalProvider):
         except ImportError as exc:
             raise RuntimeError("The 'langchain_groq' package is not installed.") from exc
 
+        # Section 202C: NO forced `reasoning_effort`. 202B.2 set it to "low"
+        # (to save hidden reasoning tokens) without live verification; the
+        # 202C release-candidate run then saw 15/15 structural failures
+        # (HTTP 400 `json_validate_failed`: at "low" effort gpt-oss-20b
+        # omitted the per-proposal `confidence` key of the 15-item batch,
+        # reproduced live at production size), while the model's default
+        # effort returned a valid 15-proposal batch in an equivalent live probe.
+        # The bounded structural retry below is kept.
         chat = ChatGroq(
             model=self._model,
             api_key=self._api_key,

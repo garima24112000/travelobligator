@@ -1,0 +1,3608 @@
+{
+ "mode": "full_ai",
+ "generated_on": "2026-09-23",
+ "results": [
+  {
+   "case_id": "LIS-1",
+   "mode": "full_ai",
+   "destination": "Lisbon, Portugal",
+   "requested_days": 3,
+   "pace": "balanced",
+   "interests": [
+    "food",
+    "history"
+   ],
+   "group": "couple",
+   "traits": "dense, walkable, hilly; first-time visitor",
+   "generate_http_status": 200,
+   "latency_seconds": 77.0,
+   "request_id": "req_cec931f7b85c4d39975b84825278c9c2",
+   "trip_id": "trip_261811c4ee384866965861596b6d39c2",
+   "score": {
+    "scheduled_experience_count": 8,
+    "days_generated": 3,
+    "empty_days": [],
+    "stops_per_day": [
+     3,
+     2,
+     3
+    ],
+    "grounding": {
+     "all_have_stable_ids": true,
+     "with_coordinates": 8,
+     "with_claim_sources": 8,
+     "data_status_live": 8,
+     "promoted_from_ai": 2,
+     "unsupported_identity_names": [],
+     "unsupported_identity_count": 0,
+     "candidate_pool": {
+      "attractions": 14,
+      "restaurants": 19,
+      "accommodation_pois": 20
+     }
+    },
+    "geography": {
+     "per_day": [
+      {
+       "day": 1,
+       "stops": 3,
+       "names": [
+        "Pelourinho de Lisboa",
+        "Castelo de S\u00e3o Jorge",
+        "Past\u00e9is de Bel\u00e9m"
+       ],
+       "max_pairwise_km": 6.3,
+       "sequential_km": 7.2,
+       "far_apart": false,
+       "day_warnings": 2
+      },
+      {
+       "day": 2,
+       "stops": 2,
+       "names": [
+        "Miradouro de S\u00e3o Pedro de Alc\u00e2ntara",
+        "Torre de S\u00e3o Louren\u00e7o"
+       ],
+       "max_pairwise_km": 0.9,
+       "sequential_km": 0.9,
+       "far_apart": false,
+       "day_warnings": 2
+      },
+      {
+       "day": 3,
+       "stops": 3,
+       "names": [
+        "Afonso de Albuquerque",
+        "Mercado da Ribeira",
+        "Arco do Ros\u00e1rio"
+       ],
+       "max_pairwise_km": 6.3,
+       "sequential_km": 6.3,
+       "far_apart": false,
+       "day_warnings": 2
+      }
+     ],
+     "days_far_apart": []
+    },
+    "duplication": {
+     "repeated_normalized_names": {}
+    },
+    "relevance_signals": {
+     "interests_requested": [
+      "food",
+      "history"
+     ],
+     "interest_words_in_scheduled_names_or_categories": [
+      "food"
+     ]
+    },
+    "routing": {
+     "report_status": "success",
+     "legs_total": 5,
+     "leg_feasibility_counts": {
+      "feasible": 5
+     },
+     "providers": [
+      "osrm"
+     ],
+     "sequencing_status": "success",
+     "buffer_status_counts": {
+      "not_computable": 5
+     }
+    },
+    "validation": {
+     "readiness_status": "needs_review",
+     "critical_count": 0,
+     "warning_count": 8,
+     "suggestion_count": 0,
+     "warning_categories": {
+      "feasibility": 1,
+      "route_aware_sequencing": 1,
+      "movement_data": 1,
+      "route_geometry": 1,
+      "weather": 1,
+      "holidays": 1,
+      "accommodation_inventory": 1,
+      "flight_inventory": 1
+     }
+    },
+    "ai": {
+     "candidate_proposal": {
+      "status": "completed",
+      "blocked": []
+     },
+     "itinerary_reasoning": {
+      "status": "completed",
+      "blocked": []
+     },
+     "repair": {
+      "result": null,
+      "attempts": 0
+     },
+     "narrator": {
+      "status": "success",
+      "provider": "groq_itinerary_narrator_provider",
+      "message": null
+     }
+    },
+    "narration": {
+     "text_length_chars": 1235,
+     "referenced_ids_all_scheduled": true,
+     "referenced_id_count": 8,
+     "pattern_hits_needing_provenance_review": {}
+    },
+    "provider_coverage": {
+     "places": "success",
+     "routes": "success",
+     "restaurants": "fallback_used",
+     "accommodations": "open_poi_available",
+     "hotel_prices": "unavailable",
+     "hotel_ratings": null,
+     "vacation_rentals": "not_connected",
+     "airbnb": "not_connected",
+     "flights": "unavailable",
+     "weather": "success",
+     "holidays": "success",
+     "currency": "success"
+    },
+    "unavailable_data": [
+     {
+      "field": "transit_feasibility",
+      "status": "not_connected",
+      "reason": "routes provider is not connected."
+     },
+     {
+      "field": "accommodation_options",
+      "status": "not_connected",
+      "reason": "accommodation provider is not connected."
+     }
+    ],
+    "factual_looking_fields_non_null": [
+     {
+      "path": "experience_plan.provider_coverage.hotel_prices",
+      "value": "unavailable"
+     }
+    ],
+    "factual_looking_field_count": 1,
+    "pace_requested": "balanced",
+    "avg_stops_per_day": 2.67
+   },
+   "logged_component_seconds": {
+    "itinerary_narrator:groq_itinerary_narrator_provider": 30.5,
+    "ai_candidate_discovery:groq_ai_candidate_proposal_provider": 7.21,
+    "routing:osrm": 5.05,
+    "flights:kiwi_mcp_flight_provider": 3.31,
+    "ai_directed_provider_discovery:openstreetmap_places": 2.53,
+    "ai_itinerary_reasoning:groq_ai_itinerary_reasoning_provider": 2.02,
+    "accommodations:scraped_accommodation_provider": 0.0
+   }
+  },
+  {
+   "case_id": "LIS-2",
+   "mode": "full_ai",
+   "destination": "Lisbon, Portugal",
+   "requested_days": 4,
+   "pace": "packed",
+   "interests": [
+    "architecture",
+    "nightlife"
+   ],
+   "group": "friends",
+   "traits": "same city, different request (packed, nightlife)",
+   "generate_http_status": 200,
+   "latency_seconds": 83.1,
+   "request_id": "req_945167621b044cbca80cb8efab89387f",
+   "trip_id": "trip_ce24842c027148be87ccc58d80482553",
+   "score": {
+    "scheduled_experience_count": 10,
+    "days_generated": 4,
+    "empty_days": [
+     4
+    ],
+    "stops_per_day": [
+     3,
+     4,
+     3,
+     0
+    ],
+    "grounding": {
+     "all_have_stable_ids": true,
+     "with_coordinates": 10,
+     "with_claim_sources": 10,
+     "data_status_live": 0,
+     "promoted_from_ai": 0,
+     "unsupported_identity_names": [],
+     "unsupported_identity_count": 0,
+     "candidate_pool": {
+      "attractions": 14,
+      "restaurants": 19,
+      "accommodation_pois": 20
+     }
+    },
+    "geography": {
+     "per_day": [
+      {
+       "day": 1,
+       "stops": 3,
+       "names": [
+        "Pelourinho de Lisboa",
+        "Miradouro de S\u00e3o Pedro de Alc\u00e2ntara",
+        "Comboio do Zoo"
+       ],
+       "max_pairwise_km": 4.8,
+       "sequential_km": 4.8,
+       "far_apart": false,
+       "day_warnings": 2
+      },
+      {
+       "day": 2,
+       "stops": 4,
+       "names": [
+        "Torre de S\u00e3o Louren\u00e7o",
+        "Arco Escuro",
+        "Portas do Mar",
+        "Afonso de Albuquerque"
+       ],
+       "max_pairwise_km": 6.1,
+       "sequential_km": 6.7,
+       "far_apart": false,
+       "day_warnings": 2
+      },
+      {
+       "day": 3,
+       "stops": 3,
+       "names": [
+        "Past\u00e9is de Bel\u00e9m",
+        "Arco do Ros\u00e1rio",
+        "Antiga Fabrica de Polvora"
+       ],
+       "max_pairwise_km": 9.0,
+       "sequential_km": 10.1,
+       "far_apart": false,
+       "day_warnings": 2
+      },
+      {
+       "day": 4,
+       "stops": 0,
+       "names": [],
+       "max_pairwise_km": 0.0,
+       "sequential_km": 0,
+       "far_apart": false,
+       "day_warnings": 4
+      }
+     ],
+     "days_far_apart": []
+    },
+    "duplication": {
+     "repeated_normalized_names": {}
+    },
+    "relevance_signals": {
+     "interests_requested": [
+      "architecture",
+      "nightlife"
+     ],
+     "interest_words_in_scheduled_names_or_categories": []
+    },
+    "routing": {
+     "report_status": "success",
+     "legs_total": 7,
+     "leg_feasibility_counts": {
+      "feasible": 7
+     },
+     "providers": [
+      "osrm"
+     ],
+     "sequencing_status": "success",
+     "buffer_status_counts": {
+      "not_computable": 7
+     }
+    },
+    "validation": {
+     "readiness_status": "needs_review",
+     "critical_count": 0,
+     "warning_count": 8,
+     "suggestion_count": 0,
+     "warning_categories": {
+      "feasibility": 1,
+      "route_aware_sequencing": 1,
+      "movement_data": 1,
+      "route_geometry": 1,
+      "geographic_spread": 1,
+      "weather": 1,
+      "accommodation_inventory": 1,
+      "flight_inventory": 1
+     }
+    },
+    "ai": {
+     "candidate_proposal": {
+      "status": "rejected",
+      "blocked": [
+       "Groq API call failed: Error code: 400 - {'error': {'message': \"Failed to validate JSON. Please adjust your prompt. See 'failed_generation' for more details.\", 'type': 'invalid_request_error', 'code': 'json_validate_failed', 'failed_generation': ''}}"
+      ]
+     },
+     "itinerary_reasoning": {
+      "status": "completed",
+      "blocked": []
+     },
+     "repair": {
+      "result": "rejected",
+      "attempts": 1
+     },
+     "narrator": {
+      "status": "failed",
+      "provider": "groq_itinerary_narrator_provider",
+      "message": "Groq API call failed: Error code: 429 - {'error': {'message': 'Rate limit reached for model `openai/gpt-oss-20b` in organization `org_<redacted>` service tier `on_demand` on tokens per day (TPD): Limit 200000, Used 198689, Requested 4484. Please try again in 22m50.736s. Need more tokens? Upgrade to Dev Tier today at https://console.groq.com/settings/billing', 'type': 'tokens', 'code': 'rate_limit_"
+     }
+    },
+    "narration": {
+     "text_length_chars": 0,
+     "referenced_ids_all_scheduled": true,
+     "referenced_id_count": 0,
+     "pattern_hits_needing_provenance_review": {}
+    },
+    "provider_coverage": {
+     "places": "success",
+     "routes": "success",
+     "restaurants": "fallback_used",
+     "accommodations": "open_poi_available",
+     "hotel_prices": "unavailable",
+     "hotel_ratings": null,
+     "vacation_rentals": "not_connected",
+     "airbnb": "not_connected",
+     "flights": "unavailable",
+     "weather": "success",
+     "holidays": "success",
+     "currency": "success"
+    },
+    "unavailable_data": [
+     {
+      "field": "transit_feasibility",
+      "status": "not_connected",
+      "reason": "routes provider is not connected."
+     },
+     {
+      "field": "accommodation_options",
+      "status": "not_connected",
+      "reason": "accommodation provider is not connected."
+     }
+    ],
+    "factual_looking_fields_non_null": [
+     {
+      "path": "experience_plan.provider_coverage.hotel_prices",
+      "value": "unavailable"
+     }
+    ],
+    "factual_looking_field_count": 1,
+    "pace_requested": "packed",
+    "avg_stops_per_day": 2.5
+   },
+   "logged_component_seconds": {
+    "ai_itinerary_reasoning:groq_ai_itinerary_reasoning_provider": 44.54,
+    "ai_candidate_discovery:groq_ai_candidate_proposal_provider": 13.27,
+    "routing:osrm": 9.61,
+    "flights:kiwi_mcp_flight_provider": 1.81,
+    "itinerary_narrator:groq_itinerary_narrator_provider": 0.19,
+    "ai_itinerary_repair:groq_ai_itinerary_reasoning_provider": 0.1,
+    "accommodations:scraped_accommodation_provider": 0.0
+   }
+  },
+  {
+   "case_id": "NYC-1",
+   "mode": "full_ai",
+   "destination": "New York City, USA",
+   "requested_days": 4,
+   "pace": "balanced",
+   "interests": [
+    "museums",
+    "food"
+   ],
+   "group": "couple",
+   "traits": "dense, transit-oriented; first-time visitor",
+   "generate_http_status": 200,
+   "latency_seconds": 7.9,
+   "request_id": "req_e4b14ad392d344b4907e43a2d9e5c16f",
+   "trip_id": "trip_8899d529bc924c24a2391055d90bcfd5",
+   "score": {
+    "scheduled_experience_count": 2,
+    "days_generated": 4,
+    "empty_days": [
+     2,
+     3,
+     4
+    ],
+    "stops_per_day": [
+     2,
+     0,
+     0,
+     0
+    ],
+    "grounding": {
+     "all_have_stable_ids": true,
+     "with_coordinates": 2,
+     "with_claim_sources": 2,
+     "data_status_live": 0,
+     "promoted_from_ai": 0,
+     "unsupported_identity_names": [],
+     "unsupported_identity_count": 0,
+     "candidate_pool": {
+      "attractions": 19,
+      "restaurants": 19,
+      "accommodation_pois": 20
+     }
+    },
+    "geography": {
+     "per_day": [
+      {
+       "day": 1,
+       "stops": 2,
+       "names": [
+        "SoHo",
+        "South Street Seaport"
+       ],
+       "max_pairwise_km": 1.9,
+       "sequential_km": 1.9,
+       "far_apart": false,
+       "day_warnings": 2
+      },
+      {
+       "day": 2,
+       "stops": 0,
+       "names": [],
+       "max_pairwise_km": 0.0,
+       "sequential_km": 0,
+       "far_apart": false,
+       "day_warnings": 5
+      },
+      {
+       "day": 3,
+       "stops": 0,
+       "names": [],
+       "max_pairwise_km": 0.0,
+       "sequential_km": 0,
+       "far_apart": false,
+       "day_warnings": 5
+      },
+      {
+       "day": 4,
+       "stops": 0,
+       "names": [],
+       "max_pairwise_km": 0.0,
+       "sequential_km": 0,
+       "far_apart": false,
+       "day_warnings": 5
+      }
+     ],
+     "days_far_apart": []
+    },
+    "duplication": {
+     "repeated_normalized_names": {}
+    },
+    "relevance_signals": {
+     "interests_requested": [
+      "museums",
+      "food"
+     ],
+     "interest_words_in_scheduled_names_or_categories": []
+    },
+    "routing": {
+     "report_status": "success",
+     "legs_total": 1,
+     "leg_feasibility_counts": {
+      "feasible": 1
+     },
+     "providers": [
+      "osrm"
+     ],
+     "sequencing_status": "success",
+     "buffer_status_counts": {
+      "not_computable": 1
+     }
+    },
+    "validation": {
+     "readiness_status": "needs_review",
+     "critical_count": 0,
+     "warning_count": 8,
+     "suggestion_count": 0,
+     "warning_categories": {
+      "feasibility": 1,
+      "route_aware_sequencing": 1,
+      "movement_data": 1,
+      "route_geometry": 1,
+      "weather": 1,
+      "holidays": 1,
+      "accommodation_inventory": 1,
+      "flight_inventory": 1
+     }
+    },
+    "ai": {
+     "candidate_proposal": {
+      "status": "rejected",
+      "blocked": [
+       "Groq API call failed: Error code: 429 - {'error': {'message': 'Rate limit reached for model `openai/gpt-oss-20b` in organization `org_<redacted>` service tier `on_demand` on tokens per day (TPD): Limit 200000, Used 198671, Requested 2334. Please try again in 7m14.159999999s. Need more tokens? Upgrade to Dev Tier today at https://console.groq.com/settings/billing', 'type': 'tokens', 'code': 'rate_l"
+      ]
+     },
+     "itinerary_reasoning": {
+      "status": "rejected",
+      "blocked": [
+       "Groq API call failed: Error code: 429 - {'error': {'message': 'Rate limit reached for model `openai/gpt-oss-20b` in organization `org_<redacted>` service tier `on_demand` on tokens per day (TPD): Limit 200000, Used 198664, Requested 5958. Please try again in 33m16.704s. Need more tokens? Upgrade to Dev Tier today at https://console.groq.com/settings/billing', 'type': 'tokens', 'code': 'rate_limit_"
+      ]
+     },
+     "repair": {
+      "result": null,
+      "attempts": 0
+     },
+     "narrator": {
+      "status": "failed",
+      "provider": "groq_itinerary_narrator_provider",
+      "message": "Groq API call failed: Error code: 429 - {'error': {'message': 'Rate limit reached for model `openai/gpt-oss-20b` in organization `org_<redacted>` service tier `on_demand` on tokens per day (TPD): Limit 200000, Used 198664, Requested 3932. Please try again in 18m41.472s. Need more tokens? Upgrade to Dev Tier today at https://console.groq.com/settings/billing', 'type': 'tokens', 'code': 'rate_limit_"
+     }
+    },
+    "narration": {
+     "text_length_chars": 0,
+     "referenced_ids_all_scheduled": true,
+     "referenced_id_count": 0,
+     "pattern_hits_needing_provenance_review": {}
+    },
+    "provider_coverage": {
+     "places": "success",
+     "routes": "success",
+     "restaurants": "success",
+     "accommodations": "open_poi_available",
+     "hotel_prices": "unavailable",
+     "hotel_ratings": null,
+     "vacation_rentals": "not_connected",
+     "airbnb": "not_connected",
+     "flights": "unavailable",
+     "weather": "success",
+     "holidays": "success",
+     "currency": "success"
+    },
+    "unavailable_data": [
+     {
+      "field": "transit_feasibility",
+      "status": "not_connected",
+      "reason": "routes provider is not connected."
+     },
+     {
+      "field": "accommodation_options",
+      "status": "not_connected",
+      "reason": "accommodation provider is not connected."
+     }
+    ],
+    "factual_looking_fields_non_null": [
+     {
+      "path": "experience_plan.provider_coverage.hotel_prices",
+      "value": "unavailable"
+     }
+    ],
+    "factual_looking_field_count": 1,
+    "pace_requested": "balanced",
+    "avg_stops_per_day": 0.5
+   },
+   "logged_component_seconds": {
+    "flights:kiwi_mcp_flight_provider": 2.85,
+    "ai_candidate_discovery:groq_ai_candidate_proposal_provider": 0.19,
+    "itinerary_narrator:groq_itinerary_narrator_provider": 0.15,
+    "ai_itinerary_reasoning:groq_ai_itinerary_reasoning_provider": 0.08,
+    "accommodations:scraped_accommodation_provider": 0.0,
+    "routing:osrm": 0.0
+   }
+  },
+  {
+   "case_id": "NYC-2",
+   "mode": "full_ai",
+   "destination": "New York City, USA",
+   "requested_days": 3,
+   "pace": "relaxed",
+   "interests": [
+    "architecture",
+    "parks"
+   ],
+   "group": "solo",
+   "traits": "relaxed, outdoors/architecture",
+   "generate_http_status": 200,
+   "latency_seconds": 4.9,
+   "request_id": "req_3303ad183cc44fb4bf67aecdb3e250d9",
+   "trip_id": "trip_8fc6d38a37bf4b8097f41409ad982b52",
+   "score": {
+    "scheduled_experience_count": 2,
+    "days_generated": 3,
+    "empty_days": [
+     2,
+     3
+    ],
+    "stops_per_day": [
+     2,
+     0,
+     0
+    ],
+    "grounding": {
+     "all_have_stable_ids": true,
+     "with_coordinates": 2,
+     "with_claim_sources": 2,
+     "data_status_live": 0,
+     "promoted_from_ai": 0,
+     "unsupported_identity_names": [],
+     "unsupported_identity_count": 0,
+     "candidate_pool": {
+      "attractions": 19,
+      "restaurants": 19,
+      "accommodation_pois": 20
+     }
+    },
+    "geography": {
+     "per_day": [
+      {
+       "day": 1,
+       "stops": 2,
+       "names": [
+        "SoHo",
+        "South Street Seaport"
+       ],
+       "max_pairwise_km": 1.9,
+       "sequential_km": 1.9,
+       "far_apart": false,
+       "day_warnings": 1
+      },
+      {
+       "day": 2,
+       "stops": 0,
+       "names": [],
+       "max_pairwise_km": 0.0,
+       "sequential_km": 0,
+       "far_apart": false,
+       "day_warnings": 5
+      },
+      {
+       "day": 3,
+       "stops": 0,
+       "names": [],
+       "max_pairwise_km": 0.0,
+       "sequential_km": 0,
+       "far_apart": false,
+       "day_warnings": 5
+      }
+     ],
+     "days_far_apart": []
+    },
+    "duplication": {
+     "repeated_normalized_names": {}
+    },
+    "relevance_signals": {
+     "interests_requested": [
+      "architecture",
+      "parks"
+     ],
+     "interest_words_in_scheduled_names_or_categories": []
+    },
+    "routing": {
+     "report_status": "success",
+     "legs_total": 1,
+     "leg_feasibility_counts": {
+      "feasible": 1
+     },
+     "providers": [
+      "osrm"
+     ],
+     "sequencing_status": "success",
+     "buffer_status_counts": {
+      "not_computable": 1
+     }
+    },
+    "validation": {
+     "readiness_status": "needs_review",
+     "critical_count": 0,
+     "warning_count": 7,
+     "suggestion_count": 0,
+     "warning_categories": {
+      "feasibility": 1,
+      "route_aware_sequencing": 1,
+      "movement_data": 1,
+      "route_geometry": 1,
+      "weather": 1,
+      "accommodation_inventory": 1,
+      "flight_inventory": 1
+     }
+    },
+    "ai": {
+     "candidate_proposal": {
+      "status": "rejected",
+      "blocked": [
+       "Groq API call failed: Error code: 429 - {'error': {'message': 'Rate limit reached for model `openai/gpt-oss-20b` in organization `org_<redacted>` service tier `on_demand` on tokens per day (TPD): Limit 200000, Used 198655, Requested 6034. Please try again in 33m45.648s. Need more tokens? Upgrade to Dev Tier today at https://console.groq.com/settings/billing', 'type': 'tokens', 'code': 'rate_limit_"
+      ]
+     },
+     "itinerary_reasoning": {
+      "status": "rejected",
+      "blocked": [
+       "Groq API call failed: Error code: 429 - {'error': {'message': 'Rate limit reached for model `openai/gpt-oss-20b` in organization `org_<redacted>` service tier `on_demand` on tokens per day (TPD): Limit 200000, Used 198646, Requested 5706. Please try again in 31m20.064s. Need more tokens? Upgrade to Dev Tier today at https://console.groq.com/settings/billing', 'type': 'tokens', 'code': 'rate_limit_"
+      ]
+     },
+     "repair": {
+      "result": null,
+      "attempts": 0
+     },
+     "narrator": {
+      "status": "failed",
+      "provider": "groq_itinerary_narrator_provider",
+      "message": "Groq API call failed: Error code: 429 - {'error': {'message': 'Rate limit reached for model `openai/gpt-oss-20b` in organization `org_<redacted>` service tier `on_demand` on tokens per day (TPD): Limit 200000, Used 198646, Requested 3908. Please try again in 18m23.328s. Need more tokens? Upgrade to Dev Tier today at https://console.groq.com/settings/billing', 'type': 'tokens', 'code': 'rate_limit_"
+     }
+    },
+    "narration": {
+     "text_length_chars": 0,
+     "referenced_ids_all_scheduled": true,
+     "referenced_id_count": 0,
+     "pattern_hits_needing_provenance_review": {}
+    },
+    "provider_coverage": {
+     "places": "success",
+     "routes": "success",
+     "restaurants": "success",
+     "accommodations": "open_poi_available",
+     "hotel_prices": "unavailable",
+     "hotel_ratings": null,
+     "vacation_rentals": "not_connected",
+     "airbnb": "not_connected",
+     "flights": "unavailable",
+     "weather": "success",
+     "holidays": "success",
+     "currency": "success"
+    },
+    "unavailable_data": [
+     {
+      "field": "transit_feasibility",
+      "status": "not_connected",
+      "reason": "routes provider is not connected."
+     },
+     {
+      "field": "accommodation_options",
+      "status": "not_connected",
+      "reason": "accommodation provider is not connected."
+     }
+    ],
+    "factual_looking_fields_non_null": [
+     {
+      "path": "experience_plan.provider_coverage.hotel_prices",
+      "value": "unavailable"
+     }
+    ],
+    "factual_looking_field_count": 1,
+    "pace_requested": "relaxed",
+    "avg_stops_per_day": 0.67
+   },
+   "logged_component_seconds": {
+    "flights:kiwi_mcp_flight_provider": 3.79,
+    "itinerary_narrator:groq_itinerary_narrator_provider": 0.17,
+    "ai_candidate_discovery:groq_ai_candidate_proposal_provider": 0.09,
+    "ai_itinerary_reasoning:groq_ai_itinerary_reasoning_provider": 0.07,
+    "accommodations:scraped_accommodation_provider": 0.0,
+    "routing:osrm": 0.0
+   }
+  },
+  {
+   "case_id": "DC-1",
+   "mode": "full_ai",
+   "destination": "Washington, DC, USA",
+   "requested_days": 3,
+   "pace": "balanced",
+   "interests": [
+    "history",
+    "museums"
+   ],
+   "group": "family",
+   "traits": "attraction-heavy, compact monument core",
+   "generate_http_status": 200,
+   "latency_seconds": 26.8,
+   "request_id": "req_07ce449dcf9d448489f0fb059ae2f861",
+   "trip_id": "trip_676115b46933456b949d6aebf311eb0d",
+   "score": {
+    "scheduled_experience_count": 9,
+    "days_generated": 3,
+    "empty_days": [],
+    "stops_per_day": [
+     3,
+     3,
+     3
+    ],
+    "grounding": {
+     "all_have_stable_ids": true,
+     "with_coordinates": 9,
+     "with_claim_sources": 9,
+     "data_status_live": 9,
+     "promoted_from_ai": 0,
+     "unsupported_identity_names": [],
+     "unsupported_identity_count": 0,
+     "candidate_pool": {
+      "attractions": 19,
+      "restaurants": 20,
+      "accommodation_pois": 20
+     }
+    },
+    "geography": {
+     "per_day": [
+      {
+       "day": 1,
+       "stops": 3,
+       "names": [
+        "Lincoln Memorial",
+        "Arts of War: Valor",
+        "Arts of Peace: Aspiration and Literature"
+       ],
+       "max_pairwise_km": 0.2,
+       "sequential_km": 0.3,
+       "far_apart": false,
+       "day_warnings": 1
+      },
+      {
+       "day": 2,
+       "stops": 3,
+       "names": [
+        "Hahnemann Monument",
+        "Lieutenant General Winfield Brevet Scott Statue",
+        "Major General George Thomas Statue"
+       ],
+       "max_pairwise_km": 0.4,
+       "sequential_km": 0.5,
+       "far_apart": false,
+       "day_warnings": 1
+      },
+      {
+       "day": 3,
+       "stops": 3,
+       "names": [
+        "Bernardo de Galvez",
+        "Dupont Circle",
+        "Bay-Eva Castle"
+       ],
+       "max_pairwise_km": 3.5,
+       "sequential_km": 5.3,
+       "far_apart": false,
+       "day_warnings": 1
+      }
+     ],
+     "days_far_apart": []
+    },
+    "duplication": {
+     "repeated_normalized_names": {}
+    },
+    "relevance_signals": {
+     "interests_requested": [
+      "history",
+      "museums"
+     ],
+     "interest_words_in_scheduled_names_or_categories": []
+    },
+    "routing": {
+     "report_status": "success",
+     "legs_total": 6,
+     "leg_feasibility_counts": {
+      "feasible": 6
+     },
+     "providers": [
+      "osrm"
+     ],
+     "sequencing_status": "success",
+     "buffer_status_counts": {
+      "not_computable": 6
+     }
+    },
+    "validation": {
+     "readiness_status": "needs_review",
+     "critical_count": 0,
+     "warning_count": 7,
+     "suggestion_count": 0,
+     "warning_categories": {
+      "feasibility": 1,
+      "route_aware_sequencing": 1,
+      "movement_data": 1,
+      "route_geometry": 1,
+      "weather": 1,
+      "accommodation_inventory": 1,
+      "flight_inventory": 1
+     }
+    },
+    "ai": {
+     "candidate_proposal": {
+      "status": "rejected",
+      "blocked": [
+       "Groq API call failed: Error code: 429 - {'error': {'message': 'Rate limit reached for model `openai/gpt-oss-20b` in organization `org_<redacted>` service tier `on_demand` on tokens per day (TPD): Limit 200000, Used 198601, Requested 6034. Please try again in 33m22.32s. Need more tokens? Upgrade to Dev Tier today at https://console.groq.com/settings/billing', 'type': 'tokens', 'code': 'rate_limit_e"
+      ]
+     },
+     "itinerary_reasoning": {
+      "status": "rejected",
+      "blocked": [
+       "Groq API call failed: Error code: 429 - {'error': {'message': 'Rate limit reached for model `openai/gpt-oss-20b` in organization `org_<redacted>` service tier `on_demand` on tokens per day (TPD): Limit 200000, Used 198592, Requested 6293. Please try again in 35m10.319999999s. Need more tokens? Upgrade to Dev Tier today at https://console.groq.com/settings/billing', 'type': 'tokens', 'code': 'rate_"
+      ]
+     },
+     "repair": {
+      "result": null,
+      "attempts": 0
+     },
+     "narrator": {
+      "status": "failed",
+      "provider": "groq_itinerary_narrator_provider",
+      "message": "Groq API call failed: Error code: 429 - {'error': {'message': 'Rate limit reached for model `openai/gpt-oss-20b` in organization `org_<redacted>` service tier `on_demand` on tokens per day (TPD): Limit 200000, Used 198577, Requested 4220. Please try again in 20m8.303999999s. Need more tokens? Upgrade to Dev Tier today at https://console.groq.com/settings/billing', 'type': 'tokens', 'code': 'rate_l"
+     }
+    },
+    "narration": {
+     "text_length_chars": 0,
+     "referenced_ids_all_scheduled": true,
+     "referenced_id_count": 0,
+     "pattern_hits_needing_provenance_review": {}
+    },
+    "provider_coverage": {
+     "places": "success",
+     "routes": "success",
+     "restaurants": "success",
+     "accommodations": "open_poi_available",
+     "hotel_prices": "unavailable",
+     "hotel_ratings": null,
+     "vacation_rentals": "not_connected",
+     "airbnb": "not_connected",
+     "flights": "unavailable",
+     "weather": "success",
+     "holidays": "success",
+     "currency": "success"
+    },
+    "unavailable_data": [
+     {
+      "field": "transit_feasibility",
+      "status": "not_connected",
+      "reason": "routes provider is not connected."
+     },
+     {
+      "field": "accommodation_options",
+      "status": "not_connected",
+      "reason": "accommodation provider is not connected."
+     }
+    ],
+    "factual_looking_fields_non_null": [
+     {
+      "path": "experience_plan.provider_coverage.hotel_prices",
+      "value": "unavailable"
+     }
+    ],
+    "factual_looking_field_count": 1,
+    "pace_requested": "balanced",
+    "avg_stops_per_day": 3.0
+   },
+   "logged_component_seconds": {
+    "routing:osrm": 6.36,
+    "flights:kiwi_mcp_flight_provider": 3.9,
+    "ai_candidate_discovery:groq_ai_candidate_proposal_provider": 0.11,
+    "itinerary_narrator:groq_itinerary_narrator_provider": 0.08,
+    "ai_itinerary_reasoning:groq_ai_itinerary_reasoning_provider": 0.06,
+    "accommodations:scraped_accommodation_provider": 0.0
+   }
+  },
+  {
+   "case_id": "DC-2",
+   "mode": "full_ai",
+   "destination": "Washington, DC, USA",
+   "requested_days": 2,
+   "pace": "relaxed",
+   "interests": [
+    "food",
+    "outdoors"
+   ],
+   "group": "couple",
+   "traits": "short trip, food/outdoors",
+   "generate_http_status": 200,
+   "latency_seconds": 5.6,
+   "request_id": "req_7b219d267cbc4eadb3e0717754e7f9cc",
+   "trip_id": "trip_fcb5ea9c8c53438abf7193327fe821f7",
+   "score": {
+    "scheduled_experience_count": 4,
+    "days_generated": 2,
+    "empty_days": [],
+    "stops_per_day": [
+     2,
+     2
+    ],
+    "grounding": {
+     "all_have_stable_ids": true,
+     "with_coordinates": 4,
+     "with_claim_sources": 4,
+     "data_status_live": 0,
+     "promoted_from_ai": 0,
+     "unsupported_identity_names": [],
+     "unsupported_identity_count": 0,
+     "candidate_pool": {
+      "attractions": 18,
+      "restaurants": 20,
+      "accommodation_pois": 20
+     }
+    },
+    "geography": {
+     "per_day": [
+      {
+       "day": 1,
+       "stops": 2,
+       "names": [
+        "Hahnemann Monument",
+        "Lieutenant General Winfield Brevet Scott Statue"
+       ],
+       "max_pairwise_km": 0.1,
+       "sequential_km": 0.1,
+       "far_apart": false,
+       "day_warnings": 1
+      },
+      {
+       "day": 2,
+       "stops": 2,
+       "names": [
+        "Arts of Peace: Aspiration and Literature",
+        "Arts of War: Valor"
+       ],
+       "max_pairwise_km": 0.1,
+       "sequential_km": 0.1,
+       "far_apart": false,
+       "day_warnings": 1
+      }
+     ],
+     "days_far_apart": []
+    },
+    "duplication": {
+     "repeated_normalized_names": {}
+    },
+    "relevance_signals": {
+     "interests_requested": [
+      "food",
+      "outdoors"
+     ],
+     "interest_words_in_scheduled_names_or_categories": []
+    },
+    "routing": {
+     "report_status": "success",
+     "legs_total": 2,
+     "leg_feasibility_counts": {
+      "feasible": 2
+     },
+     "providers": [
+      "osrm"
+     ],
+     "sequencing_status": "success",
+     "buffer_status_counts": {
+      "not_computable": 2
+     }
+    },
+    "validation": {
+     "readiness_status": "needs_review",
+     "critical_count": 0,
+     "warning_count": 7,
+     "suggestion_count": 0,
+     "warning_categories": {
+      "feasibility": 1,
+      "route_aware_sequencing": 1,
+      "movement_data": 1,
+      "route_geometry": 1,
+      "weather": 1,
+      "accommodation_inventory": 1,
+      "flight_inventory": 1
+     }
+    },
+    "ai": {
+     "candidate_proposal": {
+      "status": "rejected",
+      "blocked": [
+       "Groq API call failed: Error code: 429 - {'error': {'message': 'Rate limit reached for model `openai/gpt-oss-20b` in organization `org_<redacted>` service tier `on_demand` on tokens per day (TPD): Limit 200000, Used 198568, Requested 5687. Please try again in 30m38.159999999s. Need more tokens? Upgrade to Dev Tier today at https://console.groq.com/settings/billing', 'type': 'tokens', 'code': 'rate_"
+      ]
+     },
+     "itinerary_reasoning": {
+      "status": "rejected",
+      "blocked": [
+       "Groq API call failed: Error code: 429 - {'error': {'message': 'Rate limit reached for model `openai/gpt-oss-20b` in organization `org_<redacted>` service tier `on_demand` on tokens per day (TPD): Limit 200000, Used 198558, Requested 5191. Please try again in 26m59.568s. Need more tokens? Upgrade to Dev Tier today at https://console.groq.com/settings/billing', 'type': 'tokens', 'code': 'rate_limit_"
+      ]
+     },
+     "repair": {
+      "result": null,
+      "attempts": 0
+     },
+     "narrator": {
+      "status": "failed",
+      "provider": "groq_itinerary_narrator_provider",
+      "message": "Groq API call failed: Error code: 429 - {'error': {'message': 'Rate limit reached for model `openai/gpt-oss-20b` in organization `org_<redacted>` service tier `on_demand` on tokens per day (TPD): Limit 200000, Used 198557, Requested 3984. Please try again in 18m17.712s. Need more tokens? Upgrade to Dev Tier today at https://console.groq.com/settings/billing', 'type': 'tokens', 'code': 'rate_limit_"
+     }
+    },
+    "narration": {
+     "text_length_chars": 0,
+     "referenced_ids_all_scheduled": true,
+     "referenced_id_count": 0,
+     "pattern_hits_needing_provenance_review": {}
+    },
+    "provider_coverage": {
+     "places": "success",
+     "routes": "success",
+     "restaurants": "success",
+     "accommodations": "open_poi_available",
+     "hotel_prices": "unavailable",
+     "hotel_ratings": null,
+     "vacation_rentals": "not_connected",
+     "airbnb": "not_connected",
+     "flights": "unavailable",
+     "weather": "success",
+     "holidays": "success",
+     "currency": "success"
+    },
+    "unavailable_data": [
+     {
+      "field": "transit_feasibility",
+      "status": "not_connected",
+      "reason": "routes provider is not connected."
+     },
+     {
+      "field": "accommodation_options",
+      "status": "not_connected",
+      "reason": "accommodation provider is not connected."
+     }
+    ],
+    "factual_looking_fields_non_null": [
+     {
+      "path": "experience_plan.provider_coverage.hotel_prices",
+      "value": "unavailable"
+     }
+    ],
+    "factual_looking_field_count": 1,
+    "pace_requested": "relaxed",
+    "avg_stops_per_day": 2.0
+   },
+   "logged_component_seconds": {
+    "flights:kiwi_mcp_flight_provider": 4.03,
+    "ai_itinerary_reasoning:groq_ai_itinerary_reasoning_provider": 0.34,
+    "itinerary_narrator:groq_itinerary_narrator_provider": 0.19,
+    "ai_candidate_discovery:groq_ai_candidate_proposal_provider": 0.09,
+    "accommodations:scraped_accommodation_provider": 0.0,
+    "routing:osrm": 0.0
+   }
+  },
+  {
+   "case_id": "SF-1",
+   "mode": "full_ai",
+   "destination": "San Francisco, USA",
+   "requested_days": 4,
+   "pace": "packed",
+   "interests": [
+    "outdoors",
+    "food"
+   ],
+   "group": "friends",
+   "traits": "hilly, geographically spread; outdoors",
+   "generate_http_status": 200,
+   "latency_seconds": 43.3,
+   "request_id": "req_5acbbfeae87845478651b43abdf7c55c",
+   "trip_id": "trip_5cd5ce012fa0459c8462e3b5a76e19f4",
+   "score": {
+    "scheduled_experience_count": 8,
+    "days_generated": 4,
+    "empty_days": [
+     3,
+     4
+    ],
+    "stops_per_day": [
+     4,
+     4,
+     0,
+     0
+    ],
+    "grounding": {
+     "all_have_stable_ids": true,
+     "with_coordinates": 8,
+     "with_claim_sources": 8,
+     "data_status_live": 8,
+     "promoted_from_ai": 0,
+     "unsupported_identity_names": [],
+     "unsupported_identity_count": 0,
+     "candidate_pool": {
+      "attractions": 19,
+      "restaurants": 20,
+      "accommodation_pois": 20
+     }
+    },
+    "geography": {
+     "per_day": [
+      {
+       "day": 1,
+       "stops": 4,
+       "names": [
+        "Dragon Gate",
+        "Lotta's Fountain",
+        "Mechanics Monument",
+        "Willie McCovey Statue"
+       ],
+       "max_pairwise_km": 2.2,
+       "sequential_km": 2.8,
+       "far_apart": false,
+       "day_warnings": 1
+      },
+      {
+       "day": 2,
+       "stops": 4,
+       "names": [
+        "California Society of Pioneers Museum and Library",
+        "Inspiration Point",
+        "Phillip Burton",
+        "Mus\u00e9e M\u00e9canique"
+       ],
+       "max_pairwise_km": 4.2,
+       "sequential_km": 5.1,
+       "far_apart": false,
+       "day_warnings": 1
+      },
+      {
+       "day": 3,
+       "stops": 0,
+       "names": [],
+       "max_pairwise_km": 0.0,
+       "sequential_km": 0,
+       "far_apart": false,
+       "day_warnings": 5
+      },
+      {
+       "day": 4,
+       "stops": 0,
+       "names": [],
+       "max_pairwise_km": 0.0,
+       "sequential_km": 0,
+       "far_apart": false,
+       "day_warnings": 5
+      }
+     ],
+     "days_far_apart": []
+    },
+    "duplication": {
+     "repeated_normalized_names": {}
+    },
+    "relevance_signals": {
+     "interests_requested": [
+      "outdoors",
+      "food"
+     ],
+     "interest_words_in_scheduled_names_or_categories": []
+    },
+    "routing": {
+     "report_status": "success",
+     "legs_total": 6,
+     "leg_feasibility_counts": {
+      "feasible": 6
+     },
+     "providers": [
+      "osrm"
+     ],
+     "sequencing_status": "success",
+     "buffer_status_counts": {
+      "not_computable": 6
+     }
+    },
+    "validation": {
+     "readiness_status": "needs_review",
+     "critical_count": 0,
+     "warning_count": 7,
+     "suggestion_count": 0,
+     "warning_categories": {
+      "feasibility": 1,
+      "route_aware_sequencing": 1,
+      "movement_data": 1,
+      "route_geometry": 1,
+      "weather": 1,
+      "accommodation_inventory": 1,
+      "flight_inventory": 1
+     }
+    },
+    "ai": {
+     "candidate_proposal": {
+      "status": "rejected",
+      "blocked": [
+       "Groq API call failed: Error code: 429 - {'error': {'message': 'Rate limit reached for model `openai/gpt-oss-20b` in organization `org_<redacted>` service tier `on_demand` on tokens per day (TPD): Limit 200000, Used 198479, Requested 4621. Please try again in 22m19.2s. Need more tokens? Upgrade to Dev Tier today at https://console.groq.com/settings/billing', 'type': 'tokens', 'code': 'rate_limit_ex"
+      ]
+     },
+     "itinerary_reasoning": {
+      "status": "rejected",
+      "blocked": [
+       "Groq API call failed: Error code: 429 - {'error': {'message': 'Rate limit reached for model `openai/gpt-oss-20b` in organization `org_<redacted>` service tier `on_demand` on tokens per day (TPD): Limit 200000, Used 198471, Requested 6920. Please try again in 38m48.912s. Need more tokens? Upgrade to Dev Tier today at https://console.groq.com/settings/billing', 'type': 'tokens', 'code': 'rate_limit_"
+      ]
+     },
+     "repair": {
+      "result": null,
+      "attempts": 0
+     },
+     "narrator": {
+      "status": "failed",
+      "provider": "groq_itinerary_narrator_provider",
+      "message": "Groq API call failed: Error code: 429 - {'error': {'message': 'Rate limit reached for model `openai/gpt-oss-20b` in organization `org_<redacted>` service tier `on_demand` on tokens per day (TPD): Limit 200000, Used 198450, Requested 4186. Please try again in 18m58.752s. Need more tokens? Upgrade to Dev Tier today at https://console.groq.com/settings/billing', 'type': 'tokens', 'code': 'rate_limit_"
+     }
+    },
+    "narration": {
+     "text_length_chars": 0,
+     "referenced_ids_all_scheduled": true,
+     "referenced_id_count": 0,
+     "pattern_hits_needing_provenance_review": {}
+    },
+    "provider_coverage": {
+     "places": "success",
+     "routes": "success",
+     "restaurants": "fallback_used",
+     "accommodations": "open_poi_available",
+     "hotel_prices": "unavailable",
+     "hotel_ratings": null,
+     "vacation_rentals": "not_connected",
+     "airbnb": "not_connected",
+     "flights": "unavailable",
+     "weather": "success",
+     "holidays": "success",
+     "currency": "success"
+    },
+    "unavailable_data": [
+     {
+      "field": "transit_feasibility",
+      "status": "not_connected",
+      "reason": "routes provider is not connected."
+     },
+     {
+      "field": "accommodation_options",
+      "status": "not_connected",
+      "reason": "accommodation provider is not connected."
+     }
+    ],
+    "factual_looking_fields_non_null": [
+     {
+      "path": "experience_plan.provider_coverage.hotel_prices",
+      "value": "unavailable"
+     }
+    ],
+    "factual_looking_field_count": 1,
+    "pace_requested": "packed",
+    "avg_stops_per_day": 2.0
+   },
+   "logged_component_seconds": {
+    "routing:osrm": 8.69,
+    "flights:kiwi_mcp_flight_provider": 3.44,
+    "ai_candidate_discovery:groq_ai_candidate_proposal_provider": 0.09,
+    "ai_itinerary_reasoning:groq_ai_itinerary_reasoning_provider": 0.09,
+    "itinerary_narrator:groq_itinerary_narrator_provider": 0.07,
+    "accommodations:scraped_accommodation_provider": 0.0
+   }
+  },
+  {
+   "case_id": "SF-2",
+   "mode": "full_ai",
+   "destination": "San Francisco, USA",
+   "requested_days": 3,
+   "pace": "relaxed",
+   "interests": [
+    "architecture",
+    "history"
+   ],
+   "group": "solo",
+   "traits": "relaxed, architecture/history",
+   "generate_http_status": 200,
+   "latency_seconds": 14.3,
+   "request_id": "req_29bc25f8b89043d296b3ce390cd3662d",
+   "trip_id": "trip_144d8a9917664be29971f106238e7874",
+   "score": {
+    "scheduled_experience_count": 6,
+    "days_generated": 3,
+    "empty_days": [],
+    "stops_per_day": [
+     2,
+     2,
+     2
+    ],
+    "grounding": {
+     "all_have_stable_ids": true,
+     "with_coordinates": 6,
+     "with_claim_sources": 6,
+     "data_status_live": 0,
+     "promoted_from_ai": 0,
+     "unsupported_identity_names": [],
+     "unsupported_identity_count": 0,
+     "candidate_pool": {
+      "attractions": 19,
+      "restaurants": 20,
+      "accommodation_pois": 20
+     }
+    },
+    "geography": {
+     "per_day": [
+      {
+       "day": 1,
+       "stops": 2,
+       "names": [
+        "Dragon Gate",
+        "Lotta's Fountain"
+       ],
+       "max_pairwise_km": 0.4,
+       "sequential_km": 0.4,
+       "far_apart": false,
+       "day_warnings": 1
+      },
+      {
+       "day": 2,
+       "stops": 2,
+       "names": [
+        "California Society of Pioneers Museum and Library",
+        "Inspiration Point"
+       ],
+       "max_pairwise_km": 0.9,
+       "sequential_km": 0.9,
+       "far_apart": false,
+       "day_warnings": 1
+      },
+      {
+       "day": 3,
+       "stops": 2,
+       "names": [
+        "Mechanics Monument",
+        "Willie McCovey Statue"
+       ],
+       "max_pairwise_km": 1.9,
+       "sequential_km": 1.9,
+       "far_apart": false,
+       "day_warnings": 1
+      }
+     ],
+     "days_far_apart": []
+    },
+    "duplication": {
+     "repeated_normalized_names": {}
+    },
+    "relevance_signals": {
+     "interests_requested": [
+      "architecture",
+      "history"
+     ],
+     "interest_words_in_scheduled_names_or_categories": []
+    },
+    "routing": {
+     "report_status": "success",
+     "legs_total": 3,
+     "leg_feasibility_counts": {
+      "feasible": 3
+     },
+     "providers": [
+      "osrm"
+     ],
+     "sequencing_status": "success",
+     "buffer_status_counts": {
+      "not_computable": 3
+     }
+    },
+    "validation": {
+     "readiness_status": "needs_review",
+     "critical_count": 0,
+     "warning_count": 7,
+     "suggestion_count": 0,
+     "warning_categories": {
+      "feasibility": 1,
+      "route_aware_sequencing": 1,
+      "movement_data": 1,
+      "route_geometry": 1,
+      "weather": 1,
+      "accommodation_inventory": 1,
+      "flight_inventory": 1
+     }
+    },
+    "ai": {
+     "candidate_proposal": {
+      "status": "rejected",
+      "blocked": [
+       "Groq API call failed: Error code: 429 - {'error': {'message': 'Rate limit reached for model `openai/gpt-oss-20b` in organization `org_<redacted>` service tier `on_demand` on tokens per day (TPD): Limit 200000, Used 198418, Requested 4621. Please try again in 21m52.848s. Need more tokens? Upgrade to Dev Tier today at https://console.groq.com/settings/billing', 'type': 'tokens', 'code': 'rate_limit_"
+      ]
+     },
+     "itinerary_reasoning": {
+      "status": "rejected",
+      "blocked": [
+       "Groq API call failed: Error code: 429 - {'error': {'message': 'Rate limit reached for model `openai/gpt-oss-20b` in organization `org_<redacted>` service tier `on_demand` on tokens per day (TPD): Limit 200000, Used 198411, Requested 2736. Please try again in 8m15.503999999s. Need more tokens? Upgrade to Dev Tier today at https://console.groq.com/settings/billing', 'type': 'tokens', 'code': 'rate_l"
+      ]
+     },
+     "repair": {
+      "result": null,
+      "attempts": 0
+     },
+     "narrator": {
+      "status": "failed",
+      "provider": "groq_itinerary_narrator_provider",
+      "message": "Groq API call failed: Error code: 429 - {'error': {'message': 'Rate limit reached for model `openai/gpt-oss-20b` in organization `org_<redacted>` service tier `on_demand` on tokens per day (TPD): Limit 200000, Used 198410, Requested 4082. Please try again in 17m56.544s. Need more tokens? Upgrade to Dev Tier today at https://console.groq.com/settings/billing', 'type': 'tokens', 'code': 'rate_limit_"
+     }
+    },
+    "narration": {
+     "text_length_chars": 0,
+     "referenced_ids_all_scheduled": true,
+     "referenced_id_count": 0,
+     "pattern_hits_needing_provenance_review": {}
+    },
+    "provider_coverage": {
+     "places": "success",
+     "routes": "success",
+     "restaurants": "fallback_used",
+     "accommodations": "open_poi_available",
+     "hotel_prices": "unavailable",
+     "hotel_ratings": null,
+     "vacation_rentals": "not_connected",
+     "airbnb": "not_connected",
+     "flights": "unavailable",
+     "weather": "success",
+     "holidays": "success",
+     "currency": "success"
+    },
+    "unavailable_data": [
+     {
+      "field": "transit_feasibility",
+      "status": "not_connected",
+      "reason": "routes provider is not connected."
+     },
+     {
+      "field": "accommodation_options",
+      "status": "not_connected",
+      "reason": "accommodation provider is not connected."
+     }
+    ],
+    "factual_looking_fields_non_null": [
+     {
+      "path": "experience_plan.provider_coverage.hotel_prices",
+      "value": "unavailable"
+     }
+    ],
+    "factual_looking_field_count": 1,
+    "pace_requested": "relaxed",
+    "avg_stops_per_day": 2.0
+   },
+   "logged_component_seconds": {
+    "flights:kiwi_mcp_flight_provider": 2.93,
+    "ai_candidate_discovery:groq_ai_candidate_proposal_provider": 0.23,
+    "ai_itinerary_reasoning:groq_ai_itinerary_reasoning_provider": 0.18,
+    "itinerary_narrator:groq_itinerary_narrator_provider": 0.07,
+    "accommodations:scraped_accommodation_provider": 0.0,
+    "routing:osrm": 0.0
+   }
+  },
+  {
+   "case_id": "CHI-1",
+   "mode": "full_ai",
+   "destination": "Chicago, USA",
+   "requested_days": 3,
+   "pace": "balanced",
+   "interests": [
+    "architecture",
+    "food"
+   ],
+   "group": "couple",
+   "traits": "architecture-heavy, grid city",
+   "generate_http_status": 200,
+   "latency_seconds": 57.6,
+   "request_id": "req_a0d25fbe45c2442ab72401cdf15814e1",
+   "trip_id": "trip_6bb4d37cc0e34a65a53b78dbdd4a3b84",
+   "score": {
+    "scheduled_experience_count": 9,
+    "days_generated": 3,
+    "empty_days": [],
+    "stops_per_day": [
+     3,
+     3,
+     3
+    ],
+    "grounding": {
+     "all_have_stable_ids": true,
+     "with_coordinates": 9,
+     "with_claim_sources": 9,
+     "data_status_live": 9,
+     "promoted_from_ai": 0,
+     "unsupported_identity_names": [],
+     "unsupported_identity_count": 0,
+     "candidate_pool": {
+      "attractions": 20,
+      "restaurants": 20,
+      "accommodation_pois": 20
+     }
+    },
+    "geography": {
+     "per_day": [
+      {
+       "day": 1,
+       "stops": 3,
+       "names": [
+        "Shoreline Sightseeing",
+        "Richard H. Driehaus Museum",
+        "McCormick Bridgehouse & Chicago River Museum"
+       ],
+       "max_pairwise_km": 0.7,
+       "sequential_km": 1.3,
+       "far_apart": false,
+       "day_warnings": 1
+      },
+      {
+       "day": 2,
+       "stops": 3,
+       "names": [
+        "360 Chicago",
+        "Loyola University Museum of Art",
+        "Money Museum"
+       ],
+       "max_pairwise_km": 2.4,
+       "sequential_km": 2.4,
+       "far_apart": false,
+       "day_warnings": 1
+      },
+      {
+       "day": 3,
+       "stops": 3,
+       "names": [
+        "SkyDeck Chicago Willis Tower",
+        "The Museum of Contemporary Photography",
+        "Polish Museum of America"
+       ],
+       "max_pairwise_km": 4.1,
+       "sequential_km": 5.2,
+       "far_apart": false,
+       "day_warnings": 1
+      }
+     ],
+     "days_far_apart": []
+    },
+    "duplication": {
+     "repeated_normalized_names": {}
+    },
+    "relevance_signals": {
+     "interests_requested": [
+      "architecture",
+      "food"
+     ],
+     "interest_words_in_scheduled_names_or_categories": []
+    },
+    "routing": {
+     "report_status": "success",
+     "legs_total": 6,
+     "leg_feasibility_counts": {
+      "feasible": 6
+     },
+     "providers": [
+      "osrm"
+     ],
+     "sequencing_status": "success",
+     "buffer_status_counts": {
+      "not_computable": 6
+     }
+    },
+    "validation": {
+     "readiness_status": "needs_review",
+     "critical_count": 0,
+     "warning_count": 7,
+     "suggestion_count": 0,
+     "warning_categories": {
+      "feasibility": 1,
+      "route_aware_sequencing": 1,
+      "movement_data": 1,
+      "route_geometry": 1,
+      "weather": 1,
+      "accommodation_inventory": 1,
+      "flight_inventory": 1
+     }
+    },
+    "ai": {
+     "candidate_proposal": {
+      "status": "rejected",
+      "blocked": [
+       "Groq API call failed: Error code: 429 - {'error': {'message': 'Rate limit reached for model `openai/gpt-oss-20b` in organization `org_<redacted>` service tier `on_demand` on tokens per day (TPD): Limit 200000, Used 198298, Requested 5541. Please try again in 27m38.448s. Need more tokens? Upgrade to Dev Tier today at https://console.groq.com/settings/billing', 'type': 'tokens', 'code': 'rate_limit_"
+      ]
+     },
+     "itinerary_reasoning": {
+      "status": "rejected",
+      "blocked": [
+       "Groq API call failed: Error code: 429 - {'error': {'message': 'Rate limit reached for model `openai/gpt-oss-20b` in organization `org_<redacted>` service tier `on_demand` on tokens per day (TPD): Limit 200000, Used 198286, Requested 3107. Please try again in 10m1.776s. Need more tokens? Upgrade to Dev Tier today at https://console.groq.com/settings/billing', 'type': 'tokens', 'code': 'rate_limit_e"
+      ]
+     },
+     "repair": {
+      "result": null,
+      "attempts": 0
+     },
+     "narrator": {
+      "status": "failed",
+      "provider": "groq_itinerary_narrator_provider",
+      "message": "Groq API call failed: Error code: 429 - {'error': {'message': 'Rate limit reached for model `openai/gpt-oss-20b` in organization `org_<redacted>` service tier `on_demand` on tokens per day (TPD): Limit 200000, Used 198271, Requested 4235. Please try again in 18m2.591999999s. Need more tokens? Upgrade to Dev Tier today at https://console.groq.com/settings/billing', 'type': 'tokens', 'code': 'rate_l"
+     }
+    },
+    "narration": {
+     "text_length_chars": 0,
+     "referenced_ids_all_scheduled": true,
+     "referenced_id_count": 0,
+     "pattern_hits_needing_provenance_review": {}
+    },
+    "provider_coverage": {
+     "places": "fallback_used",
+     "routes": "success",
+     "restaurants": "fallback_used",
+     "accommodations": "open_poi_available",
+     "hotel_prices": "unavailable",
+     "hotel_ratings": null,
+     "vacation_rentals": "not_connected",
+     "airbnb": "not_connected",
+     "flights": "unavailable",
+     "weather": "success",
+     "holidays": "success",
+     "currency": "success"
+    },
+    "unavailable_data": [
+     {
+      "field": "transit_feasibility",
+      "status": "not_connected",
+      "reason": "routes provider is not connected."
+     },
+     {
+      "field": "accommodation_options",
+      "status": "not_connected",
+      "reason": "accommodation provider is not connected."
+     }
+    ],
+    "factual_looking_fields_non_null": [
+     {
+      "path": "experience_plan.provider_coverage.hotel_prices",
+      "value": "unavailable"
+     }
+    ],
+    "factual_looking_field_count": 1,
+    "pace_requested": "balanced",
+    "avg_stops_per_day": 3.0
+   },
+   "logged_component_seconds": {
+    "routing:osrm": 6.37,
+    "flights:kiwi_mcp_flight_provider": 4.8,
+    "ai_candidate_discovery:groq_ai_candidate_proposal_provider": 0.38,
+    "itinerary_narrator:groq_itinerary_narrator_provider": 0.28,
+    "ai_itinerary_reasoning:groq_ai_itinerary_reasoning_provider": 0.1,
+    "accommodations:scraped_accommodation_provider": 0.0
+   }
+  },
+  {
+   "case_id": "CHI-2",
+   "mode": "full_ai",
+   "destination": "Chicago, USA",
+   "requested_days": 4,
+   "pace": "packed",
+   "interests": [
+    "museums",
+    "nightlife"
+   ],
+   "group": "group",
+   "traits": "packed, museums/nightlife",
+   "generate_http_status": 200,
+   "latency_seconds": 45.3,
+   "request_id": "req_b8e0da389bb14b77afae914423a3d3cb",
+   "trip_id": "trip_6c1ca845b4b9453ea0c723236a755f90",
+   "score": {
+    "scheduled_experience_count": 13,
+    "days_generated": 4,
+    "empty_days": [],
+    "stops_per_day": [
+     4,
+     4,
+     4,
+     1
+    ],
+    "grounding": {
+     "all_have_stable_ids": true,
+     "with_coordinates": 13,
+     "with_claim_sources": 13,
+     "data_status_live": 13,
+     "promoted_from_ai": 0,
+     "unsupported_identity_names": [],
+     "unsupported_identity_count": 0,
+     "candidate_pool": {
+      "attractions": 16,
+      "restaurants": 20,
+      "accommodation_pois": 20
+     }
+    },
+    "geography": {
+     "per_day": [
+      {
+       "day": 1,
+       "stops": 4,
+       "names": [
+        "Shoreline Sightseeing",
+        "Interconnected",
+        "Flamingo",
+        "Monument of the Millenium"
+       ],
+       "max_pairwise_km": 1.7,
+       "sequential_km": 3.2,
+       "far_apart": false,
+       "day_warnings": 1
+      },
+      {
+       "day": 2,
+       "stops": 4,
+       "names": [
+        "Big Beaver Totem Pole",
+        "Lilies",
+        "Culture Earth and Earth's Moon",
+        "Daphne 1"
+       ],
+       "max_pairwise_km": 2.0,
+       "sequential_km": 3.0,
+       "far_apart": false,
+       "day_warnings": 1
+      },
+      {
+       "day": 3,
+       "stops": 4,
+       "names": [
+        "Batcolumn",
+        "Gr\u00e1inne",
+        "Locks",
+        "Canalport"
+       ],
+       "max_pairwise_km": 4.8,
+       "sequential_km": 5.3,
+       "far_apart": false,
+       "day_warnings": 1
+      },
+      {
+       "day": 4,
+       "stops": 1,
+       "names": [
+        "Man on a Bench"
+       ],
+       "max_pairwise_km": 0.0,
+       "sequential_km": 0,
+       "far_apart": false,
+       "day_warnings": 2
+      }
+     ],
+     "days_far_apart": []
+    },
+    "duplication": {
+     "repeated_normalized_names": {}
+    },
+    "relevance_signals": {
+     "interests_requested": [
+      "museums",
+      "nightlife"
+     ],
+     "interest_words_in_scheduled_names_or_categories": []
+    },
+    "routing": {
+     "report_status": "success",
+     "legs_total": 9,
+     "leg_feasibility_counts": {
+      "feasible": 9
+     },
+     "providers": [
+      "osrm"
+     ],
+     "sequencing_status": "success",
+     "buffer_status_counts": {
+      "not_computable": 9
+     }
+    },
+    "validation": {
+     "readiness_status": "needs_review",
+     "critical_count": 0,
+     "warning_count": 7,
+     "suggestion_count": 0,
+     "warning_categories": {
+      "feasibility": 1,
+      "route_aware_sequencing": 1,
+      "movement_data": 1,
+      "route_geometry": 1,
+      "weather": 1,
+      "accommodation_inventory": 1,
+      "flight_inventory": 1
+     }
+    },
+    "ai": {
+     "candidate_proposal": {
+      "status": "rejected",
+      "blocked": [
+       "Groq API call failed: Error code: 429 - {'error': {'message': 'Rate limit reached for model `openai/gpt-oss-20b` in organization `org_<redacted>` service tier `on_demand` on tokens per day (TPD): Limit 200000, Used 198201, Requested 2382. Please try again in 4m11.856s. Need more tokens? Upgrade to Dev Tier today at https://console.groq.com/settings/billing', 'type': 'tokens', 'code': 'rate_limit_e"
+      ]
+     },
+     "itinerary_reasoning": {
+      "status": "rejected",
+      "blocked": [
+       "Groq API call failed: Error code: 429 - {'error': {'message': 'Rate limit reached for model `openai/gpt-oss-20b` in organization `org_<redacted>` service tier `on_demand` on tokens per day (TPD): Limit 200000, Used 198191, Requested 2927. Please try again in 8m2.976s. Need more tokens? Upgrade to Dev Tier today at https://console.groq.com/settings/billing', 'type': 'tokens', 'code': 'rate_limit_ex"
+      ]
+     },
+     "repair": {
+      "result": null,
+      "attempts": 0
+     },
+     "narrator": {
+      "status": "failed",
+      "provider": "groq_itinerary_narrator_provider",
+      "message": "Groq API call failed: Error code: 429 - {'error': {'message': 'Rate limit reached for model `openai/gpt-oss-20b` in organization `org_<redacted>` service tier `on_demand` on tokens per day (TPD): Limit 200000, Used 198158, Requested 4407. Please try again in 18m28.08s. Need more tokens? Upgrade to Dev Tier today at https://console.groq.com/settings/billing', 'type': 'tokens', 'code': 'rate_limit_e"
+     }
+    },
+    "narration": {
+     "text_length_chars": 0,
+     "referenced_ids_all_scheduled": true,
+     "referenced_id_count": 0,
+     "pattern_hits_needing_provenance_review": {}
+    },
+    "provider_coverage": {
+     "places": "success",
+     "routes": "success",
+     "restaurants": "success",
+     "accommodations": "open_poi_available",
+     "hotel_prices": "unavailable",
+     "hotel_ratings": null,
+     "vacation_rentals": "not_connected",
+     "airbnb": "not_connected",
+     "flights": "unavailable",
+     "weather": "success",
+     "holidays": "success",
+     "currency": "success"
+    },
+    "unavailable_data": [
+     {
+      "field": "transit_feasibility",
+      "status": "not_connected",
+      "reason": "routes provider is not connected."
+     },
+     {
+      "field": "accommodation_options",
+      "status": "not_connected",
+      "reason": "accommodation provider is not connected."
+     }
+    ],
+    "factual_looking_fields_non_null": [
+     {
+      "path": "experience_plan.provider_coverage.hotel_prices",
+      "value": "unavailable"
+     }
+    ],
+    "factual_looking_field_count": 1,
+    "pace_requested": "packed",
+    "avg_stops_per_day": 3.25
+   },
+   "logged_component_seconds": {
+    "routing:osrm": 13.74,
+    "flights:kiwi_mcp_flight_provider": 4.32,
+    "ai_itinerary_reasoning:groq_ai_itinerary_reasoning_provider": 0.22,
+    "ai_candidate_discovery:groq_ai_candidate_proposal_provider": 0.15,
+    "itinerary_narrator:groq_itinerary_narrator_provider": 0.09,
+    "accommodations:scraped_accommodation_provider": 0.0
+   }
+  },
+  {
+   "case_id": "SEA-1",
+   "mode": "full_ai",
+   "destination": "Seattle, USA",
+   "requested_days": 3,
+   "pace": "relaxed",
+   "interests": [
+    "outdoors",
+    "food"
+   ],
+   "group": "couple",
+   "traits": "mixed indoor/outdoor, weather-dependent",
+   "generate_http_status": 200,
+   "latency_seconds": 31.3,
+   "request_id": "req_fb2e96493c4e472e8de7a828f08ac128",
+   "trip_id": "trip_be0db6e06f804f77a8ebbd14d9d9d39f",
+   "score": {
+    "scheduled_experience_count": 6,
+    "days_generated": 3,
+    "empty_days": [],
+    "stops_per_day": [
+     2,
+     2,
+     2
+    ],
+    "grounding": {
+     "all_have_stable_ids": true,
+     "with_coordinates": 6,
+     "with_claim_sources": 6,
+     "data_status_live": 6,
+     "promoted_from_ai": 0,
+     "unsupported_identity_names": [],
+     "unsupported_identity_count": 0,
+     "candidate_pool": {
+      "attractions": 13,
+      "restaurants": 20,
+      "accommodation_pois": 20
+     }
+    },
+    "geography": {
+     "per_day": [
+      {
+       "day": 1,
+       "stops": 2,
+       "names": [
+        "Klondike Gold Rush National Historical Park",
+        "Underground Tour"
+       ],
+       "max_pairwise_km": 0.4,
+       "sequential_km": 0.4,
+       "far_apart": false,
+       "day_warnings": 1
+      },
+      {
+       "day": 2,
+       "stops": 2,
+       "names": [
+        "Admiral Way Viewpoint",
+        "Rotary Viewpoint"
+       ],
+       "max_pairwise_km": 2.2,
+       "sequential_km": 2.2,
+       "far_apart": false,
+       "day_warnings": 1
+      },
+      {
+       "day": 3,
+       "stops": 2,
+       "names": [
+        "Elliott Bay Overlook",
+        "Changing Form"
+       ],
+       "max_pairwise_km": 2.7,
+       "sequential_km": 2.7,
+       "far_apart": false,
+       "day_warnings": 1
+      }
+     ],
+     "days_far_apart": []
+    },
+    "duplication": {
+     "repeated_normalized_names": {}
+    },
+    "relevance_signals": {
+     "interests_requested": [
+      "outdoors",
+      "food"
+     ],
+     "interest_words_in_scheduled_names_or_categories": []
+    },
+    "routing": {
+     "report_status": "success",
+     "legs_total": 3,
+     "leg_feasibility_counts": {
+      "feasible": 3
+     },
+     "providers": [
+      "osrm"
+     ],
+     "sequencing_status": "success",
+     "buffer_status_counts": {
+      "not_computable": 3
+     }
+    },
+    "validation": {
+     "readiness_status": "needs_review",
+     "critical_count": 0,
+     "warning_count": 7,
+     "suggestion_count": 0,
+     "warning_categories": {
+      "feasibility": 1,
+      "route_aware_sequencing": 1,
+      "movement_data": 1,
+      "route_geometry": 1,
+      "weather": 1,
+      "accommodation_inventory": 1,
+      "flight_inventory": 1
+     }
+    },
+    "ai": {
+     "candidate_proposal": {
+      "status": "rejected",
+      "blocked": [
+       "Groq API call failed: Error code: 429 - {'error': {'message': 'Rate limit reached for model `openai/gpt-oss-20b` in organization `org_<redacted>` service tier `on_demand` on tokens per day (TPD): Limit 200000, Used 198089, Requested 2282. Please try again in 2m40.272s. Need more tokens? Upgrade to Dev Tier today at https://console.groq.com/settings/billing', 'type': 'tokens', 'code': 'rate_limit_e"
+      ]
+     },
+     "itinerary_reasoning": {
+      "status": "rejected",
+      "blocked": [
+       "Groq API call failed: Error code: 429 - {'error': {'message': 'Rate limit reached for model `openai/gpt-oss-20b` in organization `org_<redacted>` service tier `on_demand` on tokens per day (TPD): Limit 200000, Used 198084, Requested 2818. Please try again in 6m29.664s. Need more tokens? Upgrade to Dev Tier today at https://console.groq.com/settings/billing', 'type': 'tokens', 'code': 'rate_limit_e"
+      ]
+     },
+     "repair": {
+      "result": null,
+      "attempts": 0
+     },
+     "narrator": {
+      "status": "failed",
+      "provider": "groq_itinerary_narrator_provider",
+      "message": "Groq API call failed: Error code: 429 - {'error': {'message': 'Rate limit reached for model `openai/gpt-oss-20b` in organization `org_<redacted>` service tier `on_demand` on tokens per day (TPD): Limit 200000, Used 198079, Requested 4079. Please try again in 15m32.256s. Need more tokens? Upgrade to Dev Tier today at https://console.groq.com/settings/billing', 'type': 'tokens', 'code': 'rate_limit_"
+     }
+    },
+    "narration": {
+     "text_length_chars": 0,
+     "referenced_ids_all_scheduled": true,
+     "referenced_id_count": 0,
+     "pattern_hits_needing_provenance_review": {}
+    },
+    "provider_coverage": {
+     "places": "success",
+     "routes": "success",
+     "restaurants": "success",
+     "accommodations": "open_poi_available",
+     "hotel_prices": "unavailable",
+     "hotel_ratings": null,
+     "vacation_rentals": "not_connected",
+     "airbnb": "not_connected",
+     "flights": "unavailable",
+     "weather": "success",
+     "holidays": "success",
+     "currency": "success"
+    },
+    "unavailable_data": [
+     {
+      "field": "transit_feasibility",
+      "status": "not_connected",
+      "reason": "routes provider is not connected."
+     },
+     {
+      "field": "accommodation_options",
+      "status": "not_connected",
+      "reason": "accommodation provider is not connected."
+     }
+    ],
+    "factual_looking_fields_non_null": [
+     {
+      "path": "experience_plan.provider_coverage.hotel_prices",
+      "value": "unavailable"
+     }
+    ],
+    "factual_looking_field_count": 1,
+    "pace_requested": "relaxed",
+    "avg_stops_per_day": 2.0
+   },
+   "logged_component_seconds": {
+    "flights:kiwi_mcp_flight_provider": 2.22,
+    "routing:osrm": 2.1,
+    "ai_itinerary_reasoning:groq_ai_itinerary_reasoning_provider": 0.13,
+    "ai_candidate_discovery:groq_ai_candidate_proposal_provider": 0.08,
+    "itinerary_narrator:groq_itinerary_narrator_provider": 0.08,
+    "accommodations:scraped_accommodation_provider": 0.0
+   }
+  },
+  {
+   "case_id": "SEA-2",
+   "mode": "full_ai",
+   "destination": "Seattle, USA",
+   "requested_days": 3,
+   "pace": "balanced",
+   "interests": [
+    "museums"
+   ],
+   "group": "family",
+   "traits": "family, indoor-leaning",
+   "generate_http_status": 200,
+   "latency_seconds": 10.0,
+   "request_id": "req_b4074d28143d4554a9c3d7ac6552c821",
+   "trip_id": "trip_9c20b06ef3b0491cb40e102fd7d5d3d7",
+   "score": {
+    "scheduled_experience_count": 9,
+    "days_generated": 3,
+    "empty_days": [],
+    "stops_per_day": [
+     3,
+     3,
+     3
+    ],
+    "grounding": {
+     "all_have_stable_ids": true,
+     "with_coordinates": 9,
+     "with_claim_sources": 9,
+     "data_status_live": 0,
+     "promoted_from_ai": 0,
+     "unsupported_identity_names": [],
+     "unsupported_identity_count": 0,
+     "candidate_pool": {
+      "attractions": 13,
+      "restaurants": 20,
+      "accommodation_pois": 20
+     }
+    },
+    "geography": {
+     "per_day": [
+      {
+       "day": 1,
+       "stops": 3,
+       "names": [
+        "Klondike Gold Rush National Historical Park",
+        "Underground Tour",
+        "Gyrojack"
+       ],
+       "max_pairwise_km": 1.9,
+       "sequential_km": 1.9,
+       "far_apart": false,
+       "day_warnings": 1
+      },
+      {
+       "day": 2,
+       "stops": 3,
+       "names": [
+        "Admiral Way Viewpoint",
+        "Rotary Viewpoint",
+        "Kerry Park"
+       ],
+       "max_pairwise_km": 7.7,
+       "sequential_km": 9.9,
+       "far_apart": false,
+       "day_warnings": 1
+      },
+      {
+       "day": 3,
+       "stops": 3,
+       "names": [
+        "Elliott Bay Overlook",
+        "Changing Form",
+        "Black Sun"
+       ],
+       "max_pairwise_km": 6.0,
+       "sequential_km": 6.0,
+       "far_apart": false,
+       "day_warnings": 1
+      }
+     ],
+     "days_far_apart": []
+    },
+    "duplication": {
+     "repeated_normalized_names": {}
+    },
+    "relevance_signals": {
+     "interests_requested": [
+      "museums"
+     ],
+     "interest_words_in_scheduled_names_or_categories": [
+      "museums"
+     ]
+    },
+    "routing": {
+     "report_status": "success",
+     "legs_total": 6,
+     "leg_feasibility_counts": {
+      "feasible": 6
+     },
+     "providers": [
+      "osrm"
+     ],
+     "sequencing_status": "success",
+     "buffer_status_counts": {
+      "not_computable": 6
+     }
+    },
+    "validation": {
+     "readiness_status": "needs_review",
+     "critical_count": 0,
+     "warning_count": 8,
+     "suggestion_count": 0,
+     "warning_categories": {
+      "feasibility": 1,
+      "route_aware_sequencing": 1,
+      "movement_data": 1,
+      "route_geometry": 1,
+      "geographic_spread": 1,
+      "weather": 1,
+      "accommodation_inventory": 1,
+      "flight_inventory": 1
+     }
+    },
+    "ai": {
+     "candidate_proposal": {
+      "status": "rejected",
+      "blocked": [
+       "Groq API call failed: Error code: 429 - {'error': {'message': 'Rate limit reached for model `openai/gpt-oss-20b` in organization `org_<redacted>` service tier `on_demand` on tokens per day (TPD): Limit 200000, Used 198069, Requested 2275. Please try again in 2m28.608s. Need more tokens? Upgrade to Dev Tier today at https://console.groq.com/settings/billing', 'type': 'tokens', 'code': 'rate_limit_e"
+      ]
+     },
+     "itinerary_reasoning": {
+      "status": "rejected",
+      "blocked": [
+       "Groq API call failed: Error code: 429 - {'error': {'message': 'Rate limit reached for model `openai/gpt-oss-20b` in organization `org_<redacted>` service tier `on_demand` on tokens per day (TPD): Limit 200000, Used 198064, Requested 2820. Please try again in 6m21.888s. Need more tokens? Upgrade to Dev Tier today at https://console.groq.com/settings/billing', 'type': 'tokens', 'code': 'rate_limit_e"
+      ]
+     },
+     "repair": {
+      "result": null,
+      "attempts": 0
+     },
+     "narrator": {
+      "status": "failed",
+      "provider": "groq_itinerary_narrator_provider",
+      "message": "Groq output failed validation: 1 validation error for ItineraryNarrativeReport\nwarnings\n  Value error, warnings must not contain forbidden pattern: 'availability' [type=value_error, input_value=['Accommodation options m...otel availability data'], input_type=list]\n    For further information visit https://errors.pydantic.dev/2.13/v/value_error"
+     }
+    },
+    "narration": {
+     "text_length_chars": 0,
+     "referenced_ids_all_scheduled": true,
+     "referenced_id_count": 0,
+     "pattern_hits_needing_provenance_review": {}
+    },
+    "provider_coverage": {
+     "places": "success",
+     "routes": "success",
+     "restaurants": "success",
+     "accommodations": "open_poi_available",
+     "hotel_prices": "unavailable",
+     "hotel_ratings": null,
+     "vacation_rentals": "not_connected",
+     "airbnb": "not_connected",
+     "flights": "unavailable",
+     "weather": "success",
+     "holidays": "success",
+     "currency": "success"
+    },
+    "unavailable_data": [
+     {
+      "field": "transit_feasibility",
+      "status": "not_connected",
+      "reason": "routes provider is not connected."
+     },
+     {
+      "field": "accommodation_options",
+      "status": "not_connected",
+      "reason": "accommodation provider is not connected."
+     }
+    ],
+    "factual_looking_fields_non_null": [
+     {
+      "path": "experience_plan.provider_coverage.hotel_prices",
+      "value": "unavailable"
+     }
+    ],
+    "factual_looking_field_count": 1,
+    "pace_requested": "balanced",
+    "avg_stops_per_day": 3.0
+   },
+   "logged_component_seconds": {
+    "routing:osrm": 4.53,
+    "flights:kiwi_mcp_flight_provider": 2.13,
+    "itinerary_narrator:groq_itinerary_narrator_provider": 1.74,
+    "ai_candidate_discovery:groq_ai_candidate_proposal_provider": 0.09,
+    "ai_itinerary_reasoning:groq_ai_itinerary_reasoning_provider": 0.07,
+    "accommodations:scraped_accommodation_provider": 0.0
+   }
+  },
+  {
+   "case_id": "MIA-1",
+   "mode": "full_ai",
+   "destination": "Miami, USA",
+   "requested_days": 3,
+   "pace": "packed",
+   "interests": [
+    "nightlife",
+    "food"
+   ],
+   "group": "friends",
+   "traits": "car-oriented, nightlife",
+   "generate_http_status": 200,
+   "latency_seconds": 55.3,
+   "request_id": "req_b555898e8a314ea0894f3032283a060a",
+   "trip_id": "trip_a1607faa7d16420aad9d3d39a216b399",
+   "score": {
+    "scheduled_experience_count": 12,
+    "days_generated": 3,
+    "empty_days": [],
+    "stops_per_day": [
+     4,
+     4,
+     4
+    ],
+    "grounding": {
+     "all_have_stable_ids": true,
+     "with_coordinates": 12,
+     "with_claim_sources": 12,
+     "data_status_live": 12,
+     "promoted_from_ai": 0,
+     "unsupported_identity_names": [],
+     "unsupported_identity_count": 0,
+     "candidate_pool": {
+      "attractions": 20,
+      "restaurants": 20,
+      "accommodation_pois": 8
+     }
+    },
+    "geography": {
+     "per_day": [
+      {
+       "day": 1,
+       "stops": 4,
+       "names": [
+        "Cuban Museum",
+        "Latin American Art Museum",
+        "Calle Ocho Walk of Fame",
+        "Madonna Statue"
+       ],
+       "max_pairwise_km": 4.6,
+       "sequential_km": 4.7,
+       "far_apart": false,
+       "day_warnings": 1
+      },
+      {
+       "day": 2,
+       "stops": 4,
+       "names": [
+        "Museum of the Americas",
+        "Eternal Torch",
+        "Mildred and Claude Pepper Fountain",
+        "Tour Boat Boarding"
+       ],
+       "max_pairwise_km": 3.3,
+       "sequential_km": 4.5,
+       "far_apart": false,
+       "day_warnings": 1
+      },
+      {
+       "day": 3,
+       "stops": 4,
+       "names": [
+        "Lemur Encounter",
+        "Primates",
+        "Gigant Tortoise",
+        "Flamingo Encounter"
+       ],
+       "max_pairwise_km": 0.1,
+       "sequential_km": 0.3,
+       "far_apart": false,
+       "day_warnings": 1
+      }
+     ],
+     "days_far_apart": []
+    },
+    "duplication": {
+     "repeated_normalized_names": {}
+    },
+    "relevance_signals": {
+     "interests_requested": [
+      "nightlife",
+      "food"
+     ],
+     "interest_words_in_scheduled_names_or_categories": []
+    },
+    "routing": {
+     "report_status": "success",
+     "legs_total": 9,
+     "leg_feasibility_counts": {
+      "feasible": 9
+     },
+     "providers": [
+      "osrm"
+     ],
+     "sequencing_status": "success",
+     "buffer_status_counts": {
+      "not_computable": 9
+     }
+    },
+    "validation": {
+     "readiness_status": "needs_review",
+     "critical_count": 0,
+     "warning_count": 7,
+     "suggestion_count": 0,
+     "warning_categories": {
+      "feasibility": 1,
+      "route_aware_sequencing": 1,
+      "movement_data": 1,
+      "route_geometry": 1,
+      "weather": 1,
+      "accommodation_inventory": 1,
+      "flight_inventory": 1
+     }
+    },
+    "ai": {
+     "candidate_proposal": {
+      "status": "rejected",
+      "blocked": [
+       "Groq API call failed: Error code: 429 - {'error': {'message': 'Rate limit reached for model `openai/gpt-oss-20b` in organization `org_<redacted>` service tier `on_demand` on tokens per day (TPD): Limit 200000, Used 199901, Requested 2270. Please try again in 15m37.872s. Need more tokens? Upgrade to Dev Tier today at https://console.groq.com/settings/billing', 'type': 'tokens', 'code': 'rate_limit_"
+      ]
+     },
+     "itinerary_reasoning": {
+      "status": "rejected",
+      "blocked": [
+       "Groq API call failed: Error code: 429 - {'error': {'message': 'Rate limit reached for model `openai/gpt-oss-20b` in organization `org_<redacted>` service tier `on_demand` on tokens per day (TPD): Limit 200000, Used 199896, Requested 2989. Please try again in 20m46.32s. Need more tokens? Upgrade to Dev Tier today at https://console.groq.com/settings/billing', 'type': 'tokens', 'code': 'rate_limit_e"
+      ]
+     },
+     "repair": {
+      "result": null,
+      "attempts": 0
+     },
+     "narrator": {
+      "status": "failed",
+      "provider": "groq_itinerary_narrator_provider",
+      "message": "Groq API call failed: Error code: 429 - {'error': {'message': 'Rate limit reached for model `openai/gpt-oss-20b` in organization `org_<redacted>` service tier `on_demand` on tokens per day (TPD): Limit 200000, Used 199866, Requested 2053. Please try again in 13m49.007999999s. Need more tokens? Upgrade to Dev Tier today at https://console.groq.com/settings/billing', 'type': 'tokens', 'code': 'rate_"
+     }
+    },
+    "narration": {
+     "text_length_chars": 0,
+     "referenced_ids_all_scheduled": true,
+     "referenced_id_count": 0,
+     "pattern_hits_needing_provenance_review": {}
+    },
+    "provider_coverage": {
+     "places": "fallback_used",
+     "routes": "success",
+     "restaurants": "success",
+     "accommodations": "open_poi_available",
+     "hotel_prices": "unavailable",
+     "hotel_ratings": null,
+     "vacation_rentals": "not_connected",
+     "airbnb": "not_connected",
+     "flights": "unavailable",
+     "weather": "success",
+     "holidays": "success",
+     "currency": "success"
+    },
+    "unavailable_data": [
+     {
+      "field": "transit_feasibility",
+      "status": "not_connected",
+      "reason": "routes provider is not connected."
+     },
+     {
+      "field": "accommodation_options",
+      "status": "not_connected",
+      "reason": "accommodation provider is not connected."
+     }
+    ],
+    "factual_looking_fields_non_null": [
+     {
+      "path": "experience_plan.provider_coverage.hotel_prices",
+      "value": "unavailable"
+     }
+    ],
+    "factual_looking_field_count": 1,
+    "pace_requested": "packed",
+    "avg_stops_per_day": 4.0
+   },
+   "logged_component_seconds": {
+    "routing:osrm": 13.17,
+    "flights:kiwi_mcp_flight_provider": 1.92,
+    "itinerary_narrator:groq_itinerary_narrator_provider": 0.17,
+    "ai_candidate_discovery:groq_ai_candidate_proposal_provider": 0.16,
+    "ai_itinerary_reasoning:groq_ai_itinerary_reasoning_provider": 0.07,
+    "accommodations:scraped_accommodation_provider": 0.0
+   }
+  },
+  {
+   "case_id": "MIA-2",
+   "mode": "full_ai",
+   "destination": "Miami, USA",
+   "requested_days": 4,
+   "pace": "relaxed",
+   "interests": [
+    "outdoors",
+    "architecture"
+   ],
+   "group": "couple",
+   "traits": "relaxed, beaches/art deco",
+   "generate_http_status": 200,
+   "latency_seconds": 25.9,
+   "request_id": "req_d8af5d6c539c4579b9e5326eec0419a8",
+   "trip_id": "trip_9580a8f0ae644b97a51442fb68ae0129",
+   "score": {
+    "scheduled_experience_count": 8,
+    "days_generated": 4,
+    "empty_days": [],
+    "stops_per_day": [
+     2,
+     2,
+     2,
+     2
+    ],
+    "grounding": {
+     "all_have_stable_ids": true,
+     "with_coordinates": 8,
+     "with_claim_sources": 8,
+     "data_status_live": 0,
+     "promoted_from_ai": 0,
+     "unsupported_identity_names": [],
+     "unsupported_identity_count": 0,
+     "candidate_pool": {
+      "attractions": 20,
+      "restaurants": 20,
+      "accommodation_pois": 8
+     }
+    },
+    "geography": {
+     "per_day": [
+      {
+       "day": 1,
+       "stops": 2,
+       "names": [
+        "Cuban Museum",
+        "Latin American Art Museum"
+       ],
+       "max_pairwise_km": 3.2,
+       "sequential_km": 3.2,
+       "far_apart": false,
+       "day_warnings": 1
+      },
+      {
+       "day": 2,
+       "stops": 2,
+       "names": [
+        "Museum of the Americas",
+        "Madonna Statue"
+       ],
+       "max_pairwise_km": 0.9,
+       "sequential_km": 0.9,
+       "far_apart": false,
+       "day_warnings": 1
+      },
+      {
+       "day": 3,
+       "stops": 2,
+       "names": [
+        "Lemur Encounter",
+        "Primates"
+       ],
+       "max_pairwise_km": 0.0,
+       "sequential_km": 0.0,
+       "far_apart": false,
+       "day_warnings": 1
+      },
+      {
+       "day": 4,
+       "stops": 2,
+       "names": [
+        "Gigant Tortoise",
+        "Flamingo Encounter"
+       ],
+       "max_pairwise_km": 0.1,
+       "sequential_km": 0.1,
+       "far_apart": false,
+       "day_warnings": 1
+      }
+     ],
+     "days_far_apart": []
+    },
+    "duplication": {
+     "repeated_normalized_names": {}
+    },
+    "relevance_signals": {
+     "interests_requested": [
+      "outdoors",
+      "architecture"
+     ],
+     "interest_words_in_scheduled_names_or_categories": []
+    },
+    "routing": {
+     "report_status": "success",
+     "legs_total": 4,
+     "leg_feasibility_counts": {
+      "feasible": 4
+     },
+     "providers": [
+      "osrm"
+     ],
+     "sequencing_status": "success",
+     "buffer_status_counts": {
+      "not_computable": 4
+     }
+    },
+    "validation": {
+     "readiness_status": "needs_review",
+     "critical_count": 0,
+     "warning_count": 7,
+     "suggestion_count": 0,
+     "warning_categories": {
+      "feasibility": 1,
+      "route_aware_sequencing": 1,
+      "movement_data": 1,
+      "route_geometry": 1,
+      "weather": 1,
+      "accommodation_inventory": 1,
+      "flight_inventory": 1
+     }
+    },
+    "ai": {
+     "candidate_proposal": {
+      "status": "rejected",
+      "blocked": [
+       "Groq API call failed: Error code: 429 - {'error': {'message': 'Rate limit reached for model `openai/gpt-oss-20b` in organization `org_<redacted>` service tier `on_demand` on tokens per day (TPD): Limit 200000, Used 199811, Requested 3296. Please try again in 22m22.224s. Need more tokens? Upgrade to Dev Tier today at https://console.groq.com/settings/billing', 'type': 'tokens', 'code': 'rate_limit_"
+      ]
+     },
+     "itinerary_reasoning": {
+      "status": "rejected",
+      "blocked": [
+       "Groq API call failed: Error code: 429 - {'error': {'message': 'Rate limit reached for model `openai/gpt-oss-20b` in organization `org_<redacted>` service tier `on_demand` on tokens per day (TPD): Limit 200000, Used 199801, Requested 2986. Please try again in 20m3.984s. Need more tokens? Upgrade to Dev Tier today at https://console.groq.com/settings/billing', 'type': 'tokens', 'code': 'rate_limit_e"
+      ]
+     },
+     "repair": {
+      "result": null,
+      "attempts": 0
+     },
+     "narrator": {
+      "status": "failed",
+      "provider": "groq_itinerary_narrator_provider",
+      "message": "Groq API call failed: Error code: 429 - {'error': {'message': 'Rate limit reached for model `openai/gpt-oss-20b` in organization `org_<redacted>` service tier `on_demand` on tokens per day (TPD): Limit 200000, Used 199799, Requested 1985. Please try again in 12m50.688s. Need more tokens? Upgrade to Dev Tier today at https://console.groq.com/settings/billing', 'type': 'tokens', 'code': 'rate_limit_"
+     }
+    },
+    "narration": {
+     "text_length_chars": 0,
+     "referenced_ids_all_scheduled": true,
+     "referenced_id_count": 0,
+     "pattern_hits_needing_provenance_review": {}
+    },
+    "provider_coverage": {
+     "places": "fallback_used",
+     "routes": "success",
+     "restaurants": "success",
+     "accommodations": "open_poi_available",
+     "hotel_prices": "unavailable",
+     "hotel_ratings": null,
+     "vacation_rentals": "not_connected",
+     "airbnb": "not_connected",
+     "flights": "unavailable",
+     "weather": "success",
+     "holidays": "success",
+     "currency": "success"
+    },
+    "unavailable_data": [
+     {
+      "field": "transit_feasibility",
+      "status": "not_connected",
+      "reason": "routes provider is not connected."
+     },
+     {
+      "field": "accommodation_options",
+      "status": "not_connected",
+      "reason": "accommodation provider is not connected."
+     }
+    ],
+    "factual_looking_fields_non_null": [
+     {
+      "path": "experience_plan.provider_coverage.hotel_prices",
+      "value": "unavailable"
+     }
+    ],
+    "factual_looking_field_count": 1,
+    "pace_requested": "relaxed",
+    "avg_stops_per_day": 2.0
+   },
+   "logged_component_seconds": {
+    "flights:kiwi_mcp_flight_provider": 4.38,
+    "routing:osrm": 0.71,
+    "itinerary_narrator:groq_itinerary_narrator_provider": 0.19,
+    "ai_candidate_discovery:groq_ai_candidate_proposal_provider": 0.09,
+    "ai_itinerary_reasoning:groq_ai_itinerary_reasoning_provider": 0.09,
+    "accommodations:scraped_accommodation_provider": 0.0
+   }
+  },
+  {
+   "case_id": "LA-1",
+   "mode": "full_ai",
+   "destination": "Los Angeles, USA",
+   "requested_days": 4,
+   "pace": "balanced",
+   "interests": [
+    "food",
+    "outdoors"
+   ],
+   "group": "couple",
+   "traits": "car-oriented, very spread out",
+   "generate_http_status": 200,
+   "latency_seconds": 48.7,
+   "request_id": "req_b86a654c46ef4770a2a2629ec2f6c974",
+   "trip_id": "trip_6f958733029a4b68b31bc5b1df140c6a",
+   "score": {
+    "scheduled_experience_count": 12,
+    "days_generated": 4,
+    "empty_days": [],
+    "stops_per_day": [
+     3,
+     3,
+     3,
+     3
+    ],
+    "grounding": {
+     "all_have_stable_ids": true,
+     "with_coordinates": 12,
+     "with_claim_sources": 12,
+     "data_status_live": 12,
+     "promoted_from_ai": 0,
+     "unsupported_identity_names": [],
+     "unsupported_identity_count": 0,
+     "candidate_pool": {
+      "attractions": 19,
+      "restaurants": 19,
+      "accommodation_pois": 0
+     }
+    },
+    "geography": {
+     "per_day": [
+      {
+       "day": 1,
+       "stops": 3,
+       "names": [
+        "Koreatown",
+        "Grammy Museum",
+        "Crack Gallery"
+       ],
+       "max_pairwise_km": 5.3,
+       "sequential_km": 5.4,
+       "far_apart": false,
+       "day_warnings": 2
+      },
+      {
+       "day": 2,
+       "stops": 3,
+       "names": [
+        "Morono Kiang Gallery",
+        "Continental Gallery",
+        "Julie Rico Gallery"
+       ],
+       "max_pairwise_km": 0.4,
+       "sequential_km": 0.4,
+       "far_apart": false,
+       "day_warnings": 2
+      },
+      {
+       "day": 3,
+       "stops": 3,
+       "names": [
+        "NORBERTELLEN GALLERY",
+        "The Last Laugh",
+        "The Latino Museum"
+       ],
+       "max_pairwise_km": 0.2,
+       "sequential_km": 0.4,
+       "far_apart": false,
+       "day_warnings": 2
+      },
+      {
+       "day": 4,
+       "stops": 3,
+       "names": [
+        "Arty",
+        "Cole's P.E. Buffet",
+        "Fifty/ 24LA Gallery"
+       ],
+       "max_pairwise_km": 0.2,
+       "sequential_km": 0.2,
+       "far_apart": false,
+       "day_warnings": 2
+      }
+     ],
+     "days_far_apart": []
+    },
+    "duplication": {
+     "repeated_normalized_names": {}
+    },
+    "relevance_signals": {
+     "interests_requested": [
+      "food",
+      "outdoors"
+     ],
+     "interest_words_in_scheduled_names_or_categories": []
+    },
+    "routing": {
+     "report_status": "success",
+     "legs_total": 8,
+     "leg_feasibility_counts": {
+      "feasible": 8
+     },
+     "providers": [
+      "osrm"
+     ],
+     "sequencing_status": "success",
+     "buffer_status_counts": {
+      "not_computable": 8
+     }
+    },
+    "validation": {
+     "readiness_status": "needs_review",
+     "critical_count": 0,
+     "warning_count": 7,
+     "suggestion_count": 0,
+     "warning_categories": {
+      "feasibility": 1,
+      "route_aware_sequencing": 1,
+      "movement_data": 1,
+      "route_geometry": 1,
+      "weather": 1,
+      "accommodation_inventory": 1,
+      "flight_inventory": 1
+     }
+    },
+    "ai": {
+     "candidate_proposal": {
+      "status": "rejected",
+      "blocked": [
+       "Groq API call failed: Error code: 429 - {'error': {'message': 'Rate limit reached for model `openai/gpt-oss-20b` in organization `org_<redacted>` service tier `on_demand` on tokens per day (TPD): Limit 200000, Used 199712, Requested 3301. Please try again in 21m41.616s. Need more tokens? Upgrade to Dev Tier today at https://console.groq.com/settings/billing', 'type': 'tokens', 'code': 'rate_limit_"
+      ]
+     },
+     "itinerary_reasoning": {
+      "status": "rejected",
+      "blocked": [
+       "Groq API call failed: Error code: 429 - {'error': {'message': 'Rate limit reached for model `openai/gpt-oss-20b` in organization `org_<redacted>` service tier `on_demand` on tokens per day (TPD): Limit 200000, Used 199701, Requested 2895. Please try again in 18m41.472s. Need more tokens? Upgrade to Dev Tier today at https://console.groq.com/settings/billing', 'type': 'tokens', 'code': 'rate_limit_"
+      ]
+     },
+     "repair": {
+      "result": null,
+      "attempts": 0
+     },
+     "narrator": {
+      "status": "failed",
+      "provider": "groq_itinerary_narrator_provider",
+      "message": "Groq API call failed: Error code: 429 - {'error': {'message': 'Rate limit reached for model `openai/gpt-oss-20b` in organization `org_<redacted>` service tier `on_demand` on tokens per day (TPD): Limit 200000, Used 199679, Requested 2113. Please try again in 12m54.143999999s. Need more tokens? Upgrade to Dev Tier today at https://console.groq.com/settings/billing', 'type': 'tokens', 'code': 'rate_"
+     }
+    },
+    "narration": {
+     "text_length_chars": 0,
+     "referenced_ids_all_scheduled": true,
+     "referenced_id_count": 0,
+     "pattern_hits_needing_provenance_review": {}
+    },
+    "provider_coverage": {
+     "places": "success",
+     "routes": "success",
+     "restaurants": "success",
+     "accommodations": "not_connected",
+     "hotel_prices": "unavailable",
+     "hotel_ratings": null,
+     "vacation_rentals": "not_connected",
+     "airbnb": "not_connected",
+     "flights": "unavailable",
+     "weather": "success",
+     "holidays": "success",
+     "currency": "success"
+    },
+    "unavailable_data": [
+     {
+      "field": "accommodation_pois",
+      "status": "failed",
+      "reason": "OpenStreetMap/Overpass request failed for 'Los Angeles, USA' (including a broader fallback query)."
+     },
+     {
+      "field": "transit_feasibility",
+      "status": "not_connected",
+      "reason": "routes provider is not connected."
+     },
+     {
+      "field": "accommodation_options",
+      "status": "not_connected",
+      "reason": "accommodation provider is not connected."
+     }
+    ],
+    "factual_looking_fields_non_null": [
+     {
+      "path": "experience_plan.provider_coverage.hotel_prices",
+      "value": "unavailable"
+     }
+    ],
+    "factual_looking_field_count": 1,
+    "pace_requested": "balanced",
+    "avg_stops_per_day": 3.0
+   },
+   "logged_component_seconds": {
+    "routing:osrm": 9.0,
+    "flights:kiwi_mcp_flight_provider": 4.79,
+    "ai_itinerary_reasoning:groq_ai_itinerary_reasoning_provider": 0.18,
+    "ai_candidate_discovery:groq_ai_candidate_proposal_provider": 0.12,
+    "itinerary_narrator:groq_itinerary_narrator_provider": 0.11,
+    "accommodations:scraped_accommodation_provider": 0.0
+   }
+  },
+  {
+   "case_id": "LA-2",
+   "mode": "full_ai",
+   "destination": "Los Angeles, USA",
+   "requested_days": 3,
+   "pace": "packed",
+   "interests": [
+    "museums",
+    "history"
+   ],
+   "group": "solo",
+   "traits": "packed, museums/history; repeat visitor",
+   "generate_http_status": 200,
+   "latency_seconds": 33.0,
+   "request_id": "req_dad5239fef224e3f923058abedacc955",
+   "trip_id": "trip_4f0c31381d4b4c938500554049a8435c",
+   "score": {
+    "scheduled_experience_count": 12,
+    "days_generated": 3,
+    "empty_days": [],
+    "stops_per_day": [
+     4,
+     4,
+     4
+    ],
+    "grounding": {
+     "all_have_stable_ids": true,
+     "with_coordinates": 12,
+     "with_claim_sources": 12,
+     "data_status_live": 0,
+     "promoted_from_ai": 0,
+     "unsupported_identity_names": [],
+     "unsupported_identity_count": 0,
+     "candidate_pool": {
+      "attractions": 19,
+      "restaurants": 19,
+      "accommodation_pois": 0
+     }
+    },
+    "geography": {
+     "per_day": [
+      {
+       "day": 1,
+       "stops": 4,
+       "names": [
+        "Koreatown",
+        "Grammy Museum",
+        "NORBERTELLEN GALLERY",
+        "Crack Gallery"
+       ],
+       "max_pairwise_km": 5.3,
+       "sequential_km": 5.5,
+       "far_apart": false,
+       "day_warnings": 2
+      },
+      {
+       "day": 2,
+       "stops": 4,
+       "names": [
+        "Morono Kiang Gallery",
+        "Continental Gallery",
+        "Julie Rico Gallery",
+        "The Latino Museum"
+       ],
+       "max_pairwise_km": 0.4,
+       "sequential_km": 0.5,
+       "far_apart": false,
+       "day_warnings": 2
+      },
+      {
+       "day": 3,
+       "stops": 4,
+       "names": [
+        "Arty",
+        "Cole's P.E. Buffet",
+        "Fifty/ 24LA Gallery",
+        "The Last Laugh"
+       ],
+       "max_pairwise_km": 0.2,
+       "sequential_km": 0.2,
+       "far_apart": false,
+       "day_warnings": 2
+      }
+     ],
+     "days_far_apart": []
+    },
+    "duplication": {
+     "repeated_normalized_names": {}
+    },
+    "relevance_signals": {
+     "interests_requested": [
+      "museums",
+      "history"
+     ],
+     "interest_words_in_scheduled_names_or_categories": [
+      "museums"
+     ]
+    },
+    "routing": {
+     "report_status": "success",
+     "legs_total": 9,
+     "leg_feasibility_counts": {
+      "feasible": 9
+     },
+     "providers": [
+      "osrm"
+     ],
+     "sequencing_status": "success",
+     "buffer_status_counts": {
+      "not_computable": 9
+     }
+    },
+    "validation": {
+     "readiness_status": "needs_review",
+     "critical_count": 0,
+     "warning_count": 7,
+     "suggestion_count": 0,
+     "warning_categories": {
+      "feasibility": 1,
+      "route_aware_sequencing": 1,
+      "movement_data": 1,
+      "route_geometry": 1,
+      "weather": 1,
+      "accommodation_inventory": 1,
+      "flight_inventory": 1
+     }
+    },
+    "ai": {
+     "candidate_proposal": {
+      "status": "rejected",
+      "blocked": [
+       "Groq API call failed: Error code: 429 - {'error': {'message': 'Rate limit reached for model `openai/gpt-oss-20b` in organization `org_<redacted>` service tier `on_demand` on tokens per day (TPD): Limit 200000, Used 199620, Requested 2317. Please try again in 13m56.783999999s. Need more tokens? Upgrade to Dev Tier today at https://console.groq.com/settings/billing', 'type': 'tokens', 'code': 'rate_"
+      ]
+     },
+     "itinerary_reasoning": {
+      "status": "rejected",
+      "blocked": [
+       "Groq API call failed: Error code: 429 - {'error': {'message': 'Rate limit reached for model `openai/gpt-oss-20b` in organization `org_<redacted>` service tier `on_demand` on tokens per day (TPD): Limit 200000, Used 199611, Requested 2907. Please try again in 18m7.776s. Need more tokens? Upgrade to Dev Tier today at https://console.groq.com/settings/billing', 'type': 'tokens', 'code': 'rate_limit_e"
+      ]
+     },
+     "repair": {
+      "result": null,
+      "attempts": 0
+     },
+     "narrator": {
+      "status": "failed",
+      "provider": "groq_itinerary_narrator_provider",
+      "message": "Groq API call failed: Error code: 429 - {'error': {'message': 'Rate limit reached for model `openai/gpt-oss-20b` in organization `org_<redacted>` service tier `on_demand` on tokens per day (TPD): Limit 200000, Used 199596, Requested 2166. Please try again in 12m41.184s. Need more tokens? Upgrade to Dev Tier today at https://console.groq.com/settings/billing', 'type': 'tokens', 'code': 'rate_limit_"
+     }
+    },
+    "narration": {
+     "text_length_chars": 0,
+     "referenced_ids_all_scheduled": true,
+     "referenced_id_count": 0,
+     "pattern_hits_needing_provenance_review": {}
+    },
+    "provider_coverage": {
+     "places": "success",
+     "routes": "success",
+     "restaurants": "success",
+     "accommodations": "not_connected",
+     "hotel_prices": "unavailable",
+     "hotel_ratings": null,
+     "vacation_rentals": "not_connected",
+     "airbnb": "not_connected",
+     "flights": "unavailable",
+     "weather": "success",
+     "holidays": "success",
+     "currency": "success"
+    },
+    "unavailable_data": [
+     {
+      "field": "accommodation_pois",
+      "status": "failed",
+      "reason": "OpenStreetMap/Overpass request failed for 'Los Angeles, USA' (including a broader fallback query)."
+     },
+     {
+      "field": "transit_feasibility",
+      "status": "not_connected",
+      "reason": "routes provider is not connected."
+     },
+     {
+      "field": "accommodation_options",
+      "status": "not_connected",
+      "reason": "accommodation provider is not connected."
+     }
+    ],
+    "factual_looking_fields_non_null": [
+     {
+      "path": "experience_plan.provider_coverage.hotel_prices",
+      "value": "unavailable"
+     }
+    ],
+    "factual_looking_field_count": 1,
+    "pace_requested": "packed",
+    "avg_stops_per_day": 4.0
+   },
+   "logged_component_seconds": {
+    "routing:osrm": 6.49,
+    "flights:kiwi_mcp_flight_provider": 3.65,
+    "ai_candidate_discovery:groq_ai_candidate_proposal_provider": 0.16,
+    "itinerary_narrator:groq_itinerary_narrator_provider": 0.15,
+    "ai_itinerary_reasoning:groq_ai_itinerary_reasoning_provider": 0.13,
+    "accommodations:scraped_accommodation_provider": 0.0
+   }
+  },
+  {
+   "case_id": "LIS-BARE",
+   "mode": "full_ai",
+   "destination": "Lisbon",
+   "requested_days": 3,
+   "pace": "balanced",
+   "interests": [
+    "food",
+    "history"
+   ],
+   "group": "couple",
+   "traits": "INPUT-FORMAT SENSITIVITY: bare city name (no country)",
+   "generate_http_status": 200,
+   "latency_seconds": 5.5,
+   "request_id": "req_c6677b1bf4444c63ae34df01059289ff",
+   "trip_id": "trip_82b5ca71edd14257b12774e973d78dff",
+   "score": {
+    "scheduled_experience_count": 0,
+    "days_generated": 3,
+    "empty_days": [
+     1,
+     2,
+     3
+    ],
+    "stops_per_day": [
+     0,
+     0,
+     0
+    ],
+    "grounding": {
+     "all_have_stable_ids": true,
+     "with_coordinates": 0,
+     "with_claim_sources": 0,
+     "data_status_live": 0,
+     "promoted_from_ai": 0,
+     "unsupported_identity_names": [],
+     "unsupported_identity_count": 0,
+     "candidate_pool": {
+      "attractions": 0,
+      "restaurants": 0,
+      "accommodation_pois": 0
+     }
+    },
+    "geography": {
+     "per_day": [
+      {
+       "day": 1,
+       "stops": 0,
+       "names": [],
+       "max_pairwise_km": 0.0,
+       "sequential_km": 0,
+       "far_apart": false,
+       "day_warnings": 3
+      },
+      {
+       "day": 2,
+       "stops": 0,
+       "names": [],
+       "max_pairwise_km": 0.0,
+       "sequential_km": 0,
+       "far_apart": false,
+       "day_warnings": 3
+      },
+      {
+       "day": 3,
+       "stops": 0,
+       "names": [],
+       "max_pairwise_km": 0.0,
+       "sequential_km": 0,
+       "far_apart": false,
+       "day_warnings": 3
+      }
+     ],
+     "days_far_apart": []
+    },
+    "duplication": {
+     "repeated_normalized_names": {}
+    },
+    "relevance_signals": {
+     "interests_requested": [
+      "food",
+      "history"
+     ],
+     "interest_words_in_scheduled_names_or_categories": []
+    },
+    "routing": {
+     "report_status": "not_connected",
+     "legs_total": 0,
+     "leg_feasibility_counts": {},
+     "providers": [],
+     "sequencing_status": "not_connected",
+     "buffer_status_counts": {}
+    },
+    "validation": {
+     "readiness_status": "blocked",
+     "critical_count": 1,
+     "warning_count": 2,
+     "suggestion_count": 0,
+     "warning_categories": {
+      "accommodation_inventory": 1,
+      "flight_inventory": 1
+     }
+    },
+    "ai": {
+     "candidate_proposal": {
+      "status": "rejected",
+      "blocked": [
+       "Groq API call failed: Error code: 429 - {'error': {'message': 'Rate limit reached for model `openai/gpt-oss-20b` in organization `org_<redacted>` service tier `on_demand` on tokens per day (TPD): Limit 200000, Used 199584, Requested 2410. Please try again in 14m21.408s. Need more tokens? Upgrade to Dev Tier today at https://console.groq.com/settings/billing', 'type': 'tokens', 'code': 'rate_limit_"
+      ]
+     },
+     "itinerary_reasoning": {
+      "status": "rejected",
+      "blocked": [
+       "Groq API call failed: Error code: 429 - {'error': {'message': 'Rate limit reached for model `openai/gpt-oss-20b` in organization `org_<redacted>` service tier `on_demand` on tokens per day (TPD): Limit 200000, Used 199577, Requested 1777. Please try again in 9m44.928s. Need more tokens? Upgrade to Dev Tier today at https://console.groq.com/settings/billing', 'type': 'tokens', 'code': 'rate_limit_e"
+      ]
+     },
+     "repair": {
+      "result": null,
+      "attempts": 0
+     },
+     "narrator": {
+      "status": "failed",
+      "provider": "groq_itinerary_narrator_provider",
+      "message": "Groq API call failed: Error code: 429 - {'error': {'message': 'Rate limit reached for model `openai/gpt-oss-20b` in organization `org_<redacted>` service tier `on_demand` on tokens per day (TPD): Limit 200000, Used 199576, Requested 2553. Please try again in 15m19.728s. Need more tokens? Upgrade to Dev Tier today at https://console.groq.com/settings/billing', 'type': 'tokens', 'code': 'rate_limit_"
+     }
+    },
+    "narration": {
+     "text_length_chars": 0,
+     "referenced_ids_all_scheduled": true,
+     "referenced_id_count": 0,
+     "pattern_hits_needing_provenance_review": {}
+    },
+    "provider_coverage": {
+     "places": "unavailable",
+     "routes": "not_connected",
+     "restaurants": "unavailable",
+     "accommodations": "not_connected",
+     "hotel_prices": "unavailable",
+     "hotel_ratings": null,
+     "vacation_rentals": "not_connected",
+     "airbnb": "not_connected",
+     "flights": "unavailable",
+     "weather": "unavailable",
+     "holidays": "unavailable",
+     "currency": "unavailable"
+    },
+    "unavailable_data": [
+     {
+      "field": "attractions",
+      "status": "unavailable",
+      "reason": "Could not confidently resolve a location for 'Lisbon' via Nominatim."
+     },
+     {
+      "field": "restaurants",
+      "status": "unavailable",
+      "reason": "Could not confidently resolve a location for 'Lisbon' via Nominatim."
+     },
+     {
+      "field": "accommodation_pois",
+      "status": "unavailable",
+      "reason": "Could not confidently resolve a location for 'Lisbon' via Nominatim."
+     },
+     {
+      "field": "transit_feasibility",
+      "status": "not_connected",
+      "reason": "routes provider is not connected."
+     },
+     {
+      "field": "weather_forecast",
+      "status": "unavailable",
+      "reason": "No coordinates are available for 'Lisbon', so Open-Meteo weather cannot be requested."
+     },
+     {
+      "field": "public_holidays",
+      "status": "unavailable",
+      "reason": "Could not conservatively infer a country from 'Lisbon', so Nager.Date public holidays cannot be requested."
+     },
+     {
+      "field": "exchange_rate",
+      "status": "unavailable",
+      "reason": "Could not conservatively infer a destination currency from 'Lisbon', so Frankfurter exchange rate cannot be requested."
+     },
+     {
+      "field": "accommodation_options",
+      "status": "not_connected",
+      "reason": "accommodation provider is not connected."
+     }
+    ],
+    "factual_looking_fields_non_null": [
+     {
+      "path": "experience_plan.provider_coverage.hotel_prices",
+      "value": "unavailable"
+     }
+    ],
+    "factual_looking_field_count": 1,
+    "pace_requested": "balanced",
+    "avg_stops_per_day": 0.0
+   },
+   "logged_component_seconds": {
+    "flights:kiwi_mcp_flight_provider": 3.18,
+    "ai_itinerary_reasoning:groq_ai_itinerary_reasoning_provider": 0.16,
+    "itinerary_narrator:groq_itinerary_narrator_provider": 0.11,
+    "ai_candidate_discovery:groq_ai_candidate_proposal_provider": 0.07,
+    "accommodations:scraped_accommodation_provider": 0.0
+   }
+  },
+  {
+   "case_id": "NYC-BARE",
+   "mode": "full_ai",
+   "destination": "New York City",
+   "requested_days": 3,
+   "pace": "balanced",
+   "interests": [
+    "museums",
+    "food"
+   ],
+   "group": "couple",
+   "traits": "INPUT-FORMAT SENSITIVITY: bare city name (no country)",
+   "generate_http_status": 200,
+   "latency_seconds": 9.0,
+   "request_id": "req_bc4b57a5fb084bff90414979a51e372e",
+   "trip_id": "trip_771ad5c480754c9ab582544cbcd525bc",
+   "score": {
+    "scheduled_experience_count": 2,
+    "days_generated": 3,
+    "empty_days": [
+     2,
+     3
+    ],
+    "stops_per_day": [
+     2,
+     0,
+     0
+    ],
+    "grounding": {
+     "all_have_stable_ids": true,
+     "with_coordinates": 2,
+     "with_claim_sources": 2,
+     "data_status_live": 0,
+     "promoted_from_ai": 0,
+     "unsupported_identity_names": [],
+     "unsupported_identity_count": 0,
+     "candidate_pool": {
+      "attractions": 19,
+      "restaurants": 19,
+      "accommodation_pois": 20
+     }
+    },
+    "geography": {
+     "per_day": [
+      {
+       "day": 1,
+       "stops": 2,
+       "names": [
+        "SoHo",
+        "South Street Seaport"
+       ],
+       "max_pairwise_km": 1.9,
+       "sequential_km": 1.9,
+       "far_apart": false,
+       "day_warnings": 2
+      },
+      {
+       "day": 2,
+       "stops": 0,
+       "names": [],
+       "max_pairwise_km": 0.0,
+       "sequential_km": 0,
+       "far_apart": false,
+       "day_warnings": 5
+      },
+      {
+       "day": 3,
+       "stops": 0,
+       "names": [],
+       "max_pairwise_km": 0.0,
+       "sequential_km": 0,
+       "far_apart": false,
+       "day_warnings": 5
+      }
+     ],
+     "days_far_apart": []
+    },
+    "duplication": {
+     "repeated_normalized_names": {}
+    },
+    "relevance_signals": {
+     "interests_requested": [
+      "museums",
+      "food"
+     ],
+     "interest_words_in_scheduled_names_or_categories": []
+    },
+    "routing": {
+     "report_status": "success",
+     "legs_total": 1,
+     "leg_feasibility_counts": {
+      "feasible": 1
+     },
+     "providers": [
+      "osrm"
+     ],
+     "sequencing_status": "success",
+     "buffer_status_counts": {
+      "not_computable": 1
+     }
+    },
+    "validation": {
+     "readiness_status": "needs_review",
+     "critical_count": 0,
+     "warning_count": 7,
+     "suggestion_count": 0,
+     "warning_categories": {
+      "feasibility": 1,
+      "route_aware_sequencing": 1,
+      "movement_data": 1,
+      "route_geometry": 1,
+      "weather": 1,
+      "accommodation_inventory": 1,
+      "flight_inventory": 1
+     }
+    },
+    "ai": {
+     "candidate_proposal": {
+      "status": "rejected",
+      "blocked": [
+       "Groq API call failed: Error code: 429 - {'error': {'message': 'Rate limit reached for model `openai/gpt-oss-20b` in organization `org_<redacted>` service tier `on_demand` on tokens per day (TPD): Limit 200000, Used 199565, Requested 2400. Please try again in 14m8.88s. Need more tokens? Upgrade to Dev Tier today at https://console.groq.com/settings/billing', 'type': 'tokens', 'code': 'rate_limit_ex"
+      ]
+     },
+     "itinerary_reasoning": {
+      "status": "rejected",
+      "blocked": [
+       "Groq API call failed: Error code: 429 - {'error': {'message': 'Rate limit reached for model `openai/gpt-oss-20b` in organization `org_<redacted>` service tier `on_demand` on tokens per day (TPD): Limit 200000, Used 199549, Requested 2547. Please try again in 15m5.472s. Need more tokens? Upgrade to Dev Tier today at https://console.groq.com/settings/billing', 'type': 'tokens', 'code': 'rate_limit_e"
+      ]
+     },
+     "repair": {
+      "result": null,
+      "attempts": 0
+     },
+     "narrator": {
+      "status": "failed",
+      "provider": "groq_itinerary_narrator_provider",
+      "message": "Groq API call failed: Error code: 429 - {'error': {'message': 'Rate limit reached for model `openai/gpt-oss-20b` in organization `org_<redacted>` service tier `on_demand` on tokens per day (TPD): Limit 200000, Used 199549, Requested 1754. Please try again in 9m22.896s. Need more tokens? Upgrade to Dev Tier today at https://console.groq.com/settings/billing', 'type': 'tokens', 'code': 'rate_limit_e"
+     }
+    },
+    "narration": {
+     "text_length_chars": 0,
+     "referenced_ids_all_scheduled": true,
+     "referenced_id_count": 0,
+     "pattern_hits_needing_provenance_review": {}
+    },
+    "provider_coverage": {
+     "places": "success",
+     "routes": "success",
+     "restaurants": "success",
+     "accommodations": "open_poi_available",
+     "hotel_prices": "unavailable",
+     "hotel_ratings": null,
+     "vacation_rentals": "not_connected",
+     "airbnb": "not_connected",
+     "flights": "success",
+     "weather": "success",
+     "holidays": "unavailable",
+     "currency": "unavailable"
+    },
+    "unavailable_data": [
+     {
+      "field": "transit_feasibility",
+      "status": "not_connected",
+      "reason": "routes provider is not connected."
+     },
+     {
+      "field": "public_holidays",
+      "status": "unavailable",
+      "reason": "Could not conservatively infer a country from 'New York City', so Nager.Date public holidays cannot be requested."
+     },
+     {
+      "field": "exchange_rate",
+      "status": "unavailable",
+      "reason": "Could not conservatively infer a destination currency from 'New York City', so Frankfurter exchange rate cannot be requested."
+     },
+     {
+      "field": "accommodation_options",
+      "status": "not_connected",
+      "reason": "accommodation provider is not connected."
+     }
+    ],
+    "factual_looking_fields_non_null": [
+     {
+      "path": "experience_plan.provider_coverage.hotel_prices",
+      "value": "unavailable"
+     }
+    ],
+    "factual_looking_field_count": 1,
+    "pace_requested": "balanced",
+    "avg_stops_per_day": 0.67
+   },
+   "logged_component_seconds": {
+    "flights:kiwi_mcp_flight_provider": 6.83,
+    "ai_itinerary_reasoning:groq_ai_itinerary_reasoning_provider": 0.14,
+    "itinerary_narrator:groq_itinerary_narrator_provider": 0.13,
+    "ai_candidate_discovery:groq_ai_candidate_proposal_provider": 0.07,
+    "accommodations:scraped_accommodation_provider": 0.0,
+    "routing:osrm": 0.0
+   }
+  }
+ ],
+ "validity_note": "INVALID for AI-stage quality except LIS-1 and LIS-2. Full-AI flags on gpt-oss-20b; the Groq 200k tokens/day quota was exhausted after LIS-2, so every later case has proposal/reasoning/narrator rejected with HTTP 429. Valid only as evidence of graceful degradation (plans still produced deterministically, nothing crashed)."
+}

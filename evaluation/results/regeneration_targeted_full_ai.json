@@ -1,0 +1,882 @@
+{
+ "generated_on": "2026-09-23",
+ "steps": [
+  {
+   "chain_id": "R-DC1",
+   "step_id": "R01-exact-removal",
+   "kind": "exact removal",
+   "mode": "full_ai",
+   "base_case_id": "DC-1",
+   "trip_id": "trip_7603de46312949dca7307ae8aac8db75",
+   "feedback_text": "Remove Major General George Thomas Statue from the itinerary.",
+   "feedback_http_status": 200,
+   "regenerate_latency_seconds": 50.3,
+   "regenerate_http_status": 200,
+   "applied": true,
+   "identity_stability": {
+    "before_experience_count": 9,
+    "ids_surviving_fraction": 0.89,
+    "names_surviving_fraction": 0.89
+   },
+   "targeted": true,
+   "interpretation_status": "completed",
+   "execution_status": "completed",
+   "previous_version": "v1",
+   "current_version": "v2",
+   "changed_sections": [
+    "day_2"
+   ],
+   "message": "Targeted regeneration applied -- v1 -> v2.",
+   "request_correct": true,
+   "request_check_note": "target (id and name) absent after=True",
+   "independent_diff": {
+    "added": 0,
+    "removed": 1,
+    "moved": 0,
+    "reordered_days": [],
+    "changed_days": [
+     2
+    ]
+   },
+   "preserved_days_reported": [
+    1,
+    3
+   ],
+   "affected_days_reported": [
+    2
+   ],
+   "preserved_days_unchanged": true,
+   "unexpected_changed_days": [],
+   "days_changed_beyond_request_scope": [
+    2
+   ],
+   "added_names": [],
+   "ungrounded_additions": [],
+   "added_without_coordinates": [],
+   "reported_diff_matches_independent": {
+    "added": true,
+    "removed": true,
+    "moved": true,
+    "reordered_days": true
+   },
+   "downstream": {
+    "route_legs_reference_only_current_experiences": true,
+    "route_leg_count": 5,
+    "validation_rerun": true,
+    "narrative_references_only_current_experiences": true,
+    "narrative_status": "failed",
+    "narrative_changed": true
+   },
+   "versioning": {
+    "revisions_before": 1,
+    "revisions_after": 2,
+    "revision_created_only_on_success": true,
+    "active_head_label_after": "v2",
+    "head_label_matches_current_version": true
+   },
+   "feedback_marked_applied": true
+  },
+  {
+   "chain_id": "R-DC1",
+   "step_id": "R02-removal-no-replace",
+   "kind": "removal without replacement",
+   "mode": "full_ai",
+   "base_case_id": "DC-1",
+   "trip_id": "trip_7603de46312949dca7307ae8aac8db75",
+   "feedback_text": "Remove Capitol Hill and don't replace it with anything.",
+   "feedback_http_status": 200,
+   "regenerate_latency_seconds": 38.6,
+   "regenerate_http_status": 200,
+   "applied": true,
+   "identity_stability": {
+    "before_experience_count": 8,
+    "ids_surviving_fraction": 0.88,
+    "names_surviving_fraction": 0.88
+   },
+   "targeted": true,
+   "interpretation_status": "completed",
+   "execution_status": "completed",
+   "previous_version": "v2",
+   "current_version": "v3",
+   "changed_sections": [
+    "day_3"
+   ],
+   "message": "Targeted regeneration applied -- v2 -> v3.",
+   "request_correct": true,
+   "request_check_note": "target (id and name) absent after=True; total 8->7; added=0",
+   "independent_diff": {
+    "added": 0,
+    "removed": 1,
+    "moved": 0,
+    "reordered_days": [],
+    "changed_days": [
+     3
+    ]
+   },
+   "preserved_days_reported": [
+    1,
+    2
+   ],
+   "affected_days_reported": [
+    3
+   ],
+   "preserved_days_unchanged": true,
+   "unexpected_changed_days": [],
+   "days_changed_beyond_request_scope": [
+    3
+   ],
+   "added_names": [],
+   "ungrounded_additions": [],
+   "added_without_coordinates": [],
+   "reported_diff_matches_independent": {
+    "added": true,
+    "removed": true,
+    "moved": true,
+    "reordered_days": true
+   },
+   "downstream": {
+    "route_legs_reference_only_current_experiences": true,
+    "route_leg_count": 4,
+    "validation_rerun": true,
+    "narrative_references_only_current_experiences": true,
+    "narrative_status": "success",
+    "narrative_changed": true
+   },
+   "versioning": {
+    "revisions_before": 2,
+    "revisions_after": 3,
+    "revision_created_only_on_success": true,
+    "active_head_label_after": "v3",
+    "head_label_matches_current_version": true
+   },
+   "feedback_marked_applied": true
+  },
+  {
+   "chain_id": "R-DC1",
+   "step_id": "R03-additive",
+   "kind": "additive request",
+   "mode": "full_ai",
+   "base_case_id": "DC-1",
+   "trip_id": "trip_7603de46312949dca7307ae8aac8db75",
+   "feedback_text": "I also want to visit the National Air and Space Museum.",
+   "feedback_http_status": 200,
+   "regenerate_latency_seconds": 52.8,
+   "regenerate_http_status": 200,
+   "applied": true,
+   "identity_stability": {
+    "before_experience_count": 7,
+    "ids_surviving_fraction": 1.0,
+    "names_surviving_fraction": 1.0
+   },
+   "targeted": true,
+   "interpretation_status": "completed",
+   "execution_status": "completed",
+   "previous_version": "v3",
+   "current_version": "v4",
+   "changed_sections": [],
+   "message": "Targeted regeneration applied -- v3 -> v4.",
+   "request_correct": true,
+   "request_check_note": "added=['National Air and Space Museum']",
+   "independent_diff": {
+    "added": 1,
+    "removed": 0,
+    "moved": 0,
+    "reordered_days": [],
+    "changed_days": [
+     2
+    ]
+   },
+   "preserved_days_reported": [
+    1,
+    2,
+    3
+   ],
+   "affected_days_reported": [],
+   "preserved_days_unchanged": false,
+   "unexpected_changed_days": [],
+   "added_names": [
+    "National Air and Space Museum"
+   ],
+   "ungrounded_additions": [],
+   "added_without_coordinates": [],
+   "reported_diff_matches_independent": {
+    "added": true,
+    "removed": true,
+    "moved": true,
+    "reordered_days": true
+   },
+   "downstream": {
+    "route_legs_reference_only_current_experiences": true,
+    "route_leg_count": 5,
+    "validation_rerun": true,
+    "narrative_references_only_current_experiences": true,
+    "narrative_status": "failed",
+    "narrative_changed": true
+   },
+   "versioning": {
+    "revisions_before": 3,
+    "revisions_after": 4,
+    "revision_created_only_on_success": true,
+    "active_head_label_after": "v4",
+    "head_label_matches_current_version": true
+   },
+   "feedback_marked_applied": true,
+   "human_verdict": {
+    "request_fully_correct": true,
+    "note": "Provider-grounded addition (OSM relation) placed on day 2, BUT the response reported affected_day_indices=[] / preserved_day_indices=[1,2,3] / changed_sections=[] although day 2 changed -- an inaccurate preservation report."
+   }
+  },
+  {
+   "chain_id": "R-LIS2",
+   "step_id": "R04-day-specific",
+   "kind": "day-specific change",
+   "mode": "full_ai",
+   "base_case_id": "LIS-2",
+   "trip_id": "trip_384e0c335d9f4f8fbca24080d832782e",
+   "feedback_text": "Change only day 2. Make it more relaxed.",
+   "feedback_http_status": 200,
+   "regenerate_latency_seconds": 69.1,
+   "regenerate_http_status": 200,
+   "applied": true,
+   "identity_stability": {
+    "before_experience_count": 9,
+    "ids_surviving_fraction": 0.67,
+    "names_surviving_fraction": 0.89
+   },
+   "targeted": true,
+   "interpretation_status": "completed",
+   "execution_status": "completed",
+   "previous_version": "v1",
+   "current_version": "v2",
+   "changed_sections": [
+    "day_2"
+   ],
+   "message": "Targeted regeneration applied -- v1 -> v2.",
+   "request_correct": true,
+   "request_check_note": "changed_days=[2]",
+   "independent_diff": {
+    "added": 3,
+    "removed": 3,
+    "moved": 0,
+    "reordered_days": [],
+    "changed_days": [
+     2
+    ]
+   },
+   "preserved_days_reported": [
+    1,
+    3,
+    4
+   ],
+   "affected_days_reported": [
+    2
+   ],
+   "preserved_days_unchanged": true,
+   "unexpected_changed_days": [],
+   "days_changed_beyond_request_scope": [
+    2
+   ],
+   "added_names": [
+    "Pelourinho de Lisboa",
+    "LX Factory",
+    "Miradouro de S\u00e3o Pedro de Alc\u00e2ntara"
+   ],
+   "ungrounded_additions": [],
+   "added_without_coordinates": [],
+   "reported_diff_matches_independent": {
+    "added": true,
+    "removed": true,
+    "moved": true,
+    "reordered_days": true
+   },
+   "downstream": {
+    "route_legs_reference_only_current_experiences": true,
+    "route_leg_count": 5,
+    "validation_rerun": true,
+    "narrative_references_only_current_experiences": true,
+    "narrative_status": "failed",
+    "narrative_changed": true
+   },
+   "versioning": {
+    "revisions_before": 1,
+    "revisions_after": 2,
+    "revision_created_only_on_success": true,
+    "active_head_label_after": "v2",
+    "head_label_matches_current_version": true
+   },
+   "feedback_marked_applied": true
+  },
+  {
+   "chain_id": "R-LIS2",
+   "step_id": "R05-preservation",
+   "kind": "preservation",
+   "mode": "full_ai",
+   "base_case_id": "LIS-2",
+   "trip_id": "trip_384e0c335d9f4f8fbca24080d832782e",
+   "feedback_text": "Keep day 1 exactly the same, but make day 3 less packed.",
+   "feedback_http_status": 200,
+   "regenerate_latency_seconds": 68.0,
+   "regenerate_http_status": 200,
+   "applied": true,
+   "identity_stability": {
+    "before_experience_count": 9,
+    "ids_surviving_fraction": 0.78,
+    "names_surviving_fraction": 0.75
+   },
+   "targeted": true,
+   "interpretation_status": "completed",
+   "execution_status": "completed",
+   "previous_version": "v2",
+   "current_version": "v3",
+   "changed_sections": [
+    "day_3"
+   ],
+   "message": "Targeted regeneration applied -- v2 -> v3.",
+   "request_correct": true,
+   "request_check_note": "day1 identical=True; other days changed=[3]",
+   "independent_diff": {
+    "added": 2,
+    "removed": 2,
+    "moved": 0,
+    "reordered_days": [],
+    "changed_days": [
+     3
+    ]
+   },
+   "preserved_days_reported": [
+    1,
+    2,
+    4
+   ],
+   "affected_days_reported": [
+    3
+   ],
+   "preserved_days_unchanged": true,
+   "unexpected_changed_days": [],
+   "days_changed_beyond_request_scope": [
+    3
+   ],
+   "added_names": [
+    "Pelourinho de Lisboa",
+    "Miradouro de S\u00e3o Pedro de Alc\u00e2ntara"
+   ],
+   "ungrounded_additions": [],
+   "added_without_coordinates": [],
+   "reported_diff_matches_independent": {
+    "added": true,
+    "removed": true,
+    "moved": true,
+    "reordered_days": true
+   },
+   "downstream": {
+    "route_legs_reference_only_current_experiences": true,
+    "route_leg_count": 5,
+    "validation_rerun": true,
+    "narrative_references_only_current_experiences": true,
+    "narrative_status": "failed",
+    "narrative_changed": false
+   },
+   "versioning": {
+    "revisions_before": 2,
+    "revisions_after": 3,
+    "revision_created_only_on_success": true,
+    "active_head_label_after": "v3",
+    "head_label_matches_current_version": true
+   },
+   "feedback_marked_applied": true,
+   "human_verdict": {
+    "request_fully_correct": false,
+    "note": "Day 1 preserved exactly (the preservation half PASSES), but 'make day 3 less packed' was not achieved: day 3 had 2 stops before and 2 after (two places swapped). It also produced cross-day duplicates (Pelourinho de Lisboa on days 1,2,3; Miradouro de Sao Pedro de Alcantara on days 2,3) that the validator did not flag."
+   }
+  },
+  {
+   "chain_id": "R-LIS2",
+   "step_id": "R06-move",
+   "kind": "move",
+   "mode": "full_ai",
+   "base_case_id": "LIS-2",
+   "trip_id": "trip_384e0c335d9f4f8fbca24080d832782e",
+   "feedback_text": "Move Afonso de Albuquerque to day 2.",
+   "feedback_http_status": 200,
+   "regenerate_latency_seconds": 57.5,
+   "regenerate_http_status": 200,
+   "applied": true,
+   "identity_stability": {
+    "before_experience_count": 9,
+    "ids_surviving_fraction": 1.0,
+    "names_surviving_fraction": 1.0
+   },
+   "targeted": true,
+   "interpretation_status": "completed",
+   "execution_status": "completed",
+   "previous_version": "v3",
+   "current_version": "v4",
+   "changed_sections": [
+    "day_2",
+    "day_4"
+   ],
+   "message": "Targeted regeneration applied -- v3 -> v4.",
+   "request_correct": true,
+   "request_check_note": "target now on day 2",
+   "independent_diff": {
+    "added": 0,
+    "removed": 0,
+    "moved": 1,
+    "reordered_days": [],
+    "changed_days": [
+     2,
+     4
+    ]
+   },
+   "preserved_days_reported": [
+    1,
+    3
+   ],
+   "affected_days_reported": [
+    2,
+    4
+   ],
+   "preserved_days_unchanged": true,
+   "unexpected_changed_days": [],
+   "days_changed_beyond_request_scope": [
+    2,
+    4
+   ],
+   "added_names": [],
+   "ungrounded_additions": [],
+   "added_without_coordinates": [],
+   "reported_diff_matches_independent": {
+    "added": true,
+    "removed": true,
+    "moved": true,
+    "reordered_days": true
+   },
+   "downstream": {
+    "route_legs_reference_only_current_experiences": true,
+    "route_leg_count": 6,
+    "validation_rerun": true,
+    "narrative_references_only_current_experiences": true,
+    "narrative_status": "failed",
+    "narrative_changed": false
+   },
+   "versioning": {
+    "revisions_before": 3,
+    "revisions_after": 4,
+    "revision_created_only_on_success": true,
+    "active_head_label_after": "v4",
+    "head_label_matches_current_version": true
+   },
+   "feedback_marked_applied": true
+  },
+  {
+   "chain_id": "R-SF1",
+   "step_id": "R07-day-pacing",
+   "kind": "pacing (one day)",
+   "mode": "full_ai",
+   "base_case_id": "SF-1",
+   "trip_id": "trip_cc798ac0859d4361968cc4f55f1d6b60",
+   "feedback_text": "Make day 2 less packed.",
+   "feedback_http_status": 200,
+   "regenerate_latency_seconds": 72.8,
+   "regenerate_http_status": 200,
+   "applied": true,
+   "identity_stability": {
+    "before_experience_count": 8,
+    "ids_surviving_fraction": 0.62,
+    "names_surviving_fraction": 0.75
+   },
+   "targeted": true,
+   "interpretation_status": "completed",
+   "execution_status": "completed",
+   "previous_version": "v1",
+   "current_version": "v2",
+   "changed_sections": [
+    "day_2"
+   ],
+   "message": "Targeted regeneration applied -- v1 -> v2.",
+   "request_correct": true,
+   "request_check_note": "day2 stops 3->2",
+   "independent_diff": {
+    "added": 2,
+    "removed": 3,
+    "moved": 0,
+    "reordered_days": [],
+    "changed_days": [
+     2
+    ]
+   },
+   "preserved_days_reported": [
+    1,
+    3,
+    4
+   ],
+   "affected_days_reported": [
+    2
+   ],
+   "preserved_days_unchanged": true,
+   "unexpected_changed_days": [],
+   "days_changed_beyond_request_scope": [
+    2
+   ],
+   "added_names": [
+    "Golden Gate Park",
+    "Inspiration Point"
+   ],
+   "ungrounded_additions": [],
+   "added_without_coordinates": [],
+   "reported_diff_matches_independent": {
+    "added": true,
+    "removed": true,
+    "moved": true,
+    "reordered_days": true
+   },
+   "downstream": {
+    "route_legs_reference_only_current_experiences": true,
+    "route_leg_count": 4,
+    "validation_rerun": true,
+    "narrative_references_only_current_experiences": true,
+    "narrative_status": "success",
+    "narrative_changed": true
+   },
+   "versioning": {
+    "revisions_before": 1,
+    "revisions_after": 2,
+    "revision_created_only_on_success": true,
+    "active_head_label_after": "v2",
+    "head_label_matches_current_version": true
+   },
+   "feedback_marked_applied": true
+  },
+  {
+   "chain_id": "R-SF1",
+   "step_id": "R08-global-pacing",
+   "kind": "pacing (global)",
+   "mode": "full_ai",
+   "base_case_id": "SF-1",
+   "trip_id": "trip_cc798ac0859d4361968cc4f55f1d6b60",
+   "feedback_text": "Make the whole trip more relaxed.",
+   "feedback_http_status": 200,
+   "regenerate_latency_seconds": 73.2,
+   "regenerate_http_status": 200,
+   "applied": true,
+   "identity_stability": {
+    "before_experience_count": 7,
+    "ids_surviving_fraction": 0.0,
+    "names_surviving_fraction": 0.71
+   },
+   "targeted": true,
+   "interpretation_status": "completed",
+   "execution_status": "completed",
+   "previous_version": "v2",
+   "current_version": "v3",
+   "changed_sections": [
+    "day_1",
+    "day_2",
+    "day_3",
+    "day_4"
+   ],
+   "message": "Targeted regeneration applied -- v2 -> v3.",
+   "request_correct": true,
+   "request_check_note": "pace packed->relaxed; total stops 7->7",
+   "independent_diff": {
+    "added": 7,
+    "removed": 7,
+    "moved": 0,
+    "reordered_days": [],
+    "changed_days": [
+     1,
+     2,
+     3,
+     4
+    ]
+   },
+   "preserved_days_reported": [],
+   "affected_days_reported": [
+    1,
+    2,
+    3,
+    4
+   ],
+   "preserved_days_unchanged": null,
+   "unexpected_changed_days": [],
+   "added_names": [
+    "Mechanics Monument",
+    "Mus\u00e9e M\u00e9canique",
+    "Dragon Gate",
+    "California Society of Pioneers Museum and Library",
+    "Lotta's Fountain",
+    "Inspiration Point",
+    "Golden Gate Park"
+   ],
+   "ungrounded_additions": [],
+   "added_without_coordinates": [],
+   "reported_diff_matches_independent": {
+    "added": true,
+    "removed": true,
+    "moved": true,
+    "reordered_days": true
+   },
+   "downstream": {
+    "route_legs_reference_only_current_experiences": true,
+    "route_leg_count": 3,
+    "validation_rerun": true,
+    "narrative_references_only_current_experiences": true,
+    "narrative_status": "success",
+    "narrative_changed": true
+   },
+   "versioning": {
+    "revisions_before": 2,
+    "revisions_after": 3,
+    "revision_created_only_on_success": true,
+    "active_head_label_after": "v3",
+    "head_label_matches_current_version": true
+   },
+   "feedback_marked_applied": true
+  },
+  {
+   "chain_id": "R-SF1",
+   "step_id": "R09-interest",
+   "kind": "interest change",
+   "mode": "full_ai",
+   "base_case_id": "SF-1",
+   "trip_id": "trip_cc798ac0859d4361968cc4f55f1d6b60",
+   "feedback_text": "I want more local food.",
+   "feedback_http_status": 200,
+   "regenerate_latency_seconds": 72.6,
+   "regenerate_http_status": 200,
+   "applied": true,
+   "identity_stability": {
+    "before_experience_count": 7,
+    "ids_surviving_fraction": 0.0,
+    "names_surviving_fraction": 0.86
+   },
+   "targeted": true,
+   "interpretation_status": "completed",
+   "execution_status": "completed",
+   "previous_version": "v3",
+   "current_version": "v4",
+   "changed_sections": [
+    "day_1",
+    "day_2",
+    "day_3",
+    "day_4"
+   ],
+   "message": "Targeted regeneration applied -- v3 -> v4.",
+   "request_correct": false,
+   "request_check_note": "interests=['outdoors', 'food']; food-like added=[]",
+   "independent_diff": {
+    "added": 6,
+    "removed": 7,
+    "moved": 0,
+    "reordered_days": [],
+    "changed_days": [
+     1,
+     2,
+     3,
+     4
+    ]
+   },
+   "preserved_days_reported": [],
+   "affected_days_reported": [
+    1,
+    2,
+    3,
+    4
+   ],
+   "preserved_days_unchanged": null,
+   "unexpected_changed_days": [],
+   "added_names": [
+    "Mus\u00e9e M\u00e9canique",
+    "Dragon Gate",
+    "Inspiration Point",
+    "California Society of Pioneers Museum and Library",
+    "Mechanics Monument",
+    "Golden Gate Park"
+   ],
+   "ungrounded_additions": [],
+   "added_without_coordinates": [],
+   "reported_diff_matches_independent": {
+    "added": true,
+    "removed": true,
+    "moved": true,
+    "reordered_days": true
+   },
+   "downstream": {
+    "route_legs_reference_only_current_experiences": true,
+    "route_leg_count": 3,
+    "validation_rerun": true,
+    "narrative_references_only_current_experiences": true,
+    "narrative_status": "success",
+    "narrative_changed": true
+   },
+   "versioning": {
+    "revisions_before": 3,
+    "revisions_after": 4,
+    "revision_created_only_on_success": true,
+    "active_head_label_after": "v4",
+    "head_label_matches_current_version": true
+   },
+   "feedback_marked_applied": true
+  },
+  {
+   "chain_id": "R-CHI1",
+   "step_id": "R10-ambiguous",
+   "kind": "ambiguous request",
+   "mode": "full_ai",
+   "base_case_id": "CHI-1",
+   "trip_id": "trip_f4028c996a624a208f53a663cae53689",
+   "feedback_text": "Swap that place for something better.",
+   "feedback_http_status": 200,
+   "regenerate_latency_seconds": 27.2,
+   "regenerate_http_status": 409,
+   "error_code": "REGENERATION_NEEDS_CLARIFICATION",
+   "error_message": "The feedback is ambiguous and needs clarification before regenerating. No plan section was changed.",
+   "applied": false,
+   "identity_stability": {
+    "before_experience_count": 7,
+    "ids_surviving_fraction": 1.0,
+    "names_surviving_fraction": 1.0
+   },
+   "request_correct": true,
+   "request_check_note": "http=409, plan unchanged=True",
+   "independent_diff": {
+    "added": 0,
+    "removed": 0,
+    "moved": 0,
+    "reordered_days": [],
+    "changed_days": []
+   },
+   "preserved_days_reported": [],
+   "affected_days_reported": [],
+   "preserved_days_unchanged": null,
+   "unexpected_changed_days": null,
+   "added_names": [],
+   "ungrounded_additions": [],
+   "added_without_coordinates": [],
+   "reported_diff_matches_independent": null,
+   "downstream": {
+    "route_legs_reference_only_current_experiences": true,
+    "route_leg_count": 4,
+    "validation_rerun": false,
+    "narrative_references_only_current_experiences": true,
+    "narrative_status": "success",
+    "narrative_changed": false
+   },
+   "versioning": {
+    "revisions_before": 1,
+    "revisions_after": 1,
+    "revision_created_only_on_success": true,
+    "active_head_label_after": "v1",
+    "head_label_matches_current_version": null
+   },
+   "feedback_marked_applied": null
+  },
+  {
+   "chain_id": "R-CHI1",
+   "step_id": "R11-impossible-move",
+   "kind": "impossible structural request",
+   "mode": "full_ai",
+   "base_case_id": "CHI-1",
+   "trip_id": "trip_f4028c996a624a208f53a663cae53689",
+   "feedback_text": "Move Monument of the Millenium to day 9.",
+   "feedback_http_status": 200,
+   "regenerate_latency_seconds": 19.1,
+   "regenerate_http_status": 409,
+   "error_code": "REGENERATION_NEEDS_CLARIFICATION",
+   "error_message": "The feedback is ambiguous and needs clarification before regenerating. No plan section was changed.",
+   "applied": false,
+   "identity_stability": {
+    "before_experience_count": 7,
+    "ids_surviving_fraction": 1.0,
+    "names_surviving_fraction": 1.0
+   },
+   "request_correct": true,
+   "request_check_note": "http=409, plan unchanged=True",
+   "independent_diff": {
+    "added": 0,
+    "removed": 0,
+    "moved": 0,
+    "reordered_days": [],
+    "changed_days": []
+   },
+   "preserved_days_reported": [],
+   "affected_days_reported": [],
+   "preserved_days_unchanged": null,
+   "unexpected_changed_days": null,
+   "added_names": [],
+   "ungrounded_additions": [],
+   "added_without_coordinates": [],
+   "reported_diff_matches_independent": null,
+   "downstream": {
+    "route_legs_reference_only_current_experiences": true,
+    "route_leg_count": 4,
+    "validation_rerun": false,
+    "narrative_references_only_current_experiences": true,
+    "narrative_status": "success",
+    "narrative_changed": false
+   },
+   "versioning": {
+    "revisions_before": 1,
+    "revisions_after": 1,
+    "revision_created_only_on_success": true,
+    "active_head_label_after": "v1",
+    "head_label_matches_current_version": null
+   },
+   "feedback_marked_applied": null
+  },
+  {
+   "chain_id": "R-CHI1",
+   "step_id": "R12-ungroundable-add",
+   "kind": "provider-grounding failure (honest, not controlled)",
+   "mode": "full_ai",
+   "base_case_id": "CHI-1",
+   "trip_id": "trip_f4028c996a624a208f53a663cae53689",
+   "feedback_text": "I also want to visit the Zzyzx Fictional Observatory Tower.",
+   "feedback_http_status": 200,
+   "regenerate_latency_seconds": 4.8,
+   "regenerate_http_status": 409,
+   "error_code": "REGENERATION_NEEDS_CLARIFICATION",
+   "error_message": "The feedback is ambiguous and needs clarification before regenerating. No plan section was changed.",
+   "applied": false,
+   "identity_stability": {
+    "before_experience_count": 7,
+    "ids_surviving_fraction": 1.0,
+    "names_surviving_fraction": 1.0
+   },
+   "request_correct": true,
+   "request_check_note": "added=[], ungrounded=[], fictional_present=[]",
+   "independent_diff": {
+    "added": 0,
+    "removed": 0,
+    "moved": 0,
+    "reordered_days": [],
+    "changed_days": []
+   },
+   "preserved_days_reported": [],
+   "affected_days_reported": [],
+   "preserved_days_unchanged": null,
+   "unexpected_changed_days": null,
+   "added_names": [],
+   "ungrounded_additions": [],
+   "added_without_coordinates": [],
+   "reported_diff_matches_independent": null,
+   "downstream": {
+    "route_legs_reference_only_current_experiences": true,
+    "route_leg_count": 4,
+    "validation_rerun": false,
+    "narrative_references_only_current_experiences": true,
+    "narrative_status": "success",
+    "narrative_changed": false
+   },
+   "versioning": {
+    "revisions_before": 1,
+    "revisions_after": 1,
+    "revision_created_only_on_success": true,
+    "active_head_label_after": "v1",
+    "head_label_matches_current_version": null
+   },
+   "feedback_marked_applied": null
+  }
+ ],
+ "validity_note": "Targeted regeneration with AI feedback interpreter on Groq gpt-oss-120b (see generation_full_ai_120b note). 12 steps across 4 chains (R-DC1, R-LIS2, R-SF1, R-CHI1). `preserved_days_unchanged` is null when the whole plan was reported affected."
+}

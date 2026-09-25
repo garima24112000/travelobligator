@@ -321,11 +321,18 @@ def test_rejected_interpretation_blocks_without_execution() -> None:
 
     result = _service(interpreter, plan_builder, executor, repository).regenerate("trip_x")
 
-    assert result.status == TargetedRegenerationRuntimeStatus.BLOCKED
+    # Section 202B.1: a rejected interpretation with no provider-call
+    # failure kind is a model answer that failed validation -- reported as
+    # a provider-unavailable outcome with kind "malformed_output", never
+    # the old generic BLOCKED -> "engine not implemented".
+    assert result.status == TargetedRegenerationRuntimeStatus.PROVIDER_UNAVAILABLE
+    assert result.provider_failure_kind == "malformed_output"
     persisted = repository.get_by_trip_id("trip_x")
     assert persisted.metadata.current_version == "v1"
     assert len(persisted.regeneration_attempts) == 1
     assert persisted.regeneration_attempts[0].status == "blocked"
+    assert persisted.regeneration_attempts[0].reason_code == "REGENERATION_AI_UNAVAILABLE"
+    assert persisted.feedback_history[0].applied_at is None
 
 
 def test_not_connected_interpretation_is_provider_unavailable() -> None:
@@ -353,7 +360,7 @@ def test_not_connected_interpretation_is_provider_unavailable() -> None:
     # mid-execution (see test_provider_unavailable_during_executor_is_a_failed_attempt).
     assert len(persisted.regeneration_attempts) == 1
     assert persisted.regeneration_attempts[0].status == "blocked"
-    assert persisted.regeneration_attempts[0].reason_code == "REGENERATION_PROVIDER_UNAVAILABLE"
+    assert persisted.regeneration_attempts[0].reason_code == "REGENERATION_AI_UNAVAILABLE"
 
 
 # ---------------------------------------------------------------------------

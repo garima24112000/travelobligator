@@ -1,0 +1,4621 @@
+{
+ "mode": "202c_as_configured",
+ "generated_on": "2026-09-24",
+ "results": [
+  {
+   "case_id": "LIS-1",
+   "mode": "202c_as_configured",
+   "destination": "Lisbon, Portugal",
+   "requested_days": 3,
+   "pace": "balanced",
+   "interests": [
+    "food",
+    "history"
+   ],
+   "group": "couple",
+   "traits": "dense, walkable, hilly; first-time visitor",
+   "generate_http_status": 200,
+   "latency_seconds": 75.1,
+   "request_id": "req_73c8f212ecbf44a2b955cdaefec14ae3",
+   "trip_id": "trip_01d2e8707e3c4f0fae5eb5c9b00bf26a",
+   "score": {
+    "scheduled_experience_count": 9,
+    "days_generated": 3,
+    "empty_days": [],
+    "stops_per_day": [
+     3,
+     3,
+     3
+    ],
+    "grounding": {
+     "all_have_stable_ids": true,
+     "with_coordinates": 9,
+     "with_claim_sources": 9,
+     "data_status_live": 9,
+     "promoted_from_ai": 0,
+     "unsupported_identity_names": [],
+     "unsupported_identity_count": 0,
+     "candidate_pool": {
+      "attractions": 55,
+      "restaurants": 19,
+      "accommodation_pois": 0
+     }
+    },
+    "geography": {
+     "per_day": [
+      {
+       "day": 1,
+       "stops": 3,
+       "names": [
+        "Mercado da Ribeira",
+        "Tamareira-do-Senegal",
+        "Pelourinho de Lisboa"
+       ],
+       "max_pairwise_km": 0.6,
+       "sequential_km": 0.8,
+       "far_apart": false,
+       "day_warnings": 2
+      },
+      {
+       "day": 2,
+       "stops": 3,
+       "names": [
+        "Museu Geol\u00f3gico",
+        "Museu da Marioneta",
+        "Tipuana"
+       ],
+       "max_pairwise_km": 0.8,
+       "sequential_km": 0.9,
+       "far_apart": false,
+       "day_warnings": 2
+      },
+      {
+       "day": 3,
+       "stops": 3,
+       "names": [
+        "Museu do Aljube - Resist\u00eancia e Liberdade",
+        "Mercado de Santa Clara",
+        "Museu Bordalo Pinheiro"
+       ],
+       "max_pairwise_km": 5.7,
+       "sequential_km": 6.3,
+       "far_apart": false,
+       "day_warnings": 2
+      }
+     ],
+     "days_far_apart": []
+    },
+    "duplication": {
+     "repeated_normalized_names": {}
+    },
+    "relevance_signals": {
+     "interests_requested": [
+      "food",
+      "history"
+     ],
+     "interest_words_in_scheduled_names_or_categories": []
+    },
+    "routing": {
+     "report_status": "success",
+     "legs_total": 6,
+     "leg_feasibility_counts": {
+      "feasible": 6
+     },
+     "providers": [
+      "osrm"
+     ],
+     "sequencing_status": "success",
+     "buffer_status_counts": {
+      "not_computable": 6
+     }
+    },
+    "validation": {
+     "readiness_status": "needs_review",
+     "critical_count": 0,
+     "warning_count": 8,
+     "suggestion_count": 0,
+     "warning_categories": {
+      "feasibility": 1,
+      "route_aware_sequencing": 1,
+      "movement_data": 1,
+      "route_geometry": 1,
+      "weather": 1,
+      "holidays": 1,
+      "accommodation_inventory": 1,
+      "flight_inventory": 1
+     }
+    },
+    "ai": {
+     "candidate_proposal": {
+      "status": "rejected",
+      "blocked": [
+       "Groq API call failed: the provider returned an output that did not match the required structure. (after 2 attempt(s))"
+      ]
+     },
+     "itinerary_reasoning": {
+      "status": "not_connected",
+      "blocked": [
+       "AI itinerary reasoning is disabled (AI_ITINERARY_REASONING_ENABLED=false)."
+      ]
+     },
+     "repair": {
+      "result": null,
+      "attempts": 0
+     },
+     "narrator": {
+      "status": "failed",
+      "provider": "groq_itinerary_narrator_provider",
+      "message": "Groq API call failed: the provider returned an output that did not match the required structure."
+     }
+    },
+    "narration": {
+     "text_length_chars": 423,
+     "referenced_ids_all_scheduled": true,
+     "referenced_id_count": 9,
+     "pattern_hits_needing_provenance_review": {}
+    },
+    "provider_coverage": {
+     "places": "success",
+     "routes": "success",
+     "restaurants": "fallback_used",
+     "accommodations": "not_connected",
+     "hotel_prices": "unavailable",
+     "hotel_ratings": null,
+     "vacation_rentals": "not_connected",
+     "airbnb": "not_connected",
+     "flights": "failed",
+     "weather": "success",
+     "holidays": "success",
+     "currency": "success"
+    },
+    "unavailable_data": [
+     {
+      "field": "accommodation_pois",
+      "status": "failed",
+      "reason": "OpenStreetMap/Overpass request failed for 'Lisbon, Portugal' (including a broader fallback query)."
+     },
+     {
+      "field": "transit_feasibility",
+      "status": "not_connected",
+      "reason": "routes provider is not connected."
+     },
+     {
+      "field": "accommodation_options",
+      "status": "not_connected",
+      "reason": "accommodation provider is not connected."
+     }
+    ],
+    "factual_looking_fields_non_null": [
+     {
+      "path": "experience_plan.provider_coverage.hotel_prices",
+      "value": "unavailable"
+     }
+    ],
+    "factual_looking_field_count": 1,
+    "candidate_supply": {
+     "attractions_discovered": 55,
+     "tiers": {
+      "primary_anchor": 14,
+      "good_candidate": 39,
+      "low_priority": 2
+     },
+     "unsuitable_rejected": 0,
+     "category_distribution": {
+      "museum": 6,
+      "landmark": 6,
+      "shopping": 1,
+      "restaurant": 1,
+      "general_attraction": 6,
+      "entertainment": 6,
+      "park_nature": 6,
+      "viewpoint": 6,
+      "art_culture": 5,
+      "historic": 3,
+      "nightlife": 6,
+      "food_market": 3
+     },
+     "viable_supply_per_matched_interest": {
+      "history": 13,
+      "food": 5
+     }
+    },
+    "scheduled_categories": {
+     "by_category": {
+      "food_market": 2,
+      "landmark": 3,
+      "museum": 4
+     },
+     "low_value_or_gallery_count": 0,
+     "interests_matched": [
+      "food",
+      "history"
+     ]
+    },
+    "resolved_destination": "Lisbon, Portugal",
+    "quality_finding_categories": [],
+    "pace_requested": "balanced",
+    "avg_stops_per_day": 3.0
+   },
+   "logged_component_seconds": {
+    "routing:osrm": 6.46,
+    "itinerary_narrator:groq_itinerary_narrator_provider": 3.31,
+    "ai_candidate_discovery:groq_ai_candidate_proposal_provider": 2.86,
+    "flights:kiwi_mcp_flight_provider": 1.95,
+    "accommodations:scraped_accommodation_provider": 0.0
+   }
+  },
+  {
+   "case_id": "LIS-2",
+   "mode": "202c_as_configured",
+   "destination": "Lisbon, Portugal",
+   "requested_days": 4,
+   "pace": "packed",
+   "interests": [
+    "architecture",
+    "nightlife"
+   ],
+   "group": "friends",
+   "traits": "same city, different request (packed, nightlife)",
+   "generate_http_status": 200,
+   "latency_seconds": 39.1,
+   "request_id": "req_27a1c8a5c3cf4988b3dcf2d8ffa9b53e",
+   "trip_id": "trip_071a9d9b10474efb8adae7654ba077ae",
+   "score": {
+    "scheduled_experience_count": 16,
+    "days_generated": 4,
+    "empty_days": [],
+    "stops_per_day": [
+     4,
+     4,
+     4,
+     4
+    ],
+    "grounding": {
+     "all_have_stable_ids": true,
+     "with_coordinates": 16,
+     "with_claim_sources": 16,
+     "data_status_live": 0,
+     "promoted_from_ai": 0,
+     "unsupported_identity_names": [],
+     "unsupported_identity_count": 0,
+     "candidate_pool": {
+      "attractions": 55,
+      "restaurants": 19,
+      "accommodation_pois": 20
+     }
+    },
+    "geography": {
+     "per_day": [
+      {
+       "day": 1,
+       "stops": 4,
+       "names": [
+        "Pelourinho de Lisboa",
+        "Tamareira-do-Senegal",
+        "Teatro Nacional de S\u00e3o Carlos",
+        "Leitaria A Camponeza"
+       ],
+       "max_pairwise_km": 0.5,
+       "sequential_km": 0.9,
+       "far_apart": false,
+       "day_warnings": 1
+      },
+      {
+       "day": 2,
+       "stops": 4,
+       "names": [
+        "Hot Club Portugal",
+        "Miradouro de S\u00e3o Pedro de Alc\u00e2ntara",
+        "Museu Ma\u00e7\u00f3nico Portugu\u00eas",
+        "Museu Geol\u00f3gico"
+       ],
+       "max_pairwise_km": 0.7,
+       "sequential_km": 1.0,
+       "far_apart": false,
+       "day_warnings": 1
+      },
+      {
+       "day": 3,
+       "stops": 4,
+       "names": [
+        "Tipuana",
+        "Museu da Marioneta",
+        "Mercado da Ribeira",
+        "Animat\u00f3grafo do Rossio"
+       ],
+       "max_pairwise_km": 1.6,
+       "sequential_km": 1.9,
+       "far_apart": false,
+       "day_warnings": 1
+      },
+      {
+       "day": 4,
+       "stops": 4,
+       "names": [
+        "Ginkgo",
+        "Museu do Aljube - Resist\u00eancia e Liberdade",
+        "Museu do Centro Cient\u00edfico e Cultural de Macau",
+        "Museu Bordalo Pinheiro"
+       ],
+       "max_pairwise_km": 6.9,
+       "sequential_km": 13.7,
+       "far_apart": false,
+       "day_warnings": 1
+      }
+     ],
+     "days_far_apart": []
+    },
+    "duplication": {
+     "repeated_normalized_names": {}
+    },
+    "relevance_signals": {
+     "interests_requested": [
+      "architecture",
+      "nightlife"
+     ],
+     "interest_words_in_scheduled_names_or_categories": []
+    },
+    "routing": {
+     "report_status": "success",
+     "legs_total": 12,
+     "leg_feasibility_counts": {
+      "feasible": 12
+     },
+     "providers": [
+      "osrm"
+     ],
+     "sequencing_status": "success",
+     "buffer_status_counts": {
+      "not_computable": 12
+     }
+    },
+    "validation": {
+     "readiness_status": "needs_review",
+     "critical_count": 0,
+     "warning_count": 8,
+     "suggestion_count": 0,
+     "warning_categories": {
+      "feasibility": 1,
+      "route_aware_sequencing": 1,
+      "movement_data": 1,
+      "route_geometry": 1,
+      "geographic_spread": 1,
+      "weather": 1,
+      "accommodation_inventory": 1,
+      "flight_inventory": 1
+     }
+    },
+    "ai": {
+     "candidate_proposal": {
+      "status": "rejected",
+      "blocked": [
+       "Groq API call failed: the provider returned an output that did not match the required structure. (after 2 attempt(s))"
+      ]
+     },
+     "itinerary_reasoning": {
+      "status": "not_connected",
+      "blocked": [
+       "AI itinerary reasoning is disabled (AI_ITINERARY_REASONING_ENABLED=false)."
+      ]
+     },
+     "repair": {
+      "result": null,
+      "attempts": 0
+     },
+     "narrator": {
+      "status": "success",
+      "provider": "groq_itinerary_narrator_provider",
+      "message": null
+     }
+    },
+    "narration": {
+     "text_length_chars": 973,
+     "referenced_ids_all_scheduled": true,
+     "referenced_id_count": 16,
+     "pattern_hits_needing_provenance_review": {
+      "availability": [
+       "available"
+      ]
+     }
+    },
+    "provider_coverage": {
+     "places": "success",
+     "routes": "success",
+     "restaurants": "fallback_used",
+     "accommodations": "open_poi_available",
+     "hotel_prices": "unavailable",
+     "hotel_ratings": null,
+     "vacation_rentals": "not_connected",
+     "airbnb": "not_connected",
+     "flights": "failed",
+     "weather": "success",
+     "holidays": "success",
+     "currency": "success"
+    },
+    "unavailable_data": [
+     {
+      "field": "transit_feasibility",
+      "status": "not_connected",
+      "reason": "routes provider is not connected."
+     },
+     {
+      "field": "accommodation_options",
+      "status": "not_connected",
+      "reason": "accommodation provider is not connected."
+     }
+    ],
+    "factual_looking_fields_non_null": [
+     {
+      "path": "experience_plan.provider_coverage.hotel_prices",
+      "value": "unavailable"
+     }
+    ],
+    "factual_looking_field_count": 1,
+    "candidate_supply": {
+     "attractions_discovered": 55,
+     "tiers": {
+      "primary_anchor": 10,
+      "good_candidate": 43,
+      "low_priority": 2
+     },
+     "unsuitable_rejected": 0,
+     "category_distribution": {
+      "museum": 6,
+      "landmark": 6,
+      "shopping": 1,
+      "restaurant": 1,
+      "general_attraction": 6,
+      "entertainment": 6,
+      "park_nature": 6,
+      "viewpoint": 6,
+      "art_culture": 5,
+      "historic": 3,
+      "nightlife": 6,
+      "food_market": 3
+     },
+     "viable_supply_per_matched_interest": {
+      "architecture": 7,
+      "nightlife": 6
+     }
+    },
+    "scheduled_categories": {
+     "by_category": {
+      "landmark": 4,
+      "entertainment": 1,
+      "historic": 2,
+      "nightlife": 1,
+      "viewpoint": 1,
+      "museum": 6,
+      "food_market": 1
+     },
+     "low_value_or_gallery_count": 0,
+     "interests_matched": [
+      "architecture",
+      "nightlife"
+     ]
+    },
+    "resolved_destination": "Lisbon, Portugal",
+    "quality_finding_categories": [],
+    "pace_requested": "packed",
+    "avg_stops_per_day": 4.0
+   },
+   "logged_component_seconds": {
+    "routing:osrm": 14.61,
+    "flights:kiwi_mcp_flight_provider": 3.35,
+    "ai_candidate_discovery:groq_ai_candidate_proposal_provider": 2.97,
+    "itinerary_narrator:groq_itinerary_narrator_provider": 1.96,
+    "accommodations:scraped_accommodation_provider": 0.0
+   }
+  },
+  {
+   "case_id": "NYC-1",
+   "mode": "202c_as_configured",
+   "destination": "New York City, USA",
+   "requested_days": 4,
+   "pace": "balanced",
+   "interests": [
+    "museums",
+    "food"
+   ],
+   "group": "couple",
+   "traits": "dense, transit-oriented; first-time visitor",
+   "generate_http_status": 200,
+   "latency_seconds": 62.9,
+   "request_id": "req_725bab0064ee423e96934cde656829fc",
+   "trip_id": "trip_f0d0f7b08b69499ca01949897fa17f02",
+   "score": {
+    "scheduled_experience_count": 12,
+    "days_generated": 4,
+    "empty_days": [],
+    "stops_per_day": [
+     3,
+     3,
+     3,
+     3
+    ],
+    "grounding": {
+     "all_have_stable_ids": true,
+     "with_coordinates": 12,
+     "with_claim_sources": 12,
+     "data_status_live": 12,
+     "promoted_from_ai": 0,
+     "unsupported_identity_names": [],
+     "unsupported_identity_count": 0,
+     "candidate_pool": {
+      "attractions": 60,
+      "restaurants": 19,
+      "accommodation_pois": 20
+     }
+    },
+    "geography": {
+     "per_day": [
+      {
+       "day": 1,
+       "stops": 3,
+       "names": [
+        "Yeshiva University Museum",
+        "Union Square Green Market",
+        "Rubin Museum of Art"
+       ],
+       "max_pairwise_km": 0.8,
+       "sequential_km": 1.1,
+       "far_apart": false,
+       "day_warnings": 1
+      },
+      {
+       "day": 2,
+       "stops": 3,
+       "names": [
+        "Lower East Side Tenement Museum",
+        "SoHo",
+        "South Street Seaport"
+       ],
+       "max_pairwise_km": 1.9,
+       "sequential_km": 2.8,
+       "far_apart": false,
+       "day_warnings": 1
+      },
+      {
+       "day": 3,
+       "stops": 3,
+       "names": [
+        "Skyscraper Museum",
+        "Stonewall Inn",
+        "Gagosian"
+       ],
+       "max_pairwise_km": 5.0,
+       "sequential_km": 5.2,
+       "far_apart": false,
+       "day_warnings": 1
+      },
+      {
+       "day": 4,
+       "stops": 3,
+       "names": [
+        "Museum of Sex",
+        "The Morgan Library & Museum",
+        "Bryant Park"
+       ],
+       "max_pairwise_km": 1.1,
+       "sequential_km": 1.3,
+       "far_apart": false,
+       "day_warnings": 1
+      }
+     ],
+     "days_far_apart": []
+    },
+    "duplication": {
+     "repeated_normalized_names": {}
+    },
+    "relevance_signals": {
+     "interests_requested": [
+      "museums",
+      "food"
+     ],
+     "interest_words_in_scheduled_names_or_categories": [
+      "museums"
+     ]
+    },
+    "routing": {
+     "report_status": "success",
+     "legs_total": 8,
+     "leg_feasibility_counts": {
+      "feasible": 8
+     },
+     "providers": [
+      "osrm"
+     ],
+     "sequencing_status": "success",
+     "buffer_status_counts": {
+      "not_computable": 8
+     }
+    },
+    "validation": {
+     "readiness_status": "needs_review",
+     "critical_count": 0,
+     "warning_count": 8,
+     "suggestion_count": 0,
+     "warning_categories": {
+      "feasibility": 1,
+      "route_aware_sequencing": 1,
+      "movement_data": 1,
+      "route_geometry": 1,
+      "weather": 1,
+      "holidays": 1,
+      "accommodation_inventory": 1,
+      "flight_inventory": 1
+     }
+    },
+    "ai": {
+     "candidate_proposal": {
+      "status": "rejected",
+      "blocked": [
+       "Groq API call failed: the provider returned an output that did not match the required structure. (after 2 attempt(s))"
+      ]
+     },
+     "itinerary_reasoning": {
+      "status": "not_connected",
+      "blocked": [
+       "AI itinerary reasoning is disabled (AI_ITINERARY_REASONING_ENABLED=false)."
+      ]
+     },
+     "repair": {
+      "result": null,
+      "attempts": 0
+     },
+     "narrator": {
+      "status": "failed",
+      "provider": "groq_itinerary_narrator_provider",
+      "message": "AI narration included wording that is not in the itinerary data and was not used; a factual summary built from the itinerary data is shown instead."
+     }
+    },
+    "narration": {
+     "text_length_chars": 484,
+     "referenced_ids_all_scheduled": true,
+     "referenced_id_count": 12,
+     "pattern_hits_needing_provenance_review": {}
+    },
+    "provider_coverage": {
+     "places": "success",
+     "routes": "success",
+     "restaurants": "success",
+     "accommodations": "open_poi_available",
+     "hotel_prices": "unavailable",
+     "hotel_ratings": null,
+     "vacation_rentals": "not_connected",
+     "airbnb": "not_connected",
+     "flights": "unavailable",
+     "weather": "success",
+     "holidays": "success",
+     "currency": "success"
+    },
+    "unavailable_data": [
+     {
+      "field": "transit_feasibility",
+      "status": "not_connected",
+      "reason": "routes provider is not connected."
+     },
+     {
+      "field": "accommodation_options",
+      "status": "not_connected",
+      "reason": "accommodation provider is not connected."
+     }
+    ],
+    "factual_looking_fields_non_null": [
+     {
+      "path": "experience_plan.provider_coverage.hotel_prices",
+      "value": "unavailable"
+     }
+    ],
+    "factual_looking_field_count": 1,
+    "candidate_supply": {
+     "attractions_discovered": 60,
+     "tiers": {
+      "primary_anchor": 17,
+      "good_candidate": 43
+     },
+     "unsuitable_rejected": 0,
+     "category_distribution": {
+      "museum": 8,
+      "landmark": 8,
+      "neighborhood_area": 1,
+      "general_attraction": 7,
+      "entertainment": 7,
+      "viewpoint": 7,
+      "art_culture": 7,
+      "historic": 7,
+      "park_nature": 7,
+      "food_market": 1
+     },
+     "viable_supply_per_matched_interest": {
+      "museum": 8,
+      "food": 1
+     }
+    },
+    "scheduled_categories": {
+     "by_category": {
+      "museum": 7,
+      "food_market": 1,
+      "landmark": 4
+     },
+     "low_value_or_gallery_count": 0,
+     "interests_matched": [
+      "food",
+      "museum"
+     ]
+    },
+    "resolved_destination": "New York, United States",
+    "quality_finding_categories": [],
+    "pace_requested": "balanced",
+    "avg_stops_per_day": 3.0
+   },
+   "logged_component_seconds": {
+    "routing:osrm": 8.17,
+    "flights:kiwi_mcp_flight_provider": 3.42,
+    "ai_candidate_discovery:groq_ai_candidate_proposal_provider": 2.89,
+    "itinerary_narrator:groq_itinerary_narrator_provider": 2.21,
+    "accommodations:scraped_accommodation_provider": 0.0
+   }
+  },
+  {
+   "case_id": "NYC-2",
+   "mode": "202c_as_configured",
+   "destination": "New York City, USA",
+   "requested_days": 3,
+   "pace": "relaxed",
+   "interests": [
+    "architecture",
+    "parks"
+   ],
+   "group": "solo",
+   "traits": "relaxed, outdoors/architecture",
+   "generate_http_status": 200,
+   "latency_seconds": 39.2,
+   "request_id": "req_aef86cd4a70246bd843011def6cd6d46",
+   "trip_id": "trip_0aad196c67de48bcbbe72d486accb220",
+   "score": {
+    "scheduled_experience_count": 6,
+    "days_generated": 3,
+    "empty_days": [],
+    "stops_per_day": [
+     2,
+     2,
+     2
+    ],
+    "grounding": {
+     "all_have_stable_ids": true,
+     "with_coordinates": 6,
+     "with_claim_sources": 6,
+     "data_status_live": 0,
+     "promoted_from_ai": 0,
+     "unsupported_identity_names": [],
+     "unsupported_identity_count": 0,
+     "candidate_pool": {
+      "attractions": 60,
+      "restaurants": 19,
+      "accommodation_pois": 20
+     }
+    },
+    "geography": {
+     "per_day": [
+      {
+       "day": 1,
+       "stops": 2,
+       "names": [
+        "Stonewall Inn",
+        "Yeshiva University Museum"
+       ],
+       "max_pairwise_km": 0.8,
+       "sequential_km": 0.8,
+       "far_apart": false,
+       "day_warnings": 1
+      },
+      {
+       "day": 2,
+       "stops": 2,
+       "names": [
+        "Bryant Park",
+        "SoHo"
+       ],
+       "max_pairwise_km": 3.7,
+       "sequential_km": 3.7,
+       "far_apart": false,
+       "day_warnings": 1
+      },
+      {
+       "day": 3,
+       "stops": 2,
+       "names": [
+        "One World Observatory",
+        "Lower East Side Tenement Museum"
+       ],
+       "max_pairwise_km": 2.0,
+       "sequential_km": 2.0,
+       "far_apart": false,
+       "day_warnings": 1
+      }
+     ],
+     "days_far_apart": []
+    },
+    "duplication": {
+     "repeated_normalized_names": {}
+    },
+    "relevance_signals": {
+     "interests_requested": [
+      "architecture",
+      "parks"
+     ],
+     "interest_words_in_scheduled_names_or_categories": [
+      "parks"
+     ]
+    },
+    "routing": {
+     "report_status": "success",
+     "legs_total": 3,
+     "leg_feasibility_counts": {
+      "feasible": 3
+     },
+     "providers": [
+      "osrm"
+     ],
+     "sequencing_status": "success",
+     "buffer_status_counts": {
+      "not_computable": 3
+     }
+    },
+    "validation": {
+     "readiness_status": "needs_review",
+     "critical_count": 0,
+     "warning_count": 7,
+     "suggestion_count": 0,
+     "warning_categories": {
+      "feasibility": 1,
+      "route_aware_sequencing": 1,
+      "movement_data": 1,
+      "route_geometry": 1,
+      "weather": 1,
+      "accommodation_inventory": 1,
+      "flight_inventory": 1
+     }
+    },
+    "ai": {
+     "candidate_proposal": {
+      "status": "rejected",
+      "blocked": [
+       "Groq API call failed: the provider returned an output that did not match the required structure. (after 2 attempt(s))"
+      ]
+     },
+     "itinerary_reasoning": {
+      "status": "not_connected",
+      "blocked": [
+       "AI itinerary reasoning is disabled (AI_ITINERARY_REASONING_ENABLED=false)."
+      ]
+     },
+     "repair": {
+      "result": null,
+      "attempts": 0
+     },
+     "narrator": {
+      "status": "success",
+      "provider": "groq_itinerary_narrator_provider",
+      "message": null
+     }
+    },
+    "narration": {
+     "text_length_chars": 703,
+     "referenced_ids_all_scheduled": true,
+     "referenced_id_count": 6,
+     "pattern_hits_needing_provenance_review": {
+      "availability": [
+       "available"
+      ]
+     }
+    },
+    "provider_coverage": {
+     "places": "success",
+     "routes": "success",
+     "restaurants": "success",
+     "accommodations": "open_poi_available",
+     "hotel_prices": "unavailable",
+     "hotel_ratings": null,
+     "vacation_rentals": "not_connected",
+     "airbnb": "not_connected",
+     "flights": "unavailable",
+     "weather": "success",
+     "holidays": "success",
+     "currency": "success"
+    },
+    "unavailable_data": [
+     {
+      "field": "transit_feasibility",
+      "status": "not_connected",
+      "reason": "routes provider is not connected."
+     },
+     {
+      "field": "accommodation_options",
+      "status": "not_connected",
+      "reason": "accommodation provider is not connected."
+     }
+    ],
+    "factual_looking_fields_non_null": [
+     {
+      "path": "experience_plan.provider_coverage.hotel_prices",
+      "value": "unavailable"
+     }
+    ],
+    "factual_looking_field_count": 1,
+    "candidate_supply": {
+     "attractions_discovered": 60,
+     "tiers": {
+      "primary_anchor": 23,
+      "good_candidate": 37
+     },
+     "unsuitable_rejected": 0,
+     "category_distribution": {
+      "museum": 8,
+      "landmark": 8,
+      "neighborhood_area": 1,
+      "general_attraction": 7,
+      "entertainment": 7,
+      "viewpoint": 7,
+      "art_culture": 7,
+      "historic": 7,
+      "park_nature": 7,
+      "food_market": 1
+     },
+     "viable_supply_per_matched_interest": {
+      "architecture": 15,
+      "outdoors": 15
+     }
+    },
+    "scheduled_categories": {
+     "by_category": {
+      "landmark": 3,
+      "museum": 2,
+      "viewpoint": 1
+     },
+     "low_value_or_gallery_count": 0,
+     "interests_matched": [
+      "architecture",
+      "outdoors"
+     ]
+    },
+    "resolved_destination": "New York, United States",
+    "quality_finding_categories": [],
+    "pace_requested": "relaxed",
+    "avg_stops_per_day": 2.0
+   },
+   "logged_component_seconds": {
+    "ai_candidate_discovery:groq_ai_candidate_proposal_provider": 24.15,
+    "flights:kiwi_mcp_flight_provider": 6.15,
+    "itinerary_narrator:groq_itinerary_narrator_provider": 5.88,
+    "routing:osrm": 2.17,
+    "accommodations:scraped_accommodation_provider": 0.0
+   }
+  },
+  {
+   "case_id": "DC-1",
+   "mode": "202c_as_configured",
+   "destination": "Washington, DC, USA",
+   "requested_days": 3,
+   "pace": "balanced",
+   "interests": [
+    "history",
+    "museums"
+   ],
+   "group": "family",
+   "traits": "attraction-heavy, compact monument core",
+   "generate_http_status": 200,
+   "latency_seconds": 120.2,
+   "request_id": "req_83c7b5136a0a491a8540dd83e2f4e9e6",
+   "trip_id": "trip_3ef28325615e4895b13aff38aff52d1b",
+   "score": {
+    "scheduled_experience_count": 9,
+    "days_generated": 3,
+    "empty_days": [],
+    "stops_per_day": [
+     3,
+     3,
+     3
+    ],
+    "grounding": {
+     "all_have_stable_ids": true,
+     "with_coordinates": 9,
+     "with_claim_sources": 9,
+     "data_status_live": 9,
+     "promoted_from_ai": 0,
+     "unsupported_identity_names": [],
+     "unsupported_identity_count": 0,
+     "candidate_pool": {
+      "attractions": 56,
+      "restaurants": 0,
+      "accommodation_pois": 20
+     }
+    },
+    "geography": {
+     "per_day": [
+      {
+       "day": 1,
+       "stops": 3,
+       "names": [
+        "Lincoln Memorial",
+        "56 Signers of the Declaration of Independence Memorial",
+        "Bernardo de Galvez"
+       ],
+       "max_pairwise_km": 0.7,
+       "sequential_km": 1.4,
+       "far_apart": false,
+       "day_warnings": 2
+      },
+      {
+       "day": 2,
+       "stops": 3,
+       "names": [
+        "Dupont Circle",
+        "Hahnemann Monument",
+        "National Law Enforcement Officers Memorial"
+       ],
+       "max_pairwise_km": 2.7,
+       "sequential_km": 2.7,
+       "far_apart": false,
+       "day_warnings": 2
+      },
+      {
+       "day": 3,
+       "stops": 3,
+       "names": [
+        "Capitol Hill",
+        "American Legion Freedom Bell",
+        "Tomb of the Unknown Soldier"
+       ],
+       "max_pairwise_km": 6.4,
+       "sequential_km": 7.1,
+       "far_apart": false,
+       "day_warnings": 2
+      }
+     ],
+     "days_far_apart": []
+    },
+    "duplication": {
+     "repeated_normalized_names": {}
+    },
+    "relevance_signals": {
+     "interests_requested": [
+      "history",
+      "museums"
+     ],
+     "interest_words_in_scheduled_names_or_categories": []
+    },
+    "routing": {
+     "report_status": "success",
+     "legs_total": 6,
+     "leg_feasibility_counts": {
+      "feasible": 6
+     },
+     "providers": [
+      "osrm"
+     ],
+     "sequencing_status": "success",
+     "buffer_status_counts": {
+      "not_computable": 6
+     }
+    },
+    "validation": {
+     "readiness_status": "needs_review",
+     "critical_count": 0,
+     "warning_count": 8,
+     "suggestion_count": 0,
+     "warning_categories": {
+      "feasibility": 1,
+      "route_aware_sequencing": 1,
+      "movement_data": 1,
+      "route_geometry": 1,
+      "interest_supply_limited": 1,
+      "weather": 1,
+      "accommodation_inventory": 1,
+      "flight_inventory": 1
+     }
+    },
+    "ai": {
+     "candidate_proposal": {
+      "status": "rejected",
+      "blocked": [
+       "Groq API call failed: the provider returned an output that did not match the required structure. (after 2 attempt(s))"
+      ]
+     },
+     "itinerary_reasoning": {
+      "status": "not_connected",
+      "blocked": [
+       "AI itinerary reasoning is disabled (AI_ITINERARY_REASONING_ENABLED=false)."
+      ]
+     },
+     "repair": {
+      "result": null,
+      "attempts": 0
+     },
+     "narrator": {
+      "status": "failed",
+      "provider": "groq_itinerary_narrator_provider",
+      "message": "Groq API call failed: the provider returned an output that did not match the required structure."
+     }
+    },
+    "narration": {
+     "text_length_chars": 500,
+     "referenced_ids_all_scheduled": true,
+     "referenced_id_count": 9,
+     "pattern_hits_needing_provenance_review": {}
+    },
+    "provider_coverage": {
+     "places": "fallback_used",
+     "routes": "success",
+     "restaurants": "failed",
+     "accommodations": "open_poi_available",
+     "hotel_prices": "unavailable",
+     "hotel_ratings": null,
+     "vacation_rentals": "not_connected",
+     "airbnb": "not_connected",
+     "flights": "failed",
+     "weather": "success",
+     "holidays": "success",
+     "currency": "success"
+    },
+    "unavailable_data": [
+     {
+      "field": "restaurants",
+      "status": "failed",
+      "reason": "OpenStreetMap/Overpass request failed for 'Washington, DC, USA' (including a broader fallback query)."
+     },
+     {
+      "field": "transit_feasibility",
+      "status": "not_connected",
+      "reason": "routes provider is not connected."
+     },
+     {
+      "field": "accommodation_options",
+      "status": "not_connected",
+      "reason": "accommodation provider is not connected."
+     }
+    ],
+    "factual_looking_fields_non_null": [
+     {
+      "path": "experience_plan.provider_coverage.hotel_prices",
+      "value": "unavailable"
+     }
+    ],
+    "factual_looking_field_count": 1,
+    "candidate_supply": {
+     "attractions_discovered": 56,
+     "tiers": {
+      "primary_anchor": 15,
+      "good_candidate": 35,
+      "secondary_candidate": 2,
+      "low_priority": 1,
+      "rejected": 3
+     },
+     "unsuitable_rejected": 3,
+     "category_distribution": {
+      "landmark": 14,
+      "historic": 4,
+      "entertainment": 22,
+      "nightlife": 4,
+      "art_culture": 4,
+      "low_value_object": 4,
+      "unsuitable": 3,
+      "park_nature": 1
+     },
+     "viable_supply_per_matched_interest": {
+      "history": 18
+     }
+    },
+    "scheduled_categories": {
+     "by_category": {
+      "park_nature": 1,
+      "landmark": 8
+     },
+     "low_value_or_gallery_count": 0,
+     "interests_matched": [
+      "history"
+     ]
+    },
+    "resolved_destination": "Washington, District of Columbia, United States",
+    "quality_finding_categories": [
+     "interest_supply_limited"
+    ],
+    "pace_requested": "balanced",
+    "avg_stops_per_day": 3.0
+   },
+   "logged_component_seconds": {
+    "routing:osrm": 6.51,
+    "itinerary_narrator:groq_itinerary_narrator_provider": 3.09,
+    "ai_candidate_discovery:groq_ai_candidate_proposal_provider": 2.97,
+    "flights:kiwi_mcp_flight_provider": 2.45,
+    "accommodations:scraped_accommodation_provider": 0.0
+   }
+  },
+  {
+   "case_id": "DC-2",
+   "mode": "202c_as_configured",
+   "destination": "Washington, DC, USA",
+   "requested_days": 2,
+   "pace": "relaxed",
+   "interests": [
+    "food",
+    "outdoors"
+   ],
+   "group": "couple",
+   "traits": "short trip, food/outdoors",
+   "generate_http_status": 200,
+   "latency_seconds": 71.1,
+   "request_id": "req_aba20eb7f1c24168857c2064d31b79bb",
+   "trip_id": "trip_4c5e422d37c84e08a61abf878f946f0e",
+   "score": {
+    "scheduled_experience_count": 4,
+    "days_generated": 2,
+    "empty_days": [],
+    "stops_per_day": [
+     2,
+     2
+    ],
+    "grounding": {
+     "all_have_stable_ids": true,
+     "with_coordinates": 4,
+     "with_claim_sources": 4,
+     "data_status_live": 3,
+     "promoted_from_ai": 0,
+     "unsupported_identity_names": [],
+     "unsupported_identity_count": 0,
+     "candidate_pool": {
+      "attractions": 60,
+      "restaurants": 0,
+      "accommodation_pois": 20
+     }
+    },
+    "geography": {
+     "per_day": [
+      {
+       "day": 1,
+       "stops": 2,
+       "names": [
+        "National Guard Memorial Museum",
+        "Howard University Museum"
+       ],
+       "max_pairwise_km": 2.8,
+       "sequential_km": 2.8,
+       "far_apart": false,
+       "day_warnings": 2
+      },
+      {
+       "day": 2,
+       "stops": 2,
+       "names": [
+        "All Hallows Guild Traveling Carousel",
+        "Dupont Circle"
+       ],
+       "max_pairwise_km": 3.2,
+       "sequential_km": 3.2,
+       "far_apart": false,
+       "day_warnings": 2
+      }
+     ],
+     "days_far_apart": []
+    },
+    "duplication": {
+     "repeated_normalized_names": {}
+    },
+    "relevance_signals": {
+     "interests_requested": [
+      "food",
+      "outdoors"
+     ],
+     "interest_words_in_scheduled_names_or_categories": []
+    },
+    "routing": {
+     "report_status": "success",
+     "legs_total": 2,
+     "leg_feasibility_counts": {
+      "feasible": 2
+     },
+     "providers": [
+      "osrm"
+     ],
+     "sequencing_status": "success",
+     "buffer_status_counts": {
+      "not_computable": 2
+     }
+    },
+    "validation": {
+     "readiness_status": "needs_review",
+     "critical_count": 0,
+     "warning_count": 9,
+     "suggestion_count": 0,
+     "warning_categories": {
+      "feasibility": 1,
+      "route_aware_sequencing": 1,
+      "movement_data": 1,
+      "route_geometry": 1,
+      "interest_supply_limited": 2,
+      "weather": 1,
+      "accommodation_inventory": 1,
+      "flight_inventory": 1
+     }
+    },
+    "ai": {
+     "candidate_proposal": {
+      "status": "rejected",
+      "blocked": [
+       "Groq API call failed: the provider returned an output that did not match the required structure. (after 2 attempt(s))"
+      ]
+     },
+     "itinerary_reasoning": {
+      "status": "not_connected",
+      "blocked": [
+       "AI itinerary reasoning is disabled (AI_ITINERARY_REASONING_ENABLED=false)."
+      ]
+     },
+     "repair": {
+      "result": null,
+      "attempts": 0
+     },
+     "narrator": {
+      "status": "success",
+      "provider": "groq_itinerary_narrator_provider",
+      "message": null
+     }
+    },
+    "narration": {
+     "text_length_chars": 492,
+     "referenced_ids_all_scheduled": true,
+     "referenced_id_count": 4,
+     "pattern_hits_needing_provenance_review": {
+      "availability": [
+       "available"
+      ]
+     }
+    },
+    "provider_coverage": {
+     "places": "fallback_used",
+     "routes": "success",
+     "restaurants": "failed",
+     "accommodations": "open_poi_available",
+     "hotel_prices": "unavailable",
+     "hotel_ratings": null,
+     "vacation_rentals": "not_connected",
+     "airbnb": "not_connected",
+     "flights": "failed",
+     "weather": "success",
+     "holidays": "success",
+     "currency": "success"
+    },
+    "unavailable_data": [
+     {
+      "field": "restaurants",
+      "status": "failed",
+      "reason": "OpenStreetMap/Overpass request failed for 'Washington, DC, USA' (including a broader fallback query)."
+     },
+     {
+      "field": "transit_feasibility",
+      "status": "not_connected",
+      "reason": "routes provider is not connected."
+     },
+     {
+      "field": "accommodation_options",
+      "status": "not_connected",
+      "reason": "accommodation provider is not connected."
+     }
+    ],
+    "factual_looking_fields_non_null": [
+     {
+      "path": "experience_plan.provider_coverage.hotel_prices",
+      "value": "unavailable"
+     }
+    ],
+    "factual_looking_field_count": 1,
+    "candidate_supply": {
+     "attractions_discovered": 60,
+     "tiers": {
+      "good_candidate": 25,
+      "primary_anchor": 24,
+      "secondary_candidate": 7,
+      "low_priority": 1,
+      "rejected": 3
+     },
+     "unsuitable_rejected": 3,
+     "category_distribution": {
+      "general_attraction": 9,
+      "landmark": 15,
+      "museum": 11,
+      "historic": 6,
+      "entertainment": 1,
+      "nightlife": 2,
+      "art_culture": 1,
+      "low_value_object": 12,
+      "unsuitable": 3
+     },
+     "viable_supply_per_matched_interest": {}
+    },
+    "scheduled_categories": {
+     "by_category": {
+      "museum": 2,
+      "landmark": 2
+     },
+     "low_value_or_gallery_count": 0,
+     "interests_matched": []
+    },
+    "resolved_destination": "Washington, District of Columbia, United States",
+    "quality_finding_categories": [
+     "interest_supply_limited"
+    ],
+    "pace_requested": "relaxed",
+    "avg_stops_per_day": 2.0
+   },
+   "logged_component_seconds": {
+    "flights:kiwi_mcp_flight_provider": 2.87,
+    "ai_candidate_discovery:groq_ai_candidate_proposal_provider": 2.84,
+    "itinerary_narrator:groq_itinerary_narrator_provider": 2.51,
+    "routing:osrm": 1.4,
+    "accommodations:scraped_accommodation_provider": 0.0
+   }
+  },
+  {
+   "case_id": "SF-1",
+   "mode": "202c_as_configured",
+   "destination": "San Francisco, USA",
+   "requested_days": 4,
+   "pace": "packed",
+   "interests": [
+    "outdoors",
+    "food"
+   ],
+   "group": "friends",
+   "traits": "hilly, geographically spread; outdoors",
+   "generate_http_status": 200,
+   "latency_seconds": 106.3,
+   "request_id": "req_670179cc39bf46b18be6aa49ae8cb1f1",
+   "trip_id": "trip_8c397aa7c27f4b679e33f2f8df956302",
+   "score": {
+    "scheduled_experience_count": 16,
+    "days_generated": 4,
+    "empty_days": [],
+    "stops_per_day": [
+     4,
+     4,
+     4,
+     4
+    ],
+    "grounding": {
+     "all_have_stable_ids": true,
+     "with_coordinates": 16,
+     "with_claim_sources": 16,
+     "data_status_live": 16,
+     "promoted_from_ai": 0,
+     "unsupported_identity_names": [],
+     "unsupported_identity_count": 0,
+     "candidate_pool": {
+      "attractions": 49,
+      "restaurants": 0,
+      "accommodation_pois": 0
+     }
+    },
+    "geography": {
+     "per_day": [
+      {
+       "day": 1,
+       "stops": 4,
+       "names": [
+        "Hawk Hill",
+        "Golden Gate Bridge Vista Point",
+        "Bay Area Discovery Museum",
+        "Point Bonita Viewpoint"
+       ],
+       "max_pairwise_km": 4.4,
+       "sequential_km": 6.6,
+       "far_apart": false,
+       "day_warnings": 3
+      },
+      {
+       "day": 2,
+       "stops": 4,
+       "names": [
+        "Mus\u00e9e M\u00e9canique",
+        "Truhlsen-Marmor Museum of the Eye",
+        "Dragon Gate",
+        "Exploratorium"
+       ],
+       "max_pairwise_km": 2.2,
+       "sequential_km": 4.0,
+       "far_apart": false,
+       "day_warnings": 3
+      },
+      {
+       "day": 3,
+       "stops": 4,
+       "names": [
+        "Inspiration Point",
+        "California Society of Pioneers Museum and Library",
+        "Alamo Square Historic District",
+        "Painted Ladies"
+       ],
+       "max_pairwise_km": 3.5,
+       "sequential_km": 4.4,
+       "far_apart": false,
+       "day_warnings": 3
+      },
+      {
+       "day": 4,
+       "stops": 4,
+       "names": [
+        "Lands End Point",
+        "Christmas Tree Point",
+        "San Francisco Railway Museum",
+        "Bird Island Overlook"
+       ],
+       "max_pairwise_km": 12.7,
+       "sequential_km": 25.4,
+       "far_apart": true,
+       "day_warnings": 3
+      }
+     ],
+     "days_far_apart": [
+      4
+     ]
+    },
+    "duplication": {
+     "repeated_normalized_names": {}
+    },
+    "relevance_signals": {
+     "interests_requested": [
+      "outdoors",
+      "food"
+     ],
+     "interest_words_in_scheduled_names_or_categories": []
+    },
+    "routing": {
+     "report_status": "success",
+     "legs_total": 12,
+     "leg_feasibility_counts": {
+      "feasible": 12
+     },
+     "providers": [
+      "osrm"
+     ],
+     "sequencing_status": "success",
+     "buffer_status_counts": {
+      "not_computable": 12
+     }
+    },
+    "validation": {
+     "readiness_status": "needs_review",
+     "critical_count": 0,
+     "warning_count": 9,
+     "suggestion_count": 0,
+     "warning_categories": {
+      "feasibility": 1,
+      "route_aware_sequencing": 1,
+      "movement_data": 1,
+      "route_geometry": 1,
+      "geographic_spread": 1,
+      "interest_supply_limited": 1,
+      "weather": 1,
+      "accommodation_inventory": 1,
+      "flight_inventory": 1
+     }
+    },
+    "ai": {
+     "candidate_proposal": {
+      "status": "rejected",
+      "blocked": [
+       "Groq API call failed: the provider returned an output that did not match the required structure. (after 2 attempt(s))"
+      ]
+     },
+     "itinerary_reasoning": {
+      "status": "not_connected",
+      "blocked": [
+       "AI itinerary reasoning is disabled (AI_ITINERARY_REASONING_ENABLED=false)."
+      ]
+     },
+     "repair": {
+      "result": null,
+      "attempts": 0
+     },
+     "narrator": {
+      "status": "success",
+      "provider": "groq_itinerary_narrator_provider",
+      "message": null
+     }
+    },
+    "narration": {
+     "text_length_chars": 1109,
+     "referenced_ids_all_scheduled": true,
+     "referenced_id_count": 16,
+     "pattern_hits_needing_provenance_review": {
+      "availability": [
+       "available"
+      ]
+     }
+    },
+    "provider_coverage": {
+     "places": "fallback_used",
+     "routes": "success",
+     "restaurants": "failed",
+     "accommodations": "not_connected",
+     "hotel_prices": "unavailable",
+     "hotel_ratings": null,
+     "vacation_rentals": "not_connected",
+     "airbnb": "not_connected",
+     "flights": "failed",
+     "weather": "success",
+     "holidays": "success",
+     "currency": "success"
+    },
+    "unavailable_data": [
+     {
+      "field": "restaurants",
+      "status": "failed",
+      "reason": "OpenStreetMap/Overpass request failed for 'San Francisco, USA' (including a broader fallback query)."
+     },
+     {
+      "field": "accommodation_pois",
+      "status": "failed",
+      "reason": "OpenStreetMap/Overpass request failed for 'San Francisco, USA' (including a broader fallback query)."
+     },
+     {
+      "field": "transit_feasibility",
+      "status": "not_connected",
+      "reason": "routes provider is not connected."
+     },
+     {
+      "field": "accommodation_options",
+      "status": "not_connected",
+      "reason": "accommodation provider is not connected."
+     }
+    ],
+    "factual_looking_fields_non_null": [
+     {
+      "path": "experience_plan.provider_coverage.hotel_prices",
+      "value": "unavailable"
+     }
+    ],
+    "factual_looking_field_count": 1,
+    "candidate_supply": {
+     "attractions_discovered": 49,
+     "tiers": {
+      "primary_anchor": 22,
+      "good_candidate": 27
+     },
+     "unsuitable_rejected": 0,
+     "category_distribution": {
+      "landmark": 3,
+      "museum": 12,
+      "park_nature": 26,
+      "general_attraction": 2,
+      "viewpoint": 6
+     },
+     "viable_supply_per_matched_interest": {
+      "outdoors": 32
+     }
+    },
+    "scheduled_categories": {
+     "by_category": {
+      "park_nature": 1,
+      "viewpoint": 6,
+      "museum": 6,
+      "landmark": 3
+     },
+     "low_value_or_gallery_count": 0,
+     "interests_matched": [
+      "outdoors"
+     ]
+    },
+    "resolved_destination": "San Francisco, California, United States",
+    "quality_finding_categories": [
+     "interest_supply_limited"
+    ],
+    "pace_requested": "packed",
+    "avg_stops_per_day": 4.0
+   },
+   "logged_component_seconds": {
+    "routing:osrm": 17.11,
+    "flights:kiwi_mcp_flight_provider": 3.4,
+    "ai_candidate_discovery:groq_ai_candidate_proposal_provider": 2.85,
+    "itinerary_narrator:groq_itinerary_narrator_provider": 2.2,
+    "accommodations:scraped_accommodation_provider": 0.0
+   }
+  },
+  {
+   "case_id": "SF-2",
+   "mode": "202c_as_configured",
+   "destination": "San Francisco, USA",
+   "requested_days": 3,
+   "pace": "relaxed",
+   "interests": [
+    "architecture",
+    "history"
+   ],
+   "group": "solo",
+   "traits": "relaxed, architecture/history",
+   "generate_http_status": 200,
+   "latency_seconds": 62.0,
+   "request_id": "req_8ac3fef21357485888f1a2b4045c61fd",
+   "trip_id": "trip_80daef4bf24c450ab37c08dd91a2645d",
+   "score": {
+    "scheduled_experience_count": 6,
+    "days_generated": 3,
+    "empty_days": [],
+    "stops_per_day": [
+     2,
+     2,
+     2
+    ],
+    "grounding": {
+     "all_have_stable_ids": true,
+     "with_coordinates": 6,
+     "with_claim_sources": 6,
+     "data_status_live": 6,
+     "promoted_from_ai": 0,
+     "unsupported_identity_names": [],
+     "unsupported_identity_count": 0,
+     "candidate_pool": {
+      "attractions": 60,
+      "restaurants": 0,
+      "accommodation_pois": 20
+     }
+    },
+    "geography": {
+     "per_day": [
+      {
+       "day": 1,
+       "stops": 2,
+       "names": [
+        "Conservatory of Flowers",
+        "Alamo Square Historic District"
+       ],
+       "max_pairwise_km": 2.3,
+       "sequential_km": 2.3,
+       "far_apart": false,
+       "day_warnings": 2
+      },
+      {
+       "day": 2,
+       "stops": 2,
+       "names": [
+        "GLBT History Museum",
+        "Dragon Gate"
+       ],
+       "max_pairwise_km": 4.2,
+       "sequential_km": 4.2,
+       "far_apart": false,
+       "day_warnings": 2
+      },
+      {
+       "day": 3,
+       "stops": 2,
+       "names": [
+        "Mus\u00e9e M\u00e9canique",
+        "Exploratorium"
+       ],
+       "max_pairwise_km": 1.8,
+       "sequential_km": 1.8,
+       "far_apart": false,
+       "day_warnings": 2
+      }
+     ],
+     "days_far_apart": []
+    },
+    "duplication": {
+     "repeated_normalized_names": {}
+    },
+    "relevance_signals": {
+     "interests_requested": [
+      "architecture",
+      "history"
+     ],
+     "interest_words_in_scheduled_names_or_categories": [
+      "history"
+     ]
+    },
+    "routing": {
+     "report_status": "success",
+     "legs_total": 3,
+     "leg_feasibility_counts": {
+      "feasible": 3
+     },
+     "providers": [
+      "osrm"
+     ],
+     "sequencing_status": "success",
+     "buffer_status_counts": {
+      "not_computable": 3
+     }
+    },
+    "validation": {
+     "readiness_status": "needs_review",
+     "critical_count": 0,
+     "warning_count": 7,
+     "suggestion_count": 0,
+     "warning_categories": {
+      "feasibility": 1,
+      "route_aware_sequencing": 1,
+      "movement_data": 1,
+      "route_geometry": 1,
+      "weather": 1,
+      "accommodation_inventory": 1,
+      "flight_inventory": 1
+     }
+    },
+    "ai": {
+     "candidate_proposal": {
+      "status": "rejected",
+      "blocked": [
+       "Groq API call failed: the provider returned an output that did not match the required structure. (after 2 attempt(s))"
+      ]
+     },
+     "itinerary_reasoning": {
+      "status": "not_connected",
+      "blocked": [
+       "AI itinerary reasoning is disabled (AI_ITINERARY_REASONING_ENABLED=false)."
+      ]
+     },
+     "repair": {
+      "result": null,
+      "attempts": 0
+     },
+     "narrator": {
+      "status": "success",
+      "provider": "groq_itinerary_narrator_provider",
+      "message": null
+     }
+    },
+    "narration": {
+     "text_length_chars": 664,
+     "referenced_ids_all_scheduled": true,
+     "referenced_id_count": 6,
+     "pattern_hits_needing_provenance_review": {
+      "availability": [
+       "available"
+      ]
+     }
+    },
+    "provider_coverage": {
+     "places": "success",
+     "routes": "success",
+     "restaurants": "failed",
+     "accommodations": "open_poi_available",
+     "hotel_prices": "unavailable",
+     "hotel_ratings": null,
+     "vacation_rentals": "not_connected",
+     "airbnb": "not_connected",
+     "flights": "failed",
+     "weather": "success",
+     "holidays": "success",
+     "currency": "success"
+    },
+    "unavailable_data": [
+     {
+      "field": "restaurants",
+      "status": "failed",
+      "reason": "OpenStreetMap/Overpass request failed for 'San Francisco, USA' (including a broader fallback query)."
+     },
+     {
+      "field": "transit_feasibility",
+      "status": "not_connected",
+      "reason": "routes provider is not connected."
+     },
+     {
+      "field": "accommodation_options",
+      "status": "not_connected",
+      "reason": "accommodation provider is not connected."
+     }
+    ],
+    "factual_looking_fields_non_null": [
+     {
+      "path": "experience_plan.provider_coverage.hotel_prices",
+      "value": "unavailable"
+     }
+    ],
+    "factual_looking_field_count": 1,
+    "candidate_supply": {
+     "attractions_discovered": 60,
+     "tiers": {
+      "primary_anchor": 15,
+      "good_candidate": 45
+     },
+     "unsuitable_rejected": 0,
+     "category_distribution": {
+      "museum": 7,
+      "landmark": 7,
+      "entertainment": 7,
+      "general_attraction": 7,
+      "historic": 6,
+      "viewpoint": 6,
+      "art_culture": 6,
+      "park_nature": 6,
+      "nightlife": 6,
+      "food_market": 2
+     },
+     "viable_supply_per_matched_interest": {
+      "history": 20,
+      "architecture": 13
+     }
+    },
+    "scheduled_categories": {
+     "by_category": {
+      "landmark": 3,
+      "museum": 3
+     },
+     "low_value_or_gallery_count": 0,
+     "interests_matched": [
+      "architecture",
+      "history"
+     ]
+    },
+    "resolved_destination": "San Francisco, California, United States",
+    "quality_finding_categories": [],
+    "pace_requested": "relaxed",
+    "avg_stops_per_day": 2.0
+   },
+   "logged_component_seconds": {
+    "flights:kiwi_mcp_flight_provider": 3.03,
+    "ai_candidate_discovery:groq_ai_candidate_proposal_provider": 2.86,
+    "itinerary_narrator:groq_itinerary_narrator_provider": 2.82,
+    "routing:osrm": 1.45,
+    "accommodations:scraped_accommodation_provider": 0.0
+   }
+  },
+  {
+   "case_id": "CHI-1",
+   "mode": "202c_as_configured",
+   "destination": "Chicago, USA",
+   "requested_days": 3,
+   "pace": "balanced",
+   "interests": [
+    "architecture",
+    "food"
+   ],
+   "group": "couple",
+   "traits": "architecture-heavy, grid city",
+   "generate_http_status": 200,
+   "latency_seconds": 91.6,
+   "request_id": "req_da41ea35232848db91cc79950fa0d87d",
+   "trip_id": "trip_86ef9248725742c180e15d89a6140fb3",
+   "score": {
+    "scheduled_experience_count": 9,
+    "days_generated": 3,
+    "empty_days": [],
+    "stops_per_day": [
+     3,
+     3,
+     3
+    ],
+    "grounding": {
+     "all_have_stable_ids": true,
+     "with_coordinates": 9,
+     "with_claim_sources": 9,
+     "data_status_live": 9,
+     "promoted_from_ai": 0,
+     "unsupported_identity_names": [],
+     "unsupported_identity_count": 0,
+     "candidate_pool": {
+      "attractions": 32,
+      "restaurants": 20,
+      "accommodation_pois": 20
+     }
+    },
+    "geography": {
+     "per_day": [
+      {
+       "day": 1,
+       "stops": 3,
+       "names": [
+        "Nuclear Energy",
+        "White City Amusement Park",
+        "Haymarket Police Memorial"
+       ],
+       "max_pairwise_km": 5.5,
+       "sequential_km": 7.3,
+       "far_apart": false,
+       "day_warnings": 1
+      },
+      {
+       "day": 2,
+       "stops": 3,
+       "names": [
+        "Haymarket Memorial",
+        "Batcolumn",
+        "Home Insurance Building Site"
+       ],
+       "max_pairwise_km": 1.2,
+       "sequential_km": 1.3,
+       "far_apart": false,
+       "day_warnings": 1
+      },
+      {
+       "day": 3,
+       "stops": 3,
+       "names": [
+        "Union Stock Yards Fire Memorial",
+        "William McKinley Memorial",
+        "Vietnam Veterans Memorial"
+       ],
+       "max_pairwise_km": 8.2,
+       "sequential_km": 11.3,
+       "far_apart": false,
+       "day_warnings": 1
+      }
+     ],
+     "days_far_apart": []
+    },
+    "duplication": {
+     "repeated_normalized_names": {}
+    },
+    "relevance_signals": {
+     "interests_requested": [
+      "architecture",
+      "food"
+     ],
+     "interest_words_in_scheduled_names_or_categories": []
+    },
+    "routing": {
+     "report_status": "success",
+     "legs_total": 6,
+     "leg_feasibility_counts": {
+      "feasible": 6
+     },
+     "providers": [
+      "osrm"
+     ],
+     "sequencing_status": "success",
+     "buffer_status_counts": {
+      "not_computable": 6
+     }
+    },
+    "validation": {
+     "readiness_status": "needs_review",
+     "critical_count": 0,
+     "warning_count": 9,
+     "suggestion_count": 0,
+     "warning_categories": {
+      "feasibility": 1,
+      "route_aware_sequencing": 1,
+      "movement_data": 1,
+      "route_geometry": 1,
+      "geographic_spread": 1,
+      "interest_supply_limited": 1,
+      "weather": 1,
+      "accommodation_inventory": 1,
+      "flight_inventory": 1
+     }
+    },
+    "ai": {
+     "candidate_proposal": {
+      "status": "rejected",
+      "blocked": [
+       "Groq API call failed: the provider returned an output that did not match the required structure. (after 2 attempt(s))"
+      ]
+     },
+     "itinerary_reasoning": {
+      "status": "not_connected",
+      "blocked": [
+       "AI itinerary reasoning is disabled (AI_ITINERARY_REASONING_ENABLED=false)."
+      ]
+     },
+     "repair": {
+      "result": null,
+      "attempts": 0
+     },
+     "narrator": {
+      "status": "success",
+      "provider": "groq_itinerary_narrator_provider",
+      "message": null
+     }
+    },
+    "narration": {
+     "text_length_chars": 579,
+     "referenced_ids_all_scheduled": true,
+     "referenced_id_count": 9,
+     "pattern_hits_needing_provenance_review": {
+      "availability": [
+       "available"
+      ]
+     }
+    },
+    "provider_coverage": {
+     "places": "fallback_used",
+     "routes": "success",
+     "restaurants": "success",
+     "accommodations": "open_poi_available",
+     "hotel_prices": "unavailable",
+     "hotel_ratings": null,
+     "vacation_rentals": "not_connected",
+     "airbnb": "not_connected",
+     "flights": "unavailable",
+     "weather": "success",
+     "holidays": "success",
+     "currency": "success"
+    },
+    "unavailable_data": [
+     {
+      "field": "transit_feasibility",
+      "status": "not_connected",
+      "reason": "routes provider is not connected."
+     },
+     {
+      "field": "accommodation_options",
+      "status": "not_connected",
+      "reason": "accommodation provider is not connected."
+     }
+    ],
+    "factual_looking_fields_non_null": [
+     {
+      "path": "experience_plan.provider_coverage.hotel_prices",
+      "value": "unavailable"
+     }
+    ],
+    "factual_looking_field_count": 1,
+    "candidate_supply": {
+     "attractions_discovered": 32,
+     "tiers": {
+      "primary_anchor": 13,
+      "good_candidate": 12,
+      "secondary_candidate": 6,
+      "low_priority": 1
+     },
+     "unsuitable_rejected": 0,
+     "category_distribution": {
+      "landmark": 13,
+      "historic": 11,
+      "low_value_object": 8
+     },
+     "viable_supply_per_matched_interest": {
+      "architecture": 24
+     }
+    },
+    "scheduled_categories": {
+     "by_category": {
+      "landmark": 9
+     },
+     "low_value_or_gallery_count": 0,
+     "interests_matched": [
+      "architecture"
+     ]
+    },
+    "resolved_destination": "Chicago, South Chicago Township, Cook County, Illinois, United States",
+    "quality_finding_categories": [
+     "interest_supply_limited"
+    ],
+    "pace_requested": "balanced",
+    "avg_stops_per_day": 3.0
+   },
+   "logged_component_seconds": {
+    "routing:osrm": 6.01,
+    "flights:kiwi_mcp_flight_provider": 3.6,
+    "ai_candidate_discovery:groq_ai_candidate_proposal_provider": 3.02,
+    "itinerary_narrator:groq_itinerary_narrator_provider": 1.79,
+    "accommodations:scraped_accommodation_provider": 0.0
+   }
+  },
+  {
+   "case_id": "CHI-2",
+   "mode": "202c_as_configured",
+   "destination": "Chicago, USA",
+   "requested_days": 4,
+   "pace": "packed",
+   "interests": [
+    "museums",
+    "nightlife"
+   ],
+   "group": "group",
+   "traits": "packed, museums/nightlife",
+   "generate_http_status": 200,
+   "latency_seconds": 69.2,
+   "request_id": "req_2a60bfeb52fc4f378569a0347c64cd50",
+   "trip_id": "trip_24dc135a24bc4be886470c125b0e7fd8",
+   "score": {
+    "scheduled_experience_count": 16,
+    "days_generated": 4,
+    "empty_days": [],
+    "stops_per_day": [
+     4,
+     4,
+     4,
+     4
+    ],
+    "grounding": {
+     "all_have_stable_ids": true,
+     "with_coordinates": 16,
+     "with_claim_sources": 16,
+     "data_status_live": 12,
+     "promoted_from_ai": 0,
+     "unsupported_identity_names": [],
+     "unsupported_identity_count": 0,
+     "candidate_pool": {
+      "attractions": 60,
+      "restaurants": 20,
+      "accommodation_pois": 20
+     }
+    },
+    "geography": {
+     "per_day": [
+      {
+       "day": 1,
+       "stops": 4,
+       "names": [
+        "Money Museum",
+        "Home Insurance Building Site",
+        "Begin Route 66",
+        "The Museum of Contemporary Photography"
+       ],
+       "max_pairwise_km": 0.9,
+       "sequential_km": 1.4,
+       "far_apart": false,
+       "day_warnings": 1
+      },
+      {
+       "day": 2,
+       "stops": 4,
+       "names": [
+        "McCormick Bridgehouse & Chicago River Museum",
+        "American Writers Museum",
+        "Chicago Architecture Center",
+        "Richard H. Driehaus Museum"
+       ],
+       "max_pairwise_km": 1.0,
+       "sequential_km": 1.4,
+       "far_apart": false,
+       "day_warnings": 1
+      },
+      {
+       "day": 3,
+       "stops": 4,
+       "names": [
+        "National Museum of Puerto Rican Arts & Culture",
+        "Ukrainian National Museum",
+        "Polish Museum of America",
+        "Haymarket Memorial"
+       ],
+       "max_pairwise_km": 5.3,
+       "sequential_km": 5.9,
+       "far_apart": false,
+       "day_warnings": 1
+      },
+      {
+       "day": 4,
+       "stops": 4,
+       "names": [
+        "Loyola University Museum of Art",
+        "Chicago Children's Museum",
+        "Batcolumn",
+        "Union Stock Yards Fire Memorial"
+       ],
+       "max_pairwise_km": 9.0,
+       "sequential_km": 11.5,
+       "far_apart": false,
+       "day_warnings": 1
+      }
+     ],
+     "days_far_apart": []
+    },
+    "duplication": {
+     "repeated_normalized_names": {}
+    },
+    "relevance_signals": {
+     "interests_requested": [
+      "museums",
+      "nightlife"
+     ],
+     "interest_words_in_scheduled_names_or_categories": [
+      "museums"
+     ]
+    },
+    "routing": {
+     "report_status": "success",
+     "legs_total": 12,
+     "leg_feasibility_counts": {
+      "feasible": 12
+     },
+     "providers": [
+      "osrm"
+     ],
+     "sequencing_status": "success",
+     "buffer_status_counts": {
+      "not_computable": 12
+     }
+    },
+    "validation": {
+     "readiness_status": "needs_review",
+     "critical_count": 0,
+     "warning_count": 9,
+     "suggestion_count": 0,
+     "warning_categories": {
+      "feasibility": 1,
+      "route_aware_sequencing": 1,
+      "movement_data": 1,
+      "route_geometry": 1,
+      "geographic_spread": 1,
+      "interest_supply_limited": 1,
+      "weather": 1,
+      "accommodation_inventory": 1,
+      "flight_inventory": 1
+     }
+    },
+    "ai": {
+     "candidate_proposal": {
+      "status": "rejected",
+      "blocked": [
+       "Groq API call failed: the provider returned an output that did not match the required structure. (after 2 attempt(s))"
+      ]
+     },
+     "itinerary_reasoning": {
+      "status": "not_connected",
+      "blocked": [
+       "AI itinerary reasoning is disabled (AI_ITINERARY_REASONING_ENABLED=false)."
+      ]
+     },
+     "repair": {
+      "result": null,
+      "attempts": 0
+     },
+     "narrator": {
+      "status": "failed",
+      "provider": "groq_itinerary_narrator_provider",
+      "message": "Groq API call failed: the provider returned an output that did not match the required structure."
+     }
+    },
+    "narration": {
+     "text_length_chars": 746,
+     "referenced_ids_all_scheduled": true,
+     "referenced_id_count": 16,
+     "pattern_hits_needing_provenance_review": {}
+    },
+    "provider_coverage": {
+     "places": "fallback_used",
+     "routes": "success",
+     "restaurants": "success",
+     "accommodations": "open_poi_available",
+     "hotel_prices": "unavailable",
+     "hotel_ratings": null,
+     "vacation_rentals": "not_connected",
+     "airbnb": "not_connected",
+     "flights": "failed",
+     "weather": "success",
+     "holidays": "success",
+     "currency": "success"
+    },
+    "unavailable_data": [
+     {
+      "field": "transit_feasibility",
+      "status": "not_connected",
+      "reason": "routes provider is not connected."
+     },
+     {
+      "field": "accommodation_options",
+      "status": "not_connected",
+      "reason": "accommodation provider is not connected."
+     }
+    ],
+    "factual_looking_fields_non_null": [
+     {
+      "path": "experience_plan.provider_coverage.hotel_prices",
+      "value": "unavailable"
+     }
+    ],
+    "factual_looking_field_count": 1,
+    "candidate_supply": {
+     "attractions_discovered": 60,
+     "tiers": {
+      "good_candidate": 25,
+      "primary_anchor": 28,
+      "secondary_candidate": 6,
+      "low_priority": 1
+     },
+     "unsuitable_rejected": 0,
+     "category_distribution": {
+      "viewpoint": 2,
+      "general_attraction": 4,
+      "museum": 14,
+      "landmark": 14,
+      "historic": 11,
+      "park_nature": 7,
+      "low_value_object": 8
+     },
+     "viable_supply_per_matched_interest": {
+      "museum": 14
+     }
+    },
+    "scheduled_categories": {
+     "by_category": {
+      "museum": 11,
+      "landmark": 5
+     },
+     "low_value_or_gallery_count": 0,
+     "interests_matched": [
+      "museum"
+     ]
+    },
+    "resolved_destination": "Chicago, South Chicago Township, Cook County, Illinois, United States",
+    "quality_finding_categories": [
+     "interest_supply_limited"
+    ],
+    "pace_requested": "packed",
+    "avg_stops_per_day": 4.0
+   },
+   "logged_component_seconds": {
+    "routing:osrm": 17.02,
+    "itinerary_narrator:groq_itinerary_narrator_provider": 3.4,
+    "ai_candidate_discovery:groq_ai_candidate_proposal_provider": 2.88,
+    "flights:kiwi_mcp_flight_provider": 1.49,
+    "accommodations:scraped_accommodation_provider": 0.0
+   }
+  },
+  {
+   "case_id": "SEA-1",
+   "mode": "202c_as_configured",
+   "destination": "Seattle, USA",
+   "requested_days": 3,
+   "pace": "relaxed",
+   "interests": [
+    "outdoors",
+    "food"
+   ],
+   "group": "couple",
+   "traits": "mixed indoor/outdoor, weather-dependent",
+   "generate_http_status": 200,
+   "latency_seconds": 71.7,
+   "request_id": "req_79af5d7246f3443e9bfaf3dc0b50d56b",
+   "trip_id": "trip_5a6401cb84b54d589b14bb0b762265cc",
+   "score": {
+    "scheduled_experience_count": 6,
+    "days_generated": 3,
+    "empty_days": [],
+    "stops_per_day": [
+     2,
+     2,
+     2
+    ],
+    "grounding": {
+     "all_have_stable_ids": true,
+     "with_coordinates": 6,
+     "with_claim_sources": 6,
+     "data_status_live": 6,
+     "promoted_from_ai": 0,
+     "unsupported_identity_names": [],
+     "unsupported_identity_count": 0,
+     "candidate_pool": {
+      "attractions": 60,
+      "restaurants": 19,
+      "accommodation_pois": 20
+     }
+    },
+    "geography": {
+     "per_day": [
+      {
+       "day": 1,
+       "stops": 2,
+       "names": [
+        "Seattle Center",
+        "Seattle Children's Museum"
+       ],
+       "max_pairwise_km": 0.1,
+       "sequential_km": 0.1,
+       "far_apart": false,
+       "day_warnings": 1
+      },
+      {
+       "day": 2,
+       "stops": 2,
+       "names": [
+        "Seattle Art Museum",
+        "Museum of History and Industry"
+       ],
+       "max_pairwise_km": 2.2,
+       "sequential_km": 2.2,
+       "far_apart": false,
+       "day_warnings": 1
+      },
+      {
+       "day": 3,
+       "stops": 2,
+       "names": [
+        "Admiral Way Viewpoint",
+        "Swiftsure (LV-83)"
+       ],
+       "max_pairwise_km": 6.1,
+       "sequential_km": 6.1,
+       "far_apart": false,
+       "day_warnings": 1
+      }
+     ],
+     "days_far_apart": []
+    },
+    "duplication": {
+     "repeated_normalized_names": {}
+    },
+    "relevance_signals": {
+     "interests_requested": [
+      "outdoors",
+      "food"
+     ],
+     "interest_words_in_scheduled_names_or_categories": []
+    },
+    "routing": {
+     "report_status": "success",
+     "legs_total": 3,
+     "leg_feasibility_counts": {
+      "feasible": 3
+     },
+     "providers": [
+      "osrm"
+     ],
+     "sequencing_status": "success",
+     "buffer_status_counts": {
+      "not_computable": 3
+     }
+    },
+    "validation": {
+     "readiness_status": "needs_review",
+     "critical_count": 0,
+     "warning_count": 8,
+     "suggestion_count": 0,
+     "warning_categories": {
+      "feasibility": 1,
+      "route_aware_sequencing": 1,
+      "movement_data": 1,
+      "route_geometry": 1,
+      "interest_supply_limited": 1,
+      "weather": 1,
+      "accommodation_inventory": 1,
+      "flight_inventory": 1
+     }
+    },
+    "ai": {
+     "candidate_proposal": {
+      "status": "rejected",
+      "blocked": [
+       "Groq API call failed: the provider returned an output that did not match the required structure. (after 2 attempt(s))"
+      ]
+     },
+     "itinerary_reasoning": {
+      "status": "not_connected",
+      "blocked": [
+       "AI itinerary reasoning is disabled (AI_ITINERARY_REASONING_ENABLED=false)."
+      ]
+     },
+     "repair": {
+      "result": null,
+      "attempts": 0
+     },
+     "narrator": {
+      "status": "failed",
+      "provider": "groq_itinerary_narrator_provider",
+      "message": "Groq API call failed: the provider rate-limited the request (HTTP 429)."
+     }
+    },
+    "narration": {
+     "text_length_chars": 368,
+     "referenced_ids_all_scheduled": true,
+     "referenced_id_count": 6,
+     "pattern_hits_needing_provenance_review": {}
+    },
+    "provider_coverage": {
+     "places": "success",
+     "routes": "success",
+     "restaurants": "fallback_used",
+     "accommodations": "open_poi_available",
+     "hotel_prices": "unavailable",
+     "hotel_ratings": null,
+     "vacation_rentals": "not_connected",
+     "airbnb": "not_connected",
+     "flights": "failed",
+     "weather": "success",
+     "holidays": "success",
+     "currency": "success"
+    },
+    "unavailable_data": [
+     {
+      "field": "transit_feasibility",
+      "status": "not_connected",
+      "reason": "routes provider is not connected."
+     },
+     {
+      "field": "accommodation_options",
+      "status": "not_connected",
+      "reason": "accommodation provider is not connected."
+     }
+    ],
+    "factual_looking_fields_non_null": [
+     {
+      "path": "experience_plan.provider_coverage.hotel_prices",
+      "value": "unavailable"
+     }
+    ],
+    "factual_looking_field_count": 1,
+    "candidate_supply": {
+     "attractions_discovered": 60,
+     "tiers": {
+      "primary_anchor": 21,
+      "good_candidate": 39
+     },
+     "unsuitable_rejected": 0,
+     "category_distribution": {
+      "museum": 7,
+      "landmark": 7,
+      "historic": 6,
+      "general_attraction": 7,
+      "park_nature": 7,
+      "viewpoint": 7,
+      "art_culture": 7,
+      "entertainment": 6,
+      "nightlife": 6
+     },
+     "viable_supply_per_matched_interest": {
+      "outdoors": 15
+     }
+    },
+    "scheduled_categories": {
+     "by_category": {
+      "landmark": 2,
+      "museum": 3,
+      "viewpoint": 1
+     },
+     "low_value_or_gallery_count": 0,
+     "interests_matched": [
+      "outdoors"
+     ]
+    },
+    "resolved_destination": "Seattle, King County, Washington, United States",
+    "quality_finding_categories": [
+     "interest_supply_limited"
+    ],
+    "pace_requested": "relaxed",
+    "avg_stops_per_day": 2.0
+   },
+   "logged_component_seconds": {
+    "itinerary_narrator:groq_itinerary_narrator_provider": 17.34,
+    "flights:kiwi_mcp_flight_provider": 3.6,
+    "ai_candidate_discovery:groq_ai_candidate_proposal_provider": 3.07,
+    "routing:osrm": 2.02,
+    "accommodations:scraped_accommodation_provider": 0.0
+   }
+  },
+  {
+   "case_id": "SEA-2",
+   "mode": "202c_as_configured",
+   "destination": "Seattle, USA",
+   "requested_days": 3,
+   "pace": "balanced",
+   "interests": [
+    "museums"
+   ],
+   "group": "family",
+   "traits": "family, indoor-leaning",
+   "generate_http_status": 200,
+   "latency_seconds": 27.1,
+   "request_id": "req_5e953adba4b447998b6e5a0b4319e47d",
+   "trip_id": "trip_a1dafd5c3cd142458c26b3a98997f0ed",
+   "score": {
+    "scheduled_experience_count": 9,
+    "days_generated": 3,
+    "empty_days": [],
+    "stops_per_day": [
+     3,
+     3,
+     3
+    ],
+    "grounding": {
+     "all_have_stable_ids": true,
+     "with_coordinates": 9,
+     "with_claim_sources": 9,
+     "data_status_live": 0,
+     "promoted_from_ai": 0,
+     "unsupported_identity_names": [],
+     "unsupported_identity_count": 0,
+     "candidate_pool": {
+      "attractions": 60,
+      "restaurants": 19,
+      "accommodation_pois": 20
+     }
+    },
+    "geography": {
+     "per_day": [
+      {
+       "day": 1,
+       "stops": 3,
+       "names": [
+        "Seattle Art Museum",
+        "Center for Wooden Boats",
+        "Seattle Children's Museum"
+       ],
+       "max_pairwise_km": 2.2,
+       "sequential_km": 3.5,
+       "far_apart": false,
+       "day_warnings": 1
+      },
+      {
+       "day": 2,
+       "stops": 3,
+       "names": [
+        "Museum of History and Industry",
+        "Swiftsure (LV-83)",
+        "Arthur Foss"
+       ],
+       "max_pairwise_km": 0.1,
+       "sequential_km": 0.1,
+       "far_apart": false,
+       "day_warnings": 1
+      },
+      {
+       "day": 3,
+       "stops": 3,
+       "names": [
+        "Seattle Asian Art Museum",
+        "Virginia V",
+        "Henry Art Gallery"
+       ],
+       "max_pairwise_km": 3.7,
+       "sequential_km": 5.4,
+       "far_apart": false,
+       "day_warnings": 1
+      }
+     ],
+     "days_far_apart": []
+    },
+    "duplication": {
+     "repeated_normalized_names": {}
+    },
+    "relevance_signals": {
+     "interests_requested": [
+      "museums"
+     ],
+     "interest_words_in_scheduled_names_or_categories": [
+      "museums"
+     ]
+    },
+    "routing": {
+     "report_status": "success",
+     "legs_total": 6,
+     "leg_feasibility_counts": {
+      "feasible": 6
+     },
+     "providers": [
+      "osrm"
+     ],
+     "sequencing_status": "success",
+     "buffer_status_counts": {
+      "not_computable": 6
+     }
+    },
+    "validation": {
+     "readiness_status": "needs_review",
+     "critical_count": 0,
+     "warning_count": 7,
+     "suggestion_count": 0,
+     "warning_categories": {
+      "feasibility": 1,
+      "route_aware_sequencing": 1,
+      "movement_data": 1,
+      "route_geometry": 1,
+      "weather": 1,
+      "accommodation_inventory": 1,
+      "flight_inventory": 1
+     }
+    },
+    "ai": {
+     "candidate_proposal": {
+      "status": "rejected",
+      "blocked": [
+       "Groq API call failed: the provider returned an output that did not match the required structure. (after 2 attempt(s))"
+      ]
+     },
+     "itinerary_reasoning": {
+      "status": "not_connected",
+      "blocked": [
+       "AI itinerary reasoning is disabled (AI_ITINERARY_REASONING_ENABLED=false)."
+      ]
+     },
+     "repair": {
+      "result": null,
+      "attempts": 0
+     },
+     "narrator": {
+      "status": "success",
+      "provider": "groq_itinerary_narrator_provider",
+      "message": null
+     }
+    },
+    "narration": {
+     "text_length_chars": 392,
+     "referenced_ids_all_scheduled": true,
+     "referenced_id_count": 9,
+     "pattern_hits_needing_provenance_review": {
+      "availability": [
+       "available"
+      ]
+     }
+    },
+    "provider_coverage": {
+     "places": "success",
+     "routes": "success",
+     "restaurants": "fallback_used",
+     "accommodations": "open_poi_available",
+     "hotel_prices": "unavailable",
+     "hotel_ratings": null,
+     "vacation_rentals": "not_connected",
+     "airbnb": "not_connected",
+     "flights": "unavailable",
+     "weather": "success",
+     "holidays": "success",
+     "currency": "success"
+    },
+    "unavailable_data": [
+     {
+      "field": "transit_feasibility",
+      "status": "not_connected",
+      "reason": "routes provider is not connected."
+     },
+     {
+      "field": "accommodation_options",
+      "status": "not_connected",
+      "reason": "accommodation provider is not connected."
+     }
+    ],
+    "factual_looking_fields_non_null": [
+     {
+      "path": "experience_plan.provider_coverage.hotel_prices",
+      "value": "unavailable"
+     }
+    ],
+    "factual_looking_field_count": 1,
+    "candidate_supply": {
+     "attractions_discovered": 60,
+     "tiers": {
+      "primary_anchor": 14,
+      "good_candidate": 46
+     },
+     "unsuitable_rejected": 0,
+     "category_distribution": {
+      "museum": 7,
+      "landmark": 7,
+      "historic": 6,
+      "general_attraction": 7,
+      "park_nature": 7,
+      "viewpoint": 7,
+      "art_culture": 7,
+      "entertainment": 6,
+      "nightlife": 6
+     },
+     "viable_supply_per_matched_interest": {
+      "museum": 7
+     }
+    },
+    "scheduled_categories": {
+     "by_category": {
+      "museum": 6,
+      "landmark": 3
+     },
+     "low_value_or_gallery_count": 0,
+     "interests_matched": [
+      "museum"
+     ]
+    },
+    "resolved_destination": "Seattle, King County, Washington, United States",
+    "quality_finding_categories": [],
+    "pace_requested": "balanced",
+    "avg_stops_per_day": 3.0
+   },
+   "logged_component_seconds": {
+    "routing:osrm": 6.66,
+    "flights:kiwi_mcp_flight_provider": 3.55,
+    "ai_candidate_discovery:groq_ai_candidate_proposal_provider": 2.21,
+    "itinerary_narrator:groq_itinerary_narrator_provider": 1.47,
+    "accommodations:scraped_accommodation_provider": 0.0
+   }
+  },
+  {
+   "case_id": "MIA-1",
+   "mode": "202c_as_configured",
+   "destination": "Miami, USA",
+   "requested_days": 3,
+   "pace": "packed",
+   "interests": [
+    "nightlife",
+    "food"
+   ],
+   "group": "friends",
+   "traits": "car-oriented, nightlife",
+   "generate_http_status": 200,
+   "latency_seconds": 61.6,
+   "request_id": "req_4b8116d417cb4721b456df05e0a006f4",
+   "trip_id": "trip_ab2129b193bc4ee9a60a5cf3678a4125",
+   "score": {
+    "scheduled_experience_count": 12,
+    "days_generated": 3,
+    "empty_days": [],
+    "stops_per_day": [
+     4,
+     4,
+     4
+    ],
+    "grounding": {
+     "all_have_stable_ids": true,
+     "with_coordinates": 12,
+     "with_claim_sources": 12,
+     "data_status_live": 12,
+     "promoted_from_ai": 0,
+     "unsupported_identity_names": [],
+     "unsupported_identity_count": 0,
+     "candidate_pool": {
+      "attractions": 56,
+      "restaurants": 20,
+      "accommodation_pois": 16
+     }
+    },
+    "geography": {
+     "per_day": [
+      {
+       "day": 1,
+       "stops": 4,
+       "names": [
+        "Club Space",
+        "Patricia and Phillip Frost Museum of Science",
+        "P\u00e9rez Art Museum Miami",
+        "Freedom Tower at Miami Dade College"
+       ],
+       "max_pairwise_km": 0.7,
+       "sequential_km": 1.4,
+       "far_apart": false,
+       "day_warnings": 1
+      },
+      {
+       "day": 2,
+       "stops": 4,
+       "names": [
+        "Loft Sofa - Modern Furniture Store",
+        "Venetian Way",
+        "The Congress Building",
+        "HistoryMiami Museum"
+       ],
+       "max_pairwise_km": 3.0,
+       "sequential_km": 3.7,
+       "far_apart": false,
+       "day_warnings": 1
+      },
+      {
+       "day": 3,
+       "stops": 4,
+       "names": [
+        "Villa Vizcaya",
+        "Vizcaya Farmer\u2019s Market",
+        "Daily Bread Marketplace",
+        "5 Diamond Delicacies"
+       ],
+       "max_pairwise_km": 10.0,
+       "sequential_km": 12.9,
+       "far_apart": false,
+       "day_warnings": 1
+      }
+     ],
+     "days_far_apart": []
+    },
+    "duplication": {
+     "repeated_normalized_names": {}
+    },
+    "relevance_signals": {
+     "interests_requested": [
+      "nightlife",
+      "food"
+     ],
+     "interest_words_in_scheduled_names_or_categories": []
+    },
+    "routing": {
+     "report_status": "success",
+     "legs_total": 9,
+     "leg_feasibility_counts": {
+      "feasible": 9
+     },
+     "providers": [
+      "osrm"
+     ],
+     "sequencing_status": "success",
+     "buffer_status_counts": {
+      "not_computable": 9
+     }
+    },
+    "validation": {
+     "readiness_status": "needs_review",
+     "critical_count": 0,
+     "warning_count": 8,
+     "suggestion_count": 0,
+     "warning_categories": {
+      "feasibility": 1,
+      "route_aware_sequencing": 1,
+      "movement_data": 1,
+      "route_geometry": 1,
+      "geographic_spread": 1,
+      "weather": 1,
+      "accommodation_inventory": 1,
+      "flight_inventory": 1
+     }
+    },
+    "ai": {
+     "candidate_proposal": {
+      "status": "rejected",
+      "blocked": [
+       "Groq API call failed: the provider returned an output that did not match the required structure. (after 2 attempt(s))"
+      ]
+     },
+     "itinerary_reasoning": {
+      "status": "not_connected",
+      "blocked": [
+       "AI itinerary reasoning is disabled (AI_ITINERARY_REASONING_ENABLED=false)."
+      ]
+     },
+     "repair": {
+      "result": null,
+      "attempts": 0
+     },
+     "narrator": {
+      "status": "success",
+      "provider": "groq_itinerary_narrator_provider",
+      "message": null
+     }
+    },
+    "narration": {
+     "text_length_chars": 917,
+     "referenced_ids_all_scheduled": true,
+     "referenced_id_count": 12,
+     "pattern_hits_needing_provenance_review": {
+      "availability": [
+       "available"
+      ]
+     }
+    },
+    "provider_coverage": {
+     "places": "success",
+     "routes": "success",
+     "restaurants": "success",
+     "accommodations": "open_poi_available",
+     "hotel_prices": "unavailable",
+     "hotel_ratings": null,
+     "vacation_rentals": "not_connected",
+     "airbnb": "not_connected",
+     "flights": "failed",
+     "weather": "success",
+     "holidays": "success",
+     "currency": "success"
+    },
+    "unavailable_data": [
+     {
+      "field": "transit_feasibility",
+      "status": "not_connected",
+      "reason": "routes provider is not connected."
+     },
+     {
+      "field": "accommodation_options",
+      "status": "not_connected",
+      "reason": "accommodation provider is not connected."
+     }
+    ],
+    "factual_looking_fields_non_null": [
+     {
+      "path": "experience_plan.provider_coverage.hotel_prices",
+      "value": "unavailable"
+     }
+    ],
+    "factual_looking_field_count": 1,
+    "candidate_supply": {
+     "attractions_discovered": 56,
+     "tiers": {
+      "primary_anchor": 13,
+      "good_candidate": 36,
+      "low_priority": 3,
+      "secondary_candidate": 4
+     },
+     "unsuitable_rejected": 0,
+     "category_distribution": {
+      "museum": 6,
+      "landmark": 6,
+      "general_attraction": 7,
+      "art_culture": 6,
+      "historic": 7,
+      "park_nature": 6,
+      "entertainment": 7,
+      "nightlife": 7,
+      "food_market": 4
+     },
+     "viable_supply_per_matched_interest": {
+      "nightlife": 7,
+      "food": 4
+     }
+    },
+    "scheduled_categories": {
+     "by_category": {
+      "nightlife": 1,
+      "museum": 4,
+      "landmark": 3,
+      "food_market": 4
+     },
+     "low_value_or_gallery_count": 0,
+     "interests_matched": [
+      "food",
+      "nightlife"
+     ]
+    },
+    "resolved_destination": "Miami, Miami-Dade County, Florida, United States",
+    "quality_finding_categories": [],
+    "pace_requested": "packed",
+    "avg_stops_per_day": 4.0
+   },
+   "logged_component_seconds": {
+    "routing:osrm": 12.56,
+    "itinerary_narrator:groq_itinerary_narrator_provider": 3.65,
+    "ai_candidate_discovery:groq_ai_candidate_proposal_provider": 2.96,
+    "flights:kiwi_mcp_flight_provider": 2.9,
+    "accommodations:scraped_accommodation_provider": 0.0
+   }
+  },
+  {
+   "case_id": "MIA-2",
+   "mode": "202c_as_configured",
+   "destination": "Miami, USA",
+   "requested_days": 4,
+   "pace": "relaxed",
+   "interests": [
+    "outdoors",
+    "architecture"
+   ],
+   "group": "couple",
+   "traits": "relaxed, beaches/art deco",
+   "generate_http_status": 200,
+   "latency_seconds": 48.5,
+   "request_id": "req_bb0c3d9940af4786b29626d35e284715",
+   "trip_id": "trip_3a2fa02036fb41829df85ac07cfef2f3",
+   "score": {
+    "scheduled_experience_count": 8,
+    "days_generated": 4,
+    "empty_days": [],
+    "stops_per_day": [
+     2,
+     2,
+     2,
+     2
+    ],
+    "grounding": {
+     "all_have_stable_ids": true,
+     "with_coordinates": 8,
+     "with_claim_sources": 8,
+     "data_status_live": 0,
+     "promoted_from_ai": 0,
+     "unsupported_identity_names": [],
+     "unsupported_identity_count": 0,
+     "candidate_pool": {
+      "attractions": 56,
+      "restaurants": 20,
+      "accommodation_pois": 16
+     }
+    },
+    "geography": {
+     "per_day": [
+      {
+       "day": 1,
+       "stops": 2,
+       "names": [
+        "Miami Circle at Brickell Point",
+        "The Congress Building"
+       ],
+       "max_pairwise_km": 0.7,
+       "sequential_km": 0.7,
+       "far_apart": false,
+       "day_warnings": 1
+      },
+      {
+       "day": 2,
+       "stops": 2,
+       "names": [
+        "Freedom Tower at Miami Dade College",
+        "P\u00e9rez Art Museum Miami"
+       ],
+       "max_pairwise_km": 0.7,
+       "sequential_km": 0.7,
+       "far_apart": false,
+       "day_warnings": 1
+      },
+      {
+       "day": 3,
+       "stops": 2,
+       "names": [
+        "Venetian Way",
+        "HistoryMiami Museum"
+       ],
+       "max_pairwise_km": 2.1,
+       "sequential_km": 2.1,
+       "far_apart": false,
+       "day_warnings": 1
+      },
+      {
+       "day": 4,
+       "stops": 2,
+       "names": [
+        "Villa Vizcaya",
+        "Tower Theater"
+       ],
+       "max_pairwise_km": 2.5,
+       "sequential_km": 2.5,
+       "far_apart": false,
+       "day_warnings": 1
+      }
+     ],
+     "days_far_apart": []
+    },
+    "duplication": {
+     "repeated_normalized_names": {}
+    },
+    "relevance_signals": {
+     "interests_requested": [
+      "outdoors",
+      "architecture"
+     ],
+     "interest_words_in_scheduled_names_or_categories": []
+    },
+    "routing": {
+     "report_status": "success",
+     "legs_total": 4,
+     "leg_feasibility_counts": {
+      "feasible": 4
+     },
+     "providers": [
+      "osrm"
+     ],
+     "sequencing_status": "success",
+     "buffer_status_counts": {
+      "not_computable": 4
+     }
+    },
+    "validation": {
+     "readiness_status": "needs_review",
+     "critical_count": 0,
+     "warning_count": 7,
+     "suggestion_count": 0,
+     "warning_categories": {
+      "feasibility": 1,
+      "route_aware_sequencing": 1,
+      "movement_data": 1,
+      "route_geometry": 1,
+      "weather": 1,
+      "accommodation_inventory": 1,
+      "flight_inventory": 1
+     }
+    },
+    "ai": {
+     "candidate_proposal": {
+      "status": "rejected",
+      "blocked": [
+       "Groq API call failed: the provider returned an output that did not match the required structure. (after 2 attempt(s))"
+      ]
+     },
+     "itinerary_reasoning": {
+      "status": "not_connected",
+      "blocked": [
+       "AI itinerary reasoning is disabled (AI_ITINERARY_REASONING_ENABLED=false)."
+      ]
+     },
+     "repair": {
+      "result": null,
+      "attempts": 0
+     },
+     "narrator": {
+      "status": "success",
+      "provider": "groq_itinerary_narrator_provider",
+      "message": null
+     }
+    },
+    "narration": {
+     "text_length_chars": 649,
+     "referenced_ids_all_scheduled": true,
+     "referenced_id_count": 8,
+     "pattern_hits_needing_provenance_review": {
+      "availability": [
+       "available"
+      ]
+     }
+    },
+    "provider_coverage": {
+     "places": "success",
+     "routes": "success",
+     "restaurants": "success",
+     "accommodations": "open_poi_available",
+     "hotel_prices": "unavailable",
+     "hotel_ratings": null,
+     "vacation_rentals": "not_connected",
+     "airbnb": "not_connected",
+     "flights": "unavailable",
+     "weather": "success",
+     "holidays": "success",
+     "currency": "success"
+    },
+    "unavailable_data": [
+     {
+      "field": "transit_feasibility",
+      "status": "not_connected",
+      "reason": "routes provider is not connected."
+     },
+     {
+      "field": "accommodation_options",
+      "status": "not_connected",
+      "reason": "accommodation provider is not connected."
+     }
+    ],
+    "factual_looking_fields_non_null": [
+     {
+      "path": "experience_plan.provider_coverage.hotel_prices",
+      "value": "unavailable"
+     }
+    ],
+    "factual_looking_field_count": 1,
+    "candidate_supply": {
+     "attractions_discovered": 56,
+     "tiers": {
+      "primary_anchor": 11,
+      "good_candidate": 38,
+      "low_priority": 3,
+      "secondary_candidate": 4
+     },
+     "unsuitable_rejected": 0,
+     "category_distribution": {
+      "museum": 6,
+      "landmark": 6,
+      "general_attraction": 7,
+      "art_culture": 6,
+      "historic": 7,
+      "park_nature": 6,
+      "entertainment": 7,
+      "nightlife": 7,
+      "food_market": 4
+     },
+     "viable_supply_per_matched_interest": {
+      "architecture": 11,
+      "outdoors": 6
+     }
+    },
+    "scheduled_categories": {
+     "by_category": {
+      "park_nature": 1,
+      "landmark": 3,
+      "museum": 3,
+      "historic": 1
+     },
+     "low_value_or_gallery_count": 0,
+     "interests_matched": [
+      "architecture",
+      "outdoors"
+     ]
+    },
+    "resolved_destination": "Miami, Miami-Dade County, Florida, United States",
+    "quality_finding_categories": [],
+    "pace_requested": "relaxed",
+    "avg_stops_per_day": 2.0
+   },
+   "logged_component_seconds": {
+    "ai_candidate_discovery:groq_ai_candidate_proposal_provider": 30.88,
+    "flights:kiwi_mcp_flight_provider": 11.85,
+    "itinerary_narrator:groq_itinerary_narrator_provider": 1.77,
+    "routing:osrm": 1.44,
+    "accommodations:scraped_accommodation_provider": 0.0
+   }
+  },
+  {
+   "case_id": "LA-1",
+   "mode": "202c_as_configured",
+   "destination": "Los Angeles, USA",
+   "requested_days": 4,
+   "pace": "balanced",
+   "interests": [
+    "food",
+    "outdoors"
+   ],
+   "group": "couple",
+   "traits": "car-oriented, very spread out",
+   "generate_http_status": 200,
+   "latency_seconds": 71.5,
+   "request_id": "req_0000dca1d663409d87942a5d26b80387",
+   "trip_id": "trip_c0e2c0617daf4e51ba86b0f4ca75b56d",
+   "score": {
+    "scheduled_experience_count": 12,
+    "days_generated": 4,
+    "empty_days": [],
+    "stops_per_day": [
+     3,
+     3,
+     3,
+     3
+    ],
+    "grounding": {
+     "all_have_stable_ids": true,
+     "with_coordinates": 12,
+     "with_claim_sources": 12,
+     "data_status_live": 12,
+     "promoted_from_ai": 0,
+     "unsupported_identity_names": [],
+     "unsupported_identity_count": 0,
+     "candidate_pool": {
+      "attractions": 60,
+      "restaurants": 18,
+      "accommodation_pois": 18
+     }
+    },
+    "geography": {
+     "per_day": [
+      {
+       "day": 1,
+       "stops": 3,
+       "names": [
+        "Cole's P.E. Buffet",
+        "Angels Flight",
+        "Museum of Contemporary Art"
+       ],
+       "max_pairwise_km": 0.9,
+       "sequential_km": 0.9,
+       "far_apart": false,
+       "day_warnings": 1
+      },
+      {
+       "day": 2,
+       "stops": 3,
+       "names": [
+        "Point Grandview",
+        "Heritage Square",
+        "LA Plaza De Culturas Y Artes"
+       ],
+       "max_pairwise_km": 4.5,
+       "sequential_km": 6.5,
+       "far_apart": false,
+       "day_warnings": 1
+      },
+      {
+       "day": 3,
+       "stops": 3,
+       "names": [
+        "Neutra Studio and Residences (VDL Research House)",
+        "City Hall Observation Deck",
+        "Koreatown"
+       ],
+       "max_pairwise_km": 5.8,
+       "sequential_km": 11.1,
+       "far_apart": false,
+       "day_warnings": 1
+      },
+      {
+       "day": 4,
+       "stops": 3,
+       "names": [
+        "Institute of Contemporary Art, Los Angeles",
+        "California African American Museum",
+        "Natural History Museum of Los Angeles County"
+       ],
+       "max_pairwise_km": 5.3,
+       "sequential_km": 5.4,
+       "far_apart": false,
+       "day_warnings": 1
+      }
+     ],
+     "days_far_apart": []
+    },
+    "duplication": {
+     "repeated_normalized_names": {}
+    },
+    "relevance_signals": {
+     "interests_requested": [
+      "food",
+      "outdoors"
+     ],
+     "interest_words_in_scheduled_names_or_categories": []
+    },
+    "routing": {
+     "report_status": "success",
+     "legs_total": 8,
+     "leg_feasibility_counts": {
+      "feasible": 8
+     },
+     "providers": [
+      "osrm"
+     ],
+     "sequencing_status": "success",
+     "buffer_status_counts": {
+      "not_computable": 8
+     }
+    },
+    "validation": {
+     "readiness_status": "needs_review",
+     "critical_count": 0,
+     "warning_count": 8,
+     "suggestion_count": 0,
+     "warning_categories": {
+      "feasibility": 1,
+      "route_aware_sequencing": 1,
+      "movement_data": 1,
+      "route_geometry": 1,
+      "geographic_spread": 1,
+      "weather": 1,
+      "accommodation_inventory": 1,
+      "flight_inventory": 1
+     }
+    },
+    "ai": {
+     "candidate_proposal": {
+      "status": "rejected",
+      "blocked": [
+       "Groq API call failed: the provider returned an output that did not match the required structure. (after 2 attempt(s))"
+      ]
+     },
+     "itinerary_reasoning": {
+      "status": "not_connected",
+      "blocked": [
+       "AI itinerary reasoning is disabled (AI_ITINERARY_REASONING_ENABLED=false)."
+      ]
+     },
+     "repair": {
+      "result": null,
+      "attempts": 0
+     },
+     "narrator": {
+      "status": "success",
+      "provider": "groq_itinerary_narrator_provider",
+      "message": null
+     }
+    },
+    "narration": {
+     "text_length_chars": 842,
+     "referenced_ids_all_scheduled": true,
+     "referenced_id_count": 12,
+     "pattern_hits_needing_provenance_review": {
+      "availability": [
+       "available"
+      ]
+     }
+    },
+    "provider_coverage": {
+     "places": "success",
+     "routes": "success",
+     "restaurants": "fallback_used",
+     "accommodations": "open_poi_available",
+     "hotel_prices": "unavailable",
+     "hotel_ratings": null,
+     "vacation_rentals": "not_connected",
+     "airbnb": "not_connected",
+     "flights": "unavailable",
+     "weather": "success",
+     "holidays": "success",
+     "currency": "success"
+    },
+    "unavailable_data": [
+     {
+      "field": "transit_feasibility",
+      "status": "not_connected",
+      "reason": "routes provider is not connected."
+     },
+     {
+      "field": "accommodation_options",
+      "status": "not_connected",
+      "reason": "accommodation provider is not connected."
+     }
+    ],
+    "factual_looking_fields_non_null": [
+     {
+      "path": "experience_plan.provider_coverage.hotel_prices",
+      "value": "unavailable"
+     }
+    ],
+    "factual_looking_field_count": 1,
+    "candidate_supply": {
+     "attractions_discovered": 60,
+     "tiers": {
+      "primary_anchor": 18,
+      "good_candidate": 36,
+      "secondary_candidate": 6
+     },
+     "unsuitable_rejected": 0,
+     "category_distribution": {
+      "museum": 8,
+      "landmark": 8,
+      "historic": 8,
+      "general_attraction": 8,
+      "park_nature": 8,
+      "viewpoint": 2,
+      "art_culture": 8,
+      "entertainment": 8,
+      "nightlife": 2
+     },
+     "viable_supply_per_matched_interest": {
+      "outdoors": 10,
+      "food": 1
+     }
+    },
+    "scheduled_categories": {
+     "by_category": {
+      "landmark": 4,
+      "museum": 6,
+      "viewpoint": 2
+     },
+     "low_value_or_gallery_count": 0,
+     "interests_matched": [
+      "food",
+      "outdoors"
+     ]
+    },
+    "resolved_destination": "Los Angeles, Los Angeles County, California, United States",
+    "quality_finding_categories": [],
+    "pace_requested": "balanced",
+    "avg_stops_per_day": 3.0
+   },
+   "logged_component_seconds": {
+    "routing:osrm": 8.62,
+    "flights:kiwi_mcp_flight_provider": 5.33,
+    "ai_candidate_discovery:groq_ai_candidate_proposal_provider": 3.07,
+    "itinerary_narrator:groq_itinerary_narrator_provider": 2.4,
+    "accommodations:scraped_accommodation_provider": 0.0
+   }
+  },
+  {
+   "case_id": "LA-2",
+   "mode": "202c_as_configured",
+   "destination": "Los Angeles, USA",
+   "requested_days": 3,
+   "pace": "packed",
+   "interests": [
+    "museums",
+    "history"
+   ],
+   "group": "solo",
+   "traits": "packed, museums/history; repeat visitor",
+   "generate_http_status": 200,
+   "latency_seconds": 30.1,
+   "request_id": "req_6e738a7a95ba413c97adb4dc9e8022d1",
+   "trip_id": "trip_8b7176dc1f4747c290c0ee7690923a80",
+   "score": {
+    "scheduled_experience_count": 12,
+    "days_generated": 3,
+    "empty_days": [],
+    "stops_per_day": [
+     4,
+     4,
+     4
+    ],
+    "grounding": {
+     "all_have_stable_ids": true,
+     "with_coordinates": 12,
+     "with_claim_sources": 12,
+     "data_status_live": 0,
+     "promoted_from_ai": 0,
+     "unsupported_identity_names": [],
+     "unsupported_identity_count": 0,
+     "candidate_pool": {
+      "attractions": 60,
+      "restaurants": 18,
+      "accommodation_pois": 18
+     }
+    },
+    "geography": {
+     "per_day": [
+      {
+       "day": 1,
+       "stops": 4,
+       "names": [
+        "Natural History Museum of Los Angeles County",
+        "California African American Museum",
+        "Shrine Auditorium",
+        "Koreatown"
+       ],
+       "max_pairwise_km": 5.5,
+       "sequential_km": 6.2,
+       "far_apart": false,
+       "day_warnings": 1
+      },
+      {
+       "day": 2,
+       "stops": 4,
+       "names": [
+        "Neutra Studio and Residences (VDL Research House)",
+        "LA Plaza De Culturas Y Artes",
+        "Thien Hau Temple",
+        "Heritage Square"
+       ],
+       "max_pairwise_km": 5.0,
+       "sequential_km": 9.8,
+       "far_apart": false,
+       "day_warnings": 1
+      },
+      {
+       "day": 3,
+       "stops": 4,
+       "names": [
+        "Angels Flight",
+        "Museum of Contemporary Art",
+        "El Pueblo de Los Angeles Historical Monument",
+        "Institute of Contemporary Art, Los Angeles"
+       ],
+       "max_pairwise_km": 2.4,
+       "sequential_km": 3.8,
+       "far_apart": false,
+       "day_warnings": 1
+      }
+     ],
+     "days_far_apart": []
+    },
+    "duplication": {
+     "repeated_normalized_names": {}
+    },
+    "relevance_signals": {
+     "interests_requested": [
+      "museums",
+      "history"
+     ],
+     "interest_words_in_scheduled_names_or_categories": [
+      "museums",
+      "history"
+     ]
+    },
+    "routing": {
+     "report_status": "success",
+     "legs_total": 9,
+     "leg_feasibility_counts": {
+      "feasible": 9
+     },
+     "providers": [
+      "osrm"
+     ],
+     "sequencing_status": "success",
+     "buffer_status_counts": {
+      "not_computable": 9
+     }
+    },
+    "validation": {
+     "readiness_status": "needs_review",
+     "critical_count": 0,
+     "warning_count": 8,
+     "suggestion_count": 0,
+     "warning_categories": {
+      "feasibility": 1,
+      "route_aware_sequencing": 1,
+      "movement_data": 1,
+      "route_geometry": 1,
+      "geographic_spread": 1,
+      "weather": 1,
+      "accommodation_inventory": 1,
+      "flight_inventory": 1
+     }
+    },
+    "ai": {
+     "candidate_proposal": {
+      "status": "rejected",
+      "blocked": [
+       "Groq API call failed: the provider rate-limited the request (HTTP 429)."
+      ]
+     },
+     "itinerary_reasoning": {
+      "status": "not_connected",
+      "blocked": [
+       "AI itinerary reasoning is disabled (AI_ITINERARY_REASONING_ENABLED=false)."
+      ]
+     },
+     "repair": {
+      "result": null,
+      "attempts": 0
+     },
+     "narrator": {
+      "status": "failed",
+      "provider": "groq_itinerary_narrator_provider",
+      "message": "Groq API call failed: the provider returned an output that did not match the required structure."
+     }
+    },
+    "narration": {
+     "text_length_chars": 601,
+     "referenced_ids_all_scheduled": true,
+     "referenced_id_count": 12,
+     "pattern_hits_needing_provenance_review": {}
+    },
+    "provider_coverage": {
+     "places": "success",
+     "routes": "success",
+     "restaurants": "fallback_used",
+     "accommodations": "open_poi_available",
+     "hotel_prices": "unavailable",
+     "hotel_ratings": null,
+     "vacation_rentals": "not_connected",
+     "airbnb": "not_connected",
+     "flights": "unavailable",
+     "weather": "success",
+     "holidays": "success",
+     "currency": "success"
+    },
+    "unavailable_data": [
+     {
+      "field": "transit_feasibility",
+      "status": "not_connected",
+      "reason": "routes provider is not connected."
+     },
+     {
+      "field": "accommodation_options",
+      "status": "not_connected",
+      "reason": "accommodation provider is not connected."
+     }
+    ],
+    "factual_looking_fields_non_null": [
+     {
+      "path": "experience_plan.provider_coverage.hotel_prices",
+      "value": "unavailable"
+     }
+    ],
+    "factual_looking_field_count": 1,
+    "candidate_supply": {
+     "attractions_discovered": 60,
+     "tiers": {
+      "primary_anchor": 17,
+      "good_candidate": 37,
+      "secondary_candidate": 6
+     },
+     "unsuitable_rejected": 0,
+     "category_distribution": {
+      "museum": 8,
+      "landmark": 8,
+      "historic": 8,
+      "general_attraction": 8,
+      "park_nature": 8,
+      "viewpoint": 2,
+      "art_culture": 8,
+      "entertainment": 8,
+      "nightlife": 2
+     },
+     "viable_supply_per_matched_interest": {
+      "museum": 9,
+      "history": 24
+     }
+    },
+    "scheduled_categories": {
+     "by_category": {
+      "museum": 6,
+      "landmark": 5,
+      "historic": 1
+     },
+     "low_value_or_gallery_count": 0,
+     "interests_matched": [
+      "history",
+      "museum"
+     ]
+    },
+    "resolved_destination": "Los Angeles, Los Angeles County, California, United States",
+    "quality_finding_categories": [],
+    "pace_requested": "packed",
+    "avg_stops_per_day": 4.0
+   },
+   "logged_component_seconds": {
+    "routing:osrm": 10.74,
+    "flights:kiwi_mcp_flight_provider": 3.28,
+    "itinerary_narrator:groq_itinerary_narrator_provider": 3.09,
+    "ai_candidate_discovery:groq_ai_candidate_proposal_provider": 2.07,
+    "accommodations:scraped_accommodation_provider": 0.0
+   }
+  },
+  {
+   "case_id": "LIS-BARE",
+   "mode": "202c_as_configured",
+   "destination": "Lisbon",
+   "requested_days": 3,
+   "pace": "balanced",
+   "interests": [
+    "food",
+    "history"
+   ],
+   "group": "couple",
+   "traits": "INPUT-FORMAT SENSITIVITY: bare city name (no country)",
+   "generate_http_status": 200,
+   "latency_seconds": 14.3,
+   "request_id": "req_bc521c2811d048418b09e0f861ba5a7b",
+   "trip_id": "trip_63b425783b434e5b953c34df41113f37",
+   "score": {
+    "scheduled_experience_count": 9,
+    "days_generated": 3,
+    "empty_days": [],
+    "stops_per_day": [
+     3,
+     3,
+     3
+    ],
+    "grounding": {
+     "all_have_stable_ids": true,
+     "with_coordinates": 9,
+     "with_claim_sources": 9,
+     "data_status_live": 0,
+     "promoted_from_ai": 0,
+     "unsupported_identity_names": [],
+     "unsupported_identity_count": 0,
+     "candidate_pool": {
+      "attractions": 55,
+      "restaurants": 20,
+      "accommodation_pois": 20
+     }
+    },
+    "geography": {
+     "per_day": [
+      {
+       "day": 1,
+       "stops": 3,
+       "names": [
+        "Mercado da Ribeira",
+        "Tamareira-do-Senegal",
+        "Pelourinho de Lisboa"
+       ],
+       "max_pairwise_km": 0.6,
+       "sequential_km": 0.8,
+       "far_apart": false,
+       "day_warnings": 1
+      },
+      {
+       "day": 2,
+       "stops": 3,
+       "names": [
+        "Museu Geol\u00f3gico",
+        "Museu da Marioneta",
+        "Tipuana"
+       ],
+       "max_pairwise_km": 0.8,
+       "sequential_km": 0.9,
+       "far_apart": false,
+       "day_warnings": 1
+      },
+      {
+       "day": 3,
+       "stops": 3,
+       "names": [
+        "Museu do Aljube - Resist\u00eancia e Liberdade",
+        "Mercado de Santa Clara",
+        "Museu Bordalo Pinheiro"
+       ],
+       "max_pairwise_km": 5.7,
+       "sequential_km": 6.3,
+       "far_apart": false,
+       "day_warnings": 1
+      }
+     ],
+     "days_far_apart": []
+    },
+    "duplication": {
+     "repeated_normalized_names": {}
+    },
+    "relevance_signals": {
+     "interests_requested": [
+      "food",
+      "history"
+     ],
+     "interest_words_in_scheduled_names_or_categories": []
+    },
+    "routing": {
+     "report_status": "success",
+     "legs_total": 6,
+     "leg_feasibility_counts": {
+      "feasible": 6
+     },
+     "providers": [
+      "osrm"
+     ],
+     "sequencing_status": "success",
+     "buffer_status_counts": {
+      "not_computable": 6
+     }
+    },
+    "validation": {
+     "readiness_status": "needs_review",
+     "critical_count": 0,
+     "warning_count": 7,
+     "suggestion_count": 0,
+     "warning_categories": {
+      "feasibility": 1,
+      "route_aware_sequencing": 1,
+      "movement_data": 1,
+      "route_geometry": 1,
+      "weather": 1,
+      "accommodation_inventory": 1,
+      "flight_inventory": 1
+     }
+    },
+    "ai": {
+     "candidate_proposal": {
+      "status": "rejected",
+      "blocked": [
+       "Groq API call failed: the provider rate-limited the request (HTTP 429)."
+      ]
+     },
+     "itinerary_reasoning": {
+      "status": "not_connected",
+      "blocked": [
+       "AI itinerary reasoning is disabled (AI_ITINERARY_REASONING_ENABLED=false)."
+      ]
+     },
+     "repair": {
+      "result": null,
+      "attempts": 0
+     },
+     "narrator": {
+      "status": "failed",
+      "provider": "groq_itinerary_narrator_provider",
+      "message": "Groq API call failed: the provider rate-limited the request (HTTP 429)."
+     }
+    },
+    "narration": {
+     "text_length_chars": 413,
+     "referenced_ids_all_scheduled": true,
+     "referenced_id_count": 9,
+     "pattern_hits_needing_provenance_review": {}
+    },
+    "provider_coverage": {
+     "places": "success",
+     "routes": "success",
+     "restaurants": "success",
+     "accommodations": "open_poi_available",
+     "hotel_prices": "unavailable",
+     "hotel_ratings": null,
+     "vacation_rentals": "not_connected",
+     "airbnb": "not_connected",
+     "flights": "failed",
+     "weather": "success",
+     "holidays": "unavailable",
+     "currency": "unavailable"
+    },
+    "unavailable_data": [
+     {
+      "field": "transit_feasibility",
+      "status": "not_connected",
+      "reason": "routes provider is not connected."
+     },
+     {
+      "field": "public_holidays",
+      "status": "unavailable",
+      "reason": "Could not conservatively infer a country from 'Lisbon', so Nager.Date public holidays cannot be requested."
+     },
+     {
+      "field": "exchange_rate",
+      "status": "unavailable",
+      "reason": "Could not conservatively infer a destination currency from 'Lisbon', so Frankfurter exchange rate cannot be requested."
+     },
+     {
+      "field": "accommodation_options",
+      "status": "not_connected",
+      "reason": "accommodation provider is not connected."
+     }
+    ],
+    "factual_looking_fields_non_null": [
+     {
+      "path": "experience_plan.provider_coverage.hotel_prices",
+      "value": "unavailable"
+     }
+    ],
+    "factual_looking_field_count": 1,
+    "candidate_supply": {
+     "attractions_discovered": 55,
+     "tiers": {
+      "primary_anchor": 14,
+      "good_candidate": 39,
+      "low_priority": 2
+     },
+     "unsuitable_rejected": 0,
+     "category_distribution": {
+      "museum": 6,
+      "landmark": 6,
+      "shopping": 1,
+      "restaurant": 1,
+      "general_attraction": 6,
+      "entertainment": 6,
+      "park_nature": 6,
+      "viewpoint": 6,
+      "art_culture": 5,
+      "historic": 3,
+      "nightlife": 6,
+      "food_market": 3
+     },
+     "viable_supply_per_matched_interest": {
+      "history": 13,
+      "food": 5
+     }
+    },
+    "scheduled_categories": {
+     "by_category": {
+      "food_market": 2,
+      "landmark": 3,
+      "museum": 4
+     },
+     "low_value_or_gallery_count": 0,
+     "interests_matched": [
+      "food",
+      "history"
+     ]
+    },
+    "resolved_destination": "Lisbon, Portugal",
+    "quality_finding_categories": [],
+    "pace_requested": "balanced",
+    "avg_stops_per_day": 3.0
+   },
+   "logged_component_seconds": {
+    "flights:kiwi_mcp_flight_provider": 3.13,
+    "ai_candidate_discovery:groq_ai_candidate_proposal_provider": 0.09,
+    "itinerary_narrator:groq_itinerary_narrator_provider": 0.07,
+    "accommodations:scraped_accommodation_provider": 0.0,
+    "routing:osrm": 0.0
+   }
+  },
+  {
+   "case_id": "NYC-BARE",
+   "mode": "202c_as_configured",
+   "destination": "New York City",
+   "requested_days": 3,
+   "pace": "balanced",
+   "interests": [
+    "museums",
+    "food"
+   ],
+   "group": "couple",
+   "traits": "INPUT-FORMAT SENSITIVITY: bare city name (no country)",
+   "generate_http_status": 200,
+   "latency_seconds": 14.2,
+   "request_id": "req_cbbaf93b461440968a35e0621a7c6349",
+   "trip_id": "trip_46882c0ecf324958baeafdffb77626d8",
+   "score": {
+    "scheduled_experience_count": 9,
+    "days_generated": 3,
+    "empty_days": [],
+    "stops_per_day": [
+     3,
+     3,
+     3
+    ],
+    "grounding": {
+     "all_have_stable_ids": true,
+     "with_coordinates": 9,
+     "with_claim_sources": 9,
+     "data_status_live": 0,
+     "promoted_from_ai": 0,
+     "unsupported_identity_names": [],
+     "unsupported_identity_count": 0,
+     "candidate_pool": {
+      "attractions": 60,
+      "restaurants": 19,
+      "accommodation_pois": 20
+     }
+    },
+    "geography": {
+     "per_day": [
+      {
+       "day": 1,
+       "stops": 3,
+       "names": [
+        "Yeshiva University Museum",
+        "Union Square Green Market",
+        "Rubin Museum of Art"
+       ],
+       "max_pairwise_km": 0.8,
+       "sequential_km": 1.1,
+       "far_apart": false,
+       "day_warnings": 1
+      },
+      {
+       "day": 2,
+       "stops": 3,
+       "names": [
+        "Lower East Side Tenement Museum",
+        "Stonewall Inn",
+        "Skyscraper Museum"
+       ],
+       "max_pairwise_km": 3.4,
+       "sequential_km": 5.3,
+       "far_apart": false,
+       "day_warnings": 1
+      },
+      {
+       "day": 3,
+       "stops": 3,
+       "names": [
+        "Museum of Sex",
+        "The Morgan Library & Museum",
+        "Bryant Park"
+       ],
+       "max_pairwise_km": 1.1,
+       "sequential_km": 1.3,
+       "far_apart": false,
+       "day_warnings": 1
+      }
+     ],
+     "days_far_apart": []
+    },
+    "duplication": {
+     "repeated_normalized_names": {}
+    },
+    "relevance_signals": {
+     "interests_requested": [
+      "museums",
+      "food"
+     ],
+     "interest_words_in_scheduled_names_or_categories": [
+      "museums"
+     ]
+    },
+    "routing": {
+     "report_status": "success",
+     "legs_total": 6,
+     "leg_feasibility_counts": {
+      "feasible": 6
+     },
+     "providers": [
+      "osrm"
+     ],
+     "sequencing_status": "success",
+     "buffer_status_counts": {
+      "not_computable": 6
+     }
+    },
+    "validation": {
+     "readiness_status": "needs_review",
+     "critical_count": 0,
+     "warning_count": 7,
+     "suggestion_count": 0,
+     "warning_categories": {
+      "feasibility": 1,
+      "route_aware_sequencing": 1,
+      "movement_data": 1,
+      "route_geometry": 1,
+      "weather": 1,
+      "accommodation_inventory": 1,
+      "flight_inventory": 1
+     }
+    },
+    "ai": {
+     "candidate_proposal": {
+      "status": "rejected",
+      "blocked": [
+       "Groq API call failed: the provider rate-limited the request (HTTP 429)."
+      ]
+     },
+     "itinerary_reasoning": {
+      "status": "not_connected",
+      "blocked": [
+       "AI itinerary reasoning is disabled (AI_ITINERARY_REASONING_ENABLED=false)."
+      ]
+     },
+     "repair": {
+      "result": null,
+      "attempts": 0
+     },
+     "narrator": {
+      "status": "failed",
+      "provider": "groq_itinerary_narrator_provider",
+      "message": "Groq API call failed: the provider rate-limited the request (HTTP 429)."
+     }
+    },
+    "narration": {
+     "text_length_chars": 417,
+     "referenced_ids_all_scheduled": true,
+     "referenced_id_count": 9,
+     "pattern_hits_needing_provenance_review": {}
+    },
+    "provider_coverage": {
+     "places": "success",
+     "routes": "success",
+     "restaurants": "success",
+     "accommodations": "open_poi_available",
+     "hotel_prices": "unavailable",
+     "hotel_ratings": null,
+     "vacation_rentals": "not_connected",
+     "airbnb": "not_connected",
+     "flights": "success",
+     "weather": "success",
+     "holidays": "unavailable",
+     "currency": "unavailable"
+    },
+    "unavailable_data": [
+     {
+      "field": "transit_feasibility",
+      "status": "not_connected",
+      "reason": "routes provider is not connected."
+     },
+     {
+      "field": "public_holidays",
+      "status": "unavailable",
+      "reason": "Could not conservatively infer a country from 'New York City', so Nager.Date public holidays cannot be requested."
+     },
+     {
+      "field": "exchange_rate",
+      "status": "unavailable",
+      "reason": "Could not conservatively infer a destination currency from 'New York City', so Frankfurter exchange rate cannot be requested."
+     },
+     {
+      "field": "accommodation_options",
+      "status": "not_connected",
+      "reason": "accommodation provider is not connected."
+     }
+    ],
+    "factual_looking_fields_non_null": [
+     {
+      "path": "experience_plan.provider_coverage.hotel_prices",
+      "value": "unavailable"
+     }
+    ],
+    "factual_looking_field_count": 1,
+    "candidate_supply": {
+     "attractions_discovered": 60,
+     "tiers": {
+      "primary_anchor": 17,
+      "good_candidate": 43
+     },
+     "unsuitable_rejected": 0,
+     "category_distribution": {
+      "museum": 8,
+      "landmark": 8,
+      "neighborhood_area": 1,
+      "general_attraction": 7,
+      "entertainment": 7,
+      "viewpoint": 7,
+      "art_culture": 7,
+      "historic": 7,
+      "park_nature": 7,
+      "food_market": 1
+     },
+     "viable_supply_per_matched_interest": {
+      "museum": 8,
+      "food": 1
+     }
+    },
+    "scheduled_categories": {
+     "by_category": {
+      "museum": 6,
+      "food_market": 1,
+      "landmark": 2
+     },
+     "low_value_or_gallery_count": 0,
+     "interests_matched": [
+      "food",
+      "museum"
+     ]
+    },
+    "resolved_destination": "New York, United States",
+    "quality_finding_categories": [],
+    "pace_requested": "balanced",
+    "avg_stops_per_day": 3.0
+   },
+   "logged_component_seconds": {
+    "flights:kiwi_mcp_flight_provider": 9.16,
+    "routing:osrm": 1.41,
+    "ai_candidate_discovery:groq_ai_candidate_proposal_provider": 0.18,
+    "itinerary_narrator:groq_itinerary_narrator_provider": 0.08,
+    "accommodations:scraped_accommodation_provider": 0.0
+   }
+  },
+  {
+   "case_id": "COR-ES",
+   "mode": "202c_as_configured",
+   "destination": "Cordoba, Spain",
+   "requested_days": 3,
+   "pace": "balanced",
+   "interests": [
+    "food",
+    "history"
+   ],
+   "group": "couple",
+   "traits": "202B.2 addition: destination that resolved but produced an empty plan in the 202B.1 follow-up",
+   "generate_http_status": 200,
+   "latency_seconds": 94.0,
+   "request_id": "req_f47b214f8d2740528b60557bc38bc3a4",
+   "trip_id": "trip_33265d3185d8426da2d08e2c7eb8c2f6",
+   "score": {
+    "scheduled_experience_count": 9,
+    "days_generated": 3,
+    "empty_days": [],
+    "stops_per_day": [
+     3,
+     3,
+     3
+    ],
+    "grounding": {
+     "all_have_stable_ids": true,
+     "with_coordinates": 9,
+     "with_claim_sources": 9,
+     "data_status_live": 9,
+     "promoted_from_ai": 0,
+     "unsupported_identity_names": [],
+     "unsupported_identity_count": 0,
+     "candidate_pool": {
+      "attractions": 57,
+      "restaurants": 20,
+      "accommodation_pois": 20
+     }
+    },
+    "geography": {
+     "per_day": [
+      {
+       "day": 1,
+       "stops": 3,
+       "names": [
+        "Zoco Municipal",
+        "Museo Taurino de C\u00f3rdoba",
+        "Casa de Sefarad"
+       ],
+       "max_pairwise_km": 0.1,
+       "sequential_km": 0.1,
+       "far_apart": false,
+       "day_warnings": 1
+      },
+      {
+       "day": 2,
+       "stops": 3,
+       "names": [
+        "Centro de Arte Moderno Rafael Bot\u00ed",
+        "Alc\u00e1zar de los Reyes Cristianos",
+        "Torre de la Calahorra - Museo Vivo de Al-\u00c1ndalus"
+       ],
+       "max_pairwise_km": 0.6,
+       "sequential_km": 1.0,
+       "far_apart": false,
+       "day_warnings": 1
+      },
+      {
+       "day": 3,
+       "stops": 3,
+       "names": [
+        "Mercado Victoria",
+        "Templo romano",
+        "Museo de Julio Romero de Torres"
+       ],
+       "max_pairwise_km": 1.0,
+       "sequential_km": 1.2,
+       "far_apart": false,
+       "day_warnings": 1
+      }
+     ],
+     "days_far_apart": []
+    },
+    "duplication": {
+     "repeated_normalized_names": {}
+    },
+    "relevance_signals": {
+     "interests_requested": [
+      "food",
+      "history"
+     ],
+     "interest_words_in_scheduled_names_or_categories": []
+    },
+    "routing": {
+     "report_status": "success",
+     "legs_total": 6,
+     "leg_feasibility_counts": {
+      "feasible": 6
+     },
+     "providers": [
+      "osrm"
+     ],
+     "sequencing_status": "success",
+     "buffer_status_counts": {
+      "not_computable": 6
+     }
+    },
+    "validation": {
+     "readiness_status": "needs_review",
+     "critical_count": 0,
+     "warning_count": 8,
+     "suggestion_count": 0,
+     "warning_categories": {
+      "feasibility": 1,
+      "route_aware_sequencing": 1,
+      "movement_data": 1,
+      "route_geometry": 1,
+      "weather": 1,
+      "holidays": 1,
+      "accommodation_inventory": 1,
+      "flight_inventory": 1
+     }
+    },
+    "ai": {
+     "candidate_proposal": {
+      "status": "rejected",
+      "blocked": [
+       "Groq API call failed: the provider rate-limited the request (HTTP 429)."
+      ]
+     },
+     "itinerary_reasoning": {
+      "status": "not_connected",
+      "blocked": [
+       "AI itinerary reasoning is disabled (AI_ITINERARY_REASONING_ENABLED=false)."
+      ]
+     },
+     "repair": {
+      "result": null,
+      "attempts": 0
+     },
+     "narrator": {
+      "status": "failed",
+      "provider": "groq_itinerary_narrator_provider",
+      "message": "Groq API call failed: the provider rate-limited the request (HTTP 429)."
+     }
+    },
+    "narration": {
+     "text_length_chars": 464,
+     "referenced_ids_all_scheduled": true,
+     "referenced_id_count": 9,
+     "pattern_hits_needing_provenance_review": {}
+    },
+    "provider_coverage": {
+     "places": "fallback_used",
+     "routes": "success",
+     "restaurants": "fallback_used",
+     "accommodations": "open_poi_available",
+     "hotel_prices": "unavailable",
+     "hotel_ratings": null,
+     "vacation_rentals": "not_connected",
+     "airbnb": "not_connected",
+     "flights": "failed",
+     "weather": "success",
+     "holidays": "success",
+     "currency": "success"
+    },
+    "unavailable_data": [
+     {
+      "field": "transit_feasibility",
+      "status": "not_connected",
+      "reason": "routes provider is not connected."
+     },
+     {
+      "field": "accommodation_options",
+      "status": "not_connected",
+      "reason": "accommodation provider is not connected."
+     }
+    ],
+    "factual_looking_fields_non_null": [
+     {
+      "path": "experience_plan.provider_coverage.hotel_prices",
+      "value": "unavailable"
+     }
+    ],
+    "factual_looking_field_count": 1,
+    "candidate_supply": {
+     "attractions_discovered": 57,
+     "tiers": {
+      "primary_anchor": 24,
+      "good_candidate": 33
+     },
+     "unsuitable_rejected": 0,
+     "category_distribution": {
+      "museum": 10,
+      "landmark": 9,
+      "park_nature": 1,
+      "viewpoint": 5,
+      "general_attraction": 6,
+      "art_culture": 6,
+      "entertainment": 8,
+      "food_market": 5,
+      "nightlife": 7
+     },
+     "viable_supply_per_matched_interest": {
+      "history": 19,
+      "food": 6
+     }
+    },
+    "scheduled_categories": {
+     "by_category": {
+      "landmark": 4,
+      "museum": 4,
+      "food_market": 1
+     },
+     "low_value_or_gallery_count": 0,
+     "interests_matched": [
+      "food",
+      "history"
+     ]
+    },
+    "resolved_destination": "C\u00f3rdoba, Andalusia, Spain",
+    "quality_finding_categories": [],
+    "pace_requested": "balanced",
+    "avg_stops_per_day": 3.0
+   },
+   "logged_component_seconds": {
+    "routing:osrm": 5.79,
+    "flights:kiwi_mcp_flight_provider": 4.91,
+    "itinerary_narrator:groq_itinerary_narrator_provider": 0.15,
+    "ai_candidate_discovery:groq_ai_candidate_proposal_provider": 0.1,
+    "accommodations:scraped_accommodation_provider": 0.0
+   }
+  }
+ ]
+}

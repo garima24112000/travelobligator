@@ -12,6 +12,7 @@ from app.models.itinerary_narrative import (
 )
 from app.models.planning_state import PlanningState, WeatherContext
 from app.models.routing import TravelTimeBufferStatus
+from app.services import place_taxonomy as taxonomy
 
 # Step 182F: strict, read-only input builder for the itinerary narrator.
 # `build_request` only ever reads `planning_state` -- it never calls a
@@ -74,6 +75,8 @@ class ItineraryNarrativeRequestBuilder:
                     name=experience.name,
                     category=experience.category,
                     reason=experience.why_included,
+                    normalized_category=experience.normalized_category,
+                    matched_interests=list(experience.matched_interests),
                 )
                 for experience in day_plan.experiences[:max_items]
             ]
@@ -154,6 +157,15 @@ class ItineraryNarrativeRequestBuilder:
             and repair_result.status == AIItineraryRepairStatus.COMPLETED
         )
 
+        canonical_interests = taxonomy.canonical_interests(interests)
+        scheduled = [e for day_plan in all_daily_plans for e in day_plan.experiences]
+        interests_served = [
+            interest
+            for interest in canonical_interests
+            if any(interest in e.matched_interests for e in scheduled)
+        ]
+        interests_unserved = [i for i in canonical_interests if i not in interests_served]
+
         return ItineraryNarrativeRequest(
             destination=trip_request.primary_destination,
             start_date=trip_request.start_date,
@@ -164,6 +176,8 @@ class ItineraryNarrativeRequestBuilder:
             else None,
             pace=pace,
             interests=list(interests),
+            interests_served=interests_served,
+            interests_unserved=interests_unserved,
             days=days,
             stay_area_names=stay_area_names,
             accommodation_offer_count=accommodation_offer_count,

@@ -4,6 +4,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from app.providers.ai_failure import classify_and_message
 from app.core.config import get_settings
 from app.models.ai_candidate_proposal import (
     AICandidateProposal,
@@ -265,7 +266,7 @@ class AnthropicAICandidateProposalProvider(AICandidateProposalProvider):
                 messages=[{"role": "user", "content": _build_prompt(request)}],
             )
         except Exception as exc:  # API/runtime failure -> rejected, never fabricated
-            return self._rejected_result(request, f"Anthropic API call failed: {exc}")
+            return self._rejected_result(request, classify_and_message("Anthropic", exc)[1])
 
         tool_input = self._extract_tool_input(response)
         if tool_input is None:

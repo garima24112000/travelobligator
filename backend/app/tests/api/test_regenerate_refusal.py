@@ -13,11 +13,7 @@ def _assert_refusal_body(body: dict) -> None:
     error = body["errors"][0]
     assert error["code"] == "REGENERATION_NOT_AVAILABLE"
     assert error["field"] == "regeneration"
-    assert error["message"] == (
-        "Feedback-driven regeneration is not available yet. The "
-        "regeneration engine has not been implemented, so no plan "
-        "changes were made."
-    )
+    assert error["message"] == "Regeneration was not applied, so no plan changes were made."
     # No generated plan content, fake diff, fake changed itinerary, or fake
     # v2 is ever smuggled into the refusal response.
     assert "daily_plans" not in str(body)
@@ -271,11 +267,7 @@ def test_regenerate_ungenerated_trip_records_one_blocked_attempt(
     assert attempt["pending_feedback_count"] == 0
     assert attempt["active_lock_count"] == 0
     assert attempt["reason_code"] == "REGENERATION_NOT_AVAILABLE"
-    assert attempt["message"] == (
-        "Feedback-driven regeneration is not available yet. The "
-        "regeneration engine has not been implemented, so no plan "
-        "changes were made."
-    )
+    assert attempt["message"] == "Regeneration was not applied, so no plan changes were made."
     assert attempt["attempt_id"].startswith("regen_attempt_")
 
 
@@ -868,6 +860,7 @@ def _submit_pace_feedback(client: TestClient, trip_id: str) -> None:
     assert response.status_code == 200
 
 
+@pytest.mark.usefixtures("synthetic_legacy_regeneration_support")
 def test_regenerate_confirm_true_with_feedback_and_zero_locks_returns_200(
     client: TestClient, generated_trip_id: str
 ) -> None:
@@ -893,6 +886,7 @@ def test_regenerate_confirm_true_with_feedback_and_zero_locks_returns_200(
     assert "regenerat" in data["message"].lower()
 
 
+@pytest.mark.usefixtures("synthetic_legacy_regeneration_support")
 def test_regenerate_success_calls_rerun_affected_stages_with_derived_stages(
     client: TestClient, generated_trip_id: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -919,6 +913,7 @@ def test_regenerate_success_calls_rerun_affected_stages_with_derived_stages(
     assert [stage.value for stage in calls[0]] == ["experience_plan", "validation"]
 
 
+@pytest.mark.usefixtures("synthetic_legacy_regeneration_support")
 def test_regenerate_success_does_not_call_langgraph_or_full_generation(
     client: TestClient, generated_trip_id: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -945,6 +940,7 @@ def test_regenerate_success_does_not_call_langgraph_or_full_generation(
     assert response.status_code == 200
 
 
+@pytest.mark.usefixtures("synthetic_legacy_regeneration_support")
 def test_regenerate_success_creates_exactly_one_new_version(
     client: TestClient, generated_trip_id: str
 ) -> None:
@@ -973,6 +969,7 @@ def test_regenerate_success_creates_exactly_one_new_version(
     assert after_state["metadata"]["current_version"] == "v2"
 
 
+@pytest.mark.usefixtures("synthetic_legacy_regeneration_support")
 def test_regenerate_success_recomputes_plan_diff_preview_and_readiness(
     client: TestClient, generated_trip_id: str
 ) -> None:
@@ -1005,6 +1002,7 @@ def test_regenerate_success_recomputes_plan_diff_preview_and_readiness(
     assert after_readiness["current_version"] == "v2"
 
 
+@pytest.mark.usefixtures("synthetic_legacy_regeneration_support")
 def test_regenerate_success_records_applied_attempt(
     client: TestClient, generated_trip_id: str
 ) -> None:
@@ -1024,6 +1022,7 @@ def test_regenerate_success_records_applied_attempt(
     assert attempt["current_version"] == "v2"
 
 
+@pytest.mark.usefixtures("synthetic_legacy_regeneration_support")
 def test_regenerate_failed_stage_rerun_does_not_create_version_and_records_failed_attempt(
     client: TestClient, generated_trip_id: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1070,6 +1069,7 @@ def test_regenerate_failed_stage_rerun_does_not_create_version_and_records_faile
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("synthetic_legacy_regeneration_support")
 def test_regenerate_success_marks_used_feedback_as_applied(
     client: TestClient, generated_trip_id: str
 ) -> None:
@@ -1093,6 +1093,7 @@ def test_regenerate_success_marks_used_feedback_as_applied(
     assert data["applied_feedback_event_ids"] == [event["feedback_event_id"]]
 
 
+@pytest.mark.usefixtures("synthetic_legacy_regeneration_support")
 def test_regenerate_success_pending_feedback_summary_reflects_zero_pending(
     client: TestClient, generated_trip_id: str
 ) -> None:
@@ -1112,6 +1113,7 @@ def test_regenerate_success_pending_feedback_summary_reflects_zero_pending(
     assert len(state["feedback_history"]) == 1
 
 
+@pytest.mark.usefixtures("synthetic_legacy_regeneration_support")
 def test_repeated_regenerate_after_success_refuses_with_no_pending_feedback(
     client: TestClient, generated_trip_id: str
 ) -> None:
@@ -1153,6 +1155,7 @@ def test_repeated_regenerate_after_success_refuses_with_no_pending_feedback(
     assert attempts[1]["reason_code"] == "REGENERATION_NO_PENDING_FEEDBACK"
 
 
+@pytest.mark.usefixtures("synthetic_legacy_regeneration_support")
 def test_regenerate_new_feedback_after_success_is_regeneratable_again(
     client: TestClient, generated_trip_id: str
 ) -> None:

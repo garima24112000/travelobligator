@@ -426,6 +426,12 @@ class AIFeedbackInterpretationResult(BaseModel):
     clarification: AIFeedbackClarification | None = None
     summary: str | None = None
     blocked_reasons: list[str] = Field(default_factory=list)
+    # Section 202B.1 (Task 16): machine-readable WHY for a `rejected`
+    # result caused by the provider call itself (an
+    # `app.providers.ai_failure.AIProviderFailureKind` value), so callers
+    # never parse `blocked_reasons` text. `None` for every other status
+    # and for rejections that are not a provider-call failure.
+    failure_kind: str | None = None
     provider_name: str | None = None
     model_name: str | None = None
     confidence: float = Field(ge=0.0, le=1.0)

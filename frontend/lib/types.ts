@@ -127,6 +127,9 @@ export type DestinationContextData = {
   trip_id: string;
   destination_context: {
     destination_name: string;
+    // Section 202B.2: what the places provider resolved the typed
+    // destination to (its own display name + structured components).
+    resolved_destination?: Record<string, string> | null;
     candidate_pois: CandidatePoi[];
     candidate_restaurants: CandidatePoi[];
     candidate_accommodation_pois: CandidatePoi[];
@@ -786,6 +789,10 @@ export type PendingFeedbackSummary = {
   summary_items: PendingFeedbackSummaryItem[];
   blocked_by: string[];
   note: string;
+  // Section 202C.1A: pending feedback in the exact order regeneration
+  // processes it (one event per call, oldest first).
+  queue_event_ids?: string[];
+  next_feedback_event_id?: string | null;
 };
 
 // A single "keep this place" instruction stored for a possible future
@@ -1233,6 +1240,10 @@ export type ItineraryNarrativeReport = {
   assumptions: string[];
   source_fields_used: string[];
   generated_at: string | null;
+  // Section 202B.3: "ai" for model-written prose, "deterministic_fallback"
+  // for the fact-only summary the backend builds from the final plan when
+  // AI narration fails. `status` still describes the AI attempt.
+  narrative_source?: "ai" | "deterministic_fallback";
 };
 
 // Full PlanningState is much larger than this; only feedback_history,
@@ -1251,6 +1262,7 @@ export type ItineraryNarrativeReport = {
 export type TripData = {
   trip_id: string;
   planning_state: {
+    trip_request?: Partial<TripRequestInput> | null;
     feedback_history: FeedbackEvent[];
     pending_feedback_summary: PendingFeedbackSummary;
     user_locks: UserLock[];
@@ -1266,4 +1278,145 @@ export type TripData = {
     travel_time_buffer_report: TravelTimeBufferReport | null;
     itinerary_narrative_report: ItineraryNarrativeReport | null;
   };
+};
+
+// ---------------------------------------------------------------------------
+// Section 199A/199B/199C: itinerary branches, revisions, and comparison.
+// Exact mirrors of the backend's `app.schemas.itinerary_lineage` and
+// `app.models.itinerary_revision_comparison` response shapes -- branch and
+// revision identity is ALWAYS `branch_id`/`revision_id`, never a display
+// name or `version_label` (labels can repeat across branches).
+// ---------------------------------------------------------------------------
+
+export type ItineraryBranch = {
+  branch_id: string;
+  trip_id: string;
+  display_name: string;
+  is_default: boolean;
+  is_active: boolean;
+  base_revision_id: string | null;
+  head_revision_id: string | null;
+  // Display context resolved by the backend from this branch's own stable
+  // head/base revision ids. `*_branch_*` name the branch that OWNS that
+  // revision -- for a fresh fork's inherited head/base, the SOURCE branch.
+  head_version_label: string | null;
+  head_branch_display_name: string | null;
+  base_version_label: string | null;
+  base_branch_id: string | null;
+  base_branch_display_name: string | null;
+  created_at: string;
+};
+
+export type ItineraryBranchListData = {
+  trip_id: string;
+  active_branch_id: string;
+  branches: ItineraryBranch[];
+};
+
+export type ItineraryRevisionSummary = {
+  revision_id: string;
+  trip_id: string;
+  branch_id: string;
+  parent_revision_id: string | null;
+  version_label: string;
+  created_by: string;
+  created_at: string;
+  feedback_event_id: string | null;
+  snapshot_available: boolean;
+};
+
+export type ItineraryRevisionListData = {
+  trip_id: string;
+  branch_id: string;
+  revisions: ItineraryRevisionSummary[];
+};
+
+// Only the snapshot fields the read-only historical preview actually
+// renders -- never the backend's full internal PlanningState.
+export type RevisionSnapshotPlanningState = {
+  metadata: { current_version: string };
+  experience_plan: { daily_plans: DailyPlan[] } | null;
+};
+
+export type ItineraryRevisionDetail = {
+  revision_id: string;
+  trip_id: string;
+  branch_id: string;
+  parent_revision_id: string | null;
+  version_label: string;
+  created_by: string;
+  created_at: string;
+  feedback_event_id: string | null;
+  snapshot_available: boolean;
+  planning_state: RevisionSnapshotPlanningState | null;
+};
+
+export type CreateForkRequest = {
+  source_revision_id: string;
+  display_name: string;
+  activate_after_create: boolean;
+};
+
+export type CreateForkResponse = {
+  status: string;
+  message: string;
+  branch: ItineraryBranch | null;
+  source_revision_id: string;
+  head_revision_id: string | null;
+  snapshot_available: boolean;
+  activated: boolean;
+  activation_status: string | null;
+  activation_message: string | null;
+};
+
+export type ActivateBranchResponse = {
+  status: string;
+  message: string;
+  previous_branch_id: string | null;
+  active_branch_id: string | null;
+  head_revision_id: string | null;
+  current_version: string | null;
+};
+
+export type ComparedRevisionSide = {
+  revision_id: string;
+  branch_id: string;
+  branch_display_name: string | null;
+  version_label: string;
+};
+
+export type ComparedExperience = {
+  experience_id: string;
+  name: string;
+};
+
+export type ComparedMovedExperience = {
+  experience_id: string;
+  name: string;
+  from_day: number;
+  to_day: number;
+};
+
+export type ComparedReorderedDay = {
+  day_index: number;
+  before_order: ComparedExperience[];
+  after_order: ComparedExperience[];
+};
+
+export type ItineraryRevisionComparison = {
+  trip_id: string;
+  left: ComparedRevisionSide;
+  right: ComparedRevisionSide;
+  added_experiences: ComparedExperience[];
+  removed_experiences: ComparedExperience[];
+  moved_experiences: ComparedMovedExperience[];
+  reordered_days: ComparedReorderedDay[];
+  traveler_profile_diff: TravelerProfileDiff | null;
+  validation_status_left: string | null;
+  validation_status_right: string | null;
+  warning_count_left: number;
+  warning_count_right: number;
+  critical_issue_count_left: number;
+  critical_issue_count_right: number;
+  no_compared_differences: boolean;
 };
