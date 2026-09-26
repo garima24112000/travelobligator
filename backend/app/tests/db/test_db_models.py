@@ -92,6 +92,7 @@ def test_planning_state_row_columns() -> None:
         "current_version",
         "pipeline_status",
         "state",
+        "lock_version",
         "created_at",
         "updated_at",
     ]
@@ -149,6 +150,9 @@ def test_generation_job_row_columns() -> None:
         "diff",
         "clarification_reason",
         "clarification_possible_experience_ids",
+        "lease_owner",
+        "lease_expires_at",
+        "heartbeat_at",
     ]
     assert table.columns["job_id"].primary_key is True
     for not_null_column in (

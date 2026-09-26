@@ -366,6 +366,22 @@ def job_not_found_error(job_id: str) -> AppError:
     )
 
 
+CONCURRENT_UPDATE_MESSAGE = (
+    "This trip was changed by another request while your change was being saved. "
+    "Nothing was overwritten -- reload the trip and try again."
+)
+
+
+def concurrent_update_error() -> AppError:
+    """409 -- a write was based on stale state (Section 200C optimistic concurrency /
+    compare-and-set). Fixed, safe message: no SQL, no row/version detail, no identifiers."""
+    return AppError(
+        code=ErrorCode.CONCURRENT_UPDATE,
+        message=CONCURRENT_UPDATE_MESSAGE,
+        status_code=status.HTTP_409_CONFLICT,
+    )
+
+
 def job_already_running_error(trip_id: str) -> AppError:
     """409 -- a new generate/regenerate job was requested for `trip_id`
     while `Settings.generation_job_max_running_per_trip` genuinely active

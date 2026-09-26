@@ -4,6 +4,7 @@ import logging
 from dataclasses import dataclass
 from enum import Enum
 
+from app.core.config import get_settings
 from app.models.itinerary_lineage import (
     DEFAULT_BRANCH_DISPLAY_NAME,
     ItineraryBranch,
@@ -15,6 +16,8 @@ from app.repositories.factory import (
     get_lineage_repository,
     get_planning_state_repository,
 )
+from app.repositories.errors import ConcurrentStateUpdateError
+from app.repositories.unit_of_work import run_atomic
 from app.services.feedback_service import pending_feedback_events
 from app.services.revision_snapshot_service import (
     build_workspace_consistency_projection,
@@ -95,18 +98,25 @@ class BranchActivationResult:
 
 
 class RevisionLineageService:
-    def ensure_default_branch(self, trip_id: str) -> ItineraryBranch:
+    def ensure_default_branch(self, trip_id: str, *, repository=None) -> ItineraryBranch:
         """Idempotent (Task 6/29): returns the trip's existing default
         branch if one is already recorded, otherwise creates it. Cheap
         and side-effect-free beyond that one metadata row -- safe to call
         from a read-only path, since it never touches/creates a revision
-        or snapshot itself."""
-        repository = get_lineage_repository()
+        or snapshot itself.
+
+        Section 200C: race-safe -- creation is `get_or_create_default_branch`
+        (`INSERT ... ON CONFLICT DO NOTHING` + read-back in PostgreSQL), so two
+        concurrent callers converge on ONE default branch and neither aborts the
+        surrounding transaction. `repository` lets a unit of work pass its own
+        transaction-bound lineage repository.
+        """
+        repository = repository or get_lineage_repository()
         existing = repository.get_default_branch(trip_id)
         if existing is not None:
             return existing
 
-        branch = repository.create_branch(
+        branch = repository.get_or_create_default_branch(
             ItineraryBranch(
                 trip_id=trip_id,
                 display_name=DEFAULT_BRANCH_DISPLAY_NAME,
@@ -114,7 +124,7 @@ class RevisionLineageService:
             )
         )
         logger.info(
-            "Default branch created for trip %s.",
+            "Default branch ensured for trip %s.",
             trip_id,
             extra={
                 "stage": _STAGE,
@@ -125,7 +135,7 @@ class RevisionLineageService:
         )
         return branch
 
-    def resolve_active_branch_id(self, planning_state: PlanningState) -> str:
+    def resolve_active_branch_id(self, planning_state: PlanningState, *, repository=None) -> str:
         """Section 199B (Task 3/24): the branch a generation/regeneration
         call operating on `planning_state` right now should record its
         result onto. `planning_state.metadata.active_branch_id` is
@@ -136,7 +146,40 @@ class RevisionLineageService:
         never requiring a manual migration (Task 3)."""
         if planning_state.metadata.active_branch_id is not None:
             return planning_state.metadata.active_branch_id
-        return self.ensure_default_branch(planning_state.trip_id).branch_id
+        return self.ensure_default_branch(planning_state.trip_id, repository=repository).branch_id
+
+    def commit_state_with_revision(
+        self,
+        planning_state: PlanningState,
+        *,
+        state_repository=None,
+        created_by: str | None = None,
+    ) -> ItineraryRevision | None:
+        """Persist `planning_state` AND record its revision as ONE transition (Section 200C).
+
+        PostgreSQL: a single short transaction performs (1) the compare-and-set state write
+        (`lock_version`), (2) the revision insert (idempotent on branch+version), (3) the branch
+        head compare-and-set. Any failure -- a stale writer (`ConcurrentStateUpdateError`), a
+        constraint violation, a fault between the writes -- rolls ALL of it back: no state
+        advanced without its revision, no head pointing at a revision that was never committed.
+        It is NOT best-effort: failures propagate. Call it only AFTER all provider/AI work is
+        finished; the transaction contains database statements only.
+
+        Local JSON (explicit dev backend) or an explicitly injected `state_repository` (unit-test
+        seam): the old two-step behaviour -- save, then best-effort revision recording.
+        """
+        if state_repository is None and get_settings().persistence_backend == "postgres":
+
+            def _persist(uow) -> ItineraryRevision:
+                uow.planning_states.save(planning_state)
+                return self._record_current_revision(
+                    planning_state, created_by=created_by, repository=uow.lineage
+                )
+
+            return run_atomic(_persist)
+
+        (state_repository or get_planning_state_repository()).save(planning_state)
+        return self.record_current_revision(planning_state, created_by=created_by)
 
     def record_current_revision(
         self, planning_state: PlanningState, *, created_by: str | None = None
@@ -184,9 +227,9 @@ class RevisionLineageService:
             return None
 
     def _record_current_revision(
-        self, planning_state: PlanningState, *, created_by: str | None
+        self, planning_state: PlanningState, *, created_by: str | None, repository=None
     ) -> ItineraryRevision:
-        repository = get_lineage_repository()
+        repository = repository or get_lineage_repository()
         trip_id = planning_state.trip_id
         version_label = planning_state.metadata.current_version
 
@@ -199,8 +242,8 @@ class RevisionLineageService:
         # (Task 25) even when that head revision was inherited from
         # Main at fork time (Task 9/10).
         branch = repository.get_branch(
-            self.resolve_active_branch_id(planning_state)
-        ) or self.ensure_default_branch(trip_id)
+            self.resolve_active_branch_id(planning_state, repository=repository)
+        ) or self.ensure_default_branch(trip_id, repository=repository)
 
         existing = repository.get_revision_by_branch_and_version(
             branch.branch_id, version_label
@@ -263,7 +306,12 @@ class RevisionLineageService:
 
         # Task 16: branch head only ever advances after the revision it
         # will point to already exists -- never the other way around.
-        repository.update_branch_head(branch.branch_id, created.revision_id)
+        # Section 200C: compare-and-set -- the head only advances from the value this call
+        # read as the parent; a stale writer gets `BranchHeadConflictError` instead of
+        # silently overwriting a newer head.
+        repository.update_branch_head(
+            branch.branch_id, created.revision_id, expected_head_revision_id=parent_revision_id
+        )
 
         logger.info(
             "Revision recorded for trip %s.",
@@ -290,17 +338,17 @@ class RevisionLineageService:
         objects."""
         return get_lineage_repository().list_revisions_for_branch(branch_id)
 
-    def load_snapshot(self, revision_id: str) -> PlanningState | None:
+    def load_snapshot(self, revision_id: str, *, repository=None) -> PlanningState | None:
         """Read-only (Task 25): the full historical `PlanningState` for
         `revision_id`, or `None` if the revision doesn't exist or never
         had a snapshot captured (`snapshot_available=False`) -- never
         reconstructed by any other means (Task 18)."""
-        revision = get_lineage_repository().get_revision(revision_id)
+        revision = (repository or get_lineage_repository()).get_revision(revision_id)
         if revision is None or not revision.snapshot_available or revision.snapshot is None:
             return None
         return deserialize_planning_state_snapshot(revision.snapshot)
 
-    def check_branch_head_consistency(self, planning_state: PlanningState) -> bool:
+    def check_branch_head_consistency(self, planning_state: PlanningState, *, repository=None) -> bool:
         """Task 28 (199A), generalized to the ACTIVE branch in 199B
         (Task 4), and strengthened to real semantic content equality in
         199B.1 (Task 5) -- `active_branch_id` + a matching
@@ -324,8 +372,10 @@ class RevisionLineageService:
         those legitimately differing never produces a false conflict
         here (Task 12/3).
         """
-        repository = get_lineage_repository()
-        branch = repository.get_branch(self.resolve_active_branch_id(planning_state))
+        repository = repository or get_lineage_repository()
+        branch = repository.get_branch(
+            self.resolve_active_branch_id(planning_state, repository=repository)
+        )
         if branch is None or branch.head_revision_id is None:
             return True
 
@@ -401,6 +451,58 @@ class RevisionLineageService:
     # -- Section 199B: branch activation (Tasks 13-18) ----------------------
 
     def activate_branch(self, trip_id: str, branch_id: str) -> BranchActivationResult:
+        """Atomic branch activation (Section 200C).
+
+        PostgreSQL: the whole decision -- lock the trip's state row (`SELECT ... FOR UPDATE`,
+        one row, released at commit), evaluate every guard, load the target head snapshot, write
+        the restored state (which also carries the new `active_branch_id`) -- runs in ONE short
+        transaction, so the workspace can never be left as "active branch = B but state = A".
+        Two competing activations serialise on the row lock and each sees the other's result;
+        the final state always corresponds completely to exactly one branch. A stale write
+        (which the lock normally prevents) surfaces as `BLOCKED_STATE_CONFLICT`, never as a
+        silent overwrite. No provider/AI call happens inside the transaction.
+
+        Local JSON (explicit dev backend) runs the same logic non-transactionally.
+        """
+        try:
+            if get_settings().persistence_backend == "postgres":
+                return run_atomic(
+                    lambda uow: self._activate_branch(
+                        trip_id,
+                        branch_id,
+                        planning_state_repository=uow.planning_states,
+                        lineage_repository=uow.lineage,
+                        job_repository=uow.jobs,
+                        lock_state_row=True,
+                    )
+                )
+            return self._activate_branch(
+                trip_id,
+                branch_id,
+                planning_state_repository=get_planning_state_repository(),
+                lineage_repository=get_lineage_repository(),
+                job_repository=get_job_repository(),
+                lock_state_row=False,
+            )
+        except ConcurrentStateUpdateError:
+            return BranchActivationResult(
+                status=BranchActivationStatus.BLOCKED_STATE_CONFLICT,
+                message=(
+                    "The itinerary changed while the branch was being switched; "
+                    "nothing was changed. Reload and try again."
+                ),
+            )
+
+    def _activate_branch(
+        self,
+        trip_id: str,
+        branch_id: str,
+        *,
+        planning_state_repository,
+        lineage_repository,
+        job_repository,
+        lock_state_row: bool,
+    ) -> BranchActivationResult:
         """Switches the trip's editable working copy onto `branch_id`'s
         head snapshot (Task 13). Never creates a new revision or
         `VersionHistoryItem` merely by switching, never auto-applies
@@ -442,8 +544,7 @@ class RevisionLineageService:
             )
             return result
 
-        planning_state_repository = get_planning_state_repository()
-        current_state = planning_state_repository.get_by_trip_id(trip_id)
+        current_state = planning_state_repository.get_by_trip_id(trip_id, for_update=lock_state_row)
         if current_state is None:
             return _log_and_return(
                 BranchActivationResult(
@@ -452,7 +553,6 @@ class RevisionLineageService:
                 )
             )
 
-        lineage_repository = get_lineage_repository()
         target_branch = lineage_repository.get_branch(branch_id)
         if target_branch is None or target_branch.trip_id != trip_id:
             # Task 49: never reveal whether a branch_id belonging to a
@@ -464,7 +564,7 @@ class RevisionLineageService:
                 )
             )
 
-        previous_branch_id = self.resolve_active_branch_id(current_state)
+        previous_branch_id = self.resolve_active_branch_id(current_state, repository=lineage_repository)
 
         # Task 14 (workspace-cleanliness guards) -- checked against the
         # CURRENT branch's workspace, since that is what would be left
@@ -504,7 +604,7 @@ class RevisionLineageService:
                 )
             )
 
-        running_jobs = get_job_repository().list_running_by_trip_id(trip_id)
+        running_jobs = job_repository.list_running_by_trip_id(trip_id)
         if running_jobs:
             # Task 15: a running async generate/regenerate job must
             # finish (or be observed as terminal) against the branch it
@@ -522,7 +622,7 @@ class RevisionLineageService:
                 )
             )
 
-        if not self.check_branch_head_consistency(current_state):
+        if not self.check_branch_head_consistency(current_state, repository=lineage_repository):
             # Task 39: never guess which state should win -- refuse the
             # switch and surface the disagreement instead.
             return _log_and_return(
@@ -546,7 +646,7 @@ class RevisionLineageService:
                 )
             )
 
-        target_snapshot = self.load_snapshot(target_branch.head_revision_id)
+        target_snapshot = self.load_snapshot(target_branch.head_revision_id, repository=lineage_repository)
         if target_snapshot is None:
             # Task 2/8/18: never reconstructed -- a metadata-only
             # historical head (should not normally happen for a real
@@ -564,6 +664,9 @@ class RevisionLineageService:
             )
 
         target_snapshot.metadata.active_branch_id = target_branch.branch_id
+        # The snapshot was deserialized (no concurrency token): it replaces the row we read
+        # (and, in PostgreSQL, locked), so it inherits THAT row's token for the CAS write.
+        target_snapshot._lock_version = current_state._lock_version
         planning_state_repository.save(target_snapshot)
 
         return _log_and_return(

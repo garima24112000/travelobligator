@@ -4229,6 +4229,8 @@ const REGENERATION_REASON_CODE_LABELS: Record<string, string> = {
   REGENERATION_PROVIDER_RATE_LIMITED: "AI temporarily rate-limited",
   REGENERATION_AI_UNAVAILABLE: "AI interpretation unavailable",
   BRANCH_STATE_CONFLICT: "Branch state changed",
+  // Section 200C: a write was based on stale state; nothing was overwritten.
+  CONCURRENT_UPDATE: "Changed by another request",
   DESTINATION_UNRESOLVED: "Destination not resolved",
   UNKNOWN_ERROR: "Unknown error",
 };

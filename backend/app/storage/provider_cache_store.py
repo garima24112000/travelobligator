@@ -289,12 +289,25 @@ _stores: dict[str, ProviderCacheStore] = {}
 _stores_lock = RLock()
 
 
-def get_provider_cache_store(path: Path) -> ProviderCacheStore:
-    """Returns a process-wide `ProviderCacheStore` shared by every caller
-    that resolves to the same file path, mirroring
-    `app.storage.local_json_store.get_local_json_store`. Not called by any
-    provider adapter yet (Step 164A is foundation only).
+def get_provider_cache_store(path: Path) -> Any:
+    """The provider-response cache backend, chosen ONCE here by
+    `Settings.provider_cache_backend` (Section 200B): `redis` (default) returns
+    the process-level Redis store and never touches `path`; `sqlite` (explicit
+    local-development alternative) returns the process-wide SQLite store for
+    `path`. Redis failures never fall back to SQLite -- the Redis store itself
+    degrades to uncached provider calls.
     """
+    from app.core.config import get_settings
+
+    if get_settings().provider_cache_backend == "redis":
+        from app.storage.redis_provider_cache_store import get_redis_provider_cache_store
+
+        return get_redis_provider_cache_store()
+    return get_sqlite_provider_cache_store(path)
+
+
+def get_sqlite_provider_cache_store(path: Path) -> ProviderCacheStore:
+    """Process-wide SQLite store per resolved file path (explicit `sqlite` backend only)."""
     key = str(path.resolve())
     with _stores_lock:
         store = _stores.get(key)

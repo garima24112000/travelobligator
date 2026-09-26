@@ -68,3 +68,23 @@ logs/
 # `./backend:/app`) rather than relying on this runtime image
 # containing app/tests/.
 app/tests/
+
+# Section 200E: everything the runtime image must not contain, stated explicitly (the Dockerfile also copies
+# only app/, alembic/, alembic.ini and scripts/run_migrations.py). Real secrets, git metadata, local state,
+# manual smoke scripts, dev requirements and editor/OS files never enter the build context.
+.git
+.gitignore
+.github/
+.idea/
+.vscode/
+*.swp
+.DS_Store
+.venv
+requirements-dev.txt
+scripts/manual_*
+*.sqlite3
+*.sqlite3-journal
+travelobligator_state.json
+.env
+.env.*
+!.env.example

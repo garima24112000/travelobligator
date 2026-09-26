@@ -1,117 +1,149 @@
+# Section 200E: production-STYLE local stack, built from the real images (no source bind mounts, no --reload,
+# no dev servers):
+#
+#   postgres (healthy) -> migrate (one-shot: alembic upgrade head, must succeed) -> backend (verifies the schema,
+#   never migrates) -> frontend.   redis is OPTIONAL infrastructure (a disposable provider-response cache) that starts in
+#   parallel: the backend does NOT wait for it and starts degraded (/ready 200 "degraded", provider calls uncached) if it
+#   is down; PostgreSQL and the migration are the only hard prerequisites.
+#
+#   docker compose up --build                       # this stack
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up   # the old hot-reload dev workflow
+#
+# Configuration comes from the PROJECT ENVIRONMENT (compose reads ./.env for `${...}` interpolation, or the file you
+# pass with --env-file). Required: POSTGRES_PASSWORD and SESSION_SECRET_KEY (no default is shipped -- this file
+# contains no credential). Application settings (AI keys, feature flags, ...) are read from APP_ENV_FILE
+# (default ./.env, optional). To run without touching your own .env:
+#   docker compose --env-file /path/to/stack.env -p myproject up --build   (with APP_ENV_FILE set in that file)
+#
+# Networks: `data` is INTERNAL (postgres/redis/migrate/backend only -- no host access, no internet); `edge` carries
+# browser-facing traffic and the backend's outbound calls to travel providers. Postgres and Redis publish NO host
+# ports (dev override publishes them on 127.0.0.1 only). Backend/frontend publish on 127.0.0.1 only.
+#
+# LOCAL ONLY: plain HTTP, no TLS, no auth on /ready and /metrics (production needs private routing/access control,
+# HTTPS and Secure cookies -- Section 203). Not a deployment.
+
+name: travelobligator
+
+x-backend-env: &backend-env
+  PERSISTENCE_BACKEND: postgres
+  # Service DNS names (never localhost inside a container). The password must be URL-safe (letters/digits/-._~).
+  DATABASE_URL: postgresql://${POSTGRES_USER:-travelobligator}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-travelobligator}
+  PROVIDER_CACHE_BACKEND: redis
+  REDIS_URL: redis://redis:6379/0
+  SESSION_SECRET_KEY: ${SESSION_SECRET_KEY:?set SESSION_SECRET_KEY}
+  BACKEND_CORS_ORIGINS: ${BACKEND_CORS_ORIGINS:-http://localhost:3000}
+  SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE:-false}
+  SESSION_COOKIE_SAMESITE: ${SESSION_COOKIE_SAMESITE:-lax}
+  PORT: "8000"
+
 services:
-  backend:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-travelobligator}
+      POSTGRES_USER: ${POSTGRES_USER:-travelobligator}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks: [data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  redis:
+    # Cache only and DISPOSABLE: no persistence (a restart empties it -- the only consequence is future cache misses /
+    # provider calls; application data lives in PostgreSQL), bounded memory, LRU eviction. Not a startup dependency of
+    # the backend (see `backend.depends_on`).
+    image: redis:7.4-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "128mb", "--maxmemory-policy", "allkeys-lru"]
+    networks: [data]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  migrate:
+    # ONE explicit one-shot migration (the same command a deployment pipeline will run once per release). The backend
+    # never migrates by itself, and this runs once here -- not once per backend replica.
     build:
       context: ./backend
-      dockerfile: Dockerfile
-    container_name: travelobligator_backend
+    image: travelobligator-backend:local
+    command: ["python", "scripts/run_migrations.py"]
+    environment: *backend-env
     env_file:
-      - .env
-    ports:
-      - "8000:8000"
-    volumes:
-      - ./backend:/app
-    # Step 188C: long-form conditions instead of the plain service-name
-    # list this used before -- Compose previously only waited for each
-    # container to *start*, never for Postgres to actually accept
-    # connections (even though `postgres` below already had a real
-    # `pg_isready` healthcheck that nothing referenced). This is a
-    # startup-ordering cleanup only: the app still defaults to
-    # `PERSISTENCE_BACKEND=local_json` and does not require Postgres at
-    # runtime -- see `.env.example`/docs/14_backend_architecture.md
-    # section 102. `redis` has no healthcheck (see that service's own
-    # comment below for why) so `service_started` is the only condition
-    # available for it, matching its previous (implicit) behavior exactly.
+      - path: ${APP_ENV_FILE:-.env}
+        required: false
     depends_on:
       postgres:
         condition: service_healthy
-      redis:
-        condition: service_started
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    networks: [data]
+    restart: "no"
+
+  backend:
+    image: travelobligator-backend:local
+    environment: *backend-env
+    env_file:
+      - path: ${APP_ENV_FILE:-.env}
+        required: false
+    ports:
+      - "127.0.0.1:${BACKEND_HOST_PORT:-8000}:8000"
+    # STARTUP CONTRACT: PostgreSQL is authoritative and the migration must have succeeded -- both are hard
+    # prerequisites. Redis is deliberately NOT listed: it is an optional provider-response cache, so the backend must be
+    # able to start (degraded, uncached) when Redis is down or absent -- both before and after startup. Do not add a
+    # `redis` dependency here.
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    networks: [data, edge]
+    # Runtime hardening: read-only root filesystem (Postgres + Redis mode writes nothing), a small tmpfs for /tmp,
+    # no Linux capabilities, no privilege escalation. Liveness = /health (image HEALTHCHECK); traffic readiness =
+    # /ready (for an orchestrator/load balancer, not for Docker restarts).
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    # uvicorn's graceful window (20 s) plus lifespan shutdown must fit inside this.
+    stop_grace_period: 30s
+    restart: unless-stopped
 
   frontend:
     build:
       context: ./frontend
-      dockerfile: Dockerfile
-      # Step 188E: `frontend/Dockerfile` is now multi-stage and defaults
-      # to its LAST stage (`production`, a real `next build`+`next
-      # start` path) when no target is given. Pinning `target: dev`
-      # here keeps local `docker compose up`/`docker compose build
-      # frontend` building/running the exact same `npm run dev`
-      # behavior as before this step -- this line is what prevents
-      # adding a production Docker path from silently changing local
-      # dev. See docs/16_frontend_architecture.md section 57 for the
-      # full story, including how to build/run the `production` target
-      # manually (never done by this compose file).
-      target: dev
-    container_name: travelobligator_frontend
-    env_file:
-      - .env
+      args:
+        # Build-time FALLBACK only; the RUNTIME value below is what the browser uses.
+        NEXT_PUBLIC_API_BASE_URL: ${PUBLIC_API_BASE_URL:-http://localhost:8000}
+    image: travelobligator-frontend:local
+    environment:
+      # The address the BROWSER uses to reach the backend (public value; never an internal service name).
+      API_BASE_URL: ${PUBLIC_API_BASE_URL:-http://localhost:8000}
+      PORT: "3000"
     ports:
-      - "3000:3000"
-    volumes:
-      - ./frontend:/app
-      - /app/node_modules
-      - /app/.next
-    # Step 188C: waits for the backend's own Dockerfile `HEALTHCHECK`
-    # (`/health`, liveness-only -- see backend/Dockerfile's comment) to
-    # report healthy, not just for the backend container to start.
-    # `/health` still never checks Postgres/Redis/any provider, so this
-    # is not a claim that the backend's data dependencies are ready --
-    # only that the FastAPI process itself is up and answering requests
-    # before the frontend container starts. Does not itself change the
-    # frontend's own command, env, or image -- see backend/Dockerfile
-    # and (as of Step 188E) this service's own `target: dev` comment
-    # above plus docs/16_frontend_architecture.md section 57 for the
-    # frontend's own Docker production-path story.
+      - "127.0.0.1:${FRONTEND_HOST_PORT:-3000}:3000"
     depends_on:
       backend:
         condition: service_healthy
-    command: npm run dev
+    networks: [edge]
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+      - /app/.next/cache:size=64m,uid=1000,gid=1000
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    stop_grace_period: 15s
+    restart: unless-stopped
 
-  postgres:
-    image: postgres:16
-    container_name: travelobligator_postgres
-    env_file:
-      - .env
-    environment:
-      POSTGRES_DB: ${POSTGRES_DB}
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-    ports:
-      # Step 183E: configurable host port -- a developer's own local
-      # Postgres (or any other project's compose stack) commonly already
-      # occupies 5432. Set POSTGRES_HOST_PORT (e.g. 15432) to avoid that
-      # conflict without touching whatever else is already using 5432.
-      # The container's own internal port stays 5432 either way -- other
-      # containers in this compose file (e.g. `backend`) keep reaching it
-      # at `postgres:5432` regardless of this mapping.
-      - "${POSTGRES_HOST_PORT:-5432}:5432"
-    volumes:
-      - travelobligator_postgres_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-
-  redis:
-    image: redis:7
-    container_name: travelobligator_redis
-    # Step 188C: no healthcheck added here -- nothing in backend/app/
-    # reads REDIS_URL or talks to Redis at all today (see
-    # `Settings.redis_url`'s own comment in backend/app/core/config.py),
-    # so `backend`'s `depends_on` above only waits for this container to
-    # *start* (`condition: service_started`), matching this service's
-    # actual role: present in this compose file for future use, not
-    # because the app needs it. Not added purely to keep this step's
-    # diff small and because a genuinely unused dependency doesn't need
-    # a health contract yet -- add one if/when the app actually starts
-    # reading REDIS_URL.
-    ports:
-      - "6379:6379"
-    volumes:
-      - travelobligator_redis_data:/data
+networks:
+  data:
+    internal: true
+  edge: {}
 
 volumes:
-  travelobligator_postgres_data:
-  travelobligator_redis_data:
+  postgres_data:

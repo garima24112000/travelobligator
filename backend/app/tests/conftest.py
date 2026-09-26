@@ -252,6 +252,63 @@ def _reset_in_memory_repositories(tmp_path: Path) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _explicit_test_persistence_backend(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Section 200A: the PRODUCTION default persistence backend is now
+    ``postgres``, so hermetic tests must not inherit it. Every test picks its
+    backend EXPLICITLY here (visible, never implicit):
+
+      * ordinary tests -> ``local_json`` (the per-test temp store below), and
+        any ambient DATABASE_URL is removed so a hermetic test can never reach
+        a real database;
+      * tests marked ``postgres_integration`` (gated by
+        TRAVELOB_RUN_POSTGRES_TESTS=1 + a real DATABASE_URL) -> ``postgres``.
+
+    Tests that assert the production default build ``Settings(_env_file=None)``
+    with these variables removed (see tests/core/test_persistence_default_200a.py).
+    """
+    if request.node.get_closest_marker("postgres_integration") is not None:
+        monkeypatch.setenv("PERSISTENCE_BACKEND", "postgres")
+    else:
+        monkeypatch.setenv("PERSISTENCE_BACKEND", "local_json")
+        monkeypatch.delenv("DATABASE_URL", raising=False)
+    # Section 200B: the provider-response cache backend is chosen explicitly too.
+    # Ordinary tests use the isolated `sqlite` cache (patched per adapter below) and
+    # can never reach a Redis; only `redis_integration` tests use `redis`.
+    if request.node.get_closest_marker("redis_integration") is not None:
+        monkeypatch.setenv("PROVIDER_CACHE_BACKEND", "redis")
+    else:
+        monkeypatch.setenv("PROVIDER_CACHE_BACKEND", "sqlite")
+        monkeypatch.delenv("REDIS_URL", raising=False)
+    _reset_persistence_caches()
+    yield
+    _reset_persistence_caches()
+
+
+def _reset_persistence_caches() -> None:
+    """Settings, the process-level SQLAlchemy engine and every lazily-built
+    Postgres repository are cached; a test that points DATABASE_URL somewhere
+    (even unreachable) must never leak that engine/repository into a later test
+    (found in 200A: a hermetic engine-cache test poisoned later gated tests when
+    the whole suite ran with the Postgres gate enabled)."""
+    from app.db.session import get_engine
+    from app.repositories import factory as _factory
+    from app.storage.redis_provider_cache_store import close_redis_provider_cache_store, reset_cache_stats
+
+    close_redis_provider_cache_store()
+    reset_cache_stats()
+    get_settings.cache_clear()
+    get_engine.cache_clear()
+    for cache in (
+        _factory._postgres_trip_repository,
+        _factory._postgres_planning_state_repository,
+        _factory._postgres_user_repository,
+        _factory._postgres_job_repository,
+        _factory._postgres_lineage_repository,
+    ):
+        cache.cache_clear()
+
+
+@pytest.fixture(autouse=True)
 def _configured_session_secret(monkeypatch: pytest.MonkeyPatch) -> None:
     """Step 184D: every `/trips/*` route now requires a real, verified
     session, so every test that hits one (which is most of this suite)
@@ -274,7 +331,7 @@ def _configured_session_secret(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
-def _isolate_provider_cache_store(monkeypatch: pytest.MonkeyPatch):
+def _isolate_provider_cache_store(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch):
     """Isolate the provider cache singleton (`get_provider_cache_store`,
     Steps 164A-164G) between test functions, mirroring
     `_reset_in_memory_repositories` above for the same reason.
@@ -305,6 +362,10 @@ def _isolate_provider_cache_store(monkeypatch: pytest.MonkeyPatch):
     """
     import shutil
     import tempfile
+
+    if request.node.get_closest_marker("redis_integration") is not None:
+        yield  # real-Redis tests exercise the real backend selection, unpatched
+        return
 
     import app.providers.accommodation.scraped_adapter as scraped_accommodation_adapter_module
     import app.providers.currency.frankfurter_adapter as frankfurter_adapter_module

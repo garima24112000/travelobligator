@@ -55,6 +55,7 @@ class _FakeSession:
         self.select_rows = select_rows or []
         self.executed_statements: list[object] = []
         self.committed = False
+        self.rolled_back = False
 
     def __enter__(self) -> "_FakeSession":
         return self
@@ -62,7 +63,7 @@ class _FakeSession:
     def __exit__(self, *exc_info: object) -> bool:
         return False
 
-    def get(self, model: type, pk: str) -> object | None:
+    def get(self, model: type, pk: str, **kwargs: object) -> object | None:
         return self.get_result if model is GenerationJobRow else None
 
     def execute(self, stmt: object):
@@ -71,6 +72,9 @@ class _FakeSession:
 
     def commit(self) -> None:
         self.committed = True
+
+    def rollback(self) -> None:
+        self.rolled_back = True
 
 
 def _compiled_sql(stmt: object) -> str:

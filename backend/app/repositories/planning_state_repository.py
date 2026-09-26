@@ -38,7 +38,9 @@ class PlanningStateRepository:
         )
         return planning_state
 
-    def get_by_trip_id(self, trip_id: str) -> PlanningState | None:
+    def get_by_trip_id(self, trip_id: str, *, for_update: bool = False) -> PlanningState | None:
+        # `for_update` exists for interface parity with the PostgreSQL repository (row lock);
+        # Local JSON has no row locks and no optimistic-concurrency token (see module docs).
         return self._states.get(trip_id)
 
 

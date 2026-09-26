@@ -27,14 +27,14 @@ from app.repositories.postgres_user_repository import PostgresUserRepository
 #   TRAVELOB_RUN_POSTGRES_TESTS=1 PERSISTENCE_BACKEND=postgres \
 #       DATABASE_URL=postgresql://to_test:to_test@localhost:15433/to_test \
 #       python -m pytest app/tests/repositories/test_postgres_itinerary_lineage_repository_integration.py -q
-pytestmark = pytest.mark.skipif(
+pytestmark = [pytest.mark.postgres_integration, pytest.mark.skipif(
     os.environ.get("TRAVELOB_RUN_POSTGRES_TESTS") != "1",
     reason=(
         "Optional live-Postgres integration test, skipped by default. Set "
         "TRAVELOB_RUN_POSTGRES_TESTS=1 (plus PERSISTENCE_BACKEND=postgres and "
         "a real DATABASE_URL against an alembic-upgraded database) to run it."
     ),
-)
+)]
 
 
 def _session_factory():

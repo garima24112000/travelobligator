@@ -124,14 +124,58 @@ section 103).
 
 ### Running with Docker Compose instead
 
-`docker compose up` (from the repo root) starts a `backend` container
-(port 8000, `--reload`), a `frontend` container (port 3000, running
-`npm run dev` — not a production build), and `postgres`/`redis`
-containers. **Nothing in the application code currently talks to
-Postgres or Redis** — they exist in `docker-compose.yml` for future use,
-not because the app needs them today (see "Current Status" below). This
-is a convenience for running both services together locally, not a
-production deployment path.
+**Since Section 200E the default `docker compose up --build` is a production-STYLE local stack built from the
+real images** — no source bind mounts, no `--reload`, no dev servers:
+
+```text
+postgres (healthy) ─► migrate (one-shot: alembic upgrade head, must exit 0) ─► backend ─► frontend
+redis (optional, disposable cache) — starts in parallel; the backend does NOT wait for it
+```
+
+PostgreSQL and the migration are hard prerequisites for the backend. **Redis is not**: if it is down or absent the
+backend still starts, `/health` is 200, `/ready` is 200 `degraded`, and provider calls run uncached (no SQLite or Local
+JSON fallback); when Redis returns, readiness recovers and caching resumes without a backend restart.
+
+```bash
+# 1. put required settings in your .env (or a separate file passed with --env-file):
+#    POSTGRES_PASSWORD (URL-safe), SESSION_SECRET_KEY   -- no default is shipped, compose refuses to start without them
+docker compose up --build                  # production-style stack
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build   # the old hot-reload dev workflow
+```
+
+- **Images:** backend `python:3.11.14-slim-bookworm` (multi-stage, virtualenv copied to the runtime stage, non-root uid
+  10001, exec-form `python -m app.serve`, **one Uvicorn worker per container**); frontend `node:22.23.3-alpine3.24`
+  (multi-stage, Next.js `output: "standalone"`, non-root `node`, `node server.js`). No `.env`, tests, `.git` or local
+  state is in either image.
+- **Migrations are an explicit one-shot `migrate` service** (`python scripts/run_migrations.py`). The backend only
+  *verifies* the schema head at startup — it refuses to start on a mismatch and never migrates. If `migrate` fails, the
+  backend never starts.
+- **Network exposure:** Postgres and Redis publish **no** host ports (the dev override publishes them on `127.0.0.1`
+  only); backend and frontend bind `127.0.0.1` only. `postgres`/`redis`/`migrate`/`backend` share an *internal*
+  network; service URLs use DNS names (`postgres`, `redis`), never `localhost`.
+- **Runtime hardening:** backend and frontend run with a read-only root filesystem (+ tmpfs), all capabilities
+  dropped, `no-new-privileges`. In PostgreSQL + Redis mode the backend writes nothing to disk.
+- **Redis contents are disposable:** the compose Redis has no persistence and LRU eviction. Application data (users, trips,
+  plans, revisions, jobs) lives only in PostgreSQL and survives independently of Redis; there is **no** guarantee that cached
+  entries survive a Redis restart — losing them only causes future cache misses (more provider calls).
+- **Health:** the container `HEALTHCHECK` is `/health` (liveness only — a Postgres/Redis outage never restart-loops the
+  container). Use **`/ready`** for traffic routing. `/ready` and `/metrics` are operational endpoints with **no
+  authentication**: production must route/restrict them privately (Section 203).
+- **Graceful shutdown:** `docker stop` (SIGTERM) reaches Uvicorn directly; it drains requests (≤ 20 s), the lifespan
+  stops job heartbeats, closes this process's in-flight jobs honestly as `JOB_INTERRUPTED`, closes Redis, disposes DB
+  engines, logs one `app.shutdown`, and exits 0 (idle: < 1 s).
+- **Frontend → backend URL:** the browser calls `API_BASE_URL` (the frontend container's *runtime* environment, set
+  from `PUBLIC_API_BASE_URL`), so one image works in any environment without a rebuild; `NEXT_PUBLIC_API_BASE_URL` is
+  only the build-time fallback. It must be an address the *browser* can reach — never an internal service name.
+- **Scaling & DB connections:** the backend is one process per container and scales horizontally. Maximum database
+  connections per container = `DB_POOL_SIZE + DB_MAX_OVERFLOW` (default 5 + 5 = 10, plus one readiness-probe
+  connection); total = that × number of containers (sized against the managed database in Section 203). `/metrics` is
+  per instance — there is no cluster aggregation.
+- **Background jobs:** async generation is FastAPI `BackgroundTasks` inside the web container + database leases —
+  **not** a durable job queue. A killed container interrupts its jobs; leases/recovery keep the database consistent but
+  never resume the computation.
+- Local-only: plain HTTP, `SESSION_COOKIE_SECURE=false`; production needs HTTPS + Secure cookies (Section 203). No
+  cloud deployment exists yet.
 
 **CI Docker build gate (Step 188G)**: `.github/workflows/ci.yml` now
 has a third job, `docker-build`, alongside the existing `backend`/
@@ -158,9 +202,9 @@ step) before starting, and the `frontend` service in turn waits for
 check only** — it confirms the FastAPI process itself is up and
 answering requests, never that Postgres, Redis, or any external
 provider is reachable or ready; nothing about this implies the overall
-stack is "production-ready," and `redis` still has no healthcheck
-(nothing in the app talks to it, so `backend` only waits for it to
-*start*, matching its previous behavior). Verified live: a real
+stack is "production-ready," and `redis` has no healthcheck
+(it is an optimization-only cache: if it is down the app still works with
+uncached provider calls, so `backend` only waits for it to *start*). Verified live: a real
 `docker compose up -d postgres backend` shows `postgres` reach
 `healthy` before `backend` even starts, and `backend` itself then
 reaches `(healthy)` in `docker compose ps`, serving `GET /health` `200`
@@ -197,23 +241,99 @@ fresh `docker build --no-cache` produced a smaller image (432MB vs.
 None of this changes application behavior, adds automatic migrations,
 or makes any part of this stack "production-ready."
 
-A `SQLAlchemy`/`psycopg`-based connection foundation (`backend/app/db/`)
-and an Alembic migrations setup (`backend/alembic/`) now exist — but no
-route or service talks to Postgres unless you explicitly opt in, and
-setting `DATABASE_URL` alone does not do that; see `PERSISTENCE_BACKEND`
-in `.env.example` and `docs/14_backend_architecture.md` section 102.
+### Persistence (Section 200A — PostgreSQL is the default)
+
+```text
+FastAPI → repository factory → PostgreSQL            [DEFAULT]
+                             → Local JSON            [explicit dev/test only]
+```
+
+- `PERSISTENCE_BACKEND` is the one selector. It defaults to **`postgres`**
+  and requires **`DATABASE_URL`** (no built-in default URL or credentials).
+  `PERSISTENCE_BACKEND=local_json` selects the old gitignored JSON file and
+  must be requested explicitly; it is a development/test alternative, not
+  the production mode. An unknown value is a startup error.
+- **No silent fallback.** A missing/invalid `DATABASE_URL`, an unreachable
+  database, or an un-migrated schema stops the app at startup with a fixed,
+  credential-free message; it never switches to Local JSON, SQLite or memory.
+  A database error during a request returns a generic HTTP 503
+  (`PERSISTENCE_UNAVAILABLE`).
+- **Migrations are Alembic-managed and are a release step, never automatic.**
+  Run `alembic upgrade head` (or `python backend/scripts/run_migrations.py`)
+  *before* starting the app; startup only verifies the schema is at the single
+  expected head.
+- PostgreSQL integration is verified against a real container (see
+  `docs/14_backend_architecture.md` section 160). Cloud-managed Postgres is a
+  later deployment step (Section 203); Local JSON data is not auto-imported.
+
+### Transactions and concurrency (Section 200C)
+
+PostgreSQL is the **authoritative** store and does the concurrency control;
+Redis stays a provider-response cache only (never a lock).
+
+- **Atomic transitions.** A generated/regenerated itinerary, its immutable
+  revision and the branch-head advance are committed in **one short database
+  transaction**, after all provider/AI work has finished (no external call ever
+  runs inside a transaction). Branch activation and trip creation are atomic
+  too; a failure at any write rolls everything back.
+- **Optimistic concurrency.** `planning_states.lock_version` — a stale writer
+  is rejected (HTTP **409 `CONCURRENT_UPDATE`**, nothing overwritten) instead of
+  silently replacing newer state; branch heads use compare-and-set.
+- **Async jobs.** PostgreSQL guarantees at most one queued/running job per trip
+  (partial unique index → `JOB_ALREADY_RUNNING`), running jobs are owned by a
+  **database lease** with heartbeats (`GENERATION_JOB_LEASE_SECONDS`), and
+  terminal transitions are conditional/idempotent, so several backend
+  instances can share one database: a healthy job of another instance is never
+  interrupted, an expired lease is recovered, and a stale owner cannot complete
+  a job it no longer owns. This is *at-most-one active claim under an enforced
+  database invariant plus idempotent terminal transitions* — not exactly-once
+  distributed execution.
+- Isolation is PostgreSQL's default READ COMMITTED plus row locks / compare-and-
+  set / constraints (never blanket SERIALIZABLE). Local JSON remains an explicit
+  dev backend **without** these guarantees. Details:
+  `docs/14_backend_architecture.md` section 162.
+
+### Health, readiness and observability (Section 200D)
+
+| Endpoint | Meaning |
+| --- | --- |
+| `GET /health` | **Liveness only** — 200 whenever the process answers. Never touches PostgreSQL, Redis, providers or AI. |
+| `GET /ready` | **Authoritative readiness.** `ready` (200) · `degraded` (200, Redis down — the service still serves correctly, uncached) · `not_ready` (**503**, PostgreSQL unreachable or schema not at the expected Alembic head). External travel providers are never called and never affect readiness. Bounded by `READINESS_TIMEOUT_SECONDS`. |
+| `GET /metrics` | Low-cardinality Prometheus-text metrics (HTTP by route *template*, transactions/conflicts/retries, jobs, provider cache HIT/MISS/BYPASS/ERROR, provider calls). `METRICS_ENABLED=false` disables it. |
+
+Dependency roles: **PostgreSQL is required for readiness; Redis is an optional
+optimization (outage = degraded, recovery is picked up without a restart).**
+Logs are structured JSON with a fixed event vocabulary and are content-safe —
+no feedback text, itinerary/narrative text, prompts, provider payloads, tokens
+or secrets (configured secrets and credentialed URLs are redacted). There is no
+authentication on these endpoints: keep `/ready` and `/metrics` on a private
+network. No cloud monitoring integration exists yet. Contradictory settings
+(e.g. `GENERATION_JOB_MAX_RUNNING_PER_TRIP > 1` with PostgreSQL) stop startup.
+Details: `docs/14_backend_architecture.md` section 163.
+
+Normal local workflow:
+
+```bash
+POSTGRES_HOST_PORT=15432 docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d postgres   # 1. start Postgres (published on 127.0.0.1 only)
+cd backend
+DATABASE_URL=postgresql://<user>:<password>@localhost:15432/<db> alembic upgrade head   # 2. migrate
+DATABASE_URL=postgresql://<user>:<password>@localhost:15432/<db> uvicorn app.main:app --reload  # 3. run
+# Explicit Local JSON alternative (no database needed):
+PERSISTENCE_BACKEND=local_json uvicorn app.main:app --reload
+```
+
+An Alembic setup (`backend/alembic/`) and a `SQLAlchemy`/`psycopg` connection
+layer (`backend/app/db/`) back this; see `.env.example` and
+`docs/14_backend_architecture.md` sections 102 and 160.
 
 `backend/alembic/versions/` has one real migration creating `trips` and
 `planning_states` (the latter storing the whole `PlanningState` as JSONB).
-`backend/app/repositories/factory.py` now has a real, working
-Postgres-backed repository implementation behind that schema
-(`PostgresTripRepository`/`PostgresPlanningStateRepository`) — but it's
-still opt-in: `app/api/routes/trips.py` and `PlanningOrchestrator` keep
-using the local JSON repositories by default, and only switch to Postgres
-when `PERSISTENCE_BACKEND=postgres` is explicitly set. This has been
-live-verified end to end against a real Postgres (migration, repository
-round-trip, and a full create → generate → get → feedback → regenerate
-API flow) — see `docs/14_backend_architecture.md` section 106.
+`backend/app/repositories/factory.py` provides the Postgres-backed
+repositories for every persisted entity (users, trips, planning states,
+generation jobs, itinerary branches/revisions). They are the default since
+Section 200A; local JSON is used only with an explicit
+`PERSISTENCE_BACKEND=local_json`. Live-verified against a real Postgres —
+see `docs/14_backend_architecture.md` sections 106 and 160.
 
 If your machine already has something on port 5432 (a local Postgres
 install, another project's compose stack), `docker compose up -d
@@ -223,7 +343,7 @@ whatever else is using 5432 — see `.env.example`. To try the whole opt-in
 path against a real local Postgres:
 
 ```bash
-POSTGRES_HOST_PORT=15432 docker compose up -d postgres
+POSTGRES_HOST_PORT=15432 docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d postgres
 cd backend
 DATABASE_URL=postgresql://travelobligator_user:change_me@localhost:15432/travelobligator alembic upgrade head
 ```
@@ -258,20 +378,36 @@ confirmed head, `\dt` showed the expected `trips`/`planning_states`/
 `users`/`generation_jobs`/`alembic_version` tables, and re-running it
 against an already-migrated database was a safe no-op.
 
-Then set `PERSISTENCE_BACKEND=postgres` (and the matching `DATABASE_URL`)
-in `.env` to have the real app use it, or run the opt-in test suites
-directly (`TRAVELOB_RUN_POSTGRES_TESTS=1 PERSISTENCE_BACKEND=postgres
-DATABASE_URL=... python -m pytest app/tests/repositories/
-test_postgres_repositories_integration.py app/tests/api/
-test_postgres_api_smoke.py`, from `backend/`) — both are skipped by
-default and never required for normal `pytest` or `local_json`
-development; see `docs/14_backend_architecture.md` sections 104-106.
+Then set the matching `DATABASE_URL` in `.env` (PostgreSQL is the default
+backend; nothing else to switch). To run the live-Postgres suites:
+`TRAVELOB_RUN_POSTGRES_TESTS=1 DATABASE_URL=... python -m pytest -m
+postgres_integration` from the repo root. They are skipped by default —
+ordinary `pytest` needs no database because every test selects its backend
+explicitly (`local_json`); see `docs/14_backend_architecture.md` sections
+104-106 and 160.
 
-`provider_cache` (the local SQLite cache for real provider responses)
-stays SQLite regardless of `PERSISTENCE_BACKEND` — it's deliberately
-decoupled from trip/plan persistence (losing it is always safe, just a
-re-fetch) and migrating it isn't required for real MVP persistence; see
-`docs/14_backend_architecture.md` section 106.
+The provider-response cache is decoupled from trip/plan persistence
+(losing it is always safe, just a re-fetch). Since Section 200B it lives in
+Redis by default; see below and `docs/14_backend_architecture.md` section 161.
+
+### Provider-response cache (Section 200B)
+
+- `PROVIDER_CACHE_BACKEND=redis` (default) caches real provider responses
+  (geocode, places/POIs, weather, holidays, currency, routing) in Redis at
+  `REDIS_URL`, under keys like
+  `travelobligator:provider-cache:v1:<provider>:<operation>:<digest>` (digest
+  only — no raw query, no secret). Each entry has a provider-appropriate TTL.
+  `PROVIDER_CACHE_BACKEND=sqlite` is the explicit local-dev alternative;
+  `PROVIDER_CACHE_ENABLED=false` turns caching off.
+- **Redis is optional at runtime:** if it is down or slow the app keeps working
+  with uncached provider calls — it never falls back to SQLite, never invents
+  data, and never fails a request because of the cache. A *malformed*
+  `REDIS_URL` stops startup; an *unreachable* Redis does not.
+- Never cached: AI/LLM output, transient provider failures, live flight
+  inventory, and scraped/local-file accommodation/flight/rating parses.
+- Ordinary `pytest` needs no Redis. Real-Redis tests are opt-in:
+  `TRAVELOB_RUN_REDIS_TESTS=1 REDIS_URL=redis://127.0.0.1:<port>/0 pytest -m redis_integration`.
+  Use a disposable local Redis (`docker run --rm -p 127.0.0.1:<port>:6379 redis:7`).
 
 ### Frontend Docker: dev vs. production build (Step 188E)
 
@@ -1702,7 +1838,8 @@ separately from MVP feature work):
   running job already in flight for a trip is rejected with
   `JOB_ALREADY_RUNNING` rather than starting a second one. Execution uses
   FastAPI's own `BackgroundTasks` — no Redis/Celery/RQ/separate worker
-  process, and the `redis` compose service remains completely unused.
+  process (the `redis` compose service is used only by the provider-response
+  cache, never for jobs).
   `PlanningState.generation_progress` (Step 163B) is still the
   plan-facing progress model, untouched by this work; `GenerationJob` is
   job *control* state only, never a source of travel facts, and a job
@@ -1814,8 +1951,8 @@ separately from MVP feature work):
   safe precisely because this runtime image never ran pytest anyway
   (`requirements-dev.txt` was already never installed here). Still true
   after 188D: the committed frontend Dockerfile runs `npm run dev`, not
-  a production build; the compose `redis` service exists but nothing in
-  the app talks to it; migrations remain a manual `alembic upgrade
+  a production build; the compose `redis` service (since Section 200B, the
+  provider-response cache only) is local-dev only — no auth/TLS; migrations remain a manual `alembic upgrade
   head` step, never automatic; `postgres` is real and opt-in per the
   point above, but still not the default deployment path. Step 188E
   added a real, verified `production` Docker target for the frontend

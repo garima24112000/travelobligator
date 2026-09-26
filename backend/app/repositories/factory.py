@@ -1,35 +1,25 @@
-"""Repository factory (Step 183D, extended in Step 184C with
-`get_user_repository()` and Step 186F with a Postgres-backed
-`get_job_repository()`).
+"""Repository factory (Step 183D; Section 200A default flip).
 
-`get_trip_repository()`/`get_planning_state_repository()` are the single
-place production code (routes, `PlanningOrchestrator`) should resolve a
-repository from -- never import the local-JSON or Postgres repository
-module directly. Both functions read `Settings.persistence_backend` on
-*every call*, not once at import time: Step 183B-FIX found that
-`app/providers/gateway.py`'s module-level `provider_gateway` singleton
-baked in a live provider at import time (before any per-test isolation
-existed), permanently contaminating the whole test session. Resolving
-per-call here, and never constructing a Postgres repository until
-`persistence_backend == "postgres"` is actually read, avoids repeating
-that mistake -- importing this module never opens a database connection,
-and neither does calling either function while `persistence_backend`
-stays at its default `"local_json"`.
+`get_*_repository()` are the single place production code (routes,
+services, `PlanningOrchestrator`) resolves a repository from -- never import
+a local-JSON or Postgres repository module directly (Section 200A found and
+fixed one such direct binding in `TargetedRegenerationApplicationService`).
 
-`"local_json"` (the default) returns the exact same module-level
-singleton objects (`app.repositories.trip_repository.trip_repository`,
-`app.repositories.planning_state_repository.planning_state_repository`)
-that existed before this step -- not a fresh instance per call -- so
-existing behavior, performance, and every test that monkeypatches those
-singletons' `_store`/`_trips`/`_states` attributes directly (see
-`backend/app/tests/conftest.py`'s `_reset_in_memory_repositories`
-fixture) all keep working completely unchanged.
+Persistence contract (Section 200A): `Settings.persistence_backend`
+defaults to `"postgres"`; `"local_json"` must be requested explicitly and is
+a development/test alternative, never a fallback. All five repositories
+(users, trips, planning states, generation jobs, itinerary branches/
+revisions) switch together on that ONE setting, so no mixed state is
+possible. If Postgres is selected and unreachable, the Postgres repositories
+raise; nothing here ever substitutes Local JSON.
 
-`"postgres"` lazily constructs (via `functools.lru_cache`, matching
-`app/db/session.py`'s `get_engine()` pattern) and caches one
-`PostgresTripRepository`/`PostgresPlanningStateRepository` for the
-process -- constructed, and so first connecting, only on the first call
-made while `persistence_backend == "postgres"`.
+Every function reads the setting on *every call* (never at import time):
+`app/providers/gateway.py`'s import-time singleton once baked in a live
+provider before per-test isolation existed (Step 183B-FIX). Postgres
+repositories are constructed lazily (`functools.lru_cache`) on the first call
+made while `"postgres"` is selected, so importing this module never opens a
+database connection. `"local_json"` returns the module-level singletons that
+tests monkeypatch (see `backend/app/tests/conftest.py`).
 """
 
 from __future__ import annotations

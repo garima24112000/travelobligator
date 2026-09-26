@@ -18,11 +18,22 @@ from app.repositories.postgres_planning_state_repository import PostgresPlanning
 # never persisted) PlanningStateRow instances.
 
 
+class _FakeWriteResult:
+    def __init__(self, rowcount: int) -> None:
+        self.rowcount = rowcount
+
+    def first(self):
+        # `INSERT/UPDATE ... RETURNING trip_id`: a row comes back only when the write landed.
+        return ("trip",) if self.rowcount == 1 else None
+
+
 class _FakeSession:
-    def __init__(self, get_result: PlanningStateRow | None = None) -> None:
+    def __init__(self, get_result: PlanningStateRow | None = None, rowcount: int = 1) -> None:
+        self.rowcount = rowcount
         self.get_result = get_result
         self.executed_statements: list[object] = []
         self.committed = False
+        self.rolled_back = False
 
     def __enter__(self) -> "_FakeSession":
         return self
@@ -30,14 +41,18 @@ class _FakeSession:
     def __exit__(self, *exc_info: object) -> bool:
         return False
 
-    def get(self, model: type, pk: str) -> object | None:
+    def get(self, model: type, pk: str, **kwargs: object) -> object | None:
         return self.get_result if model is PlanningStateRow else None
 
-    def execute(self, stmt: object) -> None:
+    def execute(self, stmt: object) -> "_FakeWriteResult":
         self.executed_statements.append(stmt)
+        return _FakeWriteResult(self.rowcount)
 
     def commit(self) -> None:
         self.committed = True
+
+    def rollback(self) -> None:
+        self.rolled_back = True
 
 
 def _compiled_sql(stmt: object) -> str:
@@ -90,7 +105,9 @@ def test_save_executes_ensure_trip_then_upsert_planning_state() -> None:
     state_sql = str(state_stmt.compile(dialect=postgresql.dialect()))
     assert "INSERT INTO planning_states" in state_sql
     assert "ON CONFLICT" in state_sql
-    assert "DO UPDATE SET" in state_sql
+    # Section 200C: a token-less save may only INSERT a NEW row; it can never overwrite one.
+    assert "DO NOTHING" in state_sql
+    assert "DO UPDATE" not in state_sql
 
     params = state_stmt.compile(dialect=postgresql.dialect()).params
     assert params["trip_id"] == planning_state.trip_id

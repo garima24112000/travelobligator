@@ -41,6 +41,7 @@ class _FakeSession:
         self.execute_rows = execute_rows or []
         self.executed_statements: list[object] = []
         self.committed = False
+        self.rolled_back = False
         self.refreshed: list[object] = []
 
     def __enter__(self) -> "_FakeSession":
@@ -49,7 +50,7 @@ class _FakeSession:
     def __exit__(self, *exc_info: object) -> bool:
         return False
 
-    def get(self, model: type, pk: str) -> TripRow | None:
+    def get(self, model: type, pk: str, **kwargs: object) -> TripRow | None:
         assert model is TripRow
         return self.get_result
 
@@ -59,6 +60,12 @@ class _FakeSession:
 
     def commit(self) -> None:
         self.committed = True
+
+    def rollback(self) -> None:
+        self.rolled_back = True
+
+    def flush(self) -> None:
+        pass
 
     def refresh(self, row: object) -> None:
         self.refreshed.append(row)
@@ -142,7 +149,8 @@ def test_update_status_returns_none_when_row_missing() -> None:
     repo = PostgresTripRepository(session_factory=lambda: session)
 
     assert repo.update_status("does_not_exist", "generating") is None
-    assert session.committed is False
+    # Nothing was written (Section 200C: the scope may still close an empty transaction).
+    assert session.executed_statements == [] and session.refreshed == []
 
 
 def test_update_status_mutates_row_and_commits() -> None:

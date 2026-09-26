@@ -1,0 +1,37 @@
+# Local DEVELOPMENT override (the workflow docker-compose.yml had before Section 200E): source bind mounts,
+# `uvicorn --reload`, the Next.js dev server, and Postgres/Redis published on 127.0.0.1 ONLY.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
+#
+# Not for anything but a developer machine: writable root, hot reload, root-equivalent bind mounts.
+
+services:
+  postgres:
+    ports:
+      - "127.0.0.1:${POSTGRES_HOST_PORT:-5432}:5432"
+
+  redis:
+    ports:
+      - "127.0.0.1:${REDIS_HOST_PORT:-6379}:6379"
+
+  backend:
+    volumes:
+      - ./backend:/app
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+    read_only: false
+    tmpfs: []
+
+  frontend:
+    build:
+      context: ./frontend
+      target: dev
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+      - /app/.next
+    command: ["npm", "run", "dev"]
+    user: root
+    read_only: false
+    tmpfs: []
+    cap_drop: []
+    security_opt: []

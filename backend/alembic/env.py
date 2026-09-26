@@ -41,8 +41,13 @@ target_metadata = Base.metadata
 # alembic.ini with the real app config, so both the app and Alembic read
 # the same source of truth. This still doesn't connect to anything --
 # `set_main_option` just changes a config value in memory.
+# Section 200A: DATABASE_URL has no built-in default any more; migrations
+# need it regardless of PERSISTENCE_BACKEND, and a missing/invalid value
+# fails with a fixed, credential-free message.
+from app.core.persistence import require_database_url  # noqa: E402
+
 config.set_main_option(
-    "sqlalchemy.url", normalize_database_url(get_settings().database_url)
+    "sqlalchemy.url", normalize_database_url(require_database_url(get_settings()))
 )
 
 # other values from the config, defined by the needs of env.py,

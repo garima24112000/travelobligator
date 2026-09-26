@@ -899,9 +899,9 @@ def test_regenerate_success_calls_rerun_affected_stages_with_derived_stages(
     calls: list[list] = []
     original = trips_route.planning_orchestrator.rerun_affected_stages
 
-    def spy(planning_state, affected_stages):
+    def spy(planning_state, affected_stages, **kwargs):
         calls.append(list(affected_stages))
-        return original(planning_state, affected_stages)
+        return original(planning_state, affected_stages, **kwargs)
 
     monkeypatch.setattr(trips_route.planning_orchestrator, "rerun_affected_stages", spy)
 

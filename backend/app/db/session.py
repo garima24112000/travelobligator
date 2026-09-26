@@ -56,9 +56,41 @@ def build_engine(settings: Settings | None = None) -> Engine:
     first actual use (a query, `.connect()`, etc.), which matches the
     "no live database required at import/startup time" requirement.
     """
+    from app.core.persistence import require_database_url
+
     resolved_settings = settings or get_settings()
-    url = normalize_database_url(resolved_settings.database_url)
-    return create_engine(url, pool_pre_ping=True)
+    # Section 200A: a missing/invalid DATABASE_URL is a clear, credential-free
+    # configuration error -- never a default, SQLite or in-memory database.
+    url = normalize_database_url(require_database_url(resolved_settings))
+    return create_engine(url, **engine_options(resolved_settings))
+
+
+def engine_options(settings: Settings) -> dict:
+    """The `create_engine` keyword arguments for the APPLICATION engine (Section 200D/200E).
+
+    pool_pre_ping (a dead pooled connection is replaced transparently), the pool bounds
+    (`DB_POOL_SIZE`/`DB_MAX_OVERFLOW`/`DB_POOL_TIMEOUT_SECONDS`/`DB_POOL_RECYCLE_SECONDS`), the libpq connect
+    timeout, and per-connection `statement_timeout` / `lock_timeout` (server-side, so a runaway statement or
+    an unbounded lock wait is cancelled and rolled back). Migrations and the readiness probe build their own
+    engines and do NOT inherit the request timeouts. Maximum connections per process =
+    pool_size + max_overflow.
+    """
+    options: list[str] = []
+    if settings.db_statement_timeout_ms:
+        options.append(f"-c statement_timeout={int(settings.db_statement_timeout_ms)}")
+    if settings.db_lock_timeout_ms:
+        options.append(f"-c lock_timeout={int(settings.db_lock_timeout_ms)}")
+    connect_args: dict = {"connect_timeout": settings.db_connect_timeout_seconds}
+    if options:
+        connect_args["options"] = " ".join(options)
+    return {
+        "pool_pre_ping": True,
+        "pool_size": settings.db_pool_size,
+        "max_overflow": settings.db_max_overflow,
+        "pool_timeout": settings.db_pool_timeout_seconds,
+        "pool_recycle": settings.db_pool_recycle_seconds if settings.db_pool_recycle_seconds else -1,
+        "connect_args": connect_args,
+    }
 
 
 @lru_cache

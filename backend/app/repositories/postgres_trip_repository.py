@@ -27,6 +27,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.db.models import TripRow
 from app.db.session import get_session_factory
+from app.db.transactions import session_scope
 from app.repositories.trip_repository import TripRecord
 
 
@@ -50,8 +51,16 @@ class PostgresTripRepository:
     keep consistent.
     """
 
-    def __init__(self, session_factory: sessionmaker[Session] | None = None) -> None:
-        self._session_factory = session_factory or get_session_factory()
+    def __init__(
+        self,
+        session_factory: sessionmaker[Session] | None = None,
+        session: Session | None = None,
+    ) -> None:
+        # Section 200C: with a bound `session` (unit of work) no method commits.
+        self._session = session
+        self._session_factory = session_factory or (
+            None if session is not None else get_session_factory()
+        )
 
     def create(self, trip_id: str, owner_id: str | None = None) -> TripRecord:
         now = datetime.now(timezone.utc)
@@ -66,37 +75,36 @@ class PostgresTripRepository:
             index_elements=["trip_id"],
             set_={"status": "draft", "owner_id": owner_id, "created_at": now, "updated_at": now},
         )
-        with self._session_factory() as session:
+        with session_scope(self._session_factory, self._session) as session:
             session.execute(stmt)
-            session.commit()
 
         return TripRecord(
             trip_id=trip_id, owner_id=owner_id, status="draft", created_at=now, updated_at=now
         )
 
     def get(self, trip_id: str) -> TripRecord | None:
-        with self._session_factory() as session:
+        with session_scope(self._session_factory, self._session) as session:
             row = session.get(TripRow, trip_id)
             if row is None:
                 return None
             return _row_to_record(row)
 
     def update_status(self, trip_id: str, status: str) -> TripRecord | None:
-        with self._session_factory() as session:
+        with session_scope(self._session_factory, self._session) as session:
             row = session.get(TripRow, trip_id)
             if row is None:
                 return None
 
             row.status = status
             row.updated_at = datetime.now(timezone.utc)
-            session.commit()
+            session.flush()
             session.refresh(row)
             return _row_to_record(row)
 
     def list_by_owner_id(self, owner_id: str) -> list[TripRecord]:
         """Returns every trip owned by `owner_id` -- `GET /trips`'s "My
         Trips" data source (Step 184D)."""
-        with self._session_factory() as session:
+        with session_scope(self._session_factory, self._session) as session:
             rows = session.execute(
                 select(TripRow).where(TripRow.owner_id == owner_id)
             ).scalars().all()

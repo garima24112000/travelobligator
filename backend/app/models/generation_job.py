@@ -141,6 +141,13 @@ class GenerationJob(BaseModel):
     clarification_reason: str | None = None
     clarification_possible_experience_ids: list[str] = Field(default_factory=list)
 
+    # Section 200C: DB-backed ownership lease. Control state only -- never returned by the
+    # API (`JobResponseData.from_job` selects fields explicitly). `lease_owner` is an opaque
+    # per-process id, never a hostname/credential. Cleared on every terminal transition.
+    lease_owner: str | None = None
+    lease_expires_at: datetime | None = None
+    heartbeat_at: datetime | None = None
+
     @field_validator("progress_stage", mode="after")
     @classmethod
     def _validate_progress_stage(cls, value: str | None) -> str | None:
@@ -150,6 +157,18 @@ class GenerationJob(BaseModel):
                 "or None -- no fabricated/cosmetic stage name is allowed."
             )
         return value
+
+
+TERMINAL_JOB_STATUSES = frozenset(
+    {GenerationJobStatus.SUCCEEDED, GenerationJobStatus.FAILED, GenerationJobStatus.CANCELLED}
+)
+ACTIVE_JOB_STATUSES = frozenset({GenerationJobStatus.QUEUED, GenerationJobStatus.RUNNING})
+
+
+def _clear_lease(job: GenerationJob) -> None:
+    """A terminal job has no owner: its lease is meaningless and must never look claimable."""
+    job.lease_owner = None
+    job.lease_expires_at = None
 
 
 def create_queued_job(
@@ -212,6 +231,7 @@ def mark_job_succeeded(
     job.message = "Job completed successfully."
     job.error_code = None
     job.error_message = None
+    _clear_lease(job)
     return job
 
 
@@ -239,6 +259,7 @@ def mark_job_failed(
     """
     job.status = GenerationJobStatus.FAILED
     job.finished_at = _utc_now()
+    _clear_lease(job)
     job.error_code = error_code
     job.error_message = error_message
     job.message = "Job failed."
@@ -263,6 +284,7 @@ def mark_job_cancelled(
     normally both `None`)."""
     job.status = GenerationJobStatus.CANCELLED
     job.finished_at = _utc_now()
+    _clear_lease(job)
     job.message = message
     return job
 

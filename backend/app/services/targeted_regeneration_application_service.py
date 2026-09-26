@@ -13,7 +13,8 @@ from app.models.targeted_regeneration_runtime import (
     TargetedRegenerationRuntimeResult,
     TargetedRegenerationRuntimeStatus,
 )
-from app.repositories.planning_state_repository import planning_state_repository as default_planning_state_repository
+from app.repositories.errors import ConcurrentStateUpdateError
+from app.repositories.factory import get_planning_state_repository
 from app.core.errors import REGENERATION_NO_EFFECT_MESSAGE, REGENERATION_PROVIDER_FAILURE_MESSAGES
 from app.schemas.errors import ErrorCode
 from app.services.ai_feedback_interpretation_request_builder import (
@@ -109,6 +110,16 @@ _STAGE = "targeted_regeneration_runtime"
 
 
 class TargetedRegenerationApplicationService:
+    @property
+    def planning_state_repository(self) -> Any:
+        if self._planning_state_repository_override is not None:
+            return self._planning_state_repository_override
+        return get_planning_state_repository()
+
+    @planning_state_repository.setter
+    def planning_state_repository(self, value: Any) -> None:
+        self._planning_state_repository_override = value
+
     def __init__(
         self,
         planning_state_repository: Any = None,
@@ -123,7 +134,11 @@ class TargetedRegenerationApplicationService:
         regeneration_attempt_service: Any = None,
         revision_lineage_service: Any = None,
     ) -> None:
-        self.planning_state_repository = planning_state_repository or default_planning_state_repository
+        # Section 200A: resolved lazily through the persistence factory on
+        # every access (like PlanningOrchestrator). This service is a
+        # module-level singleton; binding the local-JSON singleton here would
+        # silently write regenerated state to Local JSON in Postgres mode.
+        self._planning_state_repository_override = planning_state_repository
         self.interpreter_service = interpreter_service or default_interpreter_service
         self.request_builder = request_builder or default_request_builder
         self.plan_builder = plan_builder or default_plan_builder
@@ -449,7 +464,7 @@ class TargetedRegenerationApplicationService:
                     message="The itinerary changed while this regeneration was running; nothing was overwritten.",
                     status="failed",
                 )
-                self.planning_state_repository.save(current_on_disk)
+                self._save_audit_best_effort(current_on_disk)
             return TargetedRegenerationRuntimeResult(
                 trip_id=trip_id,
                 status=TargetedRegenerationRuntimeStatus.CONFLICT,
@@ -476,7 +491,7 @@ class TargetedRegenerationApplicationService:
                 message=f"{current_active_lock_count} active lock(s) block regeneration.",
                 status="failed",
             )
-            self.planning_state_repository.save(current_on_disk)
+            self._save_audit_best_effort(current_on_disk)
             return TargetedRegenerationRuntimeResult(
                 trip_id=trip_id,
                 status=TargetedRegenerationRuntimeStatus.BLOCKED,
@@ -535,6 +550,19 @@ class TargetedRegenerationApplicationService:
         self.regeneration_attempt_service.record_blocked_attempt(
             planning_state, reason_code=reason_code, message=message, status=status
         )
+
+    def _save_audit_best_effort(self, planning_state: PlanningState) -> None:
+        """Persist an audit-only attempt record on a refusal path. A concurrent writer having
+        moved the state on is not an error here (this attempt was already refused, and
+        overwriting the newer state would be wrong): the audit entry is skipped."""
+        try:
+            self.planning_state_repository.save(planning_state)
+        except ConcurrentStateUpdateError:
+            logger.info(
+                "Skipped a refusal audit record for trip %s: the state changed concurrently.",
+                planning_state.trip_id,
+                extra={"stage": _STAGE, "trip_id": planning_state.trip_id, "status": "conflict"},
+            )
 
     # -- commit boundary (Task 10/11/12/13/15) -------------------------------
 
@@ -616,17 +644,36 @@ class TargetedRegenerationApplicationService:
         resulting_state = self.regeneration_attempt_service.record_applied_attempt(resulting_state)
 
         try:
-            self.planning_state_repository.save(resulting_state)
-            # Section 199A (Task 14): the new version's immutable
-            # revision, captured only after the real save above already
-            # succeeded, so `revision.version_label` always agrees with
-            # `resulting_state`/`VersionHistoryItem`/
-            # `FeedbackEvent.applied_in_version`/`RegenerationAttempt` --
-            # best-effort (see
-            # RevisionLineageService.record_current_revision's own
-            # docstring), never turns an already-successful targeted
-            # regeneration into a reported failure.
-            self.revision_lineage_service.record_current_revision(resulting_state)
+            # Section 200C: ONE short transaction (PostgreSQL) persists the resulting state --
+            # which already carries the new version, the feedback event marked applied, the
+            # attempt record and the recomputed summaries -- together with its immutable
+            # revision and the branch-head advance (compare-and-set). All external AI/provider
+            # work finished before this point; if any write fails, everything rolls back: the
+            # state stays at the source version, no revision exists, the feedback stays pending.
+            # The state write is a compare-and-set on the state's `lock_version`, so a competing
+            # regeneration/feedback that committed first makes THIS commit fail (below) instead
+            # of applying the same feedback twice. Local JSON keeps the old save + best-effort
+            # revision behaviour.
+            self.revision_lineage_service.commit_state_with_revision(
+                resulting_state, state_repository=self._planning_state_repository_override
+            )
+        except ConcurrentStateUpdateError:
+            logger.info(
+                "Targeted regeneration lost a concurrent-update race for trip %s; nothing was written.",
+                trip_id,
+                extra={"stage": _STAGE, "trip_id": trip_id, "status": "conflict"},
+            )
+            return TargetedRegenerationRuntimeResult(
+                trip_id=trip_id,
+                status=TargetedRegenerationRuntimeStatus.CONFLICT,
+                message="The itinerary changed while this regeneration was running; nothing was overwritten.",
+                feedback_event_id=target_event.feedback_event_id,
+                interpretation_status=interpretation.status.value,
+                plan_status=plan.status.value,
+                execution_status=execution_result.status.value,
+                source_version=source_version,
+                block_reasons=["Version conflict -- the itinerary changed during regeneration."],
+            )
         except Exception:
             # Task 6: the executor succeeded and an attempt record was
             # appended in memory, but persistence itself failed -- never

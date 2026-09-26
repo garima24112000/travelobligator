@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from app.core.config import Settings
+from app.core.config import Settings, get_settings
 from app.repositories import factory as factory_module
 from app.repositories.job_repository import job_repository as local_job_repository
 from app.repositories.planning_state_repository import (
@@ -58,7 +58,18 @@ def test_get_user_repository_returns_local_singleton_by_default(
     assert factory_module.get_user_repository() is local_user_repository
 
 
-def test_get_job_repository_returns_local_singleton_by_default(
+_PG_URL = "postgresql://u:p@localhost:5432/db"  # never connected to: repositories build engines lazily
+
+
+@pytest.fixture(autouse=True)
+def _placeholder_database_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Section 200A: Postgres repositories build their (lazy, never-connected) engine from the
+    process settings, and DATABASE_URL has no built-in default any more."""
+    monkeypatch.setenv("DATABASE_URL", _PG_URL)
+    get_settings.cache_clear()
+
+
+def test_get_job_repository_returns_local_singleton_when_local_json_is_explicit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(factory_module, "get_settings", lambda: Settings(_env_file=None))
@@ -67,15 +78,15 @@ def test_get_job_repository_returns_local_singleton_by_default(
 
 
 def test_database_url_alone_does_not_select_postgres(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Matches Settings.persistence_backend's own contract (Step 183B):
-    a real-looking DATABASE_URL with no explicit PERSISTENCE_BACKEND=postgres
-    must never flip the factory over to the Postgres repositories."""
+    """Section 200A: an explicit local_json selection is never overridden by
+    a present DATABASE_URL (the URL alone selects nothing)."""
     monkeypatch.setattr(
         factory_module,
         "get_settings",
         lambda: Settings(
             _env_file=None,
-            database_url="postgresql://real_user:real_pass@real-host:5432/real_db",
+            PERSISTENCE_BACKEND="local_json",
+            DATABASE_URL="postgresql://real_user:real_pass@real-host:5432/real_db",
         ),
     )
 
@@ -123,7 +134,7 @@ def test_factory_returns_postgres_trip_repository_when_selected(
     monkeypatch.setattr(
         factory_module,
         "get_settings",
-        lambda: Settings(_env_file=None, persistence_backend="postgres"),
+        lambda: Settings(_env_file=None, PERSISTENCE_BACKEND="postgres", DATABASE_URL=_PG_URL),
     )
     factory_module._postgres_trip_repository.cache_clear()
 
@@ -147,7 +158,7 @@ def test_factory_returns_postgres_planning_state_repository_when_selected(
     monkeypatch.setattr(
         factory_module,
         "get_settings",
-        lambda: Settings(_env_file=None, persistence_backend="postgres"),
+        lambda: Settings(_env_file=None, PERSISTENCE_BACKEND="postgres", DATABASE_URL=_PG_URL),
     )
     factory_module._postgres_planning_state_repository.cache_clear()
 
@@ -167,7 +178,7 @@ def test_factory_returns_postgres_user_repository_when_selected(
     monkeypatch.setattr(
         factory_module,
         "get_settings",
-        lambda: Settings(_env_file=None, persistence_backend="postgres"),
+        lambda: Settings(_env_file=None, PERSISTENCE_BACKEND="postgres", DATABASE_URL=_PG_URL),
     )
     factory_module._postgres_user_repository.cache_clear()
 
@@ -190,7 +201,7 @@ def test_factory_returns_postgres_job_repository_when_selected(
     monkeypatch.setattr(
         factory_module,
         "get_settings",
-        lambda: Settings(_env_file=None, persistence_backend="postgres"),
+        lambda: Settings(_env_file=None, PERSISTENCE_BACKEND="postgres", DATABASE_URL=_PG_URL),
     )
     factory_module._postgres_job_repository.cache_clear()
 

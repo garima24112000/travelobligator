@@ -34,12 +34,14 @@ def _service_block(compose_source: str, service_name: str) -> str:
     return match.group(1)
 
 
-def test_docker_compose_postgres_host_port_is_configurable() -> None:
+def test_docker_compose_postgres_host_port_is_configurable_only_in_the_dev_override_on_loopback() -> None:
+    # Section 200E: the production-style base file publishes NO Postgres host port at all; a developer who wants
+    # host access uses docker-compose.dev.yml, where POSTGRES_HOST_PORT (default 5432) binds 127.0.0.1 ONLY.
     postgres_block = _service_block(_compose_source(), "postgres")
-    assert "POSTGRES_HOST_PORT" in postgres_block
-    # Backwards-compatible default: an operator who never sets
-    # POSTGRES_HOST_PORT still gets 5432, exactly as before this step.
-    assert ":-5432}:5432" in postgres_block
+    assert "ports:" not in postgres_block and "POSTGRES_HOST_PORT" not in postgres_block
+    dev_source = (_REPO_ROOT / "docker-compose.dev.yml").read_text(encoding="utf-8")
+    dev_postgres = _service_block(dev_source, "postgres")
+    assert '"127.0.0.1:${POSTGRES_HOST_PORT:-5432}:5432"' in dev_postgres
 
 
 def test_docker_compose_postgres_has_a_healthcheck() -> None:

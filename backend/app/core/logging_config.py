@@ -60,6 +60,7 @@ import traceback
 from datetime import datetime, timezone
 from typing import Any
 
+from app.core.redaction import redact
 from app.core.request_context import get_current_request_id
 
 # The single logger namespace this module owns. Every application module
@@ -184,6 +185,42 @@ ALLOWED_EXTRA_FIELDS = frozenset(
         "removed_count",
         "moved_count",
         "persistence_status",
+        # Section 200D: the operational event vocabulary (see app.core.ops_events). Every one of
+        # these is a short enum / count / label -- never user content, an id of a person, a URL or a
+        # secret -- and string values are additionally passed through `redact` when rendered.
+        "event",
+        "operation",
+        "outcome",
+        "error_kind",
+        "error_class",
+        "retry_count",
+        "cache_status",
+        "cache_source",
+        "cache_operation",
+        "cache_reason",
+        "cache_ttl_seconds",
+        "cache_state",
+        "provider_cache_backend",
+        "backend",
+        "dependency",
+        "check_status",
+        "sqlstate",
+        "attempt",
+        "scope",
+        "kind",
+        "route",
+        "method",
+        "status_code",
+        "persistence_backend",
+        "async_generation_enabled",
+        "metrics_enabled",
+        "migration_head",
+        "lease_seconds",
+        "db_pool_size",
+        "db_max_overflow",
+        "db_max_connections",
+        "db_statement_timeout_ms",
+        "db_lock_timeout_ms",
     }
 )
 
@@ -259,7 +296,7 @@ class JsonFormatter(logging.Formatter):
             "timestamp": datetime.fromtimestamp(record.created, tz=timezone.utc).isoformat(),
             "level": record.levelname,
             "logger": record.name,
-            "message": record.getMessage(),
+            "message": redact(record.getMessage()),
             "module": record.module,
             "function": record.funcName,
             "line": record.lineno,
@@ -272,15 +309,23 @@ class JsonFormatter(logging.Formatter):
                 # that invariant silently -- see this module's docstring.
                 continue
             if hasattr(record, field):
-                payload[field] = getattr(record, field)
+                value = getattr(record, field)
+                payload[field] = redact(value) if isinstance(value, str) else value
 
         if record.exc_info:
             rendered = "".join(traceback.format_exception(*record.exc_info))
             if len(rendered) > _MAX_EXC_INFO_CHARS:
                 rendered = rendered[:_MAX_EXC_INFO_CHARS] + "... [truncated]"
-            payload["exc_info"] = rendered
+            payload["exc_info"] = redact(rendered)
 
         return json.dumps(payload, default=str)
+
+
+class RedactingPlainFormatter(logging.Formatter):
+    """The non-JSON fallback formatter, with the same secret redaction as `JsonFormatter`."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        return redact(super().format(record))
 
 
 class RequestIdLogFilter(logging.Filter):
@@ -386,7 +431,7 @@ def configure_logging(
     handler.setFormatter(
         JsonFormatter()
         if structured_logging_enabled
-        else logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s")
+        else RedactingPlainFormatter("%(asctime)s %(levelname)s %(name)s %(message)s")
     )
 
     # Step 187C: idempotent, same reasoning as the handler-reuse check

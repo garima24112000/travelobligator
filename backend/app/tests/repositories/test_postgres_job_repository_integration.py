@@ -30,14 +30,14 @@ from datetime import datetime, timezone
 #       python -m pytest app/tests/repositories/test_postgres_job_repository_integration.py -q
 #
 # See docs/14_backend_architecture.md section 119.
-pytestmark = pytest.mark.skipif(
+pytestmark = [pytest.mark.postgres_integration, pytest.mark.skipif(
     os.environ.get("TRAVELOB_RUN_POSTGRES_TESTS") != "1",
     reason=(
         "Optional live-Postgres integration test, skipped by default. Set "
         "TRAVELOB_RUN_POSTGRES_TESTS=1 (plus PERSISTENCE_BACKEND=postgres and "
         "a real DATABASE_URL against an alembic-upgraded database) to run it."
     ),
-)
+)]
 
 
 def _session_factory():
@@ -141,27 +141,39 @@ def test_list_non_terminal_against_real_postgres() -> None:
 def test_startup_recovery_marks_queued_and_running_postgres_jobs_interrupted(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Step 186E's `recover_interrupted_jobs`, exercised directly against
-    a real Postgres-backed repository (not the local_json singleton) --
-    proves 186F's factory wiring, not just the repository in isolation."""
+    """Step 186E's `recover_interrupted_jobs`, exercised directly against a real
+    Postgres-backed repository. Section 200C: recovery is LEASE-based -- it closes only jobs
+    whose owner is gone (a running job with no/expired lease, a queued job nobody claimed
+    within the staleness window) and never a healthy job or a freshly queued one."""
+    from datetime import datetime, timedelta, timezone
+
     from app.core.config import get_settings
     from app.services import generation_job_service
     import app.repositories.factory as factory_module
 
     session_factory = _session_factory()
-    trip_id, owner_id = _seed_trip_and_owner(session_factory)
     repo = PostgresJobRepository(session_factory=session_factory)
 
-    queued_job = create_queued_job(
-        trip_id=trip_id, owner_id=owner_id, job_type=GenerationJobType.GENERATE
+    # Only ONE active job per trip can exist (DB invariant), so each scenario gets its own trip.
+    trip_stale_queued, owner_id = _seed_trip_and_owner(session_factory)
+    stale_queued = create_queued_job(
+        trip_id=trip_stale_queued, owner_id=owner_id, job_type=GenerationJobType.GENERATE
     )
-    repo.create(queued_job)
+    stale_queued.created_at = datetime.now(timezone.utc) - timedelta(days=2)
+    repo.create(stale_queued)
 
+    trip_running, owner_2 = _seed_trip_and_owner(session_factory)
     running_job = create_queued_job(
-        trip_id=trip_id, owner_id=owner_id, job_type=GenerationJobType.REGENERATE
+        trip_id=trip_running, owner_id=owner_2, job_type=GenerationJobType.REGENERATE
     )
-    mark_job_running(running_job)
+    mark_job_running(running_job)  # ownerless (pre-lease) running job: reclaimable
     repo.create(running_job)
+
+    trip_fresh, owner_3 = _seed_trip_and_owner(session_factory)
+    fresh_queued = create_queued_job(
+        trip_id=trip_fresh, owner_id=owner_3, job_type=GenerationJobType.GENERATE
+    )
+    repo.create(fresh_queued)
 
     monkeypatch.setenv("PERSISTENCE_BACKEND", "postgres")
     get_settings.cache_clear()
@@ -174,11 +186,13 @@ def test_startup_recovery_marks_queued_and_running_postgres_jobs_interrupted(
 
     assert recovered_count >= 2
 
-    reloaded_queued = repo.get_by_job_id(queued_job.job_id)
+    reloaded_queued = repo.get_by_job_id(stale_queued.job_id)
     reloaded_running = repo.get_by_job_id(running_job.job_id)
+    reloaded_fresh = repo.get_by_job_id(fresh_queued.job_id)
     assert reloaded_queued is not None
     assert reloaded_running is not None
     assert reloaded_queued.status.value == "failed"
     assert reloaded_queued.error_code == "JOB_INTERRUPTED"
     assert reloaded_running.status.value == "failed"
     assert reloaded_running.error_code == "JOB_INTERRUPTED"
+    assert reloaded_fresh is not None and reloaded_fresh.status.value == "queued"  # not abandoned

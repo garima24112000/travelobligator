@@ -4,6 +4,8 @@ import logging
 from dataclasses import dataclass
 from enum import Enum
 
+from sqlalchemy.exc import IntegrityError
+
 from app.models.itinerary_lineage import ItineraryBranch
 from app.repositories.factory import get_lineage_repository
 from app.services.revision_lineage_service import (
@@ -133,15 +135,26 @@ class ItineraryForkService:
                 message=f"A branch named '{normalized_name}' already exists for this trip.",
             )
 
-        branch = repository.create_branch(
-            ItineraryBranch(
-                trip_id=trip_id,
-                display_name=normalized_name,
-                is_default=False,
-                base_revision_id=source.revision_id,
-                head_revision_id=source.revision_id,
+        # Section 200C: a fork is ONE row whose base and head are both the (immutable) source
+        # revision, inserted in a single statement/transaction -- it can never exist without a
+        # valid base/head, and the source revision is never written. The database's
+        # case-insensitive unique display-name index is the final arbiter of a concurrent
+        # same-name fork: the loser gets NAME_CONFLICT (its insert rolled back), not a 500.
+        try:
+            branch = repository.create_branch(
+                ItineraryBranch(
+                    trip_id=trip_id,
+                    display_name=normalized_name,
+                    is_default=False,
+                    base_revision_id=source.revision_id,
+                    head_revision_id=source.revision_id,
+                )
             )
-        )
+        except IntegrityError:
+            return ForkCreationResult(
+                status=ForkCreationStatus.NAME_CONFLICT,
+                message=f"A branch named '{normalized_name}' already exists for this trip.",
+            )
         logger.info(
             "Fork branch created for trip %s.",
             trip_id,

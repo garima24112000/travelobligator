@@ -5,7 +5,7 @@ from enum import Enum
 from typing import Any
 from uuid import uuid4
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, PrivateAttr, field_validator, model_validator
 
 from app.models.accommodation import AccommodationSearchResult
 from app.models.ai_candidate_promotion import AICandidatePromotionReport
@@ -1163,6 +1163,14 @@ class GenerationProgress(BaseModel):
 
 
 class PlanningState(BaseModel):
+    # Section 200C: the optimistic-concurrency token of the persisted row this object was
+    # loaded from (`planning_states.lock_version`). A PRIVATE attribute on purpose: it is
+    # never serialized (not in API responses, revision snapshots or the JSONB document),
+    # it survives `model_copy(deep=True)`, and it is `None` for an object that has never
+    # been loaded from/saved to PostgreSQL. Only `PostgresPlanningStateRepository` reads
+    # and writes it; Local JSON ignores it.
+    _lock_version: int | None = PrivateAttr(default=None)
+
     planning_state_id: str = Field(default_factory=lambda: _new_id("planning_state"))
     trip_id: str = Field(default_factory=lambda: _new_id("trip"))
 

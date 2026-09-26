@@ -29,16 +29,21 @@ _ALLOWED_HOTEL_RATINGS_MANUAL_HTML_SOURCES = frozenset(
     {"generic", "tripadvisor", "google_places", "other"}
 )
 
-# Step 183B: allowed values for the persistence backend gate. An
-# unrecognized value clamps to "local_json" (the safe, current-behavior
-# default) rather than raising or silently doing nothing -- same
-# convention as every provider-selection field in this file. Setting
-# `DATABASE_URL` alone never changes this; only an explicit
-# `PERSISTENCE_BACKEND=postgres` does, and even then nothing in
-# app/repositories or app/services reads Postgres yet (see
-# backend/app/db/session.py) -- this field exists purely so a future
-# repository swap has a config surface to gate on.
+# Section 200A: allowed values for the ONE persistence selector,
+# `PERSISTENCE_BACKEND`. "postgres" is the DEFAULT normal runtime backend;
+# "local_json" is an explicit development/test fallback and is never chosen
+# implicitly. Unlike the provider-selection fields in this file, an
+# unrecognized value RAISES instead of clamping: silently mapping a typo to
+# a different persistence backend is exactly the silent fallback this
+# contract forbids. `DATABASE_URL` alone never selects anything.
 _ALLOWED_PERSISTENCE_BACKENDS = frozenset({"local_json", "postgres"})
+
+# Section 200B: the ONE provider-response-cache selector. "redis" (default) is
+# the shared cache; "sqlite" is an EXPLICIT local-development alternative (the
+# pre-200B file cache). Turning caching off entirely stays the existing
+# PROVIDER_CACHE_ENABLED=false switch -- there is no third backend value, so
+# the two settings never overlap. An unknown value raises (no silent switch).
+_ALLOWED_PROVIDER_CACHE_BACKENDS = frozenset({"redis", "sqlite"})
 
 # Step 187B: allowed values for the structured-logging foundation's log
 # level. An unrecognized value normalizes to "INFO" rather than raising
@@ -91,12 +96,29 @@ class Settings(BaseSettings):
         alias="BACKEND_CORS_ORIGINS",
     )
 
-    database_url: str = Field(
-        default="postgresql://travelobligator_user:change_me@postgres:5432/travelobligator",
-        alias="DATABASE_URL",
-    )
+    # Section 200A: NO built-in default. The old default embedded a
+    # placeholder username/password pointing at the compose host `postgres`;
+    # a real deployment must supply its own DATABASE_URL explicitly, and
+    # `PERSISTENCE_BACKEND=postgres` (the default backend) refuses to start
+    # without one (see `app/core/persistence.py`). Never logged or returned.
+    database_url: str | None = Field(default=None, alias="DATABASE_URL", repr=False)
 
-    redis_url: str = Field(default="redis://redis:6379/0", alias="REDIS_URL")
+    # Section 200B: Redis backs ONLY the provider-response cache (never
+    # persistence, sessions, jobs or AI output). The default targets the
+    # docker-compose `redis` service and carries no credentials; a real
+    # deployment supplies its own URL. Never logged, returned or put in keys.
+    redis_url: str = Field(default="redis://redis:6379/0", alias="REDIS_URL", repr=False)
+    # Short timeouts: the cache is an optimisation and must never stall a
+    # provider call. After a connection failure the store bypasses Redis for a
+    # short cooldown instead of paying the timeout on every call.
+    redis_connect_timeout_seconds: float = Field(
+        default=1.0, alias="REDIS_CONNECT_TIMEOUT_SECONDS", gt=0, le=30
+    )
+    redis_socket_timeout_seconds: float = Field(
+        default=1.0, alias="REDIS_SOCKET_TIMEOUT_SECONDS", gt=0, le=30
+    )
+    # Key namespace prefix so several environments can share one Redis.
+    redis_key_prefix: str = Field(default="travelobligator", alias="REDIS_KEY_PREFIX", min_length=1, max_length=64)
 
     openai_api_key: str | None = Field(default=None, alias="OPENAI_API_KEY")
     openai_model: str = Field(default="gpt-4.1-mini", alias="OPENAI_MODEL")
@@ -398,6 +420,11 @@ class Settings(BaseSettings):
     # `ProviderCacheStore` without a config change -- no adapter reads
     # `provider_cache_enabled` yet, and this step does not change any
     # provider behavior.
+    # Section 200B: `redis` (default, shared) or `sqlite` (explicit local
+    # development file cache at PROVIDER_CACHE_PATH). See
+    # `_ALLOWED_PROVIDER_CACHE_BACKENDS`. PROVIDER_CACHE_PATH is only used by
+    # the sqlite backend.
+    provider_cache_backend: str = Field(default="redis", alias="PROVIDER_CACHE_BACKEND")
     provider_cache_path: str = Field(
         default=".data/provider_cache.sqlite3",
         alias="PROVIDER_CACHE_PATH",
@@ -968,17 +995,15 @@ class Settings(BaseSettings):
     # original hand-written orchestrator loop.
     planning_engine_mode: str = Field(default="langgraph", alias="PLANNING_ENGINE_MODE")
 
-    # Persistence backend gate (Step 183B, docs/14_backend_architecture.md).
-    # "local_json" (default) is the only backend actually used anywhere
-    # today -- both repositories (PlanningStateRepository, TripRepository)
-    # still read/write exclusively through LocalJsonStore regardless of
-    # this value. "postgres" is accepted as an opt-in value for future
-    # repository work (Step 183D+) but currently has no effect on runtime
-    # behavior: no route, service, or repository branches on it yet.
-    # Setting `DATABASE_URL` by itself never switches persistence --
-    # only an explicit `PERSISTENCE_BACKEND=postgres` does, and even that
-    # is inert until a Postgres-backed repository exists.
-    persistence_backend: str = Field(default="local_json", alias="PERSISTENCE_BACKEND")
+    # Persistence backend selector (Step 183B; default flipped in Section
+    # 200A, docs/14_backend_architecture.md). "postgres" (DEFAULT) is the
+    # normal runtime backend for every repository (users, trips, planning
+    # state, jobs, branches/revisions) and requires DATABASE_URL.
+    # "local_json" is an EXPLICIT development/test fallback
+    # (`PERSISTENCE_BACKEND=local_json`), never used implicitly and never a
+    # fallback for a failed Postgres connection. Setting `DATABASE_URL`
+    # alone selects nothing; an unknown value is a startup error.
+    persistence_backend: str = Field(default="postgres", alias="PERSISTENCE_BACKEND")
 
     # Async job foundation (Step 186B, docs/14_backend_architecture.md
     # section 116). Declared now so a later step (186C) has a real, typed
@@ -1039,6 +1064,52 @@ class Settings(BaseSettings):
     generation_job_stale_after_seconds: int = Field(
         default=3600, alias="GENERATION_JOB_STALE_AFTER_SECONDS", gt=0
     )
+
+    # Section 200C: multi-instance job ownership (PostgreSQL only). A running job is
+    # owned by one backend process through a DB lease; the owner heartbeats every
+    # `lease/3` seconds (min 1) to extend it, and another instance may reclaim/interrupt
+    # the job only after the lease has expired without a heartbeat -- so a crashed
+    # process's work is released after roughly this many seconds, and a healthy job
+    # owned by a live instance is never touched. Independent of
+    # `generation_job_stale_after_seconds`, which now only bounds jobs that were queued
+    # but never claimed (and the local_json single-process age check).
+    # ge=3: the heartbeat runs every lease/3 seconds (minimum 1 s), so a lease shorter than 3 s
+    # could not be renewed before it expires (Section 200D validation).
+    generation_job_lease_seconds: int = Field(
+        default=120, alias="GENERATION_JOB_LEASE_SECONDS", ge=3
+    )
+
+    # Section 200D: operational observability / readiness.
+    # `GET /metrics` (Prometheus text, low-cardinality, no user content). No authentication exists in
+    # this app, so deployments should keep /metrics on a private network (see docs section 163).
+    metrics_enabled: bool = Field(default=True, alias="METRICS_ENABLED")
+    # Overall wall-clock bound for one `GET /ready` (PostgreSQL + Redis probes together).
+    readiness_timeout_seconds: float = Field(
+        default=2.0, alias="READINESS_TIMEOUT_SECONDS", gt=0, le=30
+    )
+    # libpq connect timeout for EVERY PostgreSQL connection the app opens (without it an
+    # unreachable/blackholed host can hang a connection attempt for minutes). Pool size, statement
+    # timeout and lock timeout are NOT configured here (200E).
+    db_connect_timeout_seconds: int = Field(
+        default=5, alias="DB_CONNECT_TIMEOUT_SECONDS", ge=1, le=60
+    )
+
+    # Section 200E: PostgreSQL connection pool + request-transaction bounds (one web process per
+    # container). Maximum connections per backend container = DB_POOL_SIZE + DB_MAX_OVERFLOW
+    # (default 5 + 5 = 10), plus the readiness probe's single dedicated connection. Total database
+    # connections = connections_per_container x number_of_containers -- sized in Section 203.
+    db_pool_size: int = Field(default=5, alias="DB_POOL_SIZE", ge=1, le=100)
+    db_max_overflow: int = Field(default=5, alias="DB_MAX_OVERFLOW", ge=0, le=100)
+    # How long a request waits for a free pooled connection before failing safely (HTTP 503).
+    db_pool_timeout_seconds: float = Field(default=10.0, alias="DB_POOL_TIMEOUT_SECONDS", gt=0, le=120)
+    # Recycle pooled connections older than this (0 disables recycling).
+    db_pool_recycle_seconds: int = Field(default=1800, alias="DB_POOL_RECYCLE_SECONDS", ge=0, le=86400)
+    # Server-side bounds applied to every APPLICATION connection (not to migrations, which use their
+    # own engine, and not to the readiness probe, which sets its own). 0 disables. Conservative
+    # non-sub-second defaults: a runaway statement is cancelled after 30 s, a blocked lock wait
+    # after 10 s; both roll the transaction back and surface as a sanitized 503.
+    db_statement_timeout_ms: int = Field(default=30000, alias="DB_STATEMENT_TIMEOUT_MS", ge=0, le=600000)
+    db_lock_timeout_ms: int = Field(default=10000, alias="DB_LOCK_TIMEOUT_MS", ge=0, le=600000)
 
     # Itinerary narrator (Step 182F, docs/13_llm_reasoning_pipeline.md,
     # docs/14_backend_architecture.md). A separate, optional, read-only
@@ -1170,7 +1241,34 @@ class Settings(BaseSettings):
     @field_validator("persistence_backend", mode="after")
     @classmethod
     def _normalize_persistence_backend(cls, value: str) -> str:
-        return value if value in _ALLOWED_PERSISTENCE_BACKENDS else "local_json"
+        normalized = (value or "").strip().lower()
+        if normalized not in _ALLOWED_PERSISTENCE_BACKENDS:
+            raise ValueError(
+                "PERSISTENCE_BACKEND must be 'postgres' (default) or 'local_json' (explicit "
+                "development/test fallback)."
+            )
+        return normalized
+
+    @field_validator("provider_cache_backend", mode="after")
+    @classmethod
+    def _normalize_provider_cache_backend(cls, value: str) -> str:
+        normalized = (value or "").strip().lower()
+        if normalized not in _ALLOWED_PROVIDER_CACHE_BACKENDS:
+            raise ValueError(
+                "PROVIDER_CACHE_BACKEND must be 'redis' (default) or 'sqlite' (explicit local "
+                "development cache); use PROVIDER_CACHE_ENABLED=false to disable caching."
+            )
+        return normalized
+
+    @field_validator("db_statement_timeout_ms", "db_lock_timeout_ms", mode="after")
+    @classmethod
+    def _timeouts_are_disabled_or_at_least_one_second(cls, value: int) -> int:
+        if value != 0 and value < 1000:
+            raise ValueError(
+                "DB_STATEMENT_TIMEOUT_MS / DB_LOCK_TIMEOUT_MS must be 0 (disabled) or at least 1000 ms "
+                "(sub-second timeouts would cancel healthy work)."
+            )
+        return value
 
     @field_validator("session_cookie_samesite", mode="after")
     @classmethod

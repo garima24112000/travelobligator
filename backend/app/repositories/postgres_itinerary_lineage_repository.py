@@ -17,13 +17,15 @@ backing "at most one default branch per trip."
 
 from __future__ import annotations
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.db.models import ItineraryBranchRow, ItineraryRevisionRow
 from app.db.session import get_session_factory
+from app.db.transactions import record_conflict, session_scope
 from app.models.itinerary_lineage import ItineraryBranch, ItineraryRevision
+from app.repositories.errors import UNSET, BranchHeadConflictError
 
 
 def _branch_from_row(row: ItineraryBranchRow) -> ItineraryBranch:
@@ -95,8 +97,19 @@ class PostgresItineraryLineageRepository:
     shared source of truth across processes.
     """
 
-    def __init__(self, session_factory: sessionmaker[Session] | None = None) -> None:
-        self._session_factory = session_factory or get_session_factory()
+    def __init__(
+        self,
+        session_factory: sessionmaker[Session] | None = None,
+        session: Session | None = None,
+    ) -> None:
+        # Section 200C: with a bound `session` (unit of work) no method commits.
+        self._session = session
+        self._session_factory = session_factory or (
+            None if session is not None else get_session_factory()
+        )
+
+    def _scope(self):
+        return session_scope(self._session_factory, self._session)
 
     # -- branches -----------------------------------------------------------
 
@@ -107,30 +120,46 @@ class PostgresItineraryLineageRepository:
         values = _branch_values(branch)
         stmt = pg_insert(ItineraryBranchRow.__table__).values(**values)
         stmt = stmt.on_conflict_do_update(index_elements=["branch_id"], set_=values)
-        with self._session_factory() as session:
+        with self._scope() as session:
             session.execute(stmt)
-            session.commit()
         return branch
 
+    def get_or_create_default_branch(self, branch: ItineraryBranch) -> ItineraryBranch:
+        """Race-safe "ensure the trip's default branch": `INSERT ... ON CONFLICT DO NOTHING`
+        (any unique violation -- the one-default-per-trip partial index -- is skipped, so a
+        concurrent creator never aborts the surrounding transaction), then return whichever
+        default branch now exists."""
+        stmt = pg_insert(ItineraryBranchRow.__table__).values(**_branch_values(branch))
+        with self._scope() as session:
+            session.execute(stmt.on_conflict_do_nothing())
+            row = session.execute(
+                select(ItineraryBranchRow).where(
+                    ItineraryBranchRow.trip_id == branch.trip_id,
+                    ItineraryBranchRow.is_default.is_(True),
+                )
+            ).scalar_one()
+            return _branch_from_row(row)
+
     def get_branch(self, branch_id: str) -> ItineraryBranch | None:
-        with self._session_factory() as session:
-            row = session.get(ItineraryBranchRow, branch_id)
+        with self._scope() as session:
+            # populate_existing: inside a unit of work an earlier bulk UPDATE (head CAS) must be visible.
+            row = session.get(ItineraryBranchRow, branch_id, populate_existing=True)
             if row is None:
                 return None
             return _branch_from_row(row)
 
     def get_default_branch(self, trip_id: str) -> ItineraryBranch | None:
-        with self._session_factory() as session:
+        with self._scope() as session:
             row = session.execute(
                 select(ItineraryBranchRow).where(
                     ItineraryBranchRow.trip_id == trip_id,
                     ItineraryBranchRow.is_default.is_(True),
-                )
+                ).execution_options(populate_existing=True)
             ).scalar_one_or_none()
             return _branch_from_row(row) if row is not None else None
 
     def list_branches_for_trip(self, trip_id: str) -> list[ItineraryBranch]:
-        with self._session_factory() as session:
+        with self._scope() as session:
             rows = session.execute(
                 select(ItineraryBranchRow)
                 .where(ItineraryBranchRow.trip_id == trip_id)
@@ -139,15 +168,49 @@ class PostgresItineraryLineageRepository:
             return [_branch_from_row(row) for row in rows]
 
     def update_branch_head(
-        self, branch_id: str, head_revision_id: str
+        self,
+        branch_id: str,
+        head_revision_id: str,
+        *,
+        expected_head_revision_id: object = UNSET,
     ) -> ItineraryBranch | None:
-        with self._session_factory() as session:
-            row = session.get(ItineraryBranchRow, branch_id)
-            if row is None:
-                return None
-            row.head_revision_id = head_revision_id
-            session.commit()
-            session.refresh(row)
+        """Advances a branch head.
+
+        With `expected_head_revision_id` (Section 200C compare-and-set) the UPDATE only
+        matches while the head is still exactly what the caller read
+        (`head_revision_id IS NOT DISTINCT FROM :expected`, so a legitimately `None` head is
+        expressible); a stale writer updates zero rows and gets `BranchHeadConflictError`.
+        Without it, the old unconditional update is kept for legacy callers. Returns `None`
+        for an unknown branch.
+        """
+        with self._scope() as session:
+            if expected_head_revision_id is UNSET:
+                row = session.get(ItineraryBranchRow, branch_id)
+                if row is None:
+                    return None
+                row.head_revision_id = head_revision_id
+                session.flush()
+                session.refresh(row)
+                return _branch_from_row(row)
+
+            result = session.execute(
+                update(ItineraryBranchRow)
+                .where(
+                    ItineraryBranchRow.branch_id == branch_id,
+                    ItineraryBranchRow.head_revision_id.is_not_distinct_from(expected_head_revision_id),
+                )
+                .values(head_revision_id=head_revision_id)
+            )
+            if result.rowcount != 1:
+                if session.get(ItineraryBranchRow, branch_id) is None:
+                    return None
+                record_conflict("branch_head")
+                raise BranchHeadConflictError(branch_id)
+            row = session.execute(
+                select(ItineraryBranchRow)
+                .where(ItineraryBranchRow.branch_id == branch_id)
+                .execution_options(populate_existing=True)
+            ).scalar_one()
             return _branch_from_row(row)
 
     # -- revisions ------------------------------------------------------------
@@ -167,9 +230,8 @@ class PostgresItineraryLineageRepository:
                 index_elements=["branch_id", "version_label"],
             )
         )
-        with self._session_factory() as session:
+        with self._scope() as session:
             session.execute(stmt)
-            session.commit()
             existing = session.execute(
                 select(ItineraryRevisionRow).where(
                     ItineraryRevisionRow.branch_id == revision.branch_id,
@@ -179,14 +241,14 @@ class PostgresItineraryLineageRepository:
             return _revision_from_row(existing)
 
     def get_revision(self, revision_id: str) -> ItineraryRevision | None:
-        with self._session_factory() as session:
+        with self._scope() as session:
             row = session.get(ItineraryRevisionRow, revision_id)
             if row is None:
                 return None
             return _revision_from_row(row)
 
     def list_revisions_for_branch(self, branch_id: str) -> list[ItineraryRevision]:
-        with self._session_factory() as session:
+        with self._scope() as session:
             rows = session.execute(
                 select(ItineraryRevisionRow)
                 .where(ItineraryRevisionRow.branch_id == branch_id)
@@ -197,7 +259,7 @@ class PostgresItineraryLineageRepository:
     def get_revision_by_branch_and_version(
         self, branch_id: str, version_label: str
     ) -> ItineraryRevision | None:
-        with self._session_factory() as session:
+        with self._scope() as session:
             row = session.execute(
                 select(ItineraryRevisionRow).where(
                     ItineraryRevisionRow.branch_id == branch_id,

@@ -1,52 +1,61 @@
 from __future__ import annotations
 
 import pytest
+from pydantic import ValidationError
 
 from app.core.config import Settings
 
-# Tests for the persistence backend config gate (Step 183B,
-# docs/14_backend_architecture.md). This field currently has NO effect on
-# runtime behavior -- see backend/app/tests/repositories/test_persistence.py
-# for proof the local-JSON repositories still work unchanged regardless of
-# this value.
+# Section 200A: the persistence selector contract. Production default is
+# PostgreSQL; local_json is an explicit development/test fallback; an unknown
+# value is an error (never a silent substitute); DATABASE_URL alone selects
+# nothing. (Ordinary tests run with PERSISTENCE_BACKEND=local_json chosen
+# explicitly by conftest -- see tests/core/test_persistence_default_200a.py.)
 
 
-def test_persistence_backend_default_is_local_json() -> None:
+def test_persistence_backend_default_is_postgres() -> None:
     field_info = Settings.model_fields["persistence_backend"]
-    assert field_info.default == "local_json"
+    assert field_info.default == "postgres"
     assert field_info.alias == "PERSISTENCE_BACKEND"
 
 
-def test_settings_constructs_without_any_persistence_backend_env_var(
+def test_settings_constructs_without_any_persistence_env_var_and_defaults_to_postgres(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setitem(Settings.model_config, "env_file", None)
-    settings = Settings()
+    monkeypatch.delenv("PERSISTENCE_BACKEND", raising=False)
+    monkeypatch.delenv("DATABASE_URL", raising=False)
 
-    assert settings.persistence_backend == "local_json"
+    settings = Settings(_env_file=None)
+
+    assert settings.persistence_backend == "postgres"
+    assert settings.database_url is None  # no built-in credentials/default URL
 
 
-def test_persistence_backend_accepts_postgres_as_opt_in_value() -> None:
-    settings = Settings(_env_file=None, persistence_backend="postgres")
+@pytest.mark.parametrize("value", ["local_json", "postgres"])
+def test_persistence_backend_accepts_exactly_the_two_documented_values(value: str) -> None:
+    assert Settings(_env_file=None, PERSISTENCE_BACKEND=value).persistence_backend == value
+
+
+@pytest.mark.parametrize("value,expected", [("POSTGRES", "postgres"), (" local_json ", "local_json")])
+def test_persistence_backend_is_case_and_whitespace_normalised(value: str, expected: str) -> None:
+    assert Settings(_env_file=None, PERSISTENCE_BACKEND=value).persistence_backend == expected
+
+
+@pytest.mark.parametrize("value", ["made_up", "", "sqlite", "memory", "postgresql"])
+def test_unrecognised_persistence_backend_is_a_configuration_error_not_a_silent_fallback(value: str) -> None:
+    with pytest.raises(ValidationError) as excinfo:
+        Settings(_env_file=None, PERSISTENCE_BACKEND=value)
+    assert "PERSISTENCE_BACKEND must be" in str(excinfo.value)
+
+
+def test_database_url_alone_selects_nothing_the_default_stays_postgres(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("PERSISTENCE_BACKEND", raising=False)
+    monkeypatch.setenv("DATABASE_URL", "postgresql://someone:secret@example.com:5432/somedb")
+
+    settings = Settings(_env_file=None)
+
     assert settings.persistence_backend == "postgres"
 
 
-@pytest.mark.parametrize("value", ["made_up", "POSTGRES", "", "postgres "])
-def test_persistence_backend_falls_back_to_local_json_for_unrecognized_values(
-    value: str,
-) -> None:
-    settings = Settings(_env_file=None, persistence_backend=value)
-    assert settings.persistence_backend == "local_json"
-
-
-def test_database_url_alone_does_not_change_persistence_backend(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Setting DATABASE_URL must never silently switch persistence to
-    Postgres -- only an explicit PERSISTENCE_BACKEND=postgres does."""
-    monkeypatch.setitem(Settings.model_config, "env_file", None)
-    monkeypatch.setenv("DATABASE_URL", "postgresql://someone:secret@example.com:5432/somedb")
-
-    settings = Settings()
-
-    assert settings.persistence_backend == "local_json"
+def test_database_url_never_appears_in_a_settings_repr() -> None:
+    settings = Settings(_env_file=None, DATABASE_URL="postgresql://someone:s3cretpw@example.com:5432/somedb")
+    assert "s3cretpw" not in repr(settings) and "s3cretpw" not in str(settings)

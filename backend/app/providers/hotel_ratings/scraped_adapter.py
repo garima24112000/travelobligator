@@ -322,6 +322,12 @@ class ScrapedLocalHotelRatingsProvider(HotelRatingsProvider):
     def _resolve_cache_store(self, settings: Settings) -> ProviderCacheStore | None:
         if not settings.scraped_hotel_ratings_cache_enabled:
             return None
+        # Section 200B: these caches hold PARSED LOCAL SOURCE FILES (per-instance
+        # snapshots of manually supplied inventory-like data), not shared provider
+        # responses. They stay on the explicit local `sqlite` backend and are never
+        # put in the shared Redis cache (stale prices/availability must not be shared).
+        if self._cache_store is None and settings.provider_cache_backend != "sqlite":
+            return None
         if self._cache_store is None:
             self._cache_store = get_provider_cache_store(settings.resolved_provider_cache_path())
         return self._cache_store

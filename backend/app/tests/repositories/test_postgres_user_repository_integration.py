@@ -20,14 +20,14 @@ from app.repositories.protocols import UserAlreadyExistsError
 #       python -m pytest app/tests/repositories/test_postgres_user_repository_integration.py -q
 #
 # See docs/14_backend_architecture.md section 109.
-pytestmark = pytest.mark.skipif(
+pytestmark = [pytest.mark.postgres_integration, pytest.mark.skipif(
     os.environ.get("TRAVELOB_RUN_POSTGRES_TESTS") != "1",
     reason=(
         "Optional live-Postgres integration test, skipped by default. Set "
         "TRAVELOB_RUN_POSTGRES_TESTS=1 (plus PERSISTENCE_BACKEND=postgres and "
         "a real DATABASE_URL against an alembic-upgraded database) to run it."
     ),
-)
+)]
 
 
 def _session_factory():

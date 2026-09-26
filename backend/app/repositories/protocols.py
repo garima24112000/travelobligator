@@ -12,7 +12,8 @@ contract for `app/repositories/factory.py`'s return types.
 
 from __future__ import annotations
 
-from typing import Protocol
+from datetime import datetime
+from typing import Callable, Protocol
 
 from app.models.generation_job import GenerationJob
 from app.models.itinerary_lineage import ItineraryBranch, ItineraryRevision
@@ -34,7 +35,7 @@ class TripRepositoryProtocol(Protocol):
 class PlanningStateRepositoryProtocol(Protocol):
     def save(self, planning_state: PlanningState) -> PlanningState: ...
 
-    def get_by_trip_id(self, trip_id: str) -> PlanningState | None: ...
+    def get_by_trip_id(self, trip_id: str, *, for_update: bool = False) -> PlanningState | None: ...
 
 
 class UserAlreadyExistsError(Exception):
@@ -89,6 +90,38 @@ class GenerationJobRepositoryProtocol(Protocol):
 
     def list_non_terminal(self) -> list[GenerationJob]: ...
 
+    # Section 200C lifecycle (ownership decided by the repository/database, never by callers):
+    def claim(
+        self,
+        job_id: str,
+        lease_owner: str,
+        lease_seconds: int,
+        *,
+        now: datetime | None = None,
+        progress_stage: str | None = None,
+    ) -> GenerationJob | None: ...
+
+    def heartbeat(
+        self, job_id: str, lease_owner: str, lease_seconds: int, *, now: datetime | None = None
+    ) -> bool: ...
+
+    def transition(
+        self,
+        job_id: str,
+        mutate: Callable[[GenerationJob], GenerationJob],
+        *,
+        allowed_from: frozenset[str] = ...,
+        lease_owner: object = ...,
+    ) -> GenerationJob | None: ...
+
+    def recover_expired_jobs(
+        self,
+        *,
+        stale_queued_before: datetime,
+        trip_id: str | None = None,
+        now: datetime | None = None,
+    ) -> list[GenerationJob]: ...
+
 
 class ItineraryLineageRepositoryProtocol(Protocol):
     """Section 199A revision-snapshot/branch-lineage foundation (Task 21).
@@ -106,8 +139,14 @@ class ItineraryLineageRepositoryProtocol(Protocol):
 
     def list_branches_for_trip(self, trip_id: str) -> list[ItineraryBranch]: ...
 
+    def get_or_create_default_branch(self, branch: ItineraryBranch) -> ItineraryBranch: ...
+
     def update_branch_head(
-        self, branch_id: str, head_revision_id: str
+        self,
+        branch_id: str,
+        head_revision_id: str,
+        *,
+        expected_head_revision_id: object = ...,
     ) -> ItineraryBranch | None: ...
 
     def create_revision(self, revision: ItineraryRevision) -> ItineraryRevision: ...

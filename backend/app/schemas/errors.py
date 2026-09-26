@@ -49,6 +49,8 @@ class ErrorCode(str, Enum):
     INVALID_CREDENTIALS = "INVALID_CREDENTIALS"
     EMAIL_ALREADY_REGISTERED = "EMAIL_ALREADY_REGISTERED"
     AUTH_NOT_CONFIGURED = "AUTH_NOT_CONFIGURED"
+    # Section 200A: a database (SQLAlchemy/driver) failure surfaced during a request.
+    PERSISTENCE_UNAVAILABLE = "PERSISTENCE_UNAVAILABLE"
     # Async job foundation (Step 186B) -- not raised by any route yet (no
     # job orchestration exists until Step 186C). Declared now alongside
     # the rest of this enum so a future route/dependency has a real,
@@ -65,6 +67,8 @@ class ErrorCode(str, Enum):
     BRANCH_NAME_CONFLICT = "BRANCH_NAME_CONFLICT"
     BRANCH_SWITCH_BLOCKED = "BRANCH_SWITCH_BLOCKED"
     BRANCH_STATE_CONFLICT = "BRANCH_STATE_CONFLICT"
+    # Section 200C: a write was based on stale state (another request committed first).
+    CONCURRENT_UPDATE = "CONCURRENT_UPDATE"
 
 
 class ApiError(BaseModel):

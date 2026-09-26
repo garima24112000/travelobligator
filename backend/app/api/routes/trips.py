@@ -576,13 +576,10 @@ def regenerate_trip_plan(
         raise branch_state_conflict_error(str(exc))
 
     final_state = regeneration_attempt_service.record_applied_attempt(result.planning_state)
-    get_planning_state_repository().save(final_state)
-    # Section 199A (Task 13): captures an immutable revision for the new
-    # version legacy sync regeneration just successfully created and
-    # saved above -- additive only, never changes this route's existing
-    # response/behavior (best-effort, see
-    # RevisionLineageService.record_current_revision's own docstring).
-    revision_lineage_service.record_current_revision(final_state)
+    # Section 200C: the new state, its immutable revision (Section 199A) and the branch-head
+    # advance commit as ONE transition (PostgreSQL: one short transaction after the rerun's
+    # provider work is done; a stale writer -> 409 CONCURRENT_UPDATE and nothing is written).
+    revision_lineage_service.commit_state_with_revision(final_state)
 
     data = RegenerateResponseData(
         trip_id=trip_id,

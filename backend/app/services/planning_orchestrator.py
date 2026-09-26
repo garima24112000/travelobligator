@@ -26,6 +26,8 @@ from app.models.routing import (
 )
 from app.providers.gateway import provider_gateway
 from app.repositories.factory import get_planning_state_repository, get_trip_repository
+from app.repositories.errors import ConcurrentStateUpdateError
+from app.repositories.unit_of_work import run_atomic
 from app.repositories.planning_state_repository import PlanningStateRepository
 from app.repositories.trip_repository import TripRepository
 from app.services.accommodation_inventory_service import AccommodationInventoryService
@@ -444,9 +446,31 @@ class PlanningOrchestrator:
         # this just confirms the "blocked, no generated plan yet" gate.
         planning_state = self.regeneration_readiness_service.recompute(planning_state)
 
-        self.trip_repository.create(planning_state.trip_id, owner_id=owner_id)
-        self.planning_state_repository.save(planning_state)
+        if (
+            self._trip_repo_override is None
+            and self._planning_state_repo_override is None
+            and get_settings().persistence_backend == "postgres"
+        ):
+            # Section 200C: the trip row and its initial PlanningState are ONE transaction --
+            # a failure between the two writes leaves neither behind (no orphan trip/state).
+            def _persist_new_trip(uow) -> None:
+                uow.trips.create(planning_state.trip_id, owner_id=owner_id)
+                uow.planning_states.save(planning_state)
+
+            run_atomic(_persist_new_trip)
+        else:
+            self.trip_repository.create(planning_state.trip_id, owner_id=owner_id)
+            self.planning_state_repository.save(planning_state)
         return planning_state
+
+    @staticmethod
+    def _carry_lock_token(previous: PlanningState, new: PlanningState) -> PlanningState:
+        """A stage may hand back a different `PlanningState` object; the optimistic-concurrency
+        token belongs to the persisted row, so a token-less successor inherits it (never
+        overriding a token the successor already carries)."""
+        if new is not previous and new._lock_version is None:
+            new._lock_version = previous._lock_version
+        return new
 
     # -- Step 163B: backend pipeline stage-progress bookkeeping helpers --
     # These only ever mutate `planning_state.generation_progress`. They
@@ -867,24 +891,37 @@ class PlanningOrchestrator:
         planning_state.set_pipeline_status(pipeline_status)
         return planning_state
 
+    def _save_failed_progress(self, planning_state: PlanningState, persisted: PlanningState) -> None:
+        """Best-effort persistence of the failed-generation marker. If the failure WAS a
+        concurrent update, the newer state must not be overwritten: skip (the original error
+        is what the caller sees)."""
+        planning_state = self._fail_generation_progress(planning_state)
+        self._carry_lock_token(persisted, planning_state)
+        try:
+            self.planning_state_repository.save(planning_state)
+        except ConcurrentStateUpdateError:
+            logger.info(
+                "Skipped persisting the failed-generation marker for trip %s: "
+                "the state changed concurrently.",
+                planning_state.trip_id,
+            )
+
     def generate_full_plan(self, trip_id: str, force_regenerate: bool = False) -> PlanningState:
         planning_state = self.planning_state_repository.get_by_trip_id(trip_id)
         if planning_state is None:
             raise trip_not_found_error(trip_id)
 
         planning_state.set_pipeline_status(PipelineStatus.GENERATING)
-        # Fresh progress bookkeeping for this run (Step 163B) -- resetting
-        # completed_stages/progress_percent here means re-generating an
-        # already-generated trip always reports this run's progress, never
-        # stale counts appended on top of a previous run's.
         planning_state = self._start_generation_progress(planning_state)
         self.planning_state_repository.save(planning_state)
+        # Section 200C: `persisted` = the last object written; a stage that returns a different
+        # object inherits its concurrency token. Progress saves between stages stay separate
+        # writes (they are status updates, not product transitions); a concurrent writer that
+        # committed in between makes the next save fail with ConcurrentStateUpdateError instead
+        # of being silently overwritten.
+        persisted = planning_state
 
         try:
-            # Stage order/outputs are unchanged from before Step 163B -- the
-            # (stage_key, run_stage) pairing only adds progress bookkeeping
-            # around each existing call, in the same order, with the same
-            # save-after-each-stage cadence.
             stage_runners = (
                 ("traveler_profile", self.run_traveler_profile_stage),
                 ("destination_context", self.run_destination_context_stage),
@@ -897,71 +934,31 @@ class PlanningOrchestrator:
                 planning_state = self._mark_stage_started(planning_state, stage_key)
                 planning_state = run_stage(planning_state)
                 planning_state = self._mark_stage_finished(planning_state, stage_key)
-                # "destination_context" also covers two real sub-steps
-                # (candidate_quality scoring, then the optional AI candidate
-                # shadow stage) that run_destination_context_stage already
-                # performs internally -- recorded here, without touching
-                # run_destination_context_stage itself, since both are
-                # already finished by the time it returns.
                 if stage_key == "destination_context":
                     planning_state = self._mark_stage_finished(planning_state, "candidate_quality")
                     planning_state = self._mark_stage_finished(planning_state, "ai_candidate_shadow")
+                self._carry_lock_token(persisted, planning_state)
                 self.planning_state_repository.save(planning_state)
+                persisted = planning_state
 
             planning_state = self._mark_stage_started(planning_state, "post_processing")
-            # Idempotent: records the "v1" version item only the first time a
-            # trip is generated. Calling generate again for the same trip does
-            # not append a duplicate v1 entry (see VersioningService.create_initial_version).
             planning_state = self.versioning_service.create_initial_version(planning_state)
-            # Recomputed from scratch every time (Step 132) so it always
-            # reflects the just-recorded version_history alongside any existing
-            # feedback_history/user_locks.
             planning_state = self.plan_diff_preview_service.recompute(planning_state)
-            # Recomputed from scratch every time (Step 135) so it always
-            # reflects the just-recorded version_history.
             planning_state = self.regeneration_readiness_service.recompute(planning_state)
-            # Step 182F: optional, read-only LLM narrator, run last -- after
-            # validation/provider coverage/the full plan already exist.
-            # Off by default (ITINERARY_NARRATOR_ENABLED=false); never
-            # raises, so generation always succeeds whether the narrator is
-            # disabled or its provider call fails. See
-            # ItineraryNarrativeService's own docstring for the full
-            # "never mutates any other field" contract.
             planning_state = self.itinerary_narrative_service.generate(planning_state)
             planning_state = self._mark_stage_finished(planning_state, "post_processing")
             planning_state = self._finish_generation_progress(planning_state)
-            self.planning_state_repository.save(planning_state)
-            # Section 199A (Task 12): captures the first forkable revision
-            # (v1) at the same lifecycle boundary the initial version
-            # label itself is recorded, using the fully-finished state
-            # (post narrative/progress) actually saved above -- never an
-            # empty pre-generation shell. Best-effort by construction
-            # (see RevisionLineageService.record_current_revision's own
-            # docstring); a failure here never affects a plan generation
-            # that already succeeded and was already saved.
-            self.revision_lineage_service.record_current_revision(planning_state)
+            self._carry_lock_token(persisted, planning_state)
+            # Section 200C: final state + its revision + the branch head commit atomically.
+            self.revision_lineage_service.commit_state_with_revision(
+                planning_state, state_repository=self._planning_state_repo_override
+            )
         except Exception:
-            # Mark failed before re-raising -- never swallow or replace the
-            # original exception, and never change existing error behavior
-            # otherwise (Step 163B).
-            planning_state = self._fail_generation_progress(planning_state)
-            self.planning_state_repository.save(planning_state)
+            self._save_failed_progress(planning_state, persisted)
             raise
 
         return planning_state
 
-    # Step 171D: config-gated alternative to generate_full_plan, selected by
-    # app.api.routes.trips.generate_trip_plan whenever
-    # Settings.planning_engine_mode == "langgraph" -- the default as of
-    # Step 171E, once the graph reached the stage parity documented in
-    # planning_graph.py's module docstring (an explicit "legacy", or any
-    # unrecognized config value, always calls generate_full_plan above
-    # instead, completely unchanged). Runs the same deterministic stage
-    # services as generate_full_plan, in the same relative order, but
-    # through the LangGraph graph (via self.langgraph_planning_service)
-    # instead of the hand-written stage_runners loop -- never a free-form
-    # LLM planning call, never a new provider/network call beyond what
-    # those same stage services already made before Step 171D existed.
     def generate_full_plan_via_langgraph(self, trip_id: str) -> PlanningState:
         planning_state = self.planning_state_repository.get_by_trip_id(trip_id)
         if planning_state is None:
@@ -970,12 +967,13 @@ class PlanningOrchestrator:
         planning_state.set_pipeline_status(PipelineStatus.GENERATING)
         planning_state = self._start_generation_progress(planning_state)
         self.planning_state_repository.save(planning_state)
+        persisted = planning_state
 
         try:
             result = self.langgraph_planning_service.run(
                 trip_id, planning_state.trip_request, planning_state
             )
-            new_state = result.planning_state
+            new_state = self._carry_lock_token(persisted, result.planning_state)
 
             # Mirrors generate_full_plan's own per-GENERATION_STAGE_KEYS
             # progress bookkeeping (Step 163B) as closely as the graph's
@@ -1021,13 +1019,15 @@ class PlanningOrchestrator:
             new_state = self.itinerary_narrative_service.generate(new_state)
             new_state = self._mark_stage_finished(new_state, "post_processing")
             new_state = self._finish_generation_progress(new_state)
-            self.planning_state_repository.save(new_state)
-            # Section 199A (Task 12): same first-forkable-revision capture
-            # generate_full_plan performs -- see that call site's comment.
-            self.revision_lineage_service.record_current_revision(new_state)
+            self._carry_lock_token(persisted, new_state)
+            # Section 199A (Task 12) + Section 200C: same first-forkable-revision capture
+            # generate_full_plan performs, committed atomically with the final state (see
+            # that call site's comment).
+            self.revision_lineage_service.commit_state_with_revision(
+                new_state, state_repository=self._planning_state_repo_override
+            )
         except Exception:
-            planning_state = self._fail_generation_progress(planning_state)
-            self.planning_state_repository.save(planning_state)
+            self._save_failed_progress(planning_state, persisted)
             raise
 
         return new_state
@@ -1037,7 +1037,9 @@ class PlanningOrchestrator:
         if planning_state is None:
             raise trip_not_found_error(trip_id)
 
+        loaded_state = planning_state
         planning_state = self.feedback_service.apply_feedback(planning_state, feedback_text)
+        self._carry_lock_token(loaded_state, planning_state)
         # Recomputed from scratch every time (Step 132) so it always
         # reflects the just-appended feedback_history.
         planning_state = self.plan_diff_preview_service.recompute(planning_state)
@@ -1048,8 +1050,18 @@ class PlanningOrchestrator:
         return planning_state
 
     def rerun_affected_stages(
-        self, planning_state: PlanningState, affected_stages: list[PlanningStage]
+        self,
+        planning_state: PlanningState,
+        affected_stages: list[PlanningStage],
+        *,
+        persist_each_stage: bool = True,
     ) -> PlanningState:
+        """Reruns `affected_stages` in order. `persist_each_stage=True` (default, legacy
+        callers) saves after every stage. Section 200C: legacy regeneration passes
+        `False` -- the rerun then mutates only memory and the caller commits the FINAL state
+        (new stages + version + applied feedback + revision) in one short transaction, so a
+        crash mid-rerun can never leave new stage output committed under the old version with
+        the feedback still pending."""
         stage_runner_by_stage = {
             PlanningStage.TRAVELER_PROFILE: self.run_traveler_profile_stage,
             PlanningStage.DESTINATION_CONTEXT: self.run_destination_context_stage,
@@ -1059,12 +1071,16 @@ class PlanningOrchestrator:
             PlanningStage.VALIDATION: self.run_validation_stage,
         }
 
+        persisted = planning_state
         for stage in affected_stages:
             run_stage = stage_runner_by_stage.get(stage)
             if run_stage is None:
                 continue
             planning_state = run_stage(planning_state)
-            self.planning_state_repository.save(planning_state)
+            self._carry_lock_token(persisted, planning_state)
+            if persist_each_stage:
+                self.planning_state_repository.save(planning_state)
+                persisted = planning_state
 
         return planning_state
 

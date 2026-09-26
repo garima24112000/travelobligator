@@ -32,7 +32,17 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Text, UniqueConstraint, text
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    Text,
+    UniqueConstraint,
+    text,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -99,6 +109,7 @@ class PlanningStateRow(Base):
     __table_args__ = (
         Index("ix_planning_states_current_version", "current_version"),
         Index("ix_planning_states_pipeline_status", "pipeline_status"),
+        CheckConstraint("lock_version >= 0", name="ck_planning_states_lock_version_non_negative"),
     )
 
     trip_id: Mapped[str] = mapped_column(
@@ -108,6 +119,10 @@ class PlanningStateRow(Base):
     current_version: Mapped[str] = mapped_column(Text, nullable=False)
     pipeline_status: Mapped[str] = mapped_column(Text, nullable=False)
     state: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    # Section 200C: optimistic-concurrency token (NOT a secret, NOT a timestamp).
+    # Every write is `... WHERE lock_version = :expected SET lock_version =
+    # lock_version + 1`; a stale writer updates zero rows and is rejected.
+    lock_version: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
@@ -139,6 +154,14 @@ class GenerationJobRow(Base):
         Index("ix_generation_jobs_owner_id", "owner_id"),
         Index("ix_generation_jobs_status", "status"),
         Index("ix_generation_jobs_trip_id_status", "trip_id", "status"),
+        # Section 200C: the DATABASE guarantees at most one active job per trip
+        # (closes the read-then-create race in check_no_duplicate_running_job).
+        Index(
+            "uq_generation_jobs_one_active_per_trip",
+            "trip_id",
+            unique=True,
+            postgresql_where=text("status IN ('queued', 'running')"),
+        ),
     )
 
     job_id: Mapped[str] = mapped_column(Text, primary_key=True)
@@ -181,6 +204,12 @@ class GenerationJobRow(Base):
     clarification_possible_experience_ids: Mapped[list[str]] = mapped_column(
         JSONB, nullable=False, server_default="[]"
     )
+    # Section 200C: DB-backed job ownership (lease). `lease_owner` is an opaque
+    # per-process id (never a hostname/credential); a job is reclaimable only when
+    # `lease_expires_at` has passed. Cleared on every terminal transition.
+    lease_owner: Mapped[str | None] = mapped_column(Text, nullable=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class ItineraryBranchRow(Base):

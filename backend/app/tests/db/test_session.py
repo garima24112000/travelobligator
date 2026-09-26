@@ -56,9 +56,13 @@ def test_build_engine_does_not_connect() -> None:
     assert engine.dialect.driver == "psycopg"
 
 
-def test_get_engine_is_cached() -> None:
+def test_get_engine_is_cached(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.core.config import get_settings
     from app.db.session import get_engine
 
+    monkeypatch.setenv("DATABASE_URL", "postgresql://user:pass@240.0.0.1:1/db")
+    get_settings.cache_clear()
+    get_engine.cache_clear()
     first = get_engine()
     second = get_engine()
 

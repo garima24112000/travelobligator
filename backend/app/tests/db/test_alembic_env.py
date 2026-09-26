@@ -44,12 +44,18 @@ def test_alembic_current_fails_only_at_connection_not_at_import(
     """`alembic current` DOES try to connect (unlike `history` above) --
     proving env.py imports cleanly even when a real command is run, while
     never requiring a real database to actually exist for this test."""
+    import os
+
+    # Section 200A: DATABASE_URL has no default, so point it at an
+    # refused-connection address to prove failure happens at CONNECTION time.
+    env = {**os.environ, "DATABASE_URL": "postgresql://user:pass@127.0.0.1:1/db"}
     result = subprocess.run(
         [sys.executable, "-m", "alembic", "current"],
         cwd=_BACKEND_DIR,
         capture_output=True,
         text=True,
         timeout=30,
+        env=env,
     )
 
     assert result.returncode != 0
@@ -64,3 +70,21 @@ def test_persistence_backend_default_is_still_local_json() -> None:
     migration/schema work is entirely opt-in and unwired."""
     settings = Settings(_env_file=None)
     assert settings.persistence_backend == "local_json"
+
+
+def test_alembic_without_database_url_fails_with_a_fixed_credential_free_message() -> None:
+    import os
+
+    env = {k: v for k, v in os.environ.items() if k != "DATABASE_URL"}
+    result = subprocess.run(
+        [sys.executable, "-m", "alembic", "current"],
+        cwd=_BACKEND_DIR,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env=env,
+    )
+
+    assert result.returncode != 0
+    assert "requires DATABASE_URL" in result.stderr
+    assert "postgresql://" not in result.stderr

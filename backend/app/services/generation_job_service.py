@@ -1,13 +1,19 @@
 from __future__ import annotations
 
 import logging
+import os
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from uuid import uuid4
 
 from fastapi import BackgroundTasks
 
+from app.core import ops_events
 from app.core.config import get_settings
+from app.core.metrics import registry
+from app.core.operational_config import heartbeat_interval_seconds
 from app.core.errors import (
+    CONCURRENT_UPDATE_MESSAGE,
     DESTINATION_UNRESOLVED_MESSAGE,
     REGENERATION_FEEDBACK_NOT_INTERPRETABLE_MESSAGE,
     REGENERATION_NO_EFFECT_MESSAGE,
@@ -25,6 +31,7 @@ from app.models.generation_job import (
 )
 from app.models.planning_state import PlanningStage
 from app.models.targeted_regeneration_runtime import TargetedRegenerationRuntimeStatus
+from app.repositories.errors import ConcurrentStateUpdateError, JobAlreadyActiveError
 from app.repositories.factory import get_job_repository, get_planning_state_repository
 from app.schemas.errors import ErrorCode
 from app.services.planning_orchestrator import planning_orchestrator
@@ -99,7 +106,9 @@ def safe_job_error_code(exc: BaseException) -> str:
     Every call today returns this one fixed, controlled value, matching
     this module's pre-existing generate-failure code.
     """
-    del exc  # deliberately unused -- see docstring
+    if isinstance(exc, ConcurrentStateUpdateError):
+        # Class check only -- the exception's contents are still never read.
+        return ErrorCode.CONCURRENT_UPDATE.value
     return _GENERATE_JOB_FAILED_ERROR_CODE
 
 
@@ -113,8 +122,30 @@ def safe_job_error_message(exc: BaseException, *, fallback: str) -> str:
     `exc` is accepted only for call-site symmetry with
     `safe_job_error_code` -- its contents are never read.
     """
-    del exc  # deliberately unused -- see docstring
+    if isinstance(exc, ConcurrentStateUpdateError):
+        return CONCURRENT_UPDATE_MESSAGE
     return fallback
+
+
+def _event_for(job: GenerationJob, status: str | None, error_code: str | None) -> str:
+    """The operational event a job log line represents (Section 200D taxonomy)."""
+    resolved = status if status is not None else job.status.value
+    code = error_code if error_code is not None else job.error_code
+    if resolved == "succeeded":
+        return ops_events.JOB_SUCCEEDED
+    if resolved == "failed":
+        return ops_events.JOB_INTERRUPTED if code == "JOB_INTERRUPTED" else ops_events.JOB_FAILED
+    if resolved == "running":
+        return ops_events.JOB_CLAIMED
+    return ops_events.JOB_CREATED
+
+
+def _count_job(job_type: str, event: str) -> None:
+    registry.inc("travelobligator_jobs_total", {"job_type": job_type, "event": event.split(".", 1)[-1]})
+
+
+def _job_type_of(job: GenerationJob | None) -> str:
+    return job.job_type.value if job is not None else "unknown"
 
 
 def _job_log_fields(
@@ -143,6 +174,7 @@ def _job_log_fields(
     `app.core.logging_config`'s own `request_id` handling, Step 187C).
     """
     fields: dict[str, object] = {
+        "event": _event_for(job, status, error_code),
         "trip_id": job.trip_id,
         "owner_id": job.owner_id,
         "job_id": job.job_id,
@@ -191,6 +223,234 @@ def _lock_for_trip(trip_id: str) -> threading.Lock:
         return lock
 
 
+# -- Section 200C: DB-backed ownership ----------------------------------------------------------
+#
+# Every running job is owned through a lease in PostgreSQL (`generation_jobs.lease_owner/
+# lease_expires_at/heartbeat_at`), never through process memory: `claim` is one conditional
+# UPDATE, the owner's heartbeat thread extends the lease, terminal transitions are conditional
+# on (status, owner), and recovery only touches jobs whose lease has expired. The lease owner
+# is an opaque per-process id -- no hostname, no credential.
+
+_INSTANCE_ID = f"inst-{os.getpid()}-{uuid4().hex[:8]}"
+
+
+def current_lease_owner() -> str:
+    return _INSTANCE_ID
+
+
+def _uses_database_leases() -> bool:
+    return get_settings().persistence_backend == "postgres"
+
+
+def _heartbeat_interval_seconds(lease_seconds: int) -> float:
+    return heartbeat_interval_seconds(lease_seconds)
+
+
+_ACTIVE_HEARTBEATS: "set[_LeaseHeartbeat]" = set()
+_ACTIVE_HEARTBEATS_LOCK = threading.Lock()
+
+
+def stop_all_heartbeats(timeout_seconds: float = 1.0) -> int:
+    """Shutdown hook: stop every running heartbeat thread (bounded wait, never long). Returns how
+    many were stopped. The threads are daemons, so they never block interpreter exit either."""
+    with _ACTIVE_HEARTBEATS_LOCK:
+        active = list(_ACTIVE_HEARTBEATS)
+    for heartbeat in active:
+        heartbeat.stop(timeout_seconds)
+    return len(active)
+
+
+def active_heartbeat_count() -> int:
+    with _ACTIVE_HEARTBEATS_LOCK:
+        return len(_ACTIVE_HEARTBEATS)
+
+
+class _LeaseHeartbeat:
+    """Extends a running job's lease from a small daemon thread (PostgreSQL mode only) until
+    the job body finishes. Not a scheduler: one thread per running job, stopped by the runner.
+    `lost` becomes True if the database says this owner no longer holds the job."""
+
+    def __init__(
+        self, job_repo, job_id: str, owner: str, lease_seconds: int, job_type: str = "unknown"
+    ) -> None:
+        self._job_type = job_type
+        self._job_repo = job_repo
+        self._job_id = job_id
+        self._owner = owner
+        self._lease_seconds = lease_seconds
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        self.lost = False
+
+    def __enter__(self) -> "_LeaseHeartbeat":
+        if _uses_database_leases():
+            self._thread = threading.Thread(
+                target=self._run, name=f"job-heartbeat-{self._job_id}", daemon=True
+            )
+            with _ACTIVE_HEARTBEATS_LOCK:
+                _ACTIVE_HEARTBEATS.add(self)
+            self._thread.start()
+        return self
+
+    def __exit__(self, *exc_info: object) -> bool:
+        self.stop(5)
+        return False
+
+    def stop(self, timeout_seconds: float = 5.0) -> None:
+        """Stop the thread and forget it (idempotent). Safe to call from shutdown."""
+        self._stop.set()
+        thread = self._thread
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=timeout_seconds)
+        with _ACTIVE_HEARTBEATS_LOCK:
+            _ACTIVE_HEARTBEATS.discard(self)
+
+    def _failed(self, kind: str) -> None:
+        _count_job(self._job_type, ops_events.JOB_HEARTBEAT_FAILED)
+        ops_events.log_event(
+            logger,
+            logging.WARNING,
+            ops_events.JOB_HEARTBEAT_FAILED,
+            "Job heartbeat failed.",
+            job_id=self._job_id,
+            error_kind=kind,
+        )
+
+    def _run(self) -> None:
+        interval = _heartbeat_interval_seconds(self._lease_seconds)
+        try:
+            while not self._stop.wait(interval):
+                try:
+                    if not self._job_repo.heartbeat(self._job_id, self._owner, self._lease_seconds):
+                        self.lost = True
+                        self._failed("ownership_lost")
+                        return  # ownership lost: the thread exits
+                except Exception as exc:  # a transient DB error must not kill the job; try again
+                    self._failed(type(exc).__name__)
+        finally:
+            with _ACTIVE_HEARTBEATS_LOCK:
+                _ACTIVE_HEARTBEATS.discard(self)
+
+
+def _finalize_job(job_repo, job: GenerationJob, owner: str) -> bool:
+    """Write `job` (already mutated to a terminal state) as a CONDITIONAL, idempotent
+    transition: it only lands if the stored job is still non-terminal and -- when it is running
+    with an owner -- still owned by `owner`. A replayed completion, or a stale owner whose lease
+    was taken over, changes nothing (and creates no side effects). Returns whether it landed."""
+    finished = job_repo.transition(job.job_id, lambda _stored: job, lease_owner=owner)
+    job_type = _job_type_of(job)
+    if finished is None:
+        _count_job(job_type, ops_events.JOB_STALE_OWNER_REJECTED)
+        ops_events.log_event(
+            logger,
+            logging.WARNING,
+            ops_events.JOB_STALE_OWNER_REJECTED,
+            "Skipped a terminal transition (already terminal, or ownership was lost).",
+            job_id=job.job_id,
+            trip_id=job.trip_id,
+            job_type=job_type,
+        )
+        return False
+    _count_job(job_type, _event_for(job, None, None))
+    return True
+
+
+def _run_claimed(job_id: str, body, *args, lease_owner: str | None, progress_stage: str | None = None) -> None:
+    """Claim `job_id` in the repository (a no-op for a missing/terminal job or one another live
+    instance owns), run `body(job, owner, *args)` on a private copy while the heartbeat keeps the
+    lease alive."""
+    job_repo = get_job_repository()
+    owner = lease_owner or current_lease_owner()
+    lease_seconds = get_settings().generation_job_lease_seconds
+    claimed = job_repo.claim(job_id, owner, lease_seconds, progress_stage=progress_stage)
+    if claimed is None:
+        _count_job("unknown", ops_events.JOB_CLAIM_CONFLICT)
+        ops_events.log_event(
+            logger,
+            logging.INFO,
+            ops_events.JOB_CLAIM_CONFLICT,
+            "Job was not claimed (missing, terminal, or owned by a live instance).",
+            job_id=job_id,
+        )
+        return
+    job = claimed.model_copy(deep=True)
+    with _LOCAL_JOBS_LOCK:
+        _LOCAL_JOBS[job_id] = owner
+    _count_job(_job_type_of(job), ops_events.JOB_CLAIMED)
+    registry.inc("travelobligator_jobs_running_local", value=0)  # ensure the series exists
+    _adjust_running_gauge(+1)
+    try:
+        with _LeaseHeartbeat(job_repo, job_id, owner, lease_seconds, _job_type_of(job)):
+            body(job, owner, *args)
+    finally:
+        with _LOCAL_JOBS_LOCK:
+            _LOCAL_JOBS.pop(job_id, None)
+        _adjust_running_gauge(-1)
+
+
+# Jobs THIS process currently owns: job_id -> lease owner. Used only by graceful shutdown.
+_LOCAL_JOBS: dict[str, str] = {}
+_LOCAL_JOBS_LOCK = threading.Lock()
+
+
+def interrupt_local_jobs() -> int:
+    """Graceful shutdown (Section 200E): close every job THIS process still owns as `failed`/`JOB_INTERRUPTED`
+    -- honestly, never as succeeded -- so the trip is not blocked until the lease expires. The transition is
+    conditional on lease ownership (`transition(..., lease_owner=...)`), so it can never overwrite a job another
+    instance has since taken over, and a worker thread that later tries to finish it is refused. A job that is
+    killed abruptly (SIGKILL, crash, OOM) is instead recovered by lease expiry (Section 200C). Returns the number
+    of jobs closed. Never raises."""
+    with _LOCAL_JOBS_LOCK:
+        owned = dict(_LOCAL_JOBS)
+    closed = 0
+    if not owned:
+        return 0
+    try:
+        job_repo = get_job_repository()
+        for job_id, owner in owned.items():
+            try:
+                interrupted = job_repo.transition(job_id, mark_job_interrupted, lease_owner=owner)
+            except Exception as exc:  # noqa: BLE001 - shutdown must never raise
+                logger.warning(
+                    "Could not close an in-flight job at shutdown.",
+                    extra={"job_id": job_id, "error_class": type(exc).__name__},
+                )
+                continue
+            if interrupted is not None:
+                closed += 1
+                _count_job(_job_type_of(interrupted), ops_events.JOB_INTERRUPTED)
+                logger.info(
+                    "Job %s interrupted by graceful shutdown.",
+                    job_id,
+                    extra=_job_log_fields(interrupted),
+                )
+    except Exception:  # noqa: BLE001
+        return closed
+    return closed
+
+
+_RUNNING_LOCAL = 0
+_RUNNING_LOCAL_LOCK = threading.Lock()
+
+
+def _adjust_running_gauge(delta: int) -> None:
+    global _RUNNING_LOCAL
+    with _RUNNING_LOCAL_LOCK:
+        _RUNNING_LOCAL = max(0, _RUNNING_LOCAL + delta)
+        registry.set("travelobligator_jobs_running_local", _RUNNING_LOCAL)
+
+
+def _create_job_or_conflict(job: GenerationJob) -> None:
+    """Insert a queued job; the DATABASE's one-active-job-per-trip index is the final arbiter --
+    losing that race is the same friendly 409 the pre-check produces."""
+    try:
+        get_job_repository().create(job)
+    except JobAlreadyActiveError:
+        _count_job(_job_type_of(job), ops_events.JOB_CREATE_CONFLICT)
+        raise job_already_running_error(job.trip_id) from None
+    _count_job(_job_type_of(job), ops_events.JOB_CREATED)
+
+
 def _reconcile_stale_jobs(trip_id: str) -> None:
     """Marks any `queued`/`running` job for `trip_id` older than
     `Settings.generation_job_stale_after_seconds` as interrupted/failed
@@ -210,11 +470,28 @@ def _reconcile_stale_jobs(trip_id: str) -> None:
     job_repo = get_job_repository()
     stale_after_seconds = get_settings().generation_job_stale_after_seconds
     now = datetime.now(timezone.utc)
+    if _uses_database_leases():
+        # Section 200C: ownership is decided by the DATABASE. Only a running job whose lease
+        # expired (its owner is gone) or a queued job nobody ever claimed within the staleness
+        # window is closed; a healthy job owned by another live instance is never touched, no
+        # matter how long it has been running.
+        for interrupted_job in job_repo.recover_expired_jobs(
+            stale_queued_before=now - timedelta(seconds=stale_after_seconds), trip_id=trip_id
+        ):
+            _count_job(_job_type_of(interrupted_job), ops_events.JOB_INTERRUPTED)
+            logger.warning(
+                "Marked job %s for trip %s as interrupted (its lease expired / it was never claimed).",
+                interrupted_job.job_id,
+                trip_id,
+                extra=_job_log_fields(interrupted_job),
+            )
+        return
     for job in job_repo.list_running_by_trip_id(trip_id):
         reference_time = job.started_at or job.created_at
         age_seconds = (now - reference_time).total_seconds()
         if age_seconds > stale_after_seconds:
             interrupted_job = mark_job_interrupted(job)
+            _count_job(_job_type_of(interrupted_job), ops_events.JOB_INTERRUPTED)
             logger.warning(
                 "Marking stale %s job %s for trip %s as interrupted "
                 "(queued/running for %.0fs, past the %ds staleness window).",
@@ -297,7 +574,7 @@ def start_generate_job(
         job = create_queued_job(
             trip_id=trip_id, owner_id=owner_id, job_type=GenerationJobType.GENERATE
         )
-        get_job_repository().create(job)
+        _create_job_or_conflict(job)
         logger.info(
             "Generate job %s queued for trip %s.",
             job.job_id,
@@ -346,7 +623,7 @@ def start_regenerate_job(
             # generation_progress's job), only the terminal outcome
             # updates it again.
             job.progress_stage = affected_stages[0].value
-        get_job_repository().create(job)
+        _create_job_or_conflict(job)
         logger.info(
             "Regenerate job %s queued for trip %s.",
             job.job_id,
@@ -419,10 +696,35 @@ def recover_interrupted_jobs() -> int:
     already loaded into memory by the time this runs).
     """
     job_repo = get_job_repository()
+    if _uses_database_leases():
+        # Section 200C: with several backend instances sharing one database, "every non-terminal
+        # job belongs to a dead previous process" is FALSE -- another live instance may own a
+        # healthy job. Recovery therefore closes only jobs whose lease has expired (owner gone)
+        # or that were queued and never claimed within the staleness window.
+        recovered = job_repo.recover_expired_jobs(
+            stale_queued_before=datetime.now(timezone.utc)
+            - timedelta(seconds=get_settings().generation_job_stale_after_seconds)
+        )
+        for interrupted_job in recovered:
+            _count_job(_job_type_of(interrupted_job), ops_events.JOB_INTERRUPTED)
+            logger.info(
+                "Job %s for trip %s marked interrupted at startup (lease expired).",
+                interrupted_job.job_id,
+                interrupted_job.trip_id,
+                extra=_job_log_fields(interrupted_job),
+            )
+        if recovered:
+            logger.warning(
+                "Marked %d job(s) with an expired lease as failed (JOB_INTERRUPTED) at startup.",
+                len(recovered),
+            )
+        return len(recovered)
+
     non_terminal = job_repo.list_non_terminal()
     for job in non_terminal:
         interrupted_job = mark_job_interrupted(job)
         job_repo.save(interrupted_job)
+        _count_job(_job_type_of(interrupted_job), ops_events.JOB_INTERRUPTED)
         # Step 187D: per-job structured line -- the aggregate warning
         # below only ever carried a count, with no way to trace which
         # specific trip/job was affected; this fills that gap without
@@ -442,7 +744,7 @@ def recover_interrupted_jobs() -> int:
     return len(non_terminal)
 
 
-def run_generate_job(job_id: str) -> None:
+def run_generate_job(job_id: str, *, lease_owner: str | None = None) -> None:
     """Background execution for a `generate` job. Calls the exact same
     `PlanningOrchestrator` entry point `POST /trips/{trip_id}/generate`
     already calls when async mode is off -- no planning stage is
@@ -453,13 +755,12 @@ def run_generate_job(job_id: str) -> None:
     might have held, since (on a real ASGI server) this runs after that
     request has already returned its response to the caller.
     """
-    job_repo = get_job_repository()
-    job = job_repo.get_by_job_id(job_id)
-    if job is None:
-        return
+    _run_claimed(job_id, _run_generate_job_claimed, lease_owner=lease_owner)
 
-    job = mark_job_running(job)
-    job_repo.save(job)
+
+def _run_generate_job_claimed(job: GenerationJob, owner: str) -> None:
+    job_repo = get_job_repository()
+    job_id = job.job_id
     logger.info(
         "Generate job %s started for trip %s.",
         job_id,
@@ -483,7 +784,7 @@ def run_generate_job(job_id: str) -> None:
         # can read the now-final `finished_at` and include a real
         # `duration_ms` -- this only reorders when the log line is
         # emitted relative to an in-memory mutation that was already
-        # about to happen either way; `job_repo.save(job)` below still
+        # about to happen either way; `_finalize_job(job_repo, job, owner)` below still
         # persists exactly once, with the exact same final job state as
         # before this step.
         logger.warning(
@@ -493,7 +794,7 @@ def run_generate_job(job_id: str) -> None:
             exc_info=True,
             extra=_job_log_fields(job),
         )
-        job_repo.save(job)
+        _finalize_job(job_repo, job, owner)
         return
 
     if (
@@ -507,7 +808,7 @@ def run_generate_job(job_id: str) -> None:
             error_code=ErrorCode.DESTINATION_UNRESOLVED.value,
             error_message=DESTINATION_UNRESOLVED_MESSAGE,
         )
-        job_repo.save(job)
+        _finalize_job(job_repo, job, owner)
         return
 
     result_version = planning_state.metadata.current_version
@@ -525,7 +826,7 @@ def run_generate_job(job_id: str) -> None:
     # granularity stays GET /trips/{trip_id}/generation-progress's job).
     if planning_state.generation_progress is not None:
         job.progress_stage = planning_state.generation_progress.current_stage
-    job_repo.save(job)
+    _finalize_job(job_repo, job, owner)
     logger.info(
         "Generate job %s succeeded for trip %s.",
         job_id,
@@ -535,7 +836,11 @@ def run_generate_job(job_id: str) -> None:
 
 
 def run_regenerate_job(
-    job_id: str, affected_stage_values: list[str], applied_feedback_event_ids: list[str]
+    job_id: str,
+    affected_stage_values: list[str],
+    applied_feedback_event_ids: list[str],
+    *,
+    lease_owner: str | None = None,
 ) -> None:
     """Background execution for a `regenerate` job. Calls the exact same
     `apply_regeneration_mutation` helper the synchronous route calls --
@@ -547,13 +852,23 @@ def run_regenerate_job(
     are no longer present), this fails the job safely rather than acting
     on stale data or crashing.
     """
-    job_repo = get_job_repository()
-    job = job_repo.get_by_job_id(job_id)
-    if job is None:
-        return
+    _run_claimed(
+        job_id,
+        _run_regenerate_job_claimed,
+        affected_stage_values,
+        applied_feedback_event_ids,
+        lease_owner=lease_owner,
+    )
 
-    job = mark_job_running(job, progress_stage=job.progress_stage)
-    job_repo.save(job)
+
+def _run_regenerate_job_claimed(
+    job: GenerationJob,
+    owner: str,
+    affected_stage_values: list[str],
+    applied_feedback_event_ids: list[str],
+) -> None:
+    job_repo = get_job_repository()
+    job_id = job.job_id
     logger.info(
         "Regenerate job %s started for trip %s.",
         job_id,
@@ -580,7 +895,7 @@ def run_regenerate_job(
                 error_code=ErrorCode.TRIP_NOT_FOUND.value,
                 error_message=f"Trip '{job.trip_id}' no longer exists.",
             )
-            job_repo.save(job)
+            _finalize_job(job_repo, job, owner)
             # Step 187D: a real, clean (non-exception) failure -- the
             # trip was deleted/never existed by the time this background
             # task ran. `info`, not `warning`: this is an honest,
@@ -612,7 +927,7 @@ def run_regenerate_job(
                 error_code=ErrorCode.REGENERATION_NOT_AVAILABLE.value,
                 error_message=_REGENERATE_JOB_NO_LONGER_ELIGIBLE_MESSAGE,
             )
-            job_repo.save(job)
+            _finalize_job(job_repo, job, owner)
             # Step 187D: same reasoning as above -- a clean, expected
             # refusal (the trip's pending feedback/affected stages
             # changed between request time and this background run), not
@@ -649,7 +964,7 @@ def run_regenerate_job(
                 exc_info=True,
                 extra=_job_log_fields(job),
             )
-            job_repo.save(job)
+            _finalize_job(job_repo, job, owner)
             return
         except (LegacyRegenerationNotInterpretableError, RegenerationNoEffectError) as exc:
             # Section 202B.1: the same honest refusals the sync route
@@ -673,7 +988,7 @@ def run_regenerate_job(
                 code,
                 extra=_job_log_fields(job),
             )
-            job_repo.save(job)
+            _finalize_job(job_repo, job, owner)
             return
         except BranchWorkspaceConflictError as exc:
             # Section 199B.1 (Task 7/8): the SAME shared boundary the
@@ -698,16 +1013,16 @@ def run_regenerate_job(
                 job.trip_id,
                 extra=_job_log_fields(job),
             )
-            job_repo.save(job)
+            _finalize_job(job_repo, job, owner)
             return
 
         final_state = regeneration_attempt_service.record_applied_attempt(result.planning_state)
-        state_repo.save(final_state)
-        # Section 199A (Task 13): same immutable-revision capture the
-        # synchronous legacy route performs, for the async legacy path --
-        # best-effort, see RevisionLineageService.record_current_revision's
-        # own docstring.
-        revision_lineage_service.record_current_revision(final_state)
+        # Section 200C: state + immutable revision (Section 199A) + branch-head advance commit as
+        # ONE transition after the rerun's provider work is done. A stale writer raises
+        # ConcurrentStateUpdateError (the outer guard marks the job failed with CONCURRENT_UPDATE);
+        # a replay of this whole runner cannot get here twice -- the job claim/terminal
+        # transition is conditional, and the state write is a compare-and-set.
+        revision_lineage_service.commit_state_with_revision(final_state)
 
         job = mark_job_succeeded(
             job,
@@ -724,7 +1039,7 @@ def run_regenerate_job(
             # job -- untouched by this fix).
             previous_version=result.previous_version,
         )
-        job_repo.save(job)
+        _finalize_job(job_repo, job, owner)
         logger.info(
             "Regenerate job %s succeeded for trip %s.",
             job_id,
@@ -748,7 +1063,7 @@ def run_regenerate_job(
             exc_info=True,
             extra=_job_log_fields(job),
         )
-        job_repo.save(job)
+        _finalize_job(job_repo, job, owner)
 
 
 # -- Section 197C: targeted-mode async regeneration -------------------------
@@ -771,7 +1086,7 @@ def start_targeted_regenerate_job(
     with _lock_for_trip(trip_id):
         check_no_duplicate_running_job(trip_id, attempted_job_type=GenerationJobType.REGENERATE)
         job = create_queued_job(trip_id=trip_id, owner_id=owner_id, job_type=GenerationJobType.REGENERATE)
-        get_job_repository().create(job)
+        _create_job_or_conflict(job)
         logger.info(
             "Targeted regenerate job %s queued for trip %s.",
             job.job_id,
@@ -782,7 +1097,7 @@ def start_targeted_regenerate_job(
     return job
 
 
-def run_targeted_regenerate_job(job_id: str) -> None:
+def run_targeted_regenerate_job(job_id: str, *, lease_owner: str | None = None) -> None:
     """Background execution for a targeted-mode regenerate job. Calls the
     exact same `TargetedRegenerationApplicationService.regenerate` the
     synchronous route calls (Task 28: semantic parity by construction --
@@ -791,13 +1106,12 @@ def run_targeted_regenerate_job(job_id: str) -> None:
     186E guarantee) so a failure here always marks the job `failed`
     rather than leaving it `running` forever.
     """
-    job_repo = get_job_repository()
-    job = job_repo.get_by_job_id(job_id)
-    if job is None:
-        return
+    _run_claimed(job_id, _run_targeted_regenerate_job_claimed, lease_owner=lease_owner)
 
-    job = mark_job_running(job, progress_stage=None)
-    job_repo.save(job)
+
+def _run_targeted_regenerate_job_claimed(job: GenerationJob, owner: str) -> None:
+    job_repo = get_job_repository()
+    job_id = job.job_id
     logger.info(
         "Targeted regenerate job %s started for trip %s.",
         job_id,
@@ -826,7 +1140,7 @@ def run_targeted_regenerate_job(job_id: str) -> None:
                 preserved_day_indices=result.diff.preserved_day_indices if result.diff else [],
                 diff=result.diff,
             )
-            job_repo.save(job)
+            _finalize_job(job_repo, job, owner)
             logger.info(
                 "Targeted regenerate job %s succeeded for trip %s.",
                 job_id,
@@ -871,7 +1185,7 @@ def run_targeted_regenerate_job(job_id: str) -> None:
             clarification_reason=result.clarification_reason,
             clarification_possible_experience_ids=result.clarification_possible_experience_ids,
         )
-        job_repo.save(job)
+        _finalize_job(job_repo, job, owner)
         logger.info(
             "Targeted regenerate job %s did not complete for trip %s: %s.",
             job_id,
@@ -895,4 +1209,4 @@ def run_targeted_regenerate_job(job_id: str) -> None:
             exc_info=True,
             extra=_job_log_fields(job),
         )
-        job_repo.save(job)
+        _finalize_job(job_repo, job, owner)

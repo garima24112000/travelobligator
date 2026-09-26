@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from app.core.config import get_settings
 from app.models.itinerary_lineage import ItineraryBranch, ItineraryRevision
+from app.repositories.errors import UNSET, BranchHeadConflictError
 from app.storage.local_json_store import LocalJsonStore, get_local_json_store
 
 _BRANCHES_COLLECTION = "itinerary_branches"
@@ -78,12 +79,22 @@ class ItineraryLineageRepository:
         matches = [branch for branch in self._branches.values() if branch.trip_id == trip_id]
         return sorted(matches, key=lambda branch: (branch.created_at, branch.branch_id))
 
+    def get_or_create_default_branch(self, branch: ItineraryBranch) -> ItineraryBranch:
+        existing = self.get_default_branch(branch.trip_id)
+        return existing if existing is not None else self.create_branch(branch)
+
     def update_branch_head(
-        self, branch_id: str, head_revision_id: str
+        self,
+        branch_id: str,
+        head_revision_id: str,
+        *,
+        expected_head_revision_id: object = UNSET,
     ) -> ItineraryBranch | None:
         branch = self._branches.get(branch_id)
         if branch is None:
             return None
+        if expected_head_revision_id is not UNSET and branch.head_revision_id != expected_head_revision_id:
+            raise BranchHeadConflictError(branch_id)
         updated = branch.model_copy(update={"head_revision_id": head_revision_id})
         self._branches[branch_id] = updated
         self._persist_branches()

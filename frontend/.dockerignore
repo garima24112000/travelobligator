@@ -26,3 +26,12 @@ yarn-error.log*
 pnpm-debug.log*
 logs/
 *.log
+
+# Section 200E: never enter the build context (the Dockerfile copies the source explicitly in the builder stage).
+.git
+.gitignore
+.idea/
+.vscode/
+*.tsbuildinfo
+next-env.d.ts
+!.env.example

@@ -23,14 +23,14 @@ from app.tests.conftest import create_trip_payload
 # the repository classes in isolation, genuinely persists to Postgres
 # when opted in, and that a FRESH repository instance (a new Session, not
 # anything cached from the request itself) reads back the same data.
-pytestmark = pytest.mark.skipif(
+pytestmark = [pytest.mark.postgres_integration, pytest.mark.skipif(
     os.environ.get("TRAVELOB_RUN_POSTGRES_TESTS") != "1" or not os.environ.get("DATABASE_URL"),
     reason=(
         "Optional live-Postgres API smoke test, skipped by default. Set "
         "TRAVELOB_RUN_POSTGRES_TESTS=1, PERSISTENCE_BACKEND=postgres, and a "
         "real DATABASE_URL against an alembic-upgraded database to run it."
     ),
-)
+)]
 
 
 def test_full_trip_lifecycle_persists_to_postgres(monkeypatch: pytest.MonkeyPatch) -> None:

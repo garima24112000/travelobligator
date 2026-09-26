@@ -29,8 +29,8 @@ import type {
   ValidationReportData,
 } from "./types";
 
-const API_BASE_URL =
-  process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
+// Section 200E: resolved per call (runtime-injected value first, build-time fallback) -- see runtime-config.ts.
+import { apiBaseUrl } from "./runtime-config";
 
 export class ApiRequestError extends Error {
   constructor(
@@ -68,7 +68,7 @@ async function request<T>(
   init?: RequestInit,
   options?: { allowNullData?: boolean },
 ): Promise<T> {
-  const response = await fetch(`${API_BASE_URL}${path}`, {
+  const response = await fetch(`${apiBaseUrl()}${path}`, {
     credentials: "include",
     headers: { "Content-Type": "application/json" },
     ...init,

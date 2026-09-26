@@ -10511,3 +10511,274 @@ The 202A/202B baseline showed the itinerary narrator inventing descriptive claim
 - **Feedback queue.** `PendingFeedbackSummary.queue_event_ids` / `next_feedback_event_id` publish the exact order targeted regeneration processes pending feedback (one per call, oldest first, stable on ties). Behaviour unchanged.
 - **Failure causes.** `AIItineraryReasoningResult.failure_kind` (structured `AIProviderFailureKind`, set only when the provider call failed) flows through `TargetedRegenerationExecutionResult.provider_failure_kind` so a reasoning-stage rate limit is `REGENERATION_PROVIDER_RATE_LIMITED`, not generic. Empty-plan validator copy distinguishes provider outage, no provider, no candidates and all-candidates-excluded.
 - **Groq proposal guard.** The forced `reasoning_effort="low"` stays removed (202C: it caused `json_validate_failed` by omitting the required per-proposal `confidence` at production size); regression tests assert the client is built without it, with unchanged token budget, strict structured output, and the one bounded structural retry.
+
+## 160. Section 200A: PostgreSQL as the Default Persistence Backend
+
+Infrastructure only; the product remains release-blocked by the separate 202C quality/AI acceptance work.
+
+**Audit of the previous architecture.** (1) Local JSON was selected by `Settings.persistence_backend`'s default `"local_json"`; (2) PostgreSQL only by an explicit `PERSISTENCE_BACKEND=postgres`; (3) `DATABASE_URL` alone selected nothing; (4) with postgres selected and no URL, the built-in placeholder default (`postgresql://travelobligator_user:change_me@postgres:5432/...`, a credential-shaped string in code) was used and the first query failed with a raw driver error; (5) an unreachable DB surfaced as an unhandled driver exception (nothing switched backend, but the message could echo host/user); an *unknown* backend value silently clamped to `local_json`; (6) Postgres implementations existed for all five repositories (users, trips, planning states, generation jobs, itinerary branches/revisions), selected together through `app/repositories/factory.py`; (7) entities: `users`, `trips`, `planning_states` (whole `PlanningState` as JSONB), `generation_jobs`, `itinerary_branches`, `itinerary_revisions` (snapshots as JSONB); (8) 25 live-Postgres tests in six files were skipped unless `TRAVELOB_RUN_POSTGRES_TESTS=1` (+ a real `DATABASE_URL`). **Defect found:** `TargetedRegenerationApplicationService` (a module-level singleton) bound the Local JSON `planning_state_repository` at import time, so targeted regeneration would have written state to Local JSON even in Postgres mode -- now resolved lazily through the factory, with a source-scan regression test forbidding any service from importing a local repository singleton.
+
+**Contract.** `PERSISTENCE_BACKEND` (name preserved) is the one selector: default `postgres`; `local_json` only when explicit; any other value is a validation error. `DATABASE_URL` has no default. `app/core/persistence.py`: `require_database_url` (structural check via SQLAlchemy `make_url`; fixed messages that never contain the URL), `check_postgres_ready` (connect, `SELECT 1`, `alembic_version` == the single code head; any failure raises `PersistenceUnavailableError` with a fixed message, `from None`), `startup_persistence_check` (called from the FastAPI lifespan before `recover_interrupted_jobs`; `local_json` has nothing to verify). There is no code path from a Postgres failure to Local JSON, SQLite or memory. A `SQLAlchemyError` during a request maps to a fixed HTTP 503 `PERSISTENCE_UNAVAILABLE` (only the exception class name is logged). `alembic/env.py` uses `require_database_url`, so migrations fail with the same fixed message when the URL is absent.
+
+**Tests / hermeticity.** `conftest.py` selects the backend explicitly per test: ordinary tests `local_json` with any ambient `DATABASE_URL` removed; tests marked `postgres_integration` (registered in `pytest.ini`; applied to the six existing gated files and the new lifecycle file) `postgres`. `Settings(_env_file=None, PERSISTENCE_BACKEND=..., DATABASE_URL=...)` (alias keys) must be used to override the environment in unit tests. New: `tests/core/test_persistence_default_200a.py` (acceptance A-G, no local artifact, safe 503, single alembic head, no migration code at runtime) and `tests/services/test_postgres_lifecycle_persistence_200a.py` (gated: user/trip/state/version/feedback/branch/revision restart persistence, fork independence + immutable source revision, feedback-queue order across restarts and a successful application of A, job persistence + interrupted-job recovery, full `PlanningState` equality across restart, session/rollback/pool behaviour, empty-database schema error and throwaway-database upgrade -> downgrade base -> upgrade). Gate: `TRAVELOB_RUN_POSTGRES_TESTS=1 DATABASE_URL=... python -m pytest -m postgres_integration`.
+
+**Migration policy.** Alembic is the only schema mechanism (single head `cc7238a1bca3`). Migrations are a deliberate release step (`alembic upgrade head` / `scripts/run_migrations.py`) run BEFORE the app starts; the app only verifies the head at startup and refuses to start on mismatch. Nothing runs migrations per request or at startup; deployment automation is Section 203. Local JSON data is not auto-imported (development state); an operator import tool would be a future, optional task.
+
+**Connection/session audit.** Engine: process-level (`lru_cache`), `pool_pre_ping=True`, SQLAlchemy default pool (size/timeouts deliberately untuned -- deployment hardening). Every repository method opens a short-lived `with session_factory() as session:` and commits explicitly; a failure closes the session (rollback) and returns the connection (`pool.checkedout() == 0` verified after success and after a unique-violation failure); no session is stored on any repository or shared across calls.
+
+**200C carry-forward (transactions/concurrency; NOT fixed here, no atomicity claimed).**
+1. `record_current_revision`: `create_revision` and `update_branch_head` are separate transactions, and the PlanningState save happens in yet another -- a crash between them leaves state advanced without a revision or an unreachable revision (`check_branch_head_consistency` detects, does not repair).
+2. Targeted/legacy regeneration commit: `planning_state_repository.save` then revision recording, then feedback/version bookkeeping, are separate writes.
+3. Branch activation/restore: the restored snapshot save and the branch/active-branch bookkeeping are not one transaction.
+4. Read-modify-write of the whole `PlanningState` JSONB document (routes, jobs, regeneration) is last-write-wins: `ON CONFLICT DO UPDATE` is unconditional (no version/`updated_at` check), so concurrent feedback/lock/regenerate requests can lose updates.
+5. Job vs state: `generation_jobs` and `planning_states` are updated independently; `check_no_duplicate_running_job` is a read-then-create (no partial unique index), so two simultaneous generate requests can both pass it.
+6. Trip creation writes the `trips` row and the initial `planning_states` row separately (`PostgresPlanningStateRepository.save` also inserts a minimal trip row `ON CONFLICT DO NOTHING`).
+7. Job-recovery at startup assumes a single process (multi-instance deployments need a lease/heartbeat).
+8. `pool` sizing/timeouts, statement timeouts and retry-on-serialization are untuned.
+
+## 161. Section 200B: Redis-Backed Provider-Response Caching
+
+Infrastructure only; the product remains release-blocked by the separate 202C quality/AI acceptance work. Supersedes the "separate SQLite store" statements in the Step 164A/183 sections and every "Redis is never read" note in the older step sections: **Redis is now read by exactly one thing, the provider-response cache.**
+
+**Audit of the previous architecture.** (1) Adapters called `get_provider_cache_store(path)`, which returned a process-wide SQLite `ProviderCacheStore` per file (`PROVIDER_CACHE_PATH`, default `.data/provider_cache.sqlite3`); (2) `PROVIDER_CACHE_ENABLED` was the only switch; (3) `REDIS_URL` was declared but read by nothing; (4) cached: Nominatim geocode, Overpass POIs, OSRM routes, Open-Meteo, Nager.Date, Frankfurter, plus the parsed scraped/local accommodation, flight and hotel-rating files; (5) keys were `(source, sha256(query))` rows with per-row `expires_at` checked on read; (6) tests isolated the cache with per-adapter monkeypatching to temp SQLite files.
+
+**Contract.** One selector, `PROVIDER_CACHE_BACKEND`: `redis` (default) or `sqlite` (explicit local-dev alternative); anything else is a validation error. It coexists with the `PROVIDER_CACHE_ENABLED` kill switch (off = no caching at all); the two never overlap. `get_provider_cache_store` is the single dispatcher, so adapters are unchanged (they already treat the cache as best-effort, only use `entry.payload`, and mark hits `data_status=cached`). The scraped/local-source adapters use a cache only when the backend is explicitly `sqlite` (`_resolve_cache_store` returns `None` in Redis mode): parsed local files are cheap, must never go stale across processes, and Redis mode must not create a SQLite file.
+
+**Degradation rules.** PostgreSQL is authoritative -- its failure fails safely (200A). Redis is an optimization -- its failure means an uncached provider call: never SQLite, never a fabricated value, never a failed request. A *malformed* `REDIS_URL` is a configuration error that stops startup (`RedisConfigurationError`, fixed message that withholds the value); an *unreachable* Redis lets the app start (`provider_cache_status` = `degraded`) and each call degrades. After a connection failure the store enters a 15 s bypass cooldown so a dead Redis costs one timeout, not one per call (`REDIS_CONNECT_TIMEOUT_SECONDS`/`REDIS_SOCKET_TIMEOUT_SECONDS`, default 1.0 s each, so an outage cannot stall provider calls). There is one process-level `redis.Redis` client/pool (`get_redis_provider_cache_store`), created lazily and closed at shutdown/tests.
+
+**Cache key design.** `<REDIS_KEY_PREFIX>:provider-cache:<CACHE_NAMESPACE_VERSION>:<provider>:<digest>` (default prefix `travelobligator`, version `v1`); `<digest>` is `make_query_hash` -- SHA-256 of the sorted-key JSON of the normalized request (deterministic, key-order independent), and the *provider label* is part of the key so equal digests from two providers never collide. Keys never contain a raw query, coordinates in clear text, an API key, `REDIS_URL`, a user id, a session, a prompt or an LLM output. The prefix separates environments sharing one Redis; **invalidation** of everything is a bump of `CACHE_NAMESPACE_VERSION` (old keys age out by TTL; no `FLUSHDB`, no `KEYS`).
+
+**Value envelope** (JSON): `schema`, `source`, `query_hash`, `stored_at`, `ttl_seconds`, `payload` (the adapter's already-normalized data), `metadata`. Reads validate schema/source/hash; a corrupt, foreign or mismatched value is deleted and treated as a MISS. Values over 1 MB are not stored. Redis's own TTL is the sole expiry authority (a missing TTL gets a bounded 24 h default, never immortal; `ttl <= 0` is not stored).
+
+**TTL policy (volatility-based, existing settings).** Nominatim geocode 30 d (`OSM_GEOCODE_CACHE_TTL_SECONDS`); Nager.Date holidays 30 d; Overpass POIs 7 d (`OSM_POI_CACHE_TTL_SECONDS`); OSRM routes 1 d; Frankfurter 6 h; Open-Meteo forecast 1 h.
+
+| Provider | Redis cache | Note |
+| --- | --- | --- |
+| Nominatim geocode / describe | CACHED (30 d) | |
+| Overpass / OSM POIs | CACHED (7 d) | place round-trip validated against `NormalizedPlace`; no price/rating/hours invented |
+| OSRM routing | CACHED (1 d) | |
+| Open-Meteo | CACHED (1 h) | |
+| Nager.Date | CACHED (30 d) | |
+| Frankfurter | CACHED (6 h) | |
+| Kiwi flights (MCP) | NOT_CACHED_DYNAMIC | live inventory/price |
+| Scraped accommodation / flights / ratings | NOT_CACHED_LOCAL | explicit `sqlite` only |
+| Anthropic / Groq (proposal, reasoning, narrator, interpreter) | NOT_APPLICABLE | AI prompts/outputs are never cached; a source-scan test enforces that no AI module touches the cache |
+
+**Never cached:** AI/LLM content; transient provider failures (timeouts, 429/5xx, malformed) -- adapters only write on success, so a later retry reaches the provider; `unavailable`/`not_connected` states.
+
+**Vocabulary and logging.** HIT / MISS / BYPASS / ERROR (`CacheStatus`, counters via `cache_stats_snapshot`). DEBUG for HIT/MISS/BYPASS, WARNING for ERROR; structured fields are backend, provider label, operation, status, TTL and duration -- never the URL, the key's query, the payload or the exception message (only the exception *class name*).
+
+**Tests.** Hermetic (default `pytest`, no Redis): `tests/repositories/test_redis_provider_cache_store.py` (fake client: keys, envelope, TTL, corruption, failures, cooldown, log safety) and `tests/core/test_provider_cache_200b.py` (selector/default, malformed vs unreachable, no secret exposure, no SQLite file in Redis mode, uncached provider call when Redis is unreachable, real-adapter HIT/`cached`, corrupt/wrong-shape entries, failures not cached, AI-module scan, scraped caches off Redis). `conftest.py` selects `PROVIDER_CACHE_BACKEND=sqlite` explicitly and removes `REDIS_URL` for ordinary tests. Real-Redis tests (`tests/repositories/test_redis_provider_cache_integration.py`, marker `redis_integration`) are gated by `TRAVELOB_RUN_REDIS_TESTS=1` + `REDIS_URL`; they use a unique key prefix per test and delete only their own keys. Gate: `TRAVELOB_RUN_REDIS_TESTS=1 REDIS_URL=redis://127.0.0.1:<port>/0 python -m pytest -m redis_integration` against a disposable `docker run --rm -p 127.0.0.1:<port>:6379 redis:7`.
+
+**Carry-forward (NOT done here).** Cache-stampede protection / single-flight or distributed locks (concurrent identical misses each call the provider); cache metrics/dashboards and a Redis readiness signal in `/health` (Section 200D -- `/health` is still liveness-only); production Redis networking, authentication/TLS, persistence and eviction policy (`maxmemory-policy`) -- the compose `redis` is local-dev only; migrating sessions/auth/jobs to Redis is explicitly not planned; SQLite-cache removal is optional cleanup.
+
+## 162. Section 200C: PostgreSQL Transaction and Concurrency Hardening
+
+Infrastructure only. PostgreSQL is the authoritative store **and** the concurrency arbiter; Redis (Section 200B) stays a provider-response cache and is never used as a lock, lease, job owner or revision coordinator. The product remains release-blocked by the separate 202C quality/AI acceptance work.
+
+### Audit of the previous write paths (before 200C)
+
+| Operation | Transactions / commit points | Read-before-write | Crash / lost-update window |
+| --- | --- | --- | --- |
+| User creation | one `INSERT` (own session, commit); email UNIQUE arbitrates duplicates | none | none (atomic) |
+| Trip creation | `trips` upsert (session 1, commit) **then** `planning_states` insert (session 2, commit) | none | a crash/failure between them leaves a trip with no state |
+| `PlanningState` save | `INSERT ... ON CONFLICT DO UPDATE` (own session, commit), unconditional | every route did `get -> mutate -> save` | **last-write-wins**: two concurrent feedback/lock/regenerate requests lose one update; `generate_full_plan` re-saved the whole document after every stage, silently overwriting any concurrent write |
+| Initial version | in-memory inside the state document (same write as the state) | none | none |
+| Revision creation | state `save` (tx 1) -> `create_revision` (tx 2, `ON CONFLICT DO NOTHING`) -> `update_branch_head` (tx 3), and the revision step was *best-effort* (exceptions swallowed) | branch head read before update | state advanced with no revision; revision written with head never advanced; head overwritten by a stale writer |
+| Branch creation / fork | one `INSERT` (base = head = source revision) | name pre-check | concurrent same-name fork hit the unique index and surfaced as an unhandled error |
+| Branch-head update | unconditional `UPDATE` | none | blind overwrite |
+| Branch activation | guards + snapshot load (several read sessions), then one state `save` | read-then-decide | guard-then-write race; stale overwrite of the state |
+| Targeted regeneration commit | `save(resulting_state)` then `record_current_revision` (2-3 transactions); pre-commit `current_version` re-read | version compare | between the re-read and the save; state saved but revision missing |
+| Legacy regeneration | `rerun_affected_stages` **saved after every stage** (new stage output committed under the OLD version, feedback still pending), then version/feedback/revision separately | none | crash mid-rerun left half-applied output |
+| Feedback pending -> applied | inside the state document (same write as the new version) | read at load | two workers could both consume event A |
+| Job creation | `list_running` pre-check, then upsert `create`; only an in-process `threading.Lock` | read-then-create | two instances (or a lock-less path) could both create an active job |
+| Job transitions | unconditional upsert `save` | none | a replayed/late writer could overwrite a terminal result or regress it |
+| Startup recovery | marked **every** non-terminal job interrupted | none | assumed one process: a second instance starting would kill a healthy job of the first |
+| Revision comparison | read-only | - | - |
+
+### Architecture
+
+* **Unit of work** (`app/repositories/unit_of_work.py`): `with unit_of_work() as uow:` yields `uow.planning_states / trips / lineage / jobs`, all bound to ONE SQLAlchemy `Session`. Repositories take an optional `session=`; when bound they **never commit** -- the block commits once, an exception rolls everything back, and the session is always closed (connection returned to the pool, verified `pool.checkedout() == 0` after failed transactions). Standalone repository calls keep their old short-lived-session behaviour (`app/db/transactions.session_scope`). Local JSON gets the same attribute surface but is explicitly **not** transactional.
+* **External-call boundary.** Correct pattern: external computation (providers, AI, Redis) -> build the proposed result -> short DB transaction -> atomic commit. Nothing in a unit of work calls a provider/AI/Redis/network; a source-scan test enforces this. Measured `commit_state_with_revision` on a real container: about 5 ms median.
+* **Isolation level.** PostgreSQL's default **READ COMMITTED**; SERIALIZABLE is deliberately not used. Correctness comes from compare-and-set writes, row locks where a guard-then-write sequence must be serialised (branch activation takes `SELECT ... FOR UPDATE` on the ONE `planning_states` row), and constraints.
+* **Lock order.** Every multi-row transition starts with the trip's `planning_states` row (the CAS `UPDATE` / `FOR UPDATE`), then branches, then revisions; jobs are separate transactions. Contending committers therefore queue on one row lock and cannot deadlock (tested with 6 racing committers).
+* **Retry policy.** Only PostgreSQL `40001` (serialization failure) and `40P01` (deadlock) are retried, at most 3 attempts, by re-running the whole unit of work (`run_atomic`). Business conflicts (`ConcurrentStateUpdateError` -> the caller must reload), validation, integrity and connection errors are never retried; no retried closure contains an external call.
+
+### Optimistic concurrency on `PlanningState`
+
+`planning_states.lock_version INTEGER NOT NULL DEFAULT 0` (CHECK >= 0). A read stamps the returned object with the row's token in a **private** attribute (`PlanningState._lock_version`: never serialized, absent from API responses, snapshots and JSONB; survives `model_copy(deep=True)`; a deserialized snapshot has none). Every write is `UPDATE ... WHERE trip_id = :id AND lock_version = :token SET ..., lock_version = lock_version + 1`; zero rows means a stale writer -> `ConcurrentStateUpdateError`, **nothing written**, and the in-memory token is unchanged (inside a unit of work a rollback hook restores it). An object with no token may only INSERT a brand-new row; overwriting an existing row unread is refused. Timestamps are not used as tokens. API: **HTTP 409 `CONCURRENT_UPDATE`** with one fixed message (no SQL, versions, or identifiers). Stage services that hand back a different object inherit the token (`_carry_lock_token`); `generate_full_plan`'s per-stage progress saves remain separate writes, so a concurrent user write during a long generation now fails the generation with `CONCURRENT_UPDATE` (reported honestly on the job) instead of being silently overwritten.
+
+### Atomic operations
+
+* **State + revision + head** (`RevisionLineageService.commit_state_with_revision`): CAS state write, idempotent revision insert (`(branch_id, version_label)` UNIQUE), branch-head compare-and-set (`head_revision_id IS NOT DISTINCT FROM :expected`) in one transaction. No longer best-effort in PostgreSQL mode; the 5 former `save(); record_current_revision()` pairs (generate, LangGraph generate, targeted regeneration, legacy regeneration route, legacy async job) all use it.
+* **Targeted regeneration**: the resulting state already carries the new version, the feedback event marked applied, the attempt record and recomputed summaries, so the single CAS write persists them together with the revision and head. A stale worker gets the existing `CONFLICT` outcome; a failed write leaves the state at the source version, no revision, feedback pending, head unchanged. Two workers cannot both consume event A (tested deterministically and with real threads).
+* **Legacy regeneration** no longer commits intermediate stages (`rerun_affected_stages(persist_each_stage=False)`); the final state is committed once.
+* **Branch activation**: lock the state row, evaluate all guards, load the target snapshot, write the restored state (which carries `active_branch_id`) -- one transaction; the snapshot inherits the loaded row's token. Competing activations serialise; the final state belongs completely to one branch. A stale write is reported as `BLOCKED_STATE_CONFLICT`.
+* **Fork**: one row with base = head = the immutable source revision; never a branch without a valid base/head; a concurrent same-name fork loses with `NAME_CONFLICT` (unique index), not a 500.
+* **Trip creation**: `trips` row + initial `PlanningState` in one transaction; a failure after the first write leaves no orphan.
+
+### Jobs: uniqueness, idempotency, leases
+
+* **One active job per trip is a database invariant**: partial UNIQUE index `uq_generation_jobs_one_active_per_trip ON generation_jobs(trip_id) WHERE status IN ('queued','running')`. The friendly pre-check still exists; losing the DB race raises `JobAlreadyActiveError` -> the same `JOB_ALREADY_RUNNING` 409. (`GENERATION_JOB_MAX_RUNNING_PER_TRIP > 1` therefore cannot exceed 1 in PostgreSQL mode.)
+* **Ownership is a lease in PostgreSQL**: `lease_owner` (opaque per-process id `inst-<pid>-<hex>`, no hostname/credential), `lease_expires_at`, `heartbeat_at`. `claim` is one conditional `UPDATE ... RETURNING` that succeeds only for a `queued` job or a `running` job whose lease expired (or never existed); `heartbeat` only extends the lease of the current owner; `transition` locks the one job row and applies a terminal transition only if the job is still non-terminal and, when running with an owner, still owned by the caller. Terminal jobs are never reclaimable and their lease is cleared. Comparisons use the **database clock** by default. The runner keeps the lease alive from one heartbeat thread per running job (`GENERATION_JOB_LEASE_SECONDS`, default 120; heartbeat every lease/3).
+* **Recovery** (startup and per-trip reconcile) closes only jobs whose owner is gone: `running` with an expired/NULL lease, or `queued` and never claimed within `GENERATION_JOB_STALE_AFTER_SECONDS`. A healthy job owned by another live instance is never touched; running recovery from several instances closes each job exactly once. Local JSON keeps its single-process semantics.
+* **Idempotency**: a replayed runner does not re-claim a terminal/owned job; a repeated terminal transition changes nothing and has no side effects; a stale owner's completion is refused; the state write is a CAS and the revision insert is unique on `(branch, version)`, so a replay cannot create a second version/revision.
+* **What this is not**: not exactly-once distributed execution. The guarantee is *at most one active claim under the enforced database invariant, plus idempotent terminal transitions*; a job whose owner died is failed as `JOB_INTERRUPTED`, never silently resumed.
+
+### Revision invariants (documented; enforced by the database)
+
+`revision_id` PRIMARY KEY; `UNIQUE(branch_id, version_label)` (one revision per branch+version); `parent_revision_id` self-FK; at most one default branch per trip (partial unique index); case-insensitive unique branch display name per trip; the branch-head pointer only advances via compare-and-set. No new constraint that could conflict with historical data was added.
+
+### Migration
+
+`d41a7e2c9b53` (single head; previous head `cc7238a1bca3`): adds `planning_states.lock_version`, three nullable lease columns, the partial unique index. Before creating the index it keeps the oldest active job per trip and closes duplicates as failed/`JOB_INTERRUPTED`, so it applies cleanly on a real 200A database (verified with legacy duplicate-job data, downgrade to the previous head and re-upgrade).
+
+### Local JSON, Redis, security
+
+Local JSON stays an explicit development backend with its previous behaviour; it does **not** provide these guarantees. Redis is never a correctness dependency (a scan test enforces that no transaction/lease code references it); a Redis outage cannot affect transaction correctness. Concurrency tokens are not secrets; lease owners carry no host or credential; database errors keep the fixed 503 / 409 messages; all SQL is parameterized.
+
+### Carry-forward
+
+Transaction/lock-wait metrics and dashboards; connection-pool sizing and statement/lock timeouts (SQLAlchemy defaults are still used); readiness signals for Postgres/Redis in `/health` (200D); cache-stampede protection (200B carry-forward); production worker scaling (the in-process `BackgroundTasks` executor is unchanged -- multiple instances are now safe against each other, but a dedicated worker/queue is a later step); stale-job policy tuning; `GENERATION_JOB_MAX_RUNNING_PER_TRIP > 1` semantics in PostgreSQL mode.
+
+## 163. Section 200D: Health, Readiness, Observability and Operational Configuration
+
+Operational visibility only. No cloud monitoring integration, no worker replacement, no Docker/runtime hardening (200E).
+
+### Audit of the previous observability (reused, not duplicated)
+
+| Area | State before 200D |
+| --- | --- |
+| Liveness | `GET /health` returned a hand-built dict that also exposed `environment`, `use_real_providers`, `allow_mock_travel_facts`; no dependency call. Docker `HEALTHCHECK` and compose already probe it. |
+| Readiness | none. `/health` was the only endpoint; PostgreSQL/Redis state was visible only at startup (200A/200B checks) |
+| Logging | stdlib JSON lines (`core/logging_config.py`): one `"app"` handler, **allowlisted** extra fields, request-id filter. The 200B/200C fields (`cache_status`, `sqlstate`, ...) were **not** on the allowlist, so they were silently dropped from JSON output |
+| Request correlation | `RequestIdMiddleware` + `request_context` ContextVar (safe/validated `X-Request-Id`, echoed in the response, attached to every log line by `RequestIdLogFilter`); unchanged |
+| Metrics | none (no prometheus_client / OpenTelemetry / StatsD); 200B kept in-process cache counters only, and 200C had logs but no counters |
+| Dependency status | `core/persistence.startup_persistence_check`, `core/provider_cache.provider_cache_status`, Redis store `health()` + a 15 s bypass cooldown |
+| Provider logging | one central `_log_provider_call` in `providers/gateway.py` (routing/accommodation/flights) with safe fields; places/weather/holidays/currency responses are normalised in `ProviderGateway.to_status_entry` |
+| Frontend | no backend-availability handling beyond generic request errors |
+
+### Contract
+
+* **`GET /health` -- liveness only.** 200 whenever the process can answer. Performs **no** PostgreSQL, Redis, provider, AI or network call (tests break every dependency and assert none is touched, and scan the handler source). Body: `{"success":true,"data":{"status":"ok","service":"TravelObligator"},...}` -- no environment, hostname, version dump or config.
+* **`GET /ready` -- authoritative readiness** (`core/readiness.py`, typed `schemas/readiness.py`):
+  * `ready` (200): PostgreSQL reachable, schema at the code's single Alembic head, cache healthy / recovering / explicitly disabled / explicit local SQLite.
+  * `degraded` (200): Redis (provider-response cache) unreachable -- the service still serves correctly, uncached.
+  * `not_ready` (**503**): PostgreSQL unreachable, `DATABASE_URL` invalid, or the schema is behind/ahead of the code (`mismatch`). Local JSON (explicit dev backend) reports `persistence: ready`, `schema: not_applicable`.
+  * External travel providers (Overpass, Nominatim, OSRM, Open-Meteo, Nager.Date, Frankfurter, Kiwi) and AI providers are **never** called and never affect readiness; their failures show up in metrics/logs and are handled by the app's own honest provider-failure semantics.
+  * Exposed values: fixed status enums, backend names, and the Alembic **revision identifiers** (`expected_head`, `current_head` -- 12-hex-character deployment metadata, not secrets; a test asserts nothing else appears). Never a URL, host, user, password, path, SQL or traceback.
+* **Bounded time.** Probes use a **dedicated one-connection engine** (never the request pool) with `DB_CONNECT_TIMEOUT_SECONDS` (libpq connect timeout, default 5 s), a per-probe `statement_timeout` (`set_config`, parameterised), the Redis socket timeout, and an overall wall-clock cap `READINESS_TIMEOUT_SECONDS` (default 2 s). Tests: a blackholed PostgreSQL and a hung Redis probe return within seconds.
+* **Recovery without restart.** A database that goes away after startup makes `/ready` 503 (the process is not touched); when it returns the probe engine pre-pings and reconnects. Redis: `probe()` is `healthy` / `recovering` (PING answers but a connection failure happened within the last cooldown window) / `degraded`; a successful PING clears the bypass cooldown. `recovering` counts as ready. Verified against real containers (proxy stop/start) and a real process.
+* **Startup vs readiness.** Unchanged 200A/200B rules: invalid persistence configuration / unreachable or un-migrated PostgreSQL / malformed `REDIS_URL` stop startup with fixed messages; an unreachable Redis does not. New: contradictory operational configuration also stops startup (below).
+* **Logs on change only.** `/ready` is probed every few seconds, so `readiness.changed` (and `persistence.unavailable` / `persistence.schema_mismatch` / `persistence.ready`) are emitted only when the state changes.
+
+### Metrics (`core/metrics.py`, `GET /metrics`)
+
+No metrics library existed, so this is the smallest useful vendor-neutral implementation: thread-safe counters/gauges/histograms rendered in the Prometheus text format (`text/plain; version=0.0.4`), no dependency, nothing shipped anywhere. Recording never raises and a failing metrics layer cannot affect `/health`/`/ready`. `METRICS_ENABLED=false` returns 404. **No authentication exists in this app, so keep `/metrics` (and `/ready`) on a private network.**
+
+| Metric | Labels |
+| --- | --- |
+| `travelobligator_http_requests_total`, `..._http_request_duration_seconds` | method, route **template** (`/trips/{trip_id}`, `unmatched` for 404s), status class |
+| `..._db_transactions_total`, `..._db_transaction_duration_seconds` | scope (`single`, `unit_of_work`), outcome (commit/rollback). `single` includes read-only repository calls |
+| `..._db_concurrency_conflicts_total` | kind (`state`, `branch_head`, `job_active`) |
+| `..._db_transaction_retries_total` | reason (`serialization_failure`, `deadlock`) |
+| `..._jobs_total` | job_type, event (created, claimed, claim_conflict, create_conflict, succeeded, failed, interrupted, heartbeat_failed, stale_owner_rejected) |
+| `..._jobs_running_local` (gauge) | none -- jobs THIS process currently owns (no DB query on scrape) |
+| `..._provider_cache_total` | provider (cache source), status HIT/MISS/BYPASS/ERROR |
+| `..._provider_calls_total`, `..._provider_call_duration_seconds` | provider, stage, outcome (bounded set; unknown -> `other`). Recorded in `_log_provider_call` (routing/accommodation/flights, with duration) and `to_status_entry` (places/weather/holidays/currency, outcome only) |
+| `..._dependency_up` (gauge) | dependency (`postgres`, `schema`, `redis`), last `/ready` observation |
+
+Cardinality controls: each metric declares a fixed label-name set (an undeclared label is dropped), label values are enums chosen by the instrumentation code (never trip/job/user/revision ids, destinations, free text, URLs, request ids or the lease owner), values are length-capped and escaped, and each metric holds at most 200 label sets with an `__overflow__` series beyond that. Tests scan the catalogue for forbidden label names and assert routes are templates.
+
+### Structured logging
+
+The EXISTING pipeline was extended, not replaced: the allowlist now includes the operational vocabulary (`event`, `operation`, `outcome`, `error_kind`, `retry_count`, `cache_status`, `sqlstate`, ...), which also fixes the silently-dropped 200B/200C fields. `core/ops_events.py` defines the taxonomy (`persistence.*`, `cache.*`, `transaction.*`, `job.*`, `provider.*`, `app.startup/shutdown`, `readiness.changed`). Levels: cache hit/miss/bypass and transaction commit are DEBUG; job lifecycle, persistence.ready, startup/shutdown are INFO; degraded dependencies, conflicts, retries, deadlocks, cache errors are WARNING; startup persistence failures ERROR. Existing job lines gained an `event` field (no duplicate lines). **Redaction** (`core/redaction.py`) runs on every message, string field and traceback: credentialed URLs (whole DSN), configured secret VALUES (`DATABASE_URL`, `REDIS_URL`, `*_api_key`, `*_secret_key`, ...) and pydantic `input_value=` (user input) are replaced. Tests use synthetic sentinels for DB/Redis passwords, API key, session cookie, bearer token, feedback text, login password; a static scan asserts no logger call references prompts, feedback text, payloads, cookies, passwords or URLs. Never logged: request bodies, feedback text, narratives, AI prompts/outputs, provider payloads, tokens.
+
+Startup logs ONE `app.startup` event with a fixed safe summary (`persistence_backend`, `provider_cache_backend`, `async_generation_enabled`, `metrics_enabled`, `migration_head`, `lease_seconds`) and shutdown logs `app.shutdown`.
+
+### Configuration validation (fail early)
+
+`core/operational_config.validate_runtime_configuration` runs at startup (fixed messages, no values): **`GENERATION_JOB_MAX_RUNNING_PER_TRIP > 1` is REJECTED with `PERSISTENCE_BACKEND=postgres`** (the database allows one active job per trip; the value would silently not be honoured -- Local JSON still honours it); `GENERATION_JOB_STALE_AFTER_SECONDS >= GENERATION_JOB_LEASE_SECONDS`; heartbeat interval (lease/3, min 1 s) < lease; `READINESS_TIMEOUT_SECONDS > REDIS_SOCKET_TIMEOUT_SECONDS` when Redis caching is on. Field bounds: `GENERATION_JOB_LEASE_SECONDS >= 3`, `READINESS_TIMEOUT_SECONDS` in (0, 30], `DB_CONNECT_TIMEOUT_SECONDS` 1..60. Existing checks (postgres needs a valid `DATABASE_URL`, malformed `REDIS_URL`) are unchanged.
+
+### Database timeouts -- what actually exists
+
+`pool_pre_ping=True`; `connect_timeout` = `DB_CONNECT_TIMEOUT_SECONDS` (new, default 5 s) on every engine; SQLAlchemy defaults for the rest: `pool_size=5`, `max_overflow=10`, `pool_timeout=30 s`, no `pool_recycle`, **no** statement timeout and **no** lock timeout for request traffic (only the readiness probe sets a `statement_timeout`). Pool/timeout tuning is carried to 200E.
+
+### Heartbeat lifecycle and shutdown
+
+One daemon thread per running job (unchanged design). Verified: it stops when the job body finishes (no further beats, no leaked thread), exits by itself on ownership loss, survives transient errors, is a daemon (cannot block exit), and is stopped in bulk by `stop_all_heartbeats` (bounded 1 s) at shutdown. Shutdown also closes the Redis client, disposes the probe engine and the request engine, and logs one `app.shutdown`. Full SIGTERM/container behaviour is 200E.
+
+### Carry-forward to 200E
+
+Pool sizing, statement/lock timeouts; a dedicated worker/queue (BackgroundTasks unchanged); graceful SIGTERM/drain; Docker image/runtime hardening; cache-stampede protection; access control for `/metrics`/`/ready` and cloud monitoring/alerting integration.
+
+## 164. Section 200E: Docker and Production Runtime Hardening
+
+Container/runtime hardening only: a reproducible production-STYLE local stack. No cloud deployment, no CI/CD, no cloud secrets, no worker replacement.
+
+### Audit of the previous runtime
+
+| Area | Before 200E |
+| --- | --- |
+| Backend image | `python:3.13-slim` (unpinned patch), single stage, `COPY . .` (code + alembic + everything not dockerignored), runs as **root**, `CMD uvicorn ... --port 8000` (no `--workers`, so one worker), Python-stdlib `/health` HEALTHCHECK |
+| Frontend image | `node:20-alpine` (Node 20 is end-of-life since April 2026), `dev` target (`npm run dev`) used by compose, a `production` target using `next start` with **all** production `node_modules`, runs as root; `NEXT_PUBLIC_API_BASE_URL` compiled at build time |
+| Compose | dev-shaped: bind-mounted `./backend:/app`, `uvicorn --reload`, Next dev server, `env_file: .env` (the developer's real `.env`), **Postgres and Redis published on all host interfaces**, no migration step (the operator ran it by hand), Redis `service_started` only, backend published on 0.0.0.0 |
+| Migrations | manual (`scripts/run_migrations.py` / `alembic upgrade head`); app startup verifies the head and never migrates (200A) |
+| Filesystem writes | none at import time; `LocalJsonStore` / SQLite cache write only when explicitly selected; logs go to stdout. In PostgreSQL + Redis mode the backend needs no writable path except tmp |
+| Signals / shutdown | `uvicorn` as PID 1 in exec form; lifespan shutdown existed (200D); real container behaviour with an in-flight job was unverified |
+| DB pool / timeouts | SQLAlchemy defaults (`pool_size=5`, `max_overflow=10`, `pool_timeout=30`, no recycle), `pool_pre_ping`, 5 s connect timeout, no statement/lock timeout |
+| Redis client | one pooled `redis.Redis` (200B) with connect/socket timeouts, cooldown bypass, `rediss://` supported by redis-py |
+| Frontend -> backend | browser calls `NEXT_PUBLIC_API_BASE_URL` (build-time) or `http://localhost:8000` |
+| Session/CORS | `BACKEND_CORS_ORIGINS`, `SESSION_COOKIE_SECURE/SAMESITE/HTTPONLY` configurable; no cookie-domain setting (host-only cookies) |
+
+### Runtime versions (pinned)
+
+Backend `python:3.11.14-slim-bookworm` (the interpreter the whole suite runs under locally; CI and the previous image used 3.13 -- aligning CI is 203A; `ARG PYTHON_IMAGE` allows another version). Frontend `node:22.23.3-alpine3.24` (Node 22 LTS; Next.js 16.2.4 supports Node >= 20.9; CI still uses Node 20 -- 203A). Compose data services: `postgres:16`, `redis:7.4-alpine` (7.4.11). No application dependency was upgraded; the local virtualenv was not touched.
+
+### Backend image
+
+Two stages: `builder` (virtualenv from the pinned `requirements.txt`; wheels only -- `psycopg[binary]`, `bcrypt` -- so no compiler) and `runtime` (same slim base + `/opt/venv` + only `app/`, `alembic/`, `alembic.ini`, `scripts/run_migrations.py`). Root-owned, world-readable, not writable by the runtime user (uid/gid 10001, no shell, no home). No tests, `.git`, `.env`, local state, pip caches or build tools (484 MB: 224 MB base + 198 MB virtualenv). `HEALTHCHECK` = `/health` via Python stdlib. Exec-form `CMD ["python", "-m", "app.serve"]`.
+
+### Process model, Uvicorn and signals
+
+`app/serve.py`: **one worker**, no reload, `PORT`/`HOST` from the environment (defaults 8000 / 0.0.0.0), `timeout_keep_alive` 5 s, `timeout_graceful_shutdown` 20 s, access log on (stdout), `proxy_headers` on but `X-Forwarded-*` honoured only from `FORWARDED_ALLOW_IPS` (uvicorn default `127.0.0.1`, i.e. not arbitrary clients -- set the trusted proxy in Section 203). One worker because the metrics registry and job heartbeat bookkeeping are process-local; scale by containers, `/metrics` is per instance. Python is PID 1 with no shell; `uvicorn.run` installs the SIGTERM handler, so `docker stop` reaches it directly (verified: PID 1 is `python -m app.serve`, no wrapper).
+
+### Graceful shutdown (verified in real containers)
+
+`docker stop` -> uvicorn stops accepting, waits up to 20 s for in-flight requests/background tasks, then cancels -> lifespan: stop heartbeat threads, **close this process's in-flight jobs as `failed`/`JOB_INTERRUPTED`** (conditional on lease ownership -- never overwriting a job another instance took over, never reported succeeded; a worker thread that later "finishes" is refused), close Redis, dispose engines, one `app.shutdown` event -> exit 0. Idle: 0.6 s. With a job in flight and a 120 s pipeline: 20.5 s, exit 0. Real finding fixed here: a sync `BackgroundTask` thread cannot be cancelled and kept the interpreter alive until SIGKILL (exit 137 after 30 s), so `serve.main` now exits promptly (`app.shutdown_forced`) when a non-daemon worker thread lingers after shutdown. A hard kill (SIGKILL/OOM/crash) runs no code: the job stays `running` until its lease expires, a startup within the lease does not touch it, and recovery after expiry closes it as `JOB_INTERRUPTED` (200C). Frontend: `node server.js` exits on SIGTERM in 0.3 s (143).
+
+### Database runtime
+
+Configurable (`Settings`, validated): `DB_POOL_SIZE` 5 (1..100), `DB_MAX_OVERFLOW` 5 (0..100), `DB_POOL_TIMEOUT_SECONDS` 10 (>0), `DB_POOL_RECYCLE_SECONDS` 1800 (0 disables), `DB_CONNECT_TIMEOUT_SECONDS` 5, `DB_STATEMENT_TIMEOUT_MS` 30000 and `DB_LOCK_TIMEOUT_MS` 10000 (0 disables, otherwise >= 1000 -- no sub-second defaults), `pool_pre_ping` always on. Timeouts are applied per connection (`-c statement_timeout=... -c lock_timeout=...`) to the application engine only: migrations (own NullPool engine) and the readiness probe do not inherit them. **Connection budget per container = `DB_POOL_SIZE + DB_MAX_OVERFLOW` = 10 by default (+1 dedicated readiness-probe connection); total = that x containers -- Section 203 sizes the managed database against it.** Startup logs these scalars (never the URL). Verified on real PostgreSQL: a 1 s statement timeout cancels `pg_sleep(10)` at ~1 s; a 1 s lock timeout aborts a blocked `UPDATE`; both roll back and the pool stays usable; with the shipped relationship (lock 10 s < statement 30 s) the lock timeout fires first; an exhausted pool (size 1, timeout 1 s) fails in ~1 s with a `sqlalchemy.exc.TimeoutError` -> sanitized HTTP 503, connections return afterwards. Errors stay sanitized (statement/lock/pool failures map to the fixed `PERSISTENCE_UNAVAILABLE` 503). Note: `options=-c ...` needs a direct PostgreSQL connection (a transaction-pooling proxy would reject it; revisit in 203 if one is used).
+
+### Redis runtime
+
+Unchanged single pooled client with `REDIS_CONNECT_TIMEOUT_SECONDS`/`REDIS_SOCKET_TIMEOUT_SECONDS`, degradation and cooldown from 200B; `rediss://` URLs work through redis-py (no custom TLS). Compose runs `redis:7.4-alpine` with `--save "" --appendonly no --maxmemory 128mb --maxmemory-policy allkeys-lru`: pure cache, no persistence, no published port. **Redis contents are disposable**: application data (users, trips, plans, revisions, jobs) lives only in PostgreSQL and survives independently of Redis; no guarantee is made that cache entries survive a Redis restart or eviction -- losing them only causes future cache MISSes and provider calls. Redis persistence was deliberately not added.
+
+### Compose
+
+`docker-compose.yml` (production-style, default) + `docker-compose.dev.yml` (the previous hot-reload workflow, Postgres/Redis on 127.0.0.1 only). Services `postgres`, `redis`, `migrate` (one-shot `python scripts/run_migrations.py`, `restart: "no"`), `backend`, `frontend`. Ordering: `postgres` healthy -> `migrate` `service_completed_successfully` -> `backend` -> `frontend` (needs backend healthy `/health`). **Redis is NOT a backend startup dependency** (Section 200E.1 corrected an earlier `redis: service_healthy` gate): it is an optional, disposable cache that starts in parallel; PostgreSQL and the migration are the only hard prerequisites. The backend starts and reports `/ready` 200 `degraded` with Redis down or absent from the beginning, and Redis returning is picked up without a restart. Networks: `data` is `internal: true` (postgres, redis, migrate, backend), `edge` carries browser traffic and the backend's outbound provider calls. Only backend/frontend publish ports, on `127.0.0.1`. Backend and frontend: read-only root, tmpfs for `/tmp`, `cap_drop: ALL`, `no-new-privileges`. `stop_grace_period` 30 s (> uvicorn's 20 s). Config comes from the project environment; `POSTGRES_PASSWORD` and `SESSION_SECRET_KEY` are required (`${VAR:?}`, no defaults, nothing tracked contains a credential); application settings come from `APP_ENV_FILE` (default `./.env`, optional). Local verification used a temporary `--env-file` and `APP_ENV_FILE` outside the repository, so the real `.env` was never consumed. The migration step runs once per stack (never per backend replica) and maps directly onto a deployment pipeline's migration step.
+
+### Frontend image and API URL
+
+Three stages (`base`/`dev`, `builder`, `production`); production = Next `output: "standalone"` copied into a clean Node 22 image, `USER node`, `node server.js`, `PORT`/`HOSTNAME=0.0.0.0`, no dev dependencies, no source, no `.env`; 310 MB; `HEALTHCHECK` = local `fetch` of `/`. The API base URL is now a RUNTIME value: the root layout (rendered per request via `connection()`) injects `window.__TRAVELOBLIGATOR_RUNTIME__ = {apiBaseUrl}` from the container's `API_BASE_URL` (validated absolute http(s) URL, `<` escaped); `lib/api.ts` resolves it per call (`lib/runtime-config.ts`), falling back to the build-time `NEXT_PUBLIC_API_BASE_URL`, then `http://localhost:8000` (local-development default only). It must be an address the BROWSER can reach -- never `http://backend:8000`. See `docs/16_frontend_architecture.md`.
+
+### Endpoint exposure and CORS/cookies
+
+`/health` safe liveness. `/ready` and `/metrics` are operational endpoints with no authentication -- reachable on `127.0.0.1` here; production needs private routing/access control (203). CORS allows only `BACKEND_CORS_ORIGINS` (verified: configured origin allowed with credentials, another origin gets no CORS header). The session cookie is `HttpOnly; SameSite=lax; Path=/` and host-only (no Domain setting exists); `SESSION_COOKIE_SECURE` is configurable but Secure was NOT verified (local HTTP) -- HTTPS/domain/`SameSite` for a cross-site frontend are Section 203.
+
+### Background job deployment limitation
+
+Async generation is FastAPI `BackgroundTasks` inside the web container plus database leases (200C). It is **not** a durable job queue: work runs in the web process, a terminated container interrupts it, leases/recovery keep the database consistent (jobs end `JOB_INTERRUPTED`, never falsely succeeded) but never resume the computation, and there is no external durable execution. Acceptable for an initial portfolio deployment if users can simply retry a generation and instances are not aggressively scaled down mid-job. A small cloud-neutral option (NOT implemented): a separate `worker` container running the same image with a claim-loop over queued jobs. Cloud-native task execution is 203.
+
+### Cache stampede
+
+Not addressed (no Redis distributed locks). Simultaneous misses may call a provider more than once; responses stay correct.
+
+### Carry-forward to Section 203
+
+Managed PostgreSQL/Redis, secrets management, HTTPS/domain/Secure cookies and cookie-domain design, operational-endpoint access control, cloud monitoring/alerting, max-instance x `(DB_POOL_SIZE + DB_MAX_OVERFLOW)` connection budget, async job execution strategy, CI/CD (image build/scan, CI Python/Node alignment), cache-stampede protection.
+
+### 164.1 Correction (Section 200E.1): Redis is not a backend startup prerequisite
+
+The first 200E compose file gated `backend` on `redis: service_healthy`, so a Redis that was down BEFORE startup blocked the backend, contradicting the runtime contract (PostgreSQL authoritative, Redis optional). Fixed: `backend.depends_on` lists only `postgres` (healthy) and `migrate` (completed successfully). The application code already behaved correctly (`startup_provider_cache_check` only validates the URL's shape; an unreachable Redis reports `degraded`); this was purely a Compose ordering error, and it had not been caught because only Redis failure AFTER startup was tested. Verified with the built image: Redis absent at startup -> backend starts, `/health` 200, `/ready` 200 `degraded`, a full generation succeeds uncached with state in PostgreSQL and no SQLite/Local JSON fallback; starting Redis afterwards makes `/ready` recover without a backend restart and the next identical provider requests go MISS then HIT. Earlier wording that Redis "left data intact" across a restart referred to PostgreSQL application data, not cache contents.

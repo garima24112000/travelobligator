@@ -18,7 +18,7 @@ from app.tests.conftest import create_trip_payload
 # docs/14_backend_architecture.md section 119 for the full opt-in
 # verification walkthrough (docker compose up -d postgres with
 # POSTGRES_HOST_PORT, alembic upgrade head, then this).
-pytestmark = pytest.mark.skipif(
+pytestmark = [pytest.mark.postgres_integration, pytest.mark.skipif(
     os.environ.get("TRAVELOB_RUN_POSTGRES_TESTS") != "1" or not os.environ.get("DATABASE_URL"),
     reason=(
         "Optional live-Postgres API smoke test, skipped by default. Set "
@@ -26,7 +26,7 @@ pytestmark = pytest.mark.skipif(
         "ASYNC_GENERATION_ENABLED=true, and a real DATABASE_URL against an "
         "alembic-upgraded database to run it."
     ),
-)
+)]
 
 
 def _signup(client: TestClient) -> None:

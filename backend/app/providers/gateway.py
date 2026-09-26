@@ -114,16 +114,50 @@ def _provider_error_code(status: str) -> str | None:
     return _STATUS_TO_ERROR_CODE.get(status)
 
 
+_KNOWN_OUTCOMES = frozenset(
+    {"success", "returned", "failed", "not_connected", "unavailable", "partial", "retrying", "fallback_used", "not_requested"}
+)
+
+
+def _outcome_label(status: str) -> str:
+    """A fixed low-cardinality outcome label (anything unrecognised -> `other`)."""
+    return status if status in _KNOWN_OUTCOMES else "other"
+
+
+def _record_provider_metrics(provider: str, stage: str, status: str, duration_ms: float | None = None) -> None:
+    """Section 200D: safe dimensions only -- provider name (a fixed class attribute), stage (a fixed
+    label) and outcome. Never coordinates, queries, dates, destinations or payloads."""
+    from app.core.metrics import registry
+
+    stage_label = stage if _SAFE_PROVIDER_NAME_PATTERN.match(stage or "") else "unknown"
+    registry.inc(
+        "travelobligator_provider_calls_total",
+        {"provider": provider, "stage": stage_label, "outcome": _outcome_label(status)},
+    )
+    if duration_ms is not None:
+        registry.observe(
+            "travelobligator_provider_call_duration_seconds",
+            duration_ms / 1000.0,
+            {"provider": provider, "stage": stage_label},
+        )
+
+
 def _log_provider_call(*, provider: object, stage: str, status: str, duration_ms: float) -> None:
+    provider_label = _safe_provider_name(provider)
+    _record_provider_metrics(provider_label, stage, status, duration_ms)
+    outcome = _outcome_label(status)
     extra: dict[str, object] = {
-        "provider": _safe_provider_name(provider),
+        "event": "provider.success" if status in _INFO_LEVEL_STATUSES else "provider.failure",
+        "provider": provider_label,
         "stage": stage,
         "status": status,
+        "outcome": outcome,
         "duration_ms": round(duration_ms, 3),
     }
     error_code = _provider_error_code(status)
     if error_code is not None:
         extra["error_code"] = error_code
+        extra["error_kind"] = status
 
     if status in _INFO_LEVEL_STATUSES:
         logger.info("Provider call completed.", extra=extra)
@@ -324,6 +358,17 @@ class ProviderGateway:
     def to_status_entry(response: ProviderResponse[Any]) -> ProviderStatusEntry:
         """Normalize a provider response into a PlanningState provider_status entry."""
 
+        # Section 200D: the shared point where places/weather/holiday/currency responses are
+        # normalised -- count the outcome (no duration is available here).
+        try:
+            status_value = getattr(response.status, "value", response.status)
+            _record_provider_metrics(
+                _safe_provider_name(response.provider_name),
+                _safe_provider_name(getattr(response.provider_type, "value", "unknown")),
+                str(status_value),
+            )
+        except Exception:  # noqa: BLE001 - metrics never break normalisation
+            pass
         return ProviderStatusEntry(
             provider_name=response.provider_name,
             provider_type=response.provider_type.value,

@@ -171,16 +171,20 @@ def apply_regeneration_mutation(
     applied_feedback_event_ids = [event.feedback_event_id for event in pending_events]
 
     try:
+        # Section 200C: memory-only rerun -- the callers commit the final state (new stages +
+        # version + applied feedback + revision) once, atomically, instead of committing each
+        # rerun stage separately under the OLD version with the feedback still pending.
         planning_state = planning_orchestrator.rerun_affected_stages(
-            planning_state, affected_stages
+            planning_state, affected_stages, persist_each_stage=False
         )
     except Exception:
         raise RegenerationMutationError(planning_state) from None
 
     # Section 202B.1 (Task 3): success requires an OBSERVABLE, proven
     # effect -- every event's registered postcondition must hold. On
-    # failure the pre-rerun state is restored (the rerun above already
-    # saved per stage), nothing is versioned, no feedback is consumed.
+    # failure the pre-rerun state is restored (Local JSON's in-memory
+    # singleton was mutated in place by the rerun; PostgreSQL still holds
+    # the untouched row), nothing is versioned, no feedback is consumed.
     if not all(
         LEGACY_SUPPORTED_OPERATIONS[event.feedback_type](before_state, planning_state, event)
         for event in pending_events
