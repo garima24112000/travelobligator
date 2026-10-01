@@ -21,7 +21,7 @@ def _instructions(text: str) -> list[str]:
 
 def test_backend_image_is_pinned_multistage_non_root_and_exec_form() -> None:
     lines = _instructions(_BACKEND_DOCKERFILE)
-    assert any(l.startswith("ARG PYTHON_IMAGE=python:3.11.14-slim-bookworm") for l in lines)
+    assert any(l.startswith("ARG PYTHON_IMAGE=python:3.11.16-slim-bookworm") for l in lines)
     assert sum(1 for l in lines if l.startswith("FROM ")) == 2  # builder + runtime
     assert "latest" not in _BACKEND_DOCKERFILE.lower().replace("latest_", "")
     assert any(l.startswith("USER 10001:10001") for l in lines)

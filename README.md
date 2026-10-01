@@ -1,5 +1,7 @@
 # TravelObligator
 
+[![CI](https://github.com/garima24112000/travelobligator/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/garima24112000/travelobligator/actions/workflows/ci.yml)
+
 > An AI travel decision platform with LangGraph orchestration,
 > provider-backed data boundaries, a real Kiwi MCP flight integration,
 > a validation/trust dashboard, and automated no-fabrication safety checks.
@@ -143,7 +145,7 @@ docker compose up --build                  # production-style stack
 docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build   # the old hot-reload dev workflow
 ```
 
-- **Images:** backend `python:3.11.14-slim-bookworm` (multi-stage, virtualenv copied to the runtime stage, non-root uid
+- **Images:** backend `python:3.11.16-slim-bookworm` (multi-stage, virtualenv copied to the runtime stage, non-root uid
   10001, exec-form `python -m app.serve`, **one Uvicorn worker per container**); frontend `node:22.23.3-alpine3.24`
   (multi-stage, Next.js `output: "standalone"`, non-root `node`, `node server.js`). No `.env`, tests, `.git` or local
   state is in either image.
@@ -177,17 +179,42 @@ docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build   # th
 - Local-only: plain HTTP, `SESSION_COOKIE_SECURE=false`; production needs HTTPS + Secure cookies (Section 203). No
   cloud deployment exists yet.
 
-**CI Docker build gate (Step 188G)**: `.github/workflows/ci.yml` now
-has a third job, `docker-build`, alongside the existing `backend`/
-`frontend` test jobs (both unchanged). It builds the backend image and
-both frontend Docker targets (`dev`/`production`) on every push/PR —
-**build-only**: no image is ever pushed anywhere, no registry login/
-cloud credential/GitHub secret is used or required, no container from
-any of these images is ever run in CI, no migration is applied, and no
-real provider/API call is made. A green `docker-build` job means these
-three Dockerfiles still build — nothing more; it does not deploy
-anything and is not a claim that CI has verified a production-ready
-deployment.
+### CI (Section 203A)
+
+`.github/workflows/ci.yml` runs on every pull request, every push to `main` and on manual dispatch (a newer
+push cancels the superseded run). It validates the runtime that ships — Python 3.11, Node 22, PostgreSQL 16,
+Redis 7.4 — with `contents: read` permissions only, no GitHub secret, no registry push and no deployment.
+
+| Check (stable name) | What it proves | Local equivalent (repo root) |
+|---|---|---|
+| `Backend / Hermetic` | `compileall` + the normal suite with no database/cache; gated tests skip | `python -m compileall backend/app backend/scripts && python -m pytest` |
+| `Backend / Integration` | one Alembic head, empty PostgreSQL migrated to head, full suite with both gates, **zero skips** | start disposable `postgres:16` + `redis:7.4-alpine`, export `DATABASE_URL`/`REDIS_URL`, `(cd backend && alembic heads && alembic upgrade head)`, then `TRAVELOB_RUN_POSTGRES_TESTS=1 TRAVELOB_RUN_REDIS_TESTS=1 PERSISTENCE_BACKEND=postgres PROVIDER_CACHE_BACKEND=redis python -m pytest` |
+| `Frontend / Build` | lockfile install, types, lint, production build | `cd frontend && npm ci && npx tsc --noEmit && npm run lint && npm run build` |
+| `Containers / Build & Smoke` | both production images build; image audit; Trivy image gate; production-style compose smoke | `SMOKE_BUILD=1 scripts/ci/container_smoke.sh` and `scripts/ci/image_audit.sh` |
+| `Security / Scan` | Trivy secret scan + dependency vulnerability scan of the repository | `trivy fs --scanners secret --exit-code 1 .` and `trivy fs --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 .` (run on a clean checkout) |
+
+- **Container smoke** (`scripts/ci/container_smoke.sh`) drives the real `docker-compose.yml` with generated
+  throwaway settings kept outside the repository (your `.env` is never read): Redis absent at startup →
+  `/ready` 200 `degraded`; Redis started → `/ready` `ready` in the *same* backend container (id, start time and
+  restart count unchanged); frontend `/` 200 with the runtime API URL; signup/login/trip create; a backend on
+  an un-migrated database never becomes ready; PostgreSQL stopped → `/health` 200, `/ready` 503 `not_ready`.
+  It runs no generation, so no public provider is a CI dependency. It uses host ports 18000/13000 by default
+  (`BACKEND_HOST_PORT`/`FRONTEND_HOST_PORT`).
+- **Vulnerability policy:** one scanner (Trivy). The full MEDIUM/HIGH/CRITICAL report is always printed and
+  nothing is suppressed (there is no ignore file). CI **fails** on a HIGH or CRITICAL vulnerability that has a
+  fix available, in the repository's dependency files or in either image, and on any secret-like value in a
+  tracked file. Unfixed and lower-severity findings are reported but do not fail the build.
+- **Security refresh (Section 203A.1):** to satisfy that gate without relaxing it, `starlette` 1.0.0 → 1.3.1,
+  `anyio` 4.13.0 → 4.14.2, `next`/`eslint-config-next` 16.2.4 → 16.3.6 (which brings `postcss` 8.5.23 and `sharp`
+  0.35.5; `nanoid` 3.3.19), backend base `python:3.11.14-slim-bookworm` → `python:3.11.16-slim-bookworm`, and the
+  packaging tools no runtime path uses were removed from the runtime images (`setuptools`/`wheel` in the backend,
+  `npm`/`corepack`/`yarn` in the frontend). Debian findings with no fix available remain visible in the report
+  step. Details: `docs/14_backend_architecture.md` section 165.1.
+- **Actions** are pinned to full commit SHAs (release noted beside each).
+- **Image identity (for the later deployment sections; nothing is published yet):** `sha-<git commit>` is the
+  immutable tag a deployment refers to, `main` an optional movable convenience tag, `vX.Y.Z` for formal
+  releases; `latest` is never a deployment identity. CI images already carry the OCI `revision`/`source` labels.
+- Recommended required checks on `main`: the five names in the table, exactly as written.
 
 **Startup ordering (Step 188C)**: `backend`'s image now runs
 `python:3.13-slim` (aligned with this project's actual tested Python
@@ -748,8 +775,8 @@ With the backend and frontend both running:
     real Docker healthchecks gating startup order (`postgres` →
     healthy → `backend` → healthy → `frontend`); `docker build --target
     production ./frontend` builds a real `next build`/`next start`
-    image; `.github/workflows/ci.yml`'s `docker-build` job build-checks
-    all three images on every push. None of this is a claim of a hosted
+    image; `.github/workflows/ci.yml`'s `Containers / Build & Smoke` job builds
+    and smoke-tests the production images on every push. None of this is a claim of a hosted
     production deployment — see "Current Status" below.
 
 Real output depends entirely on which providers you've connected — a

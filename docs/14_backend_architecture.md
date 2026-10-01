@@ -10782,3 +10782,56 @@ Managed PostgreSQL/Redis, secrets management, HTTPS/domain/Secure cookies and co
 ### 164.1 Correction (Section 200E.1): Redis is not a backend startup prerequisite
 
 The first 200E compose file gated `backend` on `redis: service_healthy`, so a Redis that was down BEFORE startup blocked the backend, contradicting the runtime contract (PostgreSQL authoritative, Redis optional). Fixed: `backend.depends_on` lists only `postgres` (healthy) and `migrate` (completed successfully). The application code already behaved correctly (`startup_provider_cache_check` only validates the URL's shape; an unreachable Redis reports `degraded`); this was purely a Compose ordering error, and it had not been caught because only Redis failure AFTER startup was tested. Verified with the built image: Redis absent at startup -> backend starts, `/health` 200, `/ready` 200 `degraded`, a full generation succeeds uncached with state in PostgreSQL and no SQLite/Local JSON fallback; starting Redis afterwards makes `/ready` recover without a backend restart and the next identical provider requests go MISS then HIT. Earlier wording that Redis "left data intact" across a restart referred to PostgreSQL application data, not cache contents.
+
+## 165. Section 203A: CI/CD Foundation
+
+**Scope.** CI only. No deployment, registry push, cloud login, OIDC, Terraform or GitHub secret exists after this section; those start in 203B/203C. No deployment-workflow skeleton was added (a pipeline that does nothing is worse than none).
+
+**Before.** One workflow (`.github/workflows/ci.yml`): `backend` on Python 3.13 (`compileall app` + hermetic `pytest`), `frontend` on Node 20 (`npm ci` + lint only), `docker-build` (plain `docker build` of three targets, nothing run). No `workflow_dispatch`, concurrency, `permissions`, timeouts, integration tests, migration check, container run or security scan; actions on floating major tags. It validated a runtime that 200E no longer ships.
+
+**Now (same file, upgraded in place).** Triggers `pull_request`, `push` to `main`, `workflow_dispatch` (never `pull_request_target`); `concurrency` group `ci-<workflow>-<ref>` with `cancel-in-progress`; workflow-level `permissions: contents: read` and nothing else; every job has `timeout-minutes`; `persist-credentials: false` on checkout. Job names are the branch-protection check names:
+
+| Check | Content |
+|---|---|
+| `Backend / Hermetic` | Python 3.11, pip cache keyed on `requirements.txt` + `requirements-dev.txt`, `compileall backend/app backend/scripts`, plain `python -m pytest`. No services, no gate variable: infrastructure-gated tests skip, anything else must pass. |
+| `Backend / Integration` | Service containers `postgres:16` (`pg_isready`) and `redis:7.4-alpine` (`redis-cli ping`), synthetic credentials. `alembic heads` must print exactly one head; `alembic upgrade head` on the empty database; then the full suite with `TRAVELOB_RUN_POSTGRES_TESTS=1` and `TRAVELOB_RUN_REDIS_TESTS=1`. The JUnit report must contain **zero skipped tests**. |
+| `Frontend / Build` | Node 22, `npm ci`, `npx tsc --noEmit`, `npm run lint`, `npm run build`; no API URL or secret at build time. |
+| `Containers / Build & Smoke` | buildx builds of `backend/Dockerfile` and `frontend/Dockerfile` (`production` target), loaded locally, never pushed, OCI `revision`/`source` labels, GitHub Actions layer cache (`ignore-error`, so a cold build is equivalent); `scripts/ci/image_audit.sh`; Trivy image report + gate; `scripts/ci/container_smoke.sh`. |
+| `Security / Scan` | Trivy filesystem scan of the checkout: secrets (gate), dependency vulnerabilities (report + gate). |
+
+**Why the full suite for integration, not `-m "postgres_integration or redis_integration"`.** Several gated modules use a bare `skipif` on the gate variables; a marker expression cannot be proven to select all of them. The full suite with both gates is the command already established in 200A-200E, and "zero skips" is an invariant that stays true as tests are added (no hardcoded test count anywhere in CI).
+
+**Image scans live in the container job.** Jobs run on isolated runners, so an image built in one job does not exist in another. Images are scanned where they are built; nothing is rebuilt elsewhere and no image is uploaded as an artifact.
+
+**Image audit (`scripts/ci/image_audit.sh`).** Complements the text audit in `tests/core/test_container_config_audit_200e.py` by inspecting the BUILT images. Backend: user `10001:10001`, exec-form `python -m app.serve`, no entrypoint shell, no `--reload`, `uvicorn_options()` gives one worker / no reload / honours `PORT`, no `.env`, `.data`, `app/tests`, SQLite or Local JSON state file, `pytest` not installed, code not writable by the runtime user. Frontend: user `node`, `node server.js`, standalone server present, no `.env`, no source tree, no build-machine home path in the output; **the same image is started twice with two different `API_BASE_URL` values and each must serve its own**, which is the regression gate for the 200E runtime-config design.
+
+**Container smoke (`scripts/ci/container_smoke.sh`).** Uses the real `docker-compose.yml` unchanged (no override, no bind mount), a throwaway `--env-file` with generated secrets in a temp directory, an empty `APP_ENV_FILE`, its own project name and loopback ports 18000/13000. It always runs `down -v` and prints container state/logs on failure. Phases: (1) `postgres`, `migrate`, `backend` with **no Redis container**: migration exit 0, `/health` 200, `/ready` 200 `degraded`; (2) Redis started: `/ready` becomes `ready` and the backend's container id, `StartedAt` and `RestartCount` are identical before and after (recovery without a restart, 200E.1); frontend `/` 200 carrying the runtime API URL; CORS preflight allowed for the frontend origin and for no other; (3) signup, `/auth/me`, login, trip create (PostgreSQL only, no provider call; generation is deliberately not run so no public API is a CI dependency); (4) a backend started on an empty, un-migrated database must exit non-zero or answer `/ready` non-200, and with PostgreSQL stopped `/health` stays 200 while `/ready` is 503 `not_ready`.
+
+**Vulnerability policy.** One scanner (Trivy; no account, no API key). The report steps print MEDIUM/HIGH/CRITICAL findings and never fail. The gate steps fail on **HIGH or CRITICAL findings that have a fixed version available** (`ignore-unfixed: true`), for the repository's dependency files and for both images. The secret gate fails on any finding (values are masked by Trivy). There is no `.trivyignore`; nothing is suppressed. Findings without a fix are visible in the report and do not block.
+
+**Actions.** All pinned to a full commit SHA with the release in a comment: `actions/checkout` v7.0.1, `actions/setup-python` v7.0.0, `actions/setup-node` v7.0.0, `docker/setup-buildx-action` v4.4.1, `docker/build-push-action` v7.4.0, `aquasecurity/trivy-action` v0.36.0 (Trivy v0.70.0). No `@main`/`@master`.
+
+**Image tagging (design only; nothing is published in 203A).** `sha-<full git commit>` is the immutable deployment identity; `main` is an optional movable convenience tag; `vX.Y.Z` when formal releases exist; `latest` is never a deployment identity.
+
+**Limits.** Local reproduction proves the workflow's commands, not a GitHub-hosted run. Expected durations and the required-check setting are to be confirmed after the first real run; branch protection was not changed.
+
+### 165.1 Section 203A.1: security dependency refresh
+
+The 203A gates failed on their first local run (fixable HIGH/CRITICAL findings in pinned dependencies and base images). The policy was **not** changed (same severities, `ignore-unfixed`, no ignore file); the findings were removed at the source.
+
+| Finding (before) | Kind | Remediation |
+|---|---|---|
+| `starlette` 1.0.0 (CVE-2026-48818, CVE-2026-54283) | direct pin, backend | `starlette==1.3.1` (lowest version fixing both; FastAPI 0.136.1 requires `starlette>=0.46.0`) |
+| `anyio` 4.13.0 (CVE-2026-63374, critical) | transitive (starlette/httpx/mcp), pinned | `anyio==4.14.2` |
+| `wheel` 0.45.1, `jaraco.context` 5.3.0 | vendored inside `setuptools`, in the base image and in the virtualenv; not an application dependency | `setuptools` removed from the virtualenv after install; `setuptools`/`wheel` removed from the runtime stage (no runtime dependency imports them; `pip` stays) |
+| `openssl`/`libssl3`, `libgnutls30`, krb5 libraries, `libcap2`, `libpcre2-8-0` (29 findings) | Debian packages of `python:3.11.14-slim-bookworm` (tag last rebuilt 2026-02, Debian 12.13) | base moved to `python:3.11.16-slim-bookworm` (Debian 12.15). No `apt-get upgrade` was added. Python stays on 3.11; 3.11.15/3.11.16 are security-only releases. |
+| `next` 16.2.4 (14 advisories, 3 critical; the last fixed in 16.3.6) | direct pin, frontend | `next` and `eslint-config-next` 16.3.6 |
+| `postcss` 8.4.31, `sharp` 0.34.5 | transitive via `next` | resolved by `next` 16.3.6 (`postcss` 8.5.23, `sharp` 0.35.5) |
+| `nanoid` 3.3.11 | transitive via `postcss` | lock entry refreshed to 3.3.19 (`npm update nanoid`) |
+| `brace-expansion`, `pacote`, `picomatch`, `sigstore`, `ip-address` | bundled inside the `npm` CLI of `node:22.23.3-alpine3.24` (the newest Node 22 tag), not the application | `npm`/`npx`, `corepack` and `yarn` removed from the production stage, which only runs `node server.js`; base tag unchanged |
+
+Other lockfile movement is limited to what those upgrades pull in (`@next/*`, `@swc/helpers`, the `@img/sharp-*` platform packages, `@emnapi/runtime`, `fastq`, `semver` under `sharp`). No broad `npm update`, no new dependency, no package-manager change.
+
+**Result (Trivy 0.70.0, same flags as CI, clean `--no-cache --pull` image builds):** secret gate pass; repository, backend-image and frontend-image fixable HIGH/CRITICAL gates pass. **Still reported, not suppressed:** the backend image has Debian 12 findings with no fixed version (5 critical, 57 high: `perl-base`, `zlib1g`, `libsqlite3-0`, the util-linux family, ncurses, `gzip`, `libacl1`, systemd libraries, one in `openssl`), plus fixable MEDIUMs (`openssl` 3.0.22, the image's `pip` 24.0); the repository has one fixable MEDIUM (`baseline-browser-mapping`); the frontend image reports nothing at MEDIUM or above. These are below or outside the blocking policy and stay visible in the report steps.
+
+**Runtime note.** The developer virtualenv is Python 3.11.14 while the image is 3.11.16; CI's `python-version: "3.11"` resolves to the newest 3.11 patch on the runner.

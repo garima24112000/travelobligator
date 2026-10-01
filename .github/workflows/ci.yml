@@ -1,86 +1,327 @@
+# Section 203A: CI foundation. Every pull request and every push to main proves, on the runtime we actually ship
+# (Python 3.11, Node 22, PostgreSQL 16, Redis 7.4):
+#
+#   Backend / Hermetic          compileall + the normal pytest suite, with NO database or cache
+#   Backend / Integration       one Alembic head, migrate an empty PostgreSQL, full suite with both gates, 0 skips
+#   Frontend / Build            npm ci, tsc, eslint, next build
+#   Containers / Build & Smoke  production images, image audit, Trivy image gate, production-style compose smoke
+#   Security / Scan             Trivy secret + dependency scan of the repository
+#
+# The job NAMES are the branch-protection check names -- do not rename them casually.
+#
+# No deployment, no registry push, no cloud login, no OIDC and no GitHub secret: every credential below is a
+# synthetic value for a container that exists only for the duration of one job. Actions are pinned to a full
+# commit SHA (the comment is the release that SHA belongs to). Details and local equivalents: README "CI" and
+# docs/14_backend_architecture.md section 165.
+
 name: CI
 
 on:
+  pull_request:
   push:
     branches: [main]
-  pull_request:
-    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: "3.11"
+  NODE_VERSION: "22"
 
 jobs:
-  backend:
-    runs-on: ubuntu-latest
-
+  backend-hermetic:
+    name: Backend / Hermetic
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          python-version: "3.13"
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: |
+            backend/requirements.txt
+            backend/requirements-dev.txt
 
       - name: Install backend dependencies
-        working-directory: backend
         run: |
+          set -euo pipefail
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          if [ -f requirements-dev.txt ]; then
-            pip install -r requirements-dev.txt
-          fi
+          pip install -r backend/requirements-dev.txt
 
       - name: Compile check
-        working-directory: backend
-        run: python -m compileall app
+        run: python -m compileall -q backend/app backend/scripts
 
-      # pytest.ini lives at the repo root and points at backend/app/tests
-      - name: Run tests
-        run: pytest
+      # Exactly what a developer runs: no PostgreSQL, no Redis, no gate variable. Infrastructure-gated tests skip.
+      - name: Run tests (hermetic)
+        run: python -m pytest
+
+  backend-integration:
+    name: Backend / Integration
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: travelob_ci
+          POSTGRES_USER: travelob_ci
+          POSTGRES_PASSWORD: ci_only_not_a_secret
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U travelob_ci -d travelob_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+      redis:
+        image: redis:7.4-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+    env:
+      # Synthetic values for this job's own throwaway service containers.
+      PERSISTENCE_BACKEND: postgres
+      PROVIDER_CACHE_BACKEND: redis
+      DATABASE_URL: postgresql://travelob_ci:ci_only_not_a_secret@127.0.0.1:5432/travelob_ci
+      REDIS_URL: redis://127.0.0.1:6379/0
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: |
+            backend/requirements.txt
+            backend/requirements-dev.txt
+
+      - name: Install backend dependencies
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -r backend/requirements-dev.txt
+
+      - name: Verify a single Alembic head
+        working-directory: backend
+        run: |
+          set -euo pipefail
+          heads="$(alembic heads | grep -c .)"
+          if [ "${heads}" != "1" ]; then
+            echo "Expected exactly one Alembic head, found ${heads}:"
+            alembic heads
+            exit 1
+          fi
+
+      # An explicit release step, exactly as in deployment: the web process never migrates.
+      - name: Migrate the empty database to head
+        working-directory: backend
+        run: |
+          set -euo pipefail
+          alembic upgrade head
+          alembic current | grep -q "(head)"
+
+      # The full suite with BOTH gates on (the established command). A marker expression is not used because some
+      # gated tests are skipif-gated without a marker; zero skips below proves every gated test really executed.
+      - name: Run tests (PostgreSQL + Redis gates on)
+        env:
+          TRAVELOB_RUN_POSTGRES_TESTS: "1"
+          TRAVELOB_RUN_REDIS_TESTS: "1"
+        run: python -m pytest --junitxml="${RUNNER_TEMP}/integration.xml"
+
+      - name: Assert that no test skipped
+        run: |
+          set -euo pipefail
+          python - "${RUNNER_TEMP}/integration.xml" <<'PY'
+          import sys
+          import xml.etree.ElementTree as ET
+
+          root = ET.parse(sys.argv[1]).getroot()
+          suites = [root] if root.tag == "testsuite" else list(root)
+          total = sum(int(s.get("tests", 0)) for s in suites)
+          skipped = sum(int(s.get("skipped", 0)) for s in suites)
+          print(f"tests={total} skipped={skipped}")
+          if skipped:
+              for case in root.iter("testcase"):
+                  if case.find("skipped") is not None:
+                      print("skipped:", case.get("classname"), case.get("name"))
+              sys.exit("A test skipped although PostgreSQL and Redis are both available.")
+          PY
 
   frontend:
-    runs-on: ubuntu-latest
+    name: Frontend / Build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: frontend
-
+    env:
+      NEXT_TELEMETRY_DISABLED: "1"
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Node
-        uses: actions/setup-node@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          node-version: "20"
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
       - name: Install frontend dependencies
         run: npm ci
 
-      - name: Run lint
+      - name: Type check
+        run: npx tsc --noEmit
+
+      - name: Lint
         run: npm run lint
 
-  docker-build:
-    runs-on: ubuntu-latest
-    # Step 188G (docs/14_backend_architecture.md section 132): a safe,
-    # build-only Docker regression gate for Section 188 -- confirms the
-    # backend image and both frontend Docker targets (`dev`/
-    # `production`) still build cleanly on every push/PR. Deliberately
-    # BUILD ONLY: no image is ever pushed anywhere, no registry login,
-    # cloud credential, or GitHub secret is used or required anywhere
-    # in this job, no container from any of these images is ever run
-    # here, no migration is applied, and no real provider/API call is
-    # ever made (nothing here starts a process, so nothing here could
-    # reach a live provider even if it wanted to). A green run here
-    # means "these three Dockerfiles still build" -- nothing more; it
-    # is not a deployment, not an image push, and not a claim that any
-    # resulting image is production-ready. Runs independently of the
-    # `backend`/`frontend` jobs above (both unchanged by this step).
+      # No backend, no API URL and no secret is needed to build: the API URL is a RUNTIME value (see image audit).
+      - name: Build
+        run: npm run build
+
+  containers:
+    name: Containers / Build & Smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-      - name: Build backend image (build-only, no push)
-        run: docker build -t travelobligator-backend:ci ./backend
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
-      - name: Build frontend dev target (build-only, no push)
-        run: docker build --target dev -t travelobligator-frontend:ci-dev ./frontend
+      # The real production Dockerfiles from the repository context. Loaded into the local daemon only -- never
+      # pushed. The layer cache is an optimisation: a cold build produces the same image.
+      - name: Build backend production image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: backend
+          load: true
+          push: false
+          provenance: false
+          tags: travelobligator-backend:local
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+          cache-from: type=gha,scope=backend
+          cache-to: type=gha,mode=max,scope=backend,ignore-error=true
 
-      - name: Build frontend production target (build-only, no push)
-        run: docker build --target production -t travelobligator-frontend:ci-production ./frontend
+      - name: Build frontend production image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: frontend
+          target: production
+          load: true
+          push: false
+          provenance: false
+          tags: travelobligator-frontend:local
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+          cache-from: type=gha,scope=frontend
+          cache-to: type=gha,mode=max,scope=frontend,ignore-error=true
+
+      - name: Audit built images
+        env:
+          EXPECT_REVISION: ${{ github.sha }}
+        run: bash scripts/ci/image_audit.sh travelobligator-backend:local travelobligator-frontend:local
+
+      # Image scans live in THIS job because the images exist only on this runner. Policy: the full report is
+      # printed (nothing suppressed); the gate fails on HIGH/CRITICAL vulnerabilities that HAVE a fix.
+      - name: Backend image vulnerabilities (report, non-blocking)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: image
+          image-ref: travelobligator-backend:local
+          scanners: vuln
+          severity: MEDIUM,HIGH,CRITICAL
+          exit-code: "0"
+
+      - name: Backend image vulnerabilities (gate)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: image
+          image-ref: travelobligator-backend:local
+          scanners: vuln
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+
+      - name: Frontend image vulnerabilities (report, non-blocking)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: image
+          image-ref: travelobligator-frontend:local
+          scanners: vuln
+          severity: MEDIUM,HIGH,CRITICAL
+          exit-code: "0"
+
+      - name: Frontend image vulnerabilities (gate)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: image
+          image-ref: travelobligator-frontend:local
+          scanners: vuln
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+
+      # postgres -> migrate -> backend (-> redis) -> frontend from the images built above, through the real
+      # docker-compose.yml with generated throwaway settings. Prints container logs itself on failure. Runs even
+      # when a vulnerability gate above failed (the job still fails), so both signals are always reported.
+      - name: Production-style container smoke
+        if: ${{ !cancelled() }}
+        run: bash scripts/ci/container_smoke.sh
+
+  security:
+    name: Security / Scan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Any secret-like value in a tracked file fails the job (Trivy masks the value in its output).
+      - name: Repository secret scan (gate)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: secret
+          exit-code: "1"
+
+      - name: Dependency vulnerabilities (report, non-blocking)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln
+          severity: MEDIUM,HIGH,CRITICAL
+          exit-code: "0"
+
+      - name: Dependency vulnerabilities (gate)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"

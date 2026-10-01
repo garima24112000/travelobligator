@@ -7,7 +7,7 @@
 #                   unprivileged user. No dev dependencies, no source tree, no `.env`, no `next dev`.
 #
 # Node 22 (LTS) is pinned by exact version; Next.js 16.2.4 supports Node >= 20.9 (Node 20 reached end of life in
-# April 2026). CI still uses Node 20 -- aligning CI is Section 203A.
+# April 2026). CI uses Node 22 as well (Section 203A).
 #
 # API URL: the browser is told which backend to call at RUNTIME via the container's `API_BASE_URL` environment
 # variable (injected by the root layout, see frontend/lib/runtime-config.ts) -- one image works in any
@@ -44,6 +44,10 @@ ENV NODE_ENV=production \
     NEXT_TELEMETRY_DISABLED=1 \
     PORT=3000 \
     HOSTNAME=0.0.0.0
+# The runtime only ever executes `node server.js`: the package managers shipped in the base image (npm/npx,
+# corepack, yarn) are removed, so their bundled dependencies (with known CVEs) are not part of the shipped image.
+RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack /opt/yarn-v* \
+        /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack /usr/local/bin/yarn /usr/local/bin/yarnpkg
 WORKDIR /app
 # The standalone output is a self-contained server (traced node_modules subset + server.js). Files are root-owned
 # and read-only to the runtime user.
