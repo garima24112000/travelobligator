@@ -46,8 +46,11 @@ target_metadata = Base.metadata
 # fails with a fixed, credential-free message.
 from app.core.persistence import require_database_url  # noqa: E402
 
+# Section 203B: Alembic stores options in a ConfigParser, where a bare `%` is interpolation syntax -- a
+# percent-encoded character in a managed-database password would otherwise fail here. `%%` is read back as `%`.
 config.set_main_option(
-    "sqlalchemy.url", normalize_database_url(require_database_url(get_settings()))
+    "sqlalchemy.url",
+    normalize_database_url(require_database_url(get_settings())).replace("%", "%%"),
 )
 
 # other values from the config, defined by the needs of env.py,

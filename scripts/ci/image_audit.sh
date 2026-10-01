@@ -47,11 +47,23 @@ if importlib.util.find_spec("pytest") is not None:
 if os.access("/app/app", os.W_OK):
     problems.append("application code is writable by the runtime user")
 
+# Section 203B: managed PostgreSQL/Redis are reached over TLS (sslmode=require, rediss://), verified against
+# the system trust store -- which must therefore exist in the image.
+import ssl
+
+verify_paths = ssl.get_default_verify_paths()
+has_ca_file = bool(verify_paths.cafile) and os.path.isfile(verify_paths.cafile)
+has_ca_dir = bool(verify_paths.capath) and os.path.isdir(verify_paths.capath) and any(os.scandir(verify_paths.capath))
+if not (has_ca_file or has_ca_dir):
+    problems.append("no system CA certificates: TLS connections to managed PostgreSQL/Redis cannot be verified")
+
 from app.serve import uvicorn_options
 
 options = uvicorn_options()
 if options["port"] != 9123:
     problems.append("PORT is not honoured (got %r)" % options["port"])
+if options["host"] != "0.0.0.0":
+    problems.append("does not bind 0.0.0.0 by default (got %r)" % options["host"])
 if options["workers"] != 1 or options["reload"] is not False:
     problems.append("not exactly one non-reloading worker: %r" % options)
 
@@ -59,7 +71,7 @@ for problem in problems:
     print("  - " + problem)
 sys.exit(1 if problems else 0)
 ' || fail "backend image contents/runtime options"
-echo "backend: uid 10001, exec-form python -m app.serve, one worker, no reload, PORT honoured, no .env/tests/local state"
+echo "backend: uid 10001, exec-form python -m app.serve, one worker on 0.0.0.0, no reload, PORT honoured, system CA store, no .env/tests/local state"
 
 # ---------------------------------------------------------------- frontend
 echo "== frontend image: ${FRONTEND_IMAGE}"

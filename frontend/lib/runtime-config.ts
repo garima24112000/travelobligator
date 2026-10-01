@@ -12,6 +12,10 @@
 //
 // The value is public, browser-visible configuration (it is the address the BROWSER calls) -- never a secret,
 // never an internal service name such as `http://backend:8000`, which a browser cannot resolve.
+//
+// Section 203B: the value may also be a SAME-ORIGIN path prefix (`API_BASE_URL=/api`). The hosted frontend uses
+// that together with the `/api/*` rewrite in next.config.ts, so browser API calls stay on the frontend's own
+// origin and the session cookie stays first-party.
 
 declare global {
   interface Window {
@@ -23,12 +27,17 @@ const BUILD_TIME_API_BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
 
 const SAFE_URL = /^https?:\/\/[^\s"'<>\\]+$/;
+// A same-origin path prefix: one leading slash (never `//host`, which is another origin), plain segments only.
+const SAFE_PATH_PREFIX = /^(\/[A-Za-z0-9_-]+)+$/;
 
-/** Only an absolute http(s) URL is ever accepted (also used when the layout serialises the value). */
+/**
+ * Only an absolute http(s) URL or a same-origin path prefix such as `/api` is ever accepted (also used when the
+ * layout serialises the value).
+ */
 export function sanitizeApiBaseUrl(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const trimmed = value.trim().replace(/\/+$/, "");
-  return SAFE_URL.test(trimmed) ? trimmed : null;
+  return SAFE_URL.test(trimmed) || SAFE_PATH_PREFIX.test(trimmed) ? trimmed : null;
 }
 
 export function apiBaseUrl(): string {

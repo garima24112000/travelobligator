@@ -58,6 +58,12 @@ export class ApiRequestError extends Error {
   }
 }
 
+// Frontend-only code (never sent by the backend) for "no usable response arrived".
+export const BACKEND_UNREACHABLE_CODE = "BACKEND_UNREACHABLE";
+const BACKEND_UNREACHABLE_MESSAGE =
+  "The server did not respond. It may be starting up after a period of inactivity, which can take " +
+  "about a minute. Please try again shortly.";
+
 // Step 184E: `credentials: "include"` sends/receives the backend's signed,
 // HttpOnly session cookie on every request -- this is the only place a
 // session is ever attached. There is no token to read or store on the
@@ -68,13 +74,31 @@ async function request<T>(
   init?: RequestInit,
   options?: { allowNullData?: boolean },
 ): Promise<T> {
-  const response = await fetch(`${apiBaseUrl()}${path}`, {
-    credentials: "include",
-    headers: { "Content-Type": "application/json" },
-    ...init,
-  });
+  // Section 203B: the hosted backend sleeps after inactivity and takes a while to wake. A request that gets no
+  // response at all, or a non-JSON answer from the proxy in front of it (a gateway error page), is reported as
+  // a temporary, retryable condition -- never as a parse error and never as a permanent outage.
+  let response: Response;
+  try {
+    response = await fetch(`${apiBaseUrl()}${path}`, {
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      ...init,
+    });
+  } catch {
+    throw new ApiRequestError(BACKEND_UNREACHABLE_MESSAGE, 0, BACKEND_UNREACHABLE_CODE);
+  }
 
-  const body = (await response.json()) as ApiResponse<T>;
+  let body: ApiResponse<T>;
+  try {
+    body = (await response.json()) as ApiResponse<T>;
+  } catch {
+    throw new ApiRequestError(
+      BACKEND_UNREACHABLE_MESSAGE,
+      response.status,
+      BACKEND_UNREACHABLE_CODE,
+      response.headers.get("X-Request-Id"),
+    );
+  }
 
   if (
     !response.ok ||
@@ -82,7 +106,7 @@ async function request<T>(
     (body.data === null && !options?.allowNullData)
   ) {
     const message =
-      body.errors[0]?.message ?? body.message ?? "The request failed.";
+      body.errors?.[0]?.message ?? body.message ?? "The request failed.";
     // Step 187G: prefer the body's own `metadata.request_id` (always
     // present on a real backend response) and fall back to the
     // `X-Request-Id` response header (readable cross-origin only because
@@ -94,7 +118,7 @@ async function request<T>(
     throw new ApiRequestError(
       message,
       response.status,
-      body.errors[0]?.code ?? null,
+      body.errors?.[0]?.code ?? null,
       requestId,
     );
   }

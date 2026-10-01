@@ -373,6 +373,20 @@ _store_key: tuple[Any, ...] | None = None
 _client: Any = None
 
 
+def redis_client_options(url: str, settings: Any) -> dict[str, Any]:
+    """Keyword arguments for the one process-level client. A TLS URL (`rediss://`, e.g. a managed Redis
+    reached over the public internet) also verifies the server certificate's HOSTNAME -- redis-py 5 verifies
+    the certificate chain by default but not the hostname."""
+    options: dict[str, Any] = {
+        "socket_connect_timeout": settings.redis_connect_timeout_seconds,
+        "socket_timeout": settings.redis_socket_timeout_seconds,
+        "health_check_interval": 30,
+    }
+    if urlsplit(url).scheme == "rediss":
+        options["ssl_check_hostname"] = True
+    return options
+
+
 def get_redis_provider_cache_store() -> RedisProviderCacheStore:
     """One process-level client (redis-py connection pool) and store, rebuilt
     only if the relevant settings change. No connection is opened here; the
@@ -389,12 +403,7 @@ def get_redis_provider_cache_store() -> RedisProviderCacheStore:
         _close_client_locked()
         import redis
 
-        _client = redis.Redis.from_url(
-            url,
-            socket_connect_timeout=settings.redis_connect_timeout_seconds,
-            socket_timeout=settings.redis_socket_timeout_seconds,
-            health_check_interval=30,
-        )
+        _client = redis.Redis.from_url(url, **redis_client_options(url, settings))
         _store = RedisProviderCacheStore(_client, key_prefix=settings.redis_key_prefix)
         _store_key = key
         return _store

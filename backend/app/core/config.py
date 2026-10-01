@@ -1094,6 +1094,11 @@ class Settings(BaseSettings):
     # `GET /metrics` (Prometheus text, low-cardinality, no user content). No authentication exists in
     # this app, so deployments should keep /metrics on a private network (see docs section 163).
     metrics_enabled: bool = Field(default=True, alias="METRICS_ENABLED")
+    # Section 203B: exposure policy for /ready and /metrics on a PUBLIC backend (see `api/routes/ops.py`).
+    # When set, both endpoints require `Authorization: Bearer <OPS_TOKEN>`. When unset they stay open
+    # outside production (local Compose/CI probes) and answer 404 with APP_ENV=production. /health is
+    # always public. A secret: never logged or returned.
+    ops_token: str | None = Field(default=None, alias="OPS_TOKEN", repr=False)
     # Overall wall-clock bound for one `GET /ready` (PostgreSQL + Redis probes together).
     readiness_timeout_seconds: float = Field(
         default=2.0, alias="READINESS_TIMEOUT_SECONDS", gt=0, le=30

@@ -15,6 +15,8 @@ from app.core.config import get_settings
 from app.core.errors import CONCURRENT_UPDATE_MESSAGE, AppError
 from app.core.logging_config import configure_logging
 from app.core.http_metrics_middleware import HttpMetricsMiddleware
+from app.core.no_store_middleware import NoStoreMiddleware
+from app.core.operational_config import cors_origins as configured_cors_origins
 from app.core.request_id_middleware import RequestIdMiddleware
 from app.core.response import error_response
 from app.repositories.errors import ConcurrentStateUpdateError
@@ -133,11 +135,9 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-cors_origins = [
-    origin.strip()
-    for origin in settings.backend_cors_origins.split(",")
-    if origin.strip()
-]
+# Explicit origins only (`validate_runtime_configuration` rejects a wildcard/credentialed/non-origin
+# entry at startup). CORS is not authentication: every route still checks the session itself.
+cors_origins = configured_cors_origins(settings)
 
 app.add_middleware(
     CORSMiddleware,
@@ -168,6 +168,9 @@ app.add_middleware(
 # structured log line emitted while the route ran.
 app.add_middleware(HttpMetricsMiddleware)
 app.add_middleware(RequestIdMiddleware)
+# Section 203B: outermost, so EVERY response (routes, error handlers, CORS preflights) is `no-store` --
+# the production browser path is a CDN rewrite (Vercel -> this service) and nothing here is cacheable.
+app.add_middleware(NoStoreMiddleware)
 
 
 @app.exception_handler(AppError)
