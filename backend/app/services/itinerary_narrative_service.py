@@ -15,6 +15,7 @@ from app.services.itinerary_narrative_grounding import (
     SAFE_AI_UNAVAILABLE_MESSAGE,
     build_deterministic_narrative,
     find_ungrounded_terms,
+    find_unsupported_factual_claims,
     grounding_rejected_report,
     normalize_day_titles,
     safe_narrator_message,
@@ -200,7 +201,12 @@ class ItineraryNarrativeService:
                 # structural grounding check; a rejected narration falls
                 # back rather than surfacing unsupported wording.
                 report = normalize_day_titles(report)
-                if find_ungrounded_terms(request, report):
+                # Section 202C.1E: also reject any price / rating / hours /
+                # availability-booking / safety / route-duration-distance claim
+                # FORM -- none of those values is ever supplied to the narrator.
+                # A grounding rejection is never retried (the structural retry
+                # lives in the adapter and only covers malformed output).
+                if find_ungrounded_terms(request, report) or find_unsupported_factual_claims(request, report):
                     report = grounding_rejected_report(report)
             report = _apply_final_validation_disclosure(report, request)
         except Exception:

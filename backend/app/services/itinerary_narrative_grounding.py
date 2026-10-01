@@ -83,6 +83,113 @@ def find_ungrounded_terms(request: ItineraryNarrativeRequest, report: ItineraryN
     return found
 
 
+# ---------------------------------------------------------------------------
+# Section 202C.1E: unsupported FACTUAL-CLAIM forms.
+#
+# Audit: the narrator request carries no price, rating, opening hour, route
+# duration/distance, availability, booking or safety value at all (route data
+# is a yes/no flag; the only numbers are dates, traveler/day counts and
+# validation counts). So any such claim in AI prose is invented. Before this,
+# two guards existed: `_FORBIDDEN_TEXT_PATTERNS` (a fixed substring list --
+# "price", "rating", "09:" ...) and the capitalised-vocabulary check above.
+# "costs $12", "rated 4.8 stars" and "opens at 9am" contain none of those
+# substrings and no unknown capitalised word, so they passed.
+#
+# These detectors match the FORM of a claim per category rather than one
+# keyword, and are deliberately small. Because nothing in these categories is
+# ever supplied, there is no "supported value" exception: a match rejects the
+# narration and the deterministic fallback is used. Names supplied in the
+# request (places, restaurants, destination, stay areas) are masked first, so
+# a real place called "Pier 39" or "Crime Museum" is never mistaken for a claim.
+# ---------------------------------------------------------------------------
+
+_I = re.IGNORECASE
+_NUM = r"\d+(?:[.,]\d+)?"
+_FACTUAL_CLAIM_DETECTORS: dict[str, tuple[re.Pattern[str], ...]] = {
+    "price": (
+        re.compile(rf"[$€£¥₹]\s?{_NUM}|{_NUM}\s?[$€£¥₹]"),
+        re.compile(rf"\b{_NUM}\s?(?:usd|eur|gbp|dollars?|euros?|pounds?|cents?|bucks)\b", _I),
+        re.compile(
+            rf"\b(?:costs?|priced|fees?|fares?|admission|entry|entrance|tickets?)\b(?:\s+\w+){{0,3}}?\s+{_NUM}\b", _I
+        ),
+        re.compile(r"\bfree\s+(?:admission|entry|entrance|of\s+charge|to\s+(?:enter|visit))\b|\b(?:admission|entry|entrance)\s+is\s+free\b", _I),
+        re.compile(r"\b(?:inexpensive|affordable|pricey|expensive|budget-friendly|low-cost|costly)\b", _I),
+    ),
+    "rating": (
+        re.compile(r"\b(?:top|highly|best|well|highest)?[- ]?rated\b", _I),
+        re.compile(rf"\b(?:{_NUM}|one|two|three|four|five)[- ]?stars?\b", _I),
+        re.compile(rf"\b{_NUM}\s?(?:/|out\s+of)\s?(?:5|10)\b", _I),
+        re.compile(rf"\b(?:ratings?|scores?)\s+(?:of|is|are|at|:)\s*{_NUM}", _I),
+        # "review" as a verb/status ("needs review", "you may want to review it") is
+        # ordinary limitation wording; only review COUNTS and review-as-opinion forms are claims.
+        re.compile(
+            r"\b\d[\d.,]*k?\s+reviews?\b|\breviewers?\b|"
+            r"\b(?:guest|visitor|customer|traveler|traveller|online|user|positive|negative|great|good|rave|glowing|mixed)\s+reviews?\b",
+            _I,
+        ),
+    ),
+    "opening_hours": (
+        re.compile(r"\b(?:opens?|closes?|closed|closing|opening)\s+(?:at|from|until|till|by|between|around|on|daily|early|late)\b", _I),
+        re.compile(r"\bopen\s+(?:from|until|till|daily|late|early|every|all\s+day|24)\b", _I),
+        re.compile(r"\b\d{1,2}(?::\d{2})?\s?(?:am|pm|a\.m\.|p\.m\.)(?!\w)", _I),
+        re.compile(r"\b\d{1,2}:\d{2}\b"),
+        re.compile(r"\b(?:opening|closing|business|visiting)\s+(?:hours|times?)\b", _I),
+    ),
+    "availability_booking": (
+        re.compile(
+            r"\b(?:tickets?|spots?|seats?|tables?|rooms?|slots?|tours?|reservations?|bookings?|places)\s+"
+            r"(?:(?:are|is|still|remain|remains|may\s+be)\s+)*(?:available|sold\s+out|limited|required|needed|recommended|essential)\b",
+            _I,
+        ),
+        re.compile(
+            r"\b(?:reservations?|(?:advance\s+|pre-?)?bookings?)\s+(?:(?:is|are)\s+)?(?:required|recommended|needed|essential|necessary|advised)\b",
+            _I,
+        ),
+        re.compile(r"\bbook\s+(?:now|ahead|early|online|in\s+advance|your|a)\b|\breserve\s+(?:now|ahead|early|online|in\s+advance|your|a)\b", _I),
+        re.compile(r"\b(?:must|should|need\s+to|have\s+to|be\s+sure\s+to)\s+(?:book|reserve)\b", _I),
+        re.compile(r"\bsold\s+out\b|\bfully\s+booked\b|\bbooked\s+up\b|\b(?:booking|reservation)\s+(?:is\s+)?confirmed\b|\bconfirmation\s+number\b", _I),
+    ),
+    "safety": (
+        re.compile(r"\b(?:un)?safe(?:ly|r|st)?\b|\bsafety\b", _I),
+        re.compile(r"\bcrime\b|\bdangerous\b|\bpickpockets?\b|\bsecure\s+(?:area|neighbou?rhood)\b", _I),
+    ),
+    "route": (
+        re.compile(rf"\b{_NUM}\s?-?\s?(?:min|mins|minutes?|hours?|hrs?)\b(?!\s?(?:/|per\b))", _I),
+        re.compile(rf"\b{_NUM}\s?-?\s?(?:km|kilomet(?:er|re)s?|miles?|met(?:er|re)s?|blocks?)\b(?!\s?(?:/|per\b))", _I),
+        re.compile(r"\b(?:minutes?|hours?|steps|blocks?|miles?|kilomet(?:er|re)s?)\s+(?:away|from)\b", _I),
+        re.compile(r"\bwalking\s+distance\b|\b(?:short|quick|brief)\s+(?:walk|drive|ride|stroll|hop)\b", _I),
+    ),
+}
+
+
+def _mask_supplied_names(text: str, request: ItineraryNarrativeRequest) -> str:
+    names: set[str] = {request.destination, *request.stay_area_names}
+    for day in request.days:
+        names.update(day.restaurant_names)
+        names.update(experience.name for experience in day.experiences)
+    for name in sorted((n for n in names if n and len(n.strip()) >= 3), key=len, reverse=True):
+        text = re.sub(re.escape(name.strip()), " <name> ", text, flags=re.IGNORECASE)
+    return text
+
+
+def find_unsupported_factual_claims(
+    request: ItineraryNarrativeRequest, report: ItineraryNarrativeReport
+) -> list[str]:
+    """Categories (never the text) of factual claims the narration makes that
+    no request field supports: price, rating, opening_hours,
+    availability_booking, safety, route. Empty = none found."""
+    texts: list[str] = [report.summary or "", *report.warnings, *report.assumptions]
+    for day in report.daily_narratives:
+        texts.append(day.narrative)
+        texts.extend(day.caveats)
+    masked = [_mask_supplied_names(text or "", request) for text in texts]
+    return [
+        category
+        for category, patterns in _FACTUAL_CLAIM_DETECTORS.items()
+        if any(pattern.search(text) for pattern in patterns for text in masked)
+    ]
+
+
 def normalize_day_titles(report: ItineraryNarrativeReport) -> ItineraryNarrativeReport:
     days = [day.model_copy(update={"title": f"Day {day.day_number}"}) for day in report.daily_narratives]
     return report.model_copy(update={"daily_narratives": days})
