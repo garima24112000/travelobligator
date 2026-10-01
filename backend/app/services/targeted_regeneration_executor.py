@@ -14,6 +14,7 @@ from app.models.ai_itinerary_reasoning import (
     CandidateOrigin,
     ItineraryCandidateReference,
     ItineraryReasoningCategory,
+    ItineraryReasoningDayPlan,
     build_candidate_id,
     validate_result_against_request,
 )
@@ -842,20 +843,45 @@ class TargetedRegenerationExecutor:
         if not removed_candidate_ids and not moved_candidate_targets:
             return
 
+        # Section 202C.1B: a day's `approximate_structure` may only reference that
+        # day's own `candidate_ids` (a model invariant). `model_copy(update=...)`
+        # does not re-validate, so dropping a candidate while leaving its placement
+        # behind produced a state that saved but could never be loaded again (found
+        # live: a move made `GET /trips/{id}` fail). Placements are now edited
+        # together with the ids -- a removed candidate's placement is dropped, a
+        # moved candidate's placement follows it to the target day -- and every
+        # edited day is re-validated before it can reach the working state.
+        gone = removed_candidate_ids | set(moved_candidate_targets)
+        moved_placements = {
+            placement.candidate_id: placement
+            for day in result.days
+            for placement in day.approximate_structure
+            if placement.candidate_id in moved_candidate_targets
+        }
+
         new_days = []
         for day in result.days:
-            remaining = [
-                candidate_id
-                for candidate_id in day.candidate_ids
-                if candidate_id not in removed_candidate_ids and candidate_id not in moved_candidate_targets
-            ]
+            remaining = [candidate_id for candidate_id in day.candidate_ids if candidate_id not in gone]
             if remaining:
-                new_days.append(day.model_copy(update={"candidate_ids": remaining}))
+                new_days.append(
+                    day.model_copy(
+                        update={
+                            "candidate_ids": remaining,
+                            "approximate_structure": [
+                                placement
+                                for placement in day.approximate_structure
+                                if placement.candidate_id not in gone
+                            ],
+                        }
+                    )
+                )
 
         for candidate_id, target_day_index in moved_candidate_targets.items():
             target = next((day for day in new_days if day.day_index == target_day_index), None)
             if target is not None and candidate_id not in target.candidate_ids:
                 target.candidate_ids.append(candidate_id)
+                if candidate_id in moved_placements:
+                    target.approximate_structure.append(moved_placements[candidate_id])
             # If no day-plan entry exists yet for the target day, this is
             # left as-is -- `ExperiencePlannerService` reads the real,
             # already-edited `experience_plan` (not just the reasoning
@@ -865,6 +891,7 @@ class TargetedRegenerationExecutor:
             # entry.
 
         if new_days != result.days:
+            new_days = [ItineraryReasoningDayPlan.model_validate(day.model_dump()) for day in new_days]
             working_state.ai_itinerary_reasoning_result = result.model_copy(update={"days": new_days})
 
     # -- profile mutation (Task 15/16) -------------------------------------

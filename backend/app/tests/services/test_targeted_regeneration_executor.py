@@ -14,6 +14,7 @@ from app.models.ai_itinerary_reasoning import (
     AIItineraryReasoningGuardrailReport,
     CandidateOrigin,
     ItineraryCandidateReference,
+    ItineraryReasoningCandidatePlacement,
     ItineraryReasoningCategory,
     ItineraryReasoningDayPlan,
     ItineraryReasoningStrategy,
@@ -305,6 +306,75 @@ def test_deterministic_move_preserves_identity_and_other_days() -> None:
     assert moved.provider_place_id == "way/24341353"
     assert moved.provider_source == "openstreetmap_places"
     assert moved.coordinates is not None and moved.coordinates.lat == 38.6916
+
+
+# ---------------------------------------------------------------------------
+# Section 202C.1B: a deterministic move/removal must leave a reasoning result
+# that still satisfies its own model invariants -- i.e. the saved state can be
+# loaded again. Found live: the moved candidate's `approximate_structure`
+# placement stayed on its old day, the state saved, and every later read of
+# the trip failed validation.
+# ---------------------------------------------------------------------------
+
+
+def _reasoning_result_with_placements() -> AIItineraryReasoningResult:
+    def placement(candidate_id: str) -> ItineraryReasoningCandidatePlacement:
+        return ItineraryReasoningCandidatePlacement(candidate_id=candidate_id, time_window="morning")
+
+    moved, kept = "openstreetmap_places:way/24341353", "openstreetmap_places:node/1"
+    other = "openstreetmap_places:node/2"
+    return _completed_reasoning_result(
+        [
+            ItineraryReasoningDayPlan(
+                day_index=2, candidate_ids=[moved, kept], rationale="Day two.",
+                approximate_structure=[placement(moved), placement(kept)],
+            ),
+            ItineraryReasoningDayPlan(
+                day_index=3, candidate_ids=[other], rationale="Day three.",
+                approximate_structure=[placement(other)],
+            ),
+        ]
+    )
+
+
+def _assert_state_reloads(planning_state: PlanningState) -> PlanningState:
+    return PlanningState.model_validate(planning_state.model_dump(mode="json"))
+
+
+def test_move_keeps_the_reasoning_result_loadable_and_moves_the_placement() -> None:
+    planning_state = _planning_state()
+    planning_state.ai_itinerary_reasoning_result = _reasoning_result_with_placements()
+    moved = "openstreetmap_places:way/24341353"
+    plan = _plan(
+        experience_moves=[
+            TargetedExperienceMove(experience_id="exp_C", source_day_index=2, target_day_index=3, candidate_id=moved)
+        ],
+    )
+
+    TargetedRegenerationExecutor._update_reasoning_result_after_deterministic_edit(planning_state, plan)
+
+    reloaded = _assert_state_reloads(planning_state)  # raised ValidationError before the fix
+    days = {day.day_index: day for day in reloaded.ai_itinerary_reasoning_result.days}
+    assert moved not in days[2].candidate_ids
+    assert moved not in [p.candidate_id for p in days[2].approximate_structure]
+    assert days[3].candidate_ids.count(moved) == 1
+    assert [p.candidate_id for p in days[3].approximate_structure].count(moved) == 1
+
+
+def test_removal_keeps_the_reasoning_result_loadable_and_drops_the_placement() -> None:
+    planning_state = _planning_state()
+    planning_state.ai_itinerary_reasoning_result = _reasoning_result_with_placements()
+    removed = "openstreetmap_places:way/24341353"
+    plan = _plan(
+        experience_removals=[TargetedExperienceRemoval(experience_id="exp_C", day_index=2, candidate_id=removed)],
+    )
+
+    TargetedRegenerationExecutor._update_reasoning_result_after_deterministic_edit(planning_state, plan)
+
+    reloaded = _assert_state_reloads(planning_state)
+    for day in reloaded.ai_itinerary_reasoning_result.days:
+        assert removed not in day.candidate_ids
+        assert removed not in [p.candidate_id for p in day.approximate_structure]
 
 
 # ---------------------------------------------------------------------------
