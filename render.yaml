@@ -14,6 +14,7 @@ services:
     name: travelobligator-backend
     runtime: docker
     plan: free
+    region: virginia
     dockerfilePath: ./backend/Dockerfile
     dockerContext: ./backend
     # Liveness only: no database, cache or provider call, so a sleeping Neon/Upstash never fails a deploy check.
