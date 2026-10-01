@@ -87,7 +87,7 @@ def test_startup_summary_is_a_fixed_set_of_safe_scalars() -> None:
         "abc123def456",
     )
     assert set(summary) == {
-        "persistence_backend", "provider_cache_backend", "async_generation_enabled", "metrics_enabled", "migration_head", "lease_seconds",
+        "persistence_backend", "provider_cache_backend", "geocoding_provider", "async_generation_enabled", "metrics_enabled", "migration_head", "lease_seconds",
         "db_pool_size", "db_max_overflow", "db_max_connections", "db_statement_timeout_ms", "db_lock_timeout_ms",
     }
     text = repr(summary)

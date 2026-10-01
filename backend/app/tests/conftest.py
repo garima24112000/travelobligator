@@ -394,6 +394,21 @@ def _isolate_provider_cache_store(request: pytest.FixtureRequest, monkeypatch: p
     shutil.rmtree(isolation_dir, ignore_errors=True)
 
 
+@pytest.fixture(autouse=True)
+def _reset_geocoder_guards(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Section 203C.1: the Nominatim request guard (1 request/second pacing
+    + 429 cooldown) and the Geoapify cooldown breaker are process-wide.
+    Tests exercise the adapters against fake HTTP clients, so pacing is
+    switched off (no real sleeping) and a cooldown tripped by one test
+    never leaks into the next. Tests of the pacing/cooldown itself set
+    what they need explicitly."""
+    from app.providers.geocoding import geoapify_adapter, nominatim_adapter
+
+    monkeypatch.setattr(nominatim_adapter.request_guard, "min_interval_seconds", 0.0)
+    nominatim_adapter.request_guard.reset()
+    geoapify_adapter.request_breaker.reset()
+
+
 @pytest.fixture()
 def async_generation_enabled(monkeypatch: pytest.MonkeyPatch):
     """Step 186C: opts a single test into `ASYNC_GENERATION_ENABLED=true`

@@ -56,6 +56,10 @@ services:
       # /api rewrite, so this only narrows which origin could ever call the backend directly.
       - key: BACKEND_CORS_ORIGINS
         sync: false
+      # Section 203C.1: place geocoding goes through Geoapify. The public Nominatim endpoint rate-limits shared
+      # hosting egress (HTTP 429) and is rejected as the production geocoder. Overpass POI discovery is unchanged.
+      - key: GEOCODING_PROVIDER
+        value: geoapify
       # ---- secrets (dashboard only)
       - key: DATABASE_URL
         sync: false
@@ -63,6 +67,8 @@ services:
         sync: false
       # ---- provider credential (dashboard only)
       - key: GROQ_API_KEY
+        sync: false
+      - key: GEOAPIFY_API_KEY
         sync: false
       # ---- generated secrets
       - key: SESSION_SECRET_KEY

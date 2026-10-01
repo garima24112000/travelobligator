@@ -15,6 +15,7 @@ const SOURCE_LABELS: Record<string, string> = {
   openstreetmap: "OpenStreetMap",
   overpass: "OpenStreetMap",
   nominatim: "OpenStreetMap",
+  geoapify: "Geoapify",
   open_meteo: "Open-Meteo",
   nager_date: "Nager.Date",
   frankfurter: "Frankfurter",

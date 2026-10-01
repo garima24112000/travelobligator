@@ -32,6 +32,9 @@ _PRODUCTION = {
     "BACKEND_CORS_ORIGINS": "https://frontend.example.test",
     "METRICS_ENABLED": "false",
     "OPS_TOKEN": _OPS_SECRET,
+    # Section 203C.1: production geocoding is Geoapify, never the public Nominatim endpoint
+    "GEOCODING_PROVIDER": "geoapify",
+    "GEOAPIFY_API_KEY": "SENTINEL_203C1_GEOAPIFY_KEY_5527",
 }
 
 

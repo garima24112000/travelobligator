@@ -15,7 +15,7 @@ _RENDER = yaml.safe_load(_RENDER_TEXT)
 _NEXT_CONFIG = (_ROOT / "frontend" / "next.config.ts").read_text()
 _DOC = (_ROOT / "docs" / "22_free_tier_deployment.md").read_text()
 
-_SECRET_KEYS = {"DATABASE_URL", "REDIS_URL", "GROQ_API_KEY", "SESSION_SECRET_KEY", "OPS_TOKEN"}
+_SECRET_KEYS = {"DATABASE_URL", "REDIS_URL", "GROQ_API_KEY", "GEOAPIFY_API_KEY", "SESSION_SECRET_KEY", "OPS_TOKEN"}
 # scheme://user:password@host -- a URL carrying credentials
 _CREDENTIAL_URL = re.compile(r"[a-z][a-z0-9+.\-]*://[^\s/@<>`]+:[^\s/@<>`]+@", re.I)
 _HOSTED_URL = re.compile(r"https?://[a-z0-9.-]+\.(onrender\.com|vercel\.app|neon\.tech|upstash\.io)", re.I)
@@ -54,6 +54,7 @@ def test_render_blueprint_selects_the_production_contract() -> None:
     assert env["SESSION_COOKIE_SECURE"] == "true" and env["SESSION_COOKIE_HTTPONLY"] == "true"
     assert env["SESSION_COOKIE_SAMESITE"] == "lax"
     assert env["METRICS_ENABLED"] == "false"
+    assert env["GEOCODING_PROVIDER"] == "geoapify"  # Section 203C.1: never the public Nominatim endpoint
     assert "PORT" not in env and "HOST" not in env  # PORT is injected by the platform; the image binds 0.0.0.0
     assert "LOCAL_STORAGE_PATH" not in env and "PROVIDER_CACHE_PATH" not in env  # no local-filesystem state
 

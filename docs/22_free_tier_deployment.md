@@ -195,6 +195,20 @@ Backend (Render):
 | `DB_MAX_OVERFLOW` | public | `2` |
 | `DB_CONNECT_TIMEOUT_SECONDS` | public | `15` |
 | `GROQ_API_KEY` | provider | only needed for the AI features you enable |
+| `GEOCODING_PROVIDER` | public | `geoapify` |
+| `GEOAPIFY_API_KEY` | secret | `<GEOAPIFY_API_KEY>` (free plan); required when `GEOCODING_PROVIDER=geoapify` |
+
+**Geocoder (Section 203C.1).** The first production generation was blocked by HTTP 429 from the public
+Nominatim search endpoint: destination geocoding and every named-place lookup went to it from a shared hosting
+address. Geocoding is now a separate, configurable provider. Production uses Geoapify for destination geocoding
+and named-place search; Overpass still does all OpenStreetMap POI discovery. With `APP_ENV=production` the
+backend refuses to start when `GEOCODING_PROVIDER=geoapify` has no `GEOAPIFY_API_KEY`, and when the geocoder is
+the public Nominatim endpoint (unless `ALLOW_PUBLIC_NOMINATIM_IN_PRODUCTION=true` is set deliberately). There is
+no automatic fallback from Geoapify to Nominatim. Geocode results are cached in Redis under their own
+`geoapify_geocode` namespace for `OSM_GEOCODE_CACHE_TTL_SECONDS` (30 days); failures and "no match" are never
+cached. A place found by Geoapify keeps a `geoapify/<id>` identity and carries no OpenStreetMap tags, so it
+reaches candidate scoring with less structured evidence than a Nominatim/Overpass result. A geocoder outage is
+reported as "Place geocoding provider (Geoapify) was unavailable.", distinct from an Overpass failure.
 
 The AI feature switches (`AI_ITINERARY_REASONING_ENABLED`, `AI_FEEDBACK_INTERPRETER_ENABLED`,
 `TARGETED_REGENERATION_ENABLED`, `ITINERARY_NARRATOR_ENABLED` and their `*_PROVIDER` selectors) are public
@@ -268,7 +282,8 @@ For every later release that adds a migration: repeat B for the new commit first
 
 1. Create the service from `render.yaml` (Blueprint), or create one free Docker web service by hand with the
    same settings. Decline anything that asks for a paid plan or a payment method.
-2. In the dashboard set `DATABASE_URL`, `REDIS_URL`, `GROQ_API_KEY` (if AI features are enabled) and
+2. In the dashboard set `DATABASE_URL`, `REDIS_URL`, `GROQ_API_KEY` (if AI features are enabled),
+   `GEOAPIFY_API_KEY` (create a free Geoapify project and copy its API key) and
    `BACKEND_CORS_ORIGINS`. The Vercel hostname does not exist yet: enter the intended
    `https://<project>.vercel.app` origin now and correct it in step F if it differs. Browser traffic does not
    depend on this value.

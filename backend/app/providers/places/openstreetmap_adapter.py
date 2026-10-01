@@ -11,7 +11,14 @@ from app.services.place_taxonomy import classify_place, filter_provider_tags
 from app.core.config import get_settings
 from app.models.common import DataStatus, GeoPoint, ProviderStatus
 from app.models.providers import NormalizedPlace, ProviderResponse
-from app.providers.base import PlacesProvider, failed_response, unavailable_response
+from app.providers.base import (
+    PlacesProvider,
+    failed_response,
+    not_connected_response,
+    unavailable_response,
+)
+from app.providers.geocoding.base import GeocodeHit, GeocoderError, GeocodingProvider
+from app.providers.geocoding.factory import get_geocoding_provider
 from app.storage.provider_cache_store import (
     ProviderCacheStore,
     get_provider_cache_store,
@@ -22,17 +29,16 @@ from app.utils.geo import haversine_distance_km, point_in_bounding_box
 logger = logging.getLogger(__name__)
 
 _USER_AGENT = "TravelObligator/0.1 (dev; legit-data-only)"
-# Step 164E: source label for the persistent geocode cache -- distinct from
-# `OpenStreetMapPlacesAdapter.provider_name` ("openstreetmap_places"), which
-# still labels every `ProviderResponse` this adapter returns (attractions,
-# restaurants, accommodation POIs, must-visit lookups). Only destination
-# geocoding (`_resolve_destination`) is cached under this source.
-_GEOCODE_CACHE_SOURCE = "openstreetmap_geocode"
+# Step 164E / Section 203C.1: geocode results (destination geocoding and
+# named-place lookups) are cached under the configured geocoder's own
+# `cache_source` ("openstreetmap_geocode" for Nominatim, "geoapify_geocode"
+# for Geoapify) -- distinct from `OpenStreetMapPlacesAdapter.provider_name`
+# ("openstreetmap_places"), which still labels every `ProviderResponse`
+# this adapter returns.
+_NAMED_PLACE_CACHE_SCHEMA = "203c1-v1"
 # Step 164G: source label for the persistent Overpass POI search cache --
 # one row per (point, radius, tag set) Overpass query, whether it's the
-# primary query or a single fallback tag query. `search_must_visit_place`'s
-# `_lookup_named_place` (a Nominatim search, not Overpass) is not cached
-# under this source or any other.
+# primary query or a single fallback tag query.
 _POI_CACHE_SOURCE = "openstreetmap_poi"
 _SEARCH_RADIUS_METERS = 6000
 _FALLBACK_SEARCH_RADIUS_METERS = 12000
@@ -249,18 +255,23 @@ def _destination_address(raw: Any) -> dict[str, str]:
     return {key: str(raw[key]) for key in _DESTINATION_ADDRESS_KEYS if isinstance(raw.get(key), str) and raw[key]}
 
 
-def _parse_bounding_box(raw: Any) -> tuple[float, float, float, float] | None:
-    """Parses Nominatim's `boundingbox` field (`[south, north, west,
-    east]` as strings) into floats. Returns None (never a guessed box) if
-    the field is missing or malformed.
-    """
-    if not isinstance(raw, (list, tuple)) or len(raw) != 4:
-        return None
-    try:
-        south, north, west, east = (float(value) for value in raw)
-    except (TypeError, ValueError):
-        return None
-    return south, north, west, east
+def _hit_evidence(hit: GeocodeHit) -> dict[str, Any]:
+    """The structural evidence `_is_plausible_geocode_result` judges, built
+    from a vendor-neutral `GeocodeHit` (whichever geocoder produced it)."""
+    evidence: dict[str, Any] = {
+        "name": hit.name or None,
+        "namedetails": dict(enumerate(hit.alt_names)),
+        "address": hit.address,
+        "display_name": hit.display_name,
+    }
+    if hit.feature_class is not None:
+        evidence["category"] = hit.feature_class
+    return evidence
+
+
+def _user_agent() -> str:
+    contact = (get_settings().osm_user_agent_contact or "").strip()
+    return f"TravelObligator/0.1 ({contact})" if contact else _USER_AGENT
 
 
 def _is_within_destination(
@@ -285,6 +296,15 @@ class OpenStreetMapPlacesAdapter(PlacesProvider):
     """PlacesProvider backed by OpenStreetMap/Overpass open data
     (docs/07_production_data_sources.md section 5/7, docs/12_provider_architecture.md
     section 10).
+
+    Section 203C.1: this adapter talks to Overpass only. Every geocoding
+    step described below as "Nominatim" (destination resolution and the
+    targeted named-place lookup) goes through the configured
+    `GeocodingProvider` (`GEOCODING_PROVIDER`: Nominatim for development/
+    tests, Geoapify in production) -- the plausibility, containment and
+    caching rules are the same whichever geocoder answers, a geocoder
+    failure is reported as a geocoder failure (never as an Overpass one),
+    and a place found by a geocoder keeps that geocoder's own identity.
 
     Only `search_attractions`, `search_restaurants`,
     `search_accommodation_pois`, `search_must_visit_place`, and
@@ -380,8 +400,8 @@ class OpenStreetMapPlacesAdapter(PlacesProvider):
     -- is additionally cached under source `"openstreetmap_poi"`, keyed by
     a hash of that normalized request. This covers the primary query for
     `search_attractions`/`search_restaurants`/`search_accommodation_pois`
-    and every individual fallback tag query, but not
-    `search_must_visit_place`'s Nominatim named-place lookup. Only a
+    and every individual fallback tag query (`search_must_visit_place`'s
+    named-place lookup is cached separately, under the geocoder's source). Only a
     successful query with at least one named, destination-contained result
     is cached; an empty or failed query is never cached, and no rating,
     price, opening hours, availability, booking link, or route time is ever
@@ -400,10 +420,18 @@ class OpenStreetMapPlacesAdapter(PlacesProvider):
 
     provider_name = "openstreetmap_places"
 
-    def __init__(self, cache_store: ProviderCacheStore | None = None) -> None:
+    def __init__(
+        self,
+        cache_store: ProviderCacheStore | None = None,
+        geocoder: GeocodingProvider | None = None,
+    ) -> None:
         settings = get_settings()
         self._overpass_url = settings.overpass_api_url
-        self._nominatim_url = settings.nominatim_api_url
+        # Section 203C.1: destination geocoding and named-place search go
+        # through the configured geocoder; this adapter only talks to
+        # Overpass itself.
+        self._geocoder = geocoder or get_geocoding_provider()
+        self._user_agent = _user_agent()
         self._destination_cache: dict[str, _ResolvedDestination] = {}
         self._cache_enabled = settings.provider_cache_enabled
         self._geocode_cache_ttl_seconds = settings.osm_geocode_cache_ttl_seconds
@@ -462,7 +490,7 @@ class OpenStreetMapPlacesAdapter(PlacesProvider):
 
         try:
             with httpx.Client(
-                timeout=_REQUEST_TIMEOUT_SECONDS, headers={"User-Agent": _USER_AGENT}
+                timeout=_REQUEST_TIMEOUT_SECONDS, headers={"User-Agent": self._user_agent}
             ) as client:
                 resolved = self._resolve_destination(client, primary_destination)
                 if resolved is None:
@@ -476,15 +504,9 @@ class OpenStreetMapPlacesAdapter(PlacesProvider):
                             f"'{must_visit_term}' cannot be grounded to it."
                         ),
                     )
-                place = self._lookup_named_place(client, query)
-        except (httpx.HTTPError, ValueError) as exc:
-            logger.warning("OpenStreetMap must-visit lookup failed for %s: %s", query, exc)
-            return failed_response(
-                self.provider_name,
-                self.provider_type,
-                unavailable_fields=[field_name],
-                message=f"OpenStreetMap/Nominatim request failed for '{query}'.",
-            )
+                place = self._lookup_named_place(client, query, resolved)
+        except GeocoderError as exc:
+            return self._geocoder_failure_response(exc, field_name)
 
         if place is None:
             return unavailable_response(
@@ -492,7 +514,7 @@ class OpenStreetMapPlacesAdapter(PlacesProvider):
                 self.provider_type,
                 unavailable_fields=[field_name],
                 message=(
-                    f"OpenStreetMap found no named place with coordinates for '{query}'."
+                    f"{self._geocoder.display_name} found no named place with coordinates for '{query}'."
                 ),
             )
 
@@ -504,7 +526,7 @@ class OpenStreetMapPlacesAdapter(PlacesProvider):
                 self.provider_type,
                 unavailable_fields=[field_name],
                 message=(
-                    f"OpenStreetMap found a place for '{query}', but it is outside the "
+                    f"{self._geocoder.display_name} found a place for '{query}', but it is outside the "
                     f"resolved destination '{primary_destination}', so it was not used."
                 ),
             )
@@ -518,8 +540,8 @@ class OpenStreetMapPlacesAdapter(PlacesProvider):
             unavailable_fields=[],
             confidence=0.5,
             message=(
-                f"Found a named OpenStreetMap place for must-visit term "
-                f"'{must_visit_term}' via a targeted Nominatim lookup."
+                f"Found a named place for must-visit term '{must_visit_term}' "
+                f"via a targeted {self._geocoder.display_name} lookup."
             ),
         )
 
@@ -535,12 +557,12 @@ class OpenStreetMapPlacesAdapter(PlacesProvider):
         """
         try:
             with httpx.Client(
-                timeout=_REQUEST_TIMEOUT_SECONDS, headers={"User-Agent": _USER_AGENT}
+                timeout=_REQUEST_TIMEOUT_SECONDS, headers={"User-Agent": self._user_agent}
             ) as client:
                 resolved = self._resolve_destination(client, destination)
                 return resolved.point if resolved is not None else None
-        except (httpx.HTTPError, ValueError) as exc:
-            logger.warning("OpenStreetMap geocoding failed for %s: %s", destination, exc)
+        except GeocoderError as exc:
+            self._log_geocoder_failure(exc)
             return None
 
     def describe_destination(self, destination: str) -> dict[str, str] | None:
@@ -551,88 +573,93 @@ class OpenStreetMapPlacesAdapter(PlacesProvider):
         unresolved."""
         try:
             with httpx.Client(
-                timeout=_REQUEST_TIMEOUT_SECONDS, headers={"User-Agent": _USER_AGENT}
+                timeout=_REQUEST_TIMEOUT_SECONDS, headers={"User-Agent": self._user_agent}
             ) as client:
                 resolved = self._resolve_destination(client, destination)
-        except (httpx.HTTPError, ValueError):
+        except GeocoderError:
             return None
         if resolved is None:
             return None
         return {"display_name": resolved.display_name, **resolved.address}
 
-    def _lookup_named_place(self, client: httpx.Client, query: str) -> NormalizedPlace | None:
+    def _lookup_named_place(
+        self,
+        client: httpx.Client,
+        query: str,
+        resolved: _ResolvedDestination | None = None,
+    ) -> NormalizedPlace | None:
         """Look up exactly one named, coordinate-backed place for `query` via
-        Nominatim's search endpoint. Returns None (never a guessed place) if
-        Nominatim has no usable result. `query` is always the must-visit term
+        the configured geocoder. Returns None (never a guessed place) if the
+        geocoder has no usable result. `query` is always the must-visit term
         combined with the trip's primary destination, so this never falls
         back to an unconstrained global search that could resolve to the
         wrong city. (Containment against the resolved destination is
         checked by the caller, `search_must_visit_place`, not here.)
+
+        Section 203C.1: a found place is cached under the geocoder's own
+        source; "no match" and every failure are never cached. The place's
+        `source`/`place_id` are whatever identity the geocoder genuinely
+        returned.
         """
-        response = client.get(
-            f"{self._nominatim_url}/search",
-            params={
-                "q": query,
-                "format": "jsonv2",
-                "limit": 1,
-                "namedetails": 1,
-                # Section 202C.1C: the place's own OSM tags, in the same single
-                # request. Without them a targeted-lookup result reached scoring
-                # with no provider evidence at all (no wikipedia/heritage/type),
-                # so a nationally significant museum ranked below minor objects.
-                "extratags": 1,
-            },
+        query_hash = make_query_hash(
+            {
+                "provider": self._geocoder.provider_name,
+                "kind": "named_place",
+                "query": query.strip().lower(),
+                "schema": _NAMED_PLACE_CACHE_SCHEMA,
+            }
         )
-        response.raise_for_status()
-        results = response.json()
-        if not results:
-            return None
+        cache_store = self._resolve_cache_store()
+        if cache_store is not None:
+            cached = self._read_named_place_cache(cache_store, query_hash)
+            if cached is not None:
+                return cached
 
-        result = results[0]
-        lat = result.get("lat")
-        lon = result.get("lon")
-        if lat is None or lon is None:
-            return None
-
-        namedetails = result.get("namedetails") or {}
-        display_name = result.get("display_name") or ""
-        name = namedetails.get("name") or display_name.split(",")[0].strip()
-        if not name:
-            return None
-
-        osm_type = result.get("osm_type")
-        osm_id = result.get("osm_id")
-        place_id = (
-            f"{osm_type}/{osm_id}"
-            if osm_type and osm_id is not None
-            else f"nominatim/{result.get('place_id')}"
+        hit = self._geocoder.search_named_place(
+            client,
+            query,
+            near=resolved.point if resolved is not None else None,
+            bounding_box=resolved.bounding_box if resolved is not None else None,
         )
+        if hit is None:
+            return None
 
-        # Whitelisted tags only (`filter_provider_tags`): the primary OSM
-        # key/value Nominatim reports for the object (`category`/`class` +
-        # `type`, e.g. tourism=museum) plus its extratags (wikidata,
-        # wikipedia, heritage, building, ...). Never opening hours, phone,
-        # website, ratings or any other non-taxonomy tag.
-        raw_tags: dict[str, Any] = {}
-        extratags = result.get("extratags")
-        if isinstance(extratags, dict):
-            raw_tags.update(extratags)
-        primary_key = result.get("category") or result.get("class")
-        primary_value = result.get("type")
-        if isinstance(primary_key, str) and isinstance(primary_value, str):
-            raw_tags[primary_key] = primary_value
-
-        return NormalizedPlace(
-            place_id=place_id,
-            name=name,
-            category=result.get("type") or result.get("class"),
-            coordinates=GeoPoint(lat=float(lat), lng=float(lon)),
-            address=display_name or None,
-            source=self.provider_name,
+        # Whitelisted tags only (`filter_provider_tags`): never opening
+        # hours, phone, website, ratings or any other non-taxonomy tag.
+        place = NormalizedPlace(
+            place_id=hit.provider_place_id,
+            name=hit.name,
+            category=hit.feature_type or hit.feature_class,
+            coordinates=GeoPoint(lat=hit.lat, lng=hit.lon),
+            address=hit.display_name or None,
+            source=hit.source,
             data_status=DataStatus.LIVE,
             confidence=0.5,
-            provider_tags=filter_provider_tags(raw_tags) or None,
+            provider_tags=filter_provider_tags(hit.tags) or None,
         )
+        if cache_store is not None:
+            try:
+                cache_store.set(
+                    self._geocoder.cache_source,
+                    query_hash,
+                    place.model_dump(mode="json"),
+                    ttl_seconds=self._geocode_cache_ttl_seconds,
+                )
+            except Exception:
+                logger.warning("Named-place cache write failed; returning live result anyway.")
+        return place
+
+    def _read_named_place_cache(
+        self, cache_store: ProviderCacheStore, query_hash: str
+    ) -> NormalizedPlace | None:
+        try:
+            entry = cache_store.get(self._geocoder.cache_source, query_hash)
+            if entry is None:
+                return None
+            return NormalizedPlace(**{**entry.payload, "data_status": DataStatus.CACHED})
+        except Exception:
+            logger.warning("Named-place cache read failed; falling back to live request.")
+            return None
 
     def _search(
         self,
@@ -643,7 +670,7 @@ class OpenStreetMapPlacesAdapter(PlacesProvider):
     ) -> ProviderResponse[Any]:
         try:
             with httpx.Client(
-                timeout=_REQUEST_TIMEOUT_SECONDS, headers={"User-Agent": _USER_AGENT}
+                timeout=_REQUEST_TIMEOUT_SECONDS, headers={"User-Agent": self._user_agent}
             ) as client:
                 resolved = self._resolve_destination(client, place_name)
                 if resolved is None:
@@ -653,7 +680,7 @@ class OpenStreetMapPlacesAdapter(PlacesProvider):
                         unavailable_fields=[field_name],
                         message=(
                             f"Could not confidently resolve a location for "
-                            f"'{place_name}' via Nominatim."
+                            f"'{place_name}' via {self._geocoder.display_name}."
                         ),
                     )
                     unresolved.failure_reason = "destination_unresolved"
@@ -689,16 +716,46 @@ class OpenStreetMapPlacesAdapter(PlacesProvider):
                     request_failed=primary_failed or fallback_failed,
                     fallback_attempted=True,
                 )
-        except (httpx.HTTPError, ValueError) as exc:
+        except GeocoderError as exc:
             # Only geocoding failures reach here; per-query Overpass failures
             # are caught in `_try_query` so a fallback can still be attempted.
-            logger.warning("OpenStreetMap request failed for %s: %s", place_name, exc)
+            # Section 203C.1: reported as a geocoder failure, never as an
+            # OpenStreetMap/Overpass one.
+            return self._geocoder_failure_response(exc, field_name)
+        except (httpx.HTTPError, ValueError) as exc:
+            # Safety net for an unusable Overpass payload outside `_try_query`.
+            logger.warning("OpenStreetMap POI search failed (%s).", type(exc).__name__)
             return failed_response(
                 self.provider_name,
                 self.provider_type,
                 unavailable_fields=[field_name],
                 message=f"OpenStreetMap/Overpass request failed for '{place_name}'.",
             )
+
+    def _log_geocoder_failure(self, exc: GeocoderError) -> None:
+        # Fixed identifiers only: never the query, a URL or exception text.
+        logger.warning(
+            "Place geocoding failed (provider=%s, kind=%s).", self._geocoder.provider_name, exc.kind
+        )
+
+    def _geocoder_failure_response(self, exc: GeocoderError, field_name: str) -> ProviderResponse[Any]:
+        """An honest result for a failed geocoder request. The message names
+        the geocoder (not Overpass) and carries no exception text;
+        `failure_reason` is the machine-readable `geocoder_<kind>`."""
+        self._log_geocoder_failure(exc)
+        if exc.kind == "not_connected":
+            response = not_connected_response(
+                self.provider_name, self.provider_type, unavailable_fields=[field_name], message=str(exc)
+            )
+        else:
+            response = failed_response(
+                self.provider_name,
+                self.provider_type,
+                unavailable_fields=[field_name],
+                message=f"Place geocoding provider ({self._geocoder.display_name}) was unavailable.",
+            )
+        response.failure_reason = f"geocoder_{exc.kind}"
+        return response
 
     def _try_query(
         self,
@@ -890,7 +947,7 @@ class OpenStreetMapPlacesAdapter(PlacesProvider):
     def _resolve_destination(
         self, client: httpx.Client, place_name: str
     ) -> _ResolvedDestination | None:
-        """Conservatively geocodes `place_name` via Nominatim (Step 155C).
+        """Conservatively geocodes `place_name` via the configured geocoder (Step 155C).
 
         Requires the result's `display_name` to plausibly relate to the
         query (`_is_plausible_geocode_match`) before trusting it -- this is
@@ -915,16 +972,7 @@ class OpenStreetMapPlacesAdapter(PlacesProvider):
         if cached is not None:
             return cached
 
-        query_hash = make_query_hash(
-            {
-                "query": place_name.strip().lower(),
-                "format": "jsonv2",
-                "limit": 1,
-                "addressdetails": 1,
-                "namedetails": 1,
-                "accept-language": "en",
-            }
-        )
+        query_hash = make_query_hash(self._geocoder.destination_cache_query(place_name))
         cache_store = self._resolve_cache_store()
 
         if cache_store is not None:
@@ -933,46 +981,21 @@ class OpenStreetMapPlacesAdapter(PlacesProvider):
                 self._destination_cache[place_name] = persisted
                 return persisted
 
-        response = client.get(
-            f"{self._nominatim_url}/search",
-            params={
-                "q": place_name,
-                "format": "jsonv2",
-                "limit": 1,
-                # Section 202B.1: structural provider evidence for the
-                # plausibility decision, in English so an English query
-                # compares against English provider names.
-                "addressdetails": 1,
-                "namedetails": 1,
-                "accept-language": "en",
-            },
-        )
-        response.raise_for_status()
-        results = response.json()
-        if not results:
+        hit = self._geocoder.search_destination(client, place_name)
+        if hit is None:
             return None
 
-        result = results[0]
-        lat = result.get("lat")
-        lon = result.get("lon")
-        if lat is None or lon is None:
-            return None
-
-        display_name = result.get("display_name") or ""
-        if not _is_plausible_geocode_result(place_name, result):
+        if not _is_plausible_geocode_result(place_name, _hit_evidence(hit)):
             logger.warning(
-                "Rejecting implausible OpenStreetMap/Nominatim geocode match for %r: "
-                "display_name=%r",
-                place_name,
-                display_name,
+                "Rejecting implausible geocode match (provider=%s).", self._geocoder.provider_name
             )
             return None
 
         resolved = _ResolvedDestination(
-            point=GeoPoint(lat=float(lat), lng=float(lon)),
-            bounding_box=_parse_bounding_box(result.get("boundingbox")),
-            display_name=display_name,
-            address=_destination_address(result.get("address")),
+            point=GeoPoint(lat=hit.lat, lng=hit.lon),
+            bounding_box=hit.bounding_box,
+            display_name=hit.display_name,
+            address=_destination_address(hit.address),
         )
         self._destination_cache[place_name] = resolved
         if cache_store is not None:
@@ -984,12 +1007,12 @@ class OpenStreetMapPlacesAdapter(PlacesProvider):
     ) -> _ResolvedDestination | None:
         """Returns the cached geocode result, or `None` on a cache miss/
         expiry or a broken cache read -- either way, the caller falls back
-        to the live Nominatim request rather than failing."""
+        to the live geocoder request rather than failing."""
         try:
-            entry = cache_store.get(_GEOCODE_CACHE_SOURCE, query_hash)
+            entry = cache_store.get(self._geocoder.cache_source, query_hash)
         except Exception:
             logger.warning(
-                "OpenStreetMap geocode cache read failed; falling back to live request."
+                "Geocode cache read failed; falling back to live request."
             )
             return None
 
@@ -1007,7 +1030,7 @@ class OpenStreetMapPlacesAdapter(PlacesProvider):
             )
         except (KeyError, TypeError, ValueError):
             logger.warning(
-                "OpenStreetMap geocode cache entry was unusable; falling back to live request."
+                "Geocode cache entry was unusable; falling back to live request."
             )
             return None
 
@@ -1021,7 +1044,7 @@ class OpenStreetMapPlacesAdapter(PlacesProvider):
         already-computed live result being returned to the caller."""
         try:
             cache_store.set(
-                _GEOCODE_CACHE_SOURCE,
+                self._geocoder.cache_source,
                 query_hash,
                 {
                     "lat": resolved.point.lat,
@@ -1036,7 +1059,7 @@ class OpenStreetMapPlacesAdapter(PlacesProvider):
             )
         except Exception:
             logger.warning(
-                "OpenStreetMap geocode cache write failed; returning live result anyway."
+                "Geocode cache write failed; returning live result anyway."
             )
 
     def _read_poi_cache(

@@ -13,7 +13,8 @@ cannot work, instead of letting them surprise an operator later:
   * credentialed CORS never accepts a wildcard, credentials or a non-origin value (every environment);
   * Section 203B: with `APP_ENV=production` the development-only choices are rejected outright
     (Local JSON, SQLite provider cache, debug mode, insecure/cross-site session cookie, missing or
-    short session secret, non-https CORS origin) -- see `production_configuration_problems`.
+    short session secret, non-https CORS origin, the public Nominatim geocoder, Geoapify without its
+    key) -- see `production_configuration_problems`.
 
 Per-field bounds (persistence URL shape, REDIS_URL shape, lease >= 3 s, timeouts > 0) are enforced by
 `Settings` / `core.persistence` / `core.provider_cache`. `startup_config_summary` is the ONLY thing
@@ -133,6 +134,7 @@ def production_configuration_problems(settings: Settings) -> list[str]:
             validate_provider_cache_configuration(settings)
         except RedisConfigurationError as exc:
             problems.append(str(exc))
+    problems.extend(_production_geocoder_problems(settings))
     if settings.app_debug:
         problems.append("APP_ENV=production requires APP_DEBUG=false.")
     if len(settings.session_secret_key or "") < MIN_PRODUCTION_SESSION_SECRET_LENGTH:
@@ -153,6 +155,30 @@ def production_configuration_problems(settings: Settings) -> list[str]:
     return problems
 
 
+_PUBLIC_NOMINATIM_HOST = "nominatim.openstreetmap.org"
+
+
+def _production_geocoder_problems(settings: Settings) -> list[str]:
+    """Section 203C.1: production place grounding must not depend on the public Nominatim endpoint (it
+    rate-limits shared hosting egress), and a keyed geocoder without its key is a misconfiguration, not a
+    reason to fall back."""
+    if settings.geocoding_provider == "geoapify":
+        if not (settings.geoapify_api_key or "").strip():
+            return ["APP_ENV=production with GEOCODING_PROVIDER=geoapify requires GEOAPIFY_API_KEY."]
+        return []
+    try:
+        host = (urlsplit(settings.nominatim_api_url).hostname or "").lower()
+    except ValueError:
+        host = ""
+    if host == _PUBLIC_NOMINATIM_HOST and not settings.allow_public_nominatim_in_production:
+        return [
+            "APP_ENV=production must not use the public Nominatim endpoint as its geocoder: set "
+            "GEOCODING_PROVIDER=geoapify (with GEOAPIFY_API_KEY), point NOMINATIM_API_URL at your own "
+            "instance, or set ALLOW_PUBLIC_NOMINATIM_IN_PRODUCTION=true to accept its rate limit."
+        ]
+    return []
+
+
 def startup_config_summary(settings: Settings | None = None, migration_head: str | None = None) -> dict[str, object]:
     """The safe, fixed set of configuration facts logged at startup (Task 22)."""
     resolved = settings or get_settings()
@@ -161,6 +187,7 @@ def startup_config_summary(settings: Settings | None = None, migration_head: str
         "provider_cache_backend": (
             "none" if not resolved.provider_cache_enabled else resolved.provider_cache_backend
         ),
+        "geocoding_provider": resolved.geocoding_provider,
         "async_generation_enabled": resolved.async_generation_enabled,
         "metrics_enabled": resolved.metrics_enabled,
         "migration_head": migration_head,

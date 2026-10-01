@@ -44,6 +44,7 @@ _ALLOWED_PERSISTENCE_BACKENDS = frozenset({"local_json", "postgres"})
 # PROVIDER_CACHE_ENABLED=false switch -- there is no third backend value, so
 # the two settings never overlap. An unknown value raises (no silent switch).
 _ALLOWED_PROVIDER_CACHE_BACKENDS = frozenset({"redis", "sqlite"})
+_ALLOWED_GEOCODING_PROVIDERS = frozenset({"nominatim", "geoapify"})
 
 # Step 187B: allowed values for the structured-logging foundation's log
 # level. An unrecognized value normalizes to "INFO" rather than raising
@@ -404,6 +405,23 @@ class Settings(BaseSettings):
         default="https://nominatim.openstreetmap.org",
         alias="NOMINATIM_API_URL",
     )
+    # Geocoder selection (Section 203C.1, docs/22_free_tier_deployment.md).
+    # Geocoding/named-place search is separate from Overpass POI discovery:
+    # "nominatim" (default; development/tests, paced to the public usage
+    # policy) or "geoapify" (the production geocoder; needs
+    # GEOAPIFY_API_KEY). There is no automatic fallback between them.
+    # APP_ENV=production rejects the public Nominatim endpoint unless
+    # ALLOW_PUBLIC_NOMINATIM_IN_PRODUCTION=true is set explicitly.
+    geocoding_provider: str = Field(default="nominatim", alias="GEOCODING_PROVIDER")
+    geoapify_api_key: str | None = Field(default=None, alias="GEOAPIFY_API_KEY", repr=False)
+    geoapify_api_url: str = Field(default="https://api.geoapify.com", alias="GEOAPIFY_API_URL")
+    geoapify_timeout_seconds: float = Field(default=10.0, alias="GEOAPIFY_TIMEOUT_SECONDS", gt=0.0)
+    allow_public_nominatim_in_production: bool = Field(
+        default=False, alias="ALLOW_PUBLIC_NOMINATIM_IN_PRODUCTION"
+    )
+    # Optional contact (URL or email) added to the User-Agent sent to
+    # Overpass/Nominatim, as their usage policies ask for.
+    osm_user_agent_contact: str | None = Field(default=None, alias="OSM_USER_AGENT_CONTACT")
     open_meteo_api_url: str = Field(
         default="https://api.open-meteo.com",
         alias="OPEN_METEO_API_URL",
@@ -478,11 +496,10 @@ class Settings(BaseSettings):
         ge=0,
     )
 
-    # OpenStreetMap/Nominatim geocode cache TTL (Step 164E,
-    # docs/12_provider_architecture.md "Provider Cache Foundation" section).
-    # Only `OpenStreetMapPlacesAdapter`'s destination-geocode path
-    # (`_resolve_destination`) reads this -- Overpass POI searches are not
-    # cache-wired yet. 30 days is acceptable here because geocoding a given
+    # Geocode cache TTL (Step 164E, docs/12_provider_architecture.md
+    # "Provider Cache Foundation" section). Applies to every geocoder
+    # (Nominatim and Geoapify, Section 203C.1): destination geocodes and
+    # named-place lookups made by `OpenStreetMapPlacesAdapter`. 30 days is acceptable here because geocoding a given
     # destination string changes slowly, but it stays configurable. Must be
     # non-negative, matching the other provider cache TTL settings.
     osm_geocode_cache_ttl_seconds: int = Field(
@@ -1263,6 +1280,14 @@ class Settings(BaseSettings):
                 "PERSISTENCE_BACKEND must be 'postgres' (default) or 'local_json' (explicit "
                 "development/test fallback)."
             )
+        return normalized
+
+    @field_validator("geocoding_provider", mode="after")
+    @classmethod
+    def _normalize_geocoding_provider(cls, value: str) -> str:
+        normalized = (value or "").strip().lower()
+        if normalized not in _ALLOWED_GEOCODING_PROVIDERS:
+            raise ValueError("GEOCODING_PROVIDER must be 'nominatim' (default) or 'geoapify'.")
         return normalized
 
     @field_validator("provider_cache_backend", mode="after")

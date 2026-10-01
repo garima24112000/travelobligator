@@ -8,6 +8,7 @@ import pytest
 
 from app.core.config import Settings
 from app.models.common import DataStatus, ProviderStatus
+from app.providers.geocoding import nominatim_adapter
 from app.providers.places import openstreetmap_adapter
 from app.providers.places.openstreetmap_adapter import OpenStreetMapPlacesAdapter
 from app.storage.provider_cache_store import ProviderCacheStore, make_query_hash
@@ -894,14 +895,14 @@ def test_is_plausible_geocode_match_rejects_when_query_has_no_significant_tokens
 
 
 def test_parse_bounding_box_parses_valid_values() -> None:
-    box = openstreetmap_adapter._parse_bounding_box(["1.0", "2.0", "3.0", "4.0"])
+    box = nominatim_adapter._parse_bounding_box(["1.0", "2.0", "3.0", "4.0"])
     assert box == (1.0, 2.0, 3.0, 4.0)
 
 
 def test_parse_bounding_box_returns_none_for_malformed_input() -> None:
-    assert openstreetmap_adapter._parse_bounding_box(None) is None
-    assert openstreetmap_adapter._parse_bounding_box(["only", "two"]) is None
-    assert openstreetmap_adapter._parse_bounding_box(["a", "b", "c", "d"]) is None
+    assert nominatim_adapter._parse_bounding_box(None) is None
+    assert nominatim_adapter._parse_bounding_box(["only", "two"]) is None
+    assert nominatim_adapter._parse_bounding_box(["a", "b", "c", "d"]) is None
 
 
 def test_implausible_geocode_match_is_rejected_and_no_overpass_query_is_made(
