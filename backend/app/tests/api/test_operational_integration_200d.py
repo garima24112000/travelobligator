@@ -46,12 +46,22 @@ P = "travelobligator_"
 
 class TcpProxy:
     """A controllable TCP forwarder: stop() = the dependency vanishes (listener + live connections die);
-    start(same port) = it is back."""
+    start(same port) = it is back.
+
+    stop() must be SYNCHRONOUS and portable. Closing a listening socket while another thread is blocked in
+    accept() wakes that thread on macOS/BSD, but NOT on Linux: there the blocked accept() keeps the listening
+    socket alive in the kernel, so the port keeps accepting and the next connection is still forwarded -- the
+    "outage" never happens (Section 203A.2: this passed on macOS and failed on the Linux CI runner). So the
+    accept loop polls with a short timeout and watches a stop flag, and stop() waits for that thread to exit
+    BEFORE closing the listener: when stop() returns nothing is listening on the port and every forwarded
+    connection is closed, on any platform."""
 
     def __init__(self, host: str, port: int) -> None:
         self.target = (host, port)
         self.port: int | None = None
         self._listener: socket.socket | None = None
+        self._acceptor: threading.Thread | None = None
+        self._stopping = threading.Event()
         self._conns: list[socket.socket] = []
         self._lock = threading.Lock()
 
@@ -60,18 +70,27 @@ class TcpProxy:
         listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         listener.bind(("127.0.0.1", self.port or 0))
         listener.listen(64)
+        listener.settimeout(0.05)  # accept() never blocks indefinitely, so stop() can always join the loop
         self.port = listener.getsockname()[1]
         self._listener = listener
-        threading.Thread(target=self._accept, args=(listener,), daemon=True).start()
+        self._stopping = threading.Event()
+        self._acceptor = threading.Thread(target=self._accept, args=(listener, self._stopping), daemon=True)
+        self._acceptor.start()
 
-    def _accept(self, listener: socket.socket) -> None:
-        while True:
+    def _accept(self, listener: socket.socket, stopping: threading.Event) -> None:
+        while not stopping.is_set():
             try:
                 client, _ = listener.accept()
-                upstream = socket.create_connection(self.target, timeout=3)
+            except TimeoutError:
+                continue
             except OSError:
-                if listener.fileno() == -1:
-                    return
+                return
+            client.settimeout(None)
+            try:
+                upstream = socket.create_connection(self.target, timeout=3)
+                upstream.settimeout(None)
+            except OSError:
+                client.close()
                 continue
             with self._lock:
                 self._conns += [client, upstream]
@@ -96,8 +115,13 @@ class TcpProxy:
                     pass
 
     def stop(self) -> None:
+        self._stopping.set()
+        if self._acceptor is not None:
+            self._acceptor.join(timeout=5)
+            assert not self._acceptor.is_alive(), "proxy accept loop did not stop"
+            self._acceptor = None
         if self._listener is not None:
-            self._listener.close()
+            self._listener.close()  # nothing is in accept() any more: the port is really closed now
             self._listener = None
         with self._lock:
             conns, self._conns = self._conns, []
@@ -110,6 +134,37 @@ class TcpProxy:
                 s.close()
             except OSError:
                 pass
+
+
+def _port_is_closed(port: int) -> bool:
+    try:
+        socket.create_connection(("127.0.0.1", port), timeout=1).close()
+    except OSError:
+        return True
+    return False
+
+
+def test_proxy_stop_really_closes_the_port_and_start_reopens_it() -> None:
+    """Guards the outage mechanism itself: if stop() left the port accepting (the Linux behaviour of a naive
+    close()), every outage test below would silently talk to a healthy dependency."""
+    proxy = TcpProxy(*_redis_target())
+    proxy.start()
+    try:
+        port = proxy.port
+        with socket.create_connection(("127.0.0.1", port), timeout=3) as live:
+            live.sendall(b"PING\r\n")
+            assert live.recv(16).startswith(b"+PONG")  # forwards to the real Redis
+            proxy.stop()
+            assert live.recv(16) == b""  # the live connection died with the proxy
+        for _ in range(3):  # and no new connection is accepted, not even once
+            assert _port_is_closed(port)
+        proxy.start()
+        assert proxy.port == port
+        with socket.create_connection(("127.0.0.1", port), timeout=3) as again:
+            again.sendall(b"PING\r\n")
+            assert again.recv(16).startswith(b"+PONG")
+    finally:
+        proxy.stop()
 
 
 def _pg_target() -> tuple[str, int]:
