@@ -1779,3 +1779,50 @@ def test_poi_cache_hit_does_not_change_provider_coverage_relevant_fields(
     assert response.fallback_used is False
     assert response.fallback_provider is None
     assert response.unavailable_fields == []
+
+
+def test_search_must_visit_place_keeps_only_whitelisted_provider_tags(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Section 202C.1C: a targeted lookup now carries the place's own taxonomy
+    tags (requested with `extratags=1` in the SAME single call) so it is scored
+    on real provider evidence -- and nothing outside the whitelist."""
+    result = {
+        **_nominatim_result("National Gallery of Art"),
+        "category": "tourism",
+        "type": "museum",
+        "extratags": {
+            "wikidata": "Q214867",
+            "wikipedia": "en:National Gallery of Art",
+            "architect": "John Russell Pope",
+            "opening_hours": "Mo-Su 10:00-17:00",
+            "phone": "+1 202 000 0000",
+            "website": "https://example.org",
+            "fee": "no",
+        },
+    }
+    fake_client = _install_fake_client_for_get(
+        monkeypatch,
+        get_responses=[_geocode_ok("Los Angeles"), _FakeResponse(json_data=[result])],
+    )
+
+    place = OpenStreetMapPlacesAdapter().search_must_visit_place("National Gallery of Art", "Los Angeles").data[0]
+
+    assert place.provider_tags == {
+        "tourism": "museum",
+        "wikidata": "Q214867",
+        "wikipedia": "en:National Gallery of Art",
+        "architect": "John Russell Pope",
+    }
+    assert fake_client.get_call_count == 2  # still exactly one lookup call after destination resolution
+
+
+def test_search_must_visit_place_without_extratags_has_no_provider_tags(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_fake_client_for_get(
+        monkeypatch,
+        get_responses=[_geocode_ok("Los Angeles"), _FakeResponse(json_data=[_nominatim_result("Griffith Observatory")])],
+    )
+    place = OpenStreetMapPlacesAdapter().search_must_visit_place("Griffith Observatory", "Los Angeles").data[0]
+    assert place.provider_tags is None or all(key in ("tourism", "historic", "amenity", "leisure", "natural", "man_made", "building", "shop", "office", "place") for key in place.provider_tags)

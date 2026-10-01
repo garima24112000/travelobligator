@@ -25,6 +25,12 @@ from app.models.ai_itinerary_repair import (
     validate_repair_result_against_request,
 )
 from app.providers.ai_itinerary_reasoning.base import AIItineraryReasoningProvider
+from app.providers.ai_itinerary_reasoning.candidate_refs import (
+    CandidateRefMap,
+    UnknownCandidateReference,
+    resolve_day_refs,
+    scrub_output_prose,
+)
 
 # Groq-backed itinerary-reasoning adapter (Section 193B,
 # docs/14_backend_architecture.md section 142). Reuses the exact
@@ -143,9 +149,11 @@ _SYSTEM_PROMPT = (
 )
 
 
-def _format_candidate_line(candidate: Any) -> str:
+def _format_candidate_line(candidate: Any, ref: str) -> str:
+    # Section 202C.1C: the model sees only the short per-request reference
+    # (`candidate_refs.py`), never the provider-derived identity.
     line = (
-        f"- candidate_id={candidate.candidate_id!r} name={candidate.name!r} "
+        f"- candidate_id={ref!r} name={candidate.name!r} "
         f"category={candidate.category.value} quality_tier={candidate.quality_tier} "
         f"quality_score={candidate.quality_score:.2f}"
     )
@@ -159,13 +167,15 @@ def _format_candidate_line(candidate: Any) -> str:
     return line
 
 
-def _build_prompt(request: AIItineraryReasoningRequest) -> str:
+def _build_prompt(request: AIItineraryReasoningRequest, ref_map: CandidateRefMap | None = None) -> str:
     """Builds a minimal, controlled prompt from `request` fields only --
     never a raw `PlanningState` dump, and never a coordinate (193A's own
     design intent: the reasoning model is not asked to reason about
     distances/travel times, that stays deterministic routing's job).
     """
     traveler = request.traveler_context
+    if ref_map is None:
+        ref_map = CandidateRefMap.for_candidates(request.allowed_candidates)
     lines = [
         _SYSTEM_PROMPT,
         "",
@@ -190,7 +200,10 @@ def _build_prompt(request: AIItineraryReasoningRequest) -> str:
         )
     lines.append(f"Factual context: {request.factual_context.model_dump()}")
     lines.append(f"Allowed candidates (use only these candidate_id values, {len(request.allowed_candidates)} total):")
-    lines.extend(_format_candidate_line(candidate) for candidate in request.allowed_candidates)
+    lines.extend(
+        _format_candidate_line(candidate, ref_map.ref_for(candidate.candidate_id))
+        for candidate in request.allowed_candidates
+    )
     return "\n".join(lines)
 
 
@@ -265,10 +278,12 @@ def _format_issue_line(issue: Any) -> str:
     )
 
 
-def _build_repair_prompt(request: AIItineraryRepairRequest) -> str:
+def _build_repair_prompt(request: AIItineraryRepairRequest, ref_map: CandidateRefMap | None = None) -> str:
     """Builds a minimal, controlled repair prompt from `request` fields
     only -- never a raw `PlanningState` dump, and never a coordinate."""
     traveler = request.traveler_context
+    if ref_map is None:
+        ref_map = CandidateRefMap.for_candidates(request.allowed_candidates)
     lines = [
         _REPAIR_SYSTEM_PROMPT,
         "",
@@ -286,12 +301,15 @@ def _build_repair_prompt(request: AIItineraryRepairRequest) -> str:
     lines.extend(_format_issue_line(issue) for issue in request.issues)
     lines.append("Original day plans (unaffected days must come back unchanged, i.e. omitted):")
     for day in request.original_days:
-        lines.append(f"- day {day.day_index}: candidate_ids={day.candidate_ids}")
+        lines.append(f"- day {day.day_index}: candidate_ids={ref_map.refs_for(day.candidate_ids)}")
     lines.append(
         f"Allowed candidates (use only these candidate_id values, "
         f"{len(request.allowed_candidates)} total, same universe as the original plan):"
     )
-    lines.extend(_format_candidate_line(candidate) for candidate in request.allowed_candidates)
+    lines.extend(
+        _format_candidate_line(candidate, ref_map.ref_for(candidate.candidate_id))
+        for candidate in request.allowed_candidates
+    )
     return "\n".join(lines)
 
 
@@ -352,8 +370,9 @@ class GroqAIItineraryReasoningProvider(AIItineraryReasoningProvider):
                     request, f"Groq client could not be initialized: {exc}"
                 )
 
+        ref_map = CandidateRefMap.for_candidates(request.allowed_candidates)
         try:
-            raw_output = client.invoke(_build_prompt(request))
+            raw_output = client.invoke(_build_prompt(request, ref_map))
         except Exception as exc:  # API/runtime failure -> rejected, never fabricated
             kind, message = classify_and_message("Groq", exc)
             return self._rejected_result(request, message, failure_kind=kind.value)
@@ -361,6 +380,18 @@ class GroqAIItineraryReasoningProvider(AIItineraryReasoningProvider):
         output_dict = self._coerce_output(raw_output)
         if output_dict is None:
             return self._rejected_result(request, "Groq did not return a structured response.")
+
+        # Section 202C.1C: references -> exact allowed candidate_ids (exact
+        # lookup, never a correction). An unknown reference rejects the whole
+        # output, and `_build_result_from_output` still validates the real
+        # ids against `request.allowed_candidates` afterwards.
+        try:
+            output_dict = {**output_dict, "days": resolve_day_refs(output_dict.get("days"), ref_map)}
+            output_dict = scrub_output_prose(output_dict, ref_map)
+        except UnknownCandidateReference as exc:
+            return self._rejected_result(
+                request, f"Groq output referenced a candidate outside the allowed set: {exc}."
+            )
 
         return self._build_result_from_output(request, output_dict)
 
@@ -533,14 +564,26 @@ class GroqAIItineraryReasoningProvider(AIItineraryReasoningProvider):
                     request, f"Groq client could not be initialized: {exc}"
                 )
 
+        ref_map = CandidateRefMap.for_candidates(request.allowed_candidates)
         try:
-            raw_output = client.invoke(_build_repair_prompt(request))
+            raw_output = client.invoke(_build_repair_prompt(request, ref_map))
         except Exception as exc:  # API/runtime failure -> rejected, never fabricated
             return self._rejected_repair_result(request, classify_and_message("Groq", exc)[1])
 
         output_dict = self._coerce_output(raw_output)
         if output_dict is None:
             return self._rejected_repair_result(request, "Groq did not return a structured response.")
+
+        try:
+            output_dict = {
+                **output_dict,
+                "repaired_days": resolve_day_refs(output_dict.get("repaired_days"), ref_map),
+            }
+            output_dict = scrub_output_prose(output_dict, ref_map)
+        except UnknownCandidateReference as exc:
+            return self._rejected_repair_result(
+                request, f"Groq repair output referenced a candidate outside the allowed set: {exc}."
+            )
 
         return self._build_repair_result_from_output(request, output_dict)
 

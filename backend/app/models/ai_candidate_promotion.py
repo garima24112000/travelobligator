@@ -59,6 +59,10 @@ class PromotedAICandidate(BaseModel):
     coordinates: GeoPoint | None = None
     confidence: float | None = Field(default=None, ge=0.0, le=1.0)
     data_status: str | None = None
+    # Section 202C.1C: the provider's whitelisted taxonomy tags from the
+    # grounding evidence, so a promoted place is classified from provider
+    # facts in the planner exactly like a broad-pool candidate.
+    provider_tags: dict[str, str] | None = None
     promotion_reasons: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     promoted: bool = True

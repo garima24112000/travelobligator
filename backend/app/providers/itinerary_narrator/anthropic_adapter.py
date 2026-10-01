@@ -6,7 +6,6 @@ from typing import Any
 from pydantic import ValidationError
 
 from app.providers.itinerary_narrator.contract import NARRATOR_SYSTEM_PROMPT, build_grounded_prompt_body
-from app.providers.ai_failure import classify_and_message
 from app.core.config import get_settings
 from app.models.itinerary_narrative import (
     ItineraryNarrativeDayOutput,
@@ -16,6 +15,13 @@ from app.models.itinerary_narrative import (
     validate_narrative_against_request,
 )
 from app.providers.itinerary_narrator.base import ItineraryNarratorProvider
+from app.providers.itinerary_narrator.structural_retry import (
+    MAX_NARRATOR_ATTEMPTS,
+    RETRY_FORMAT_REMINDER,
+    log_retry_outcome,
+    log_retrying,
+    structural_failure_message,
+)
 
 # Anthropic/Claude-backed itinerary narrator adapter (Step 182F,
 # docs/13_llm_reasoning_pipeline.md, docs/14_backend_architecture.md).
@@ -162,25 +168,39 @@ class AnthropicItineraryNarratorProvider(ItineraryNarratorProvider):
                     f"Anthropic client could not be initialized: {exc}"
                 )
 
-        try:
-            response = client.messages.create(
-                model=self._model,
-                max_tokens=self._max_tokens,
-                temperature=self._temperature,
-                timeout=self._timeout_seconds,
-                system=_SYSTEM_PROMPT,
-                tools=[_TOOL_DEFINITION],
-                tool_choice={"type": "tool", "name": _TOOL_NAME},
-                messages=[{"role": "user", "content": _build_prompt(request)}],
-            )
-        except Exception as exc:  # API/runtime/timeout failure -> failed, never fabricated
-            return self._failed_result(classify_and_message("Anthropic", exc)[1])
+        # Section 202C.1D: same bounded structural retry as the Groq adapter
+        # (see `structural_retry.py`).
+        prompt = _build_prompt(request)
+        failure_message = "Claude did not return a structured tool_use response."
+        for attempt in range(1, MAX_NARRATOR_ATTEMPTS + 1):
+            attempt_prompt = prompt if attempt == 1 else f"{prompt}\n\n{RETRY_FORMAT_REMINDER}"
+            try:
+                response = client.messages.create(
+                    model=self._model,
+                    max_tokens=self._max_tokens,
+                    temperature=self._temperature,
+                    timeout=self._timeout_seconds,
+                    system=_SYSTEM_PROMPT,
+                    tools=[_TOOL_DEFINITION],
+                    tool_choice={"type": "tool", "name": _TOOL_NAME},
+                    messages=[{"role": "user", "content": attempt_prompt}],
+                )
+            except Exception as exc:  # API/runtime/timeout failure -> failed, never fabricated
+                structural, failure_message = structural_failure_message("Anthropic", exc)
+                if not structural:
+                    return self._failed_result(failure_message)
+            else:
+                tool_input = self._extract_tool_input(response)
+                if tool_input is not None:
+                    if attempt > 1:
+                        log_retry_outcome(self.provider_name, recovered=True)
+                    return self._build_result(request, tool_input)
+                failure_message = "Claude did not return a structured tool_use response."
+            if attempt == 1:
+                log_retrying(self.provider_name)
 
-        tool_input = self._extract_tool_input(response)
-        if tool_input is None:
-            return self._failed_result("Claude did not return a structured tool_use response.")
-
-        return self._build_result(request, tool_input)
+        log_retry_outcome(self.provider_name, recovered=False)
+        return self._failed_result(failure_message)
 
     @staticmethod
     def _build_client() -> Any:

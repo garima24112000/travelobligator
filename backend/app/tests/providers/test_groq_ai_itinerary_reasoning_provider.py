@@ -117,7 +117,7 @@ def _valid_output(**overrides: object) -> dict[str, object]:
             "pace": "balanced",
             "reason": "Matches the traveler's stated interests and pace.",
         },
-        "days": [_valid_day_dict(1, ["openstreetmap_places:way/1"])],
+        "days": [_valid_day_dict(1, ["c1"])],
         "overall_tradeoffs": [],
         "confidence": 0.7,
     }
@@ -222,8 +222,8 @@ def test_duplicate_candidate_across_days_is_rejected() -> None:
     client = _client_returning(
         _valid_output(
             days=[
-                _valid_day_dict(1, ["openstreetmap_places:way/1"]),
-                _valid_day_dict(2, ["openstreetmap_places:way/1"]),
+                _valid_day_dict(1, ["c1"]),
+                _valid_day_dict(2, ["c1"]),
             ]
         )
     )
@@ -242,7 +242,7 @@ def test_duplicate_candidate_across_days_is_rejected() -> None:
 
 def test_invalid_day_index_is_rejected() -> None:
     client = _client_returning(
-        _valid_output(days=[_valid_day_dict(9, ["openstreetmap_places:way/1"])])
+        _valid_output(days=[_valid_day_dict(9, ["c1"])])
     )
     provider = GroqAIItineraryReasoningProvider(client=client)
 
@@ -269,7 +269,7 @@ def test_invalid_day_index_is_rejected() -> None:
     ],
 )
 def test_forbidden_factual_claim_in_rationale_is_rejected(forbidden_text: str) -> None:
-    day = _valid_day_dict(1, ["openstreetmap_places:way/1"])
+    day = _valid_day_dict(1, ["c1"])
     day["rationale"] = forbidden_text
     client = _client_returning(_valid_output(days=[day]))
     provider = GroqAIItineraryReasoningProvider(client=client)

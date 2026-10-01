@@ -64,6 +64,9 @@ PROVIDER_TAG_KEYS: tuple[str, ...] = (
     "zoo",
     "wikidata",
     "wikipedia",
+    # Section 202C.1C: explicit architecture evidence.
+    "architect",
+    "building:architecture",
 )
 
 
@@ -107,7 +110,24 @@ _MAJOR_HISTORIC_TYPES = frozenset(
 )
 _SMALL_HISTORIC_TYPES = frozenset(
     {"memorial", "wayside_cross", "wayside_shrine", "boundary_stone", "milestone", "plaque",
-     "bust", "statue", "city_gate", "gate", "charcoal_pile", "fountain", "bench", "stone"}
+     "bust", "statue", "city_gate", "gate", "charcoal_pile", "fountain", "bench", "stone",
+     # Section 202C.1C: single punishment/ordnance objects are small historic
+     # objects too (a pillory was scheduled as "architecture" in 202C.1B).
+     "pillory", "stocks", "cannon"}
+)
+# Section 202C.1C: a bare `historic=ruins` is the weakest "major" type -- it is
+# tagged on countless unnamed remnants -- so it only counts as significance
+# evidence when the provider corroborates it (wikidata / wikipedia / heritage
+# or an explicit tourism designation).
+_MAJOR_HISTORIC_TYPES_NEEDING_CORROBORATION = frozenset({"ruins"})
+# Section 202C.1C: individual amusement rides (`attraction=*` sub-tags). A
+# ride is one object inside (or outside) a park, not a landmark: 202C.1B saw
+# `tourism=attraction` + `attraction=carousel` + a wikipedia tag rank as a
+# primary landmark above national museums.
+_RIDE_ATTRACTION_TYPES = frozenset(
+    {"carousel", "roller_coaster", "big_wheel", "ferris_wheel", "train", "slide", "water_slide",
+     "bumper_car", "bumper_cars", "swing_carousel", "dark_ride", "drop_tower", "pirate_ship",
+     "log_flume", "river_rafting", "kiddie_ride", "summer_toboggan", "alpine_coaster", "swing"}
 )
 _SMALL_MEMORIAL_TYPES = frozenset(
     {"statue", "plaque", "bust", "stolperstein", "stone", "bench", "cross", "tree", "sculpture"}
@@ -117,6 +137,15 @@ _ARCHITECTURE_BUILDINGS = frozenset(
      "castle", "palace", "tower", "monastery"}
 )
 _ARCHITECTURE_MAN_MADE = frozenset({"tower", "lighthouse", "bridge"})
+# Section 202C.1C: `historic=*` values that name a BUILDING or built structure
+# (architecture is about the structure itself). Deliberately not every historic
+# value: memorials, pillories, ruins, battlefields, archaeological sites and a
+# bare `historic=yes` are history, not architecture.
+_ARCHITECTURE_HISTORIC = frozenset(
+    {"building", "castle", "palace", "cathedral", "church", "chapel", "monastery", "fort",
+     "manor", "tower", "temple", "mosque", "synagogue", "city_walls", "citywalls", "aqueduct",
+     "bridge", "lighthouse", "house"}
+)
 
 # Flattened `category` (an OSM tag VALUE) -> the tag key it came from, for
 # candidates that carry no structured tags.
@@ -151,6 +180,7 @@ OBJECT_ARTWORK = "artwork"
 OBJECT_FOUNTAIN = "fountain"
 OBJECT_MEMORIAL = "memorial"
 OBJECT_GATE = "gate"
+OBJECT_RIDE = "amusement_ride"
 
 # Evidence that is ABOUT something other than the single object itself. A
 # heritage/wikipedia tag on a tree only describes the tree, so it never
@@ -194,7 +224,10 @@ def significance_signals(tags: dict[str, str]) -> tuple[str, ...]:
         signals.append("wikipedia")
     if tags.get("heritage"):
         signals.append("heritage")
-    if tags.get("historic") in _MAJOR_HISTORIC_TYPES:
+    historic = tags.get("historic")
+    if historic in _MAJOR_HISTORIC_TYPES and (
+        historic not in _MAJOR_HISTORIC_TYPES_NEEDING_CORROBORATION or signals or tags.get("tourism")
+    ):
         signals.append("major_historic_type")
     if tags.get("tourism") == "attraction" and signals:
         signals.append("tourism_attraction")
@@ -209,6 +242,8 @@ def object_kind_of(tags: dict[str, str]) -> str | None:
         return OBJECT_ARTWORK
     if tags.get("amenity") == "fountain":
         return OBJECT_FOUNTAIN
+    if tags.get("attraction") in _RIDE_ATTRACTION_TYPES and tags.get("tourism") not in {"theme_park", "zoo", "aquarium", "museum"}:
+        return OBJECT_RIDE
     historic = tags.get("historic")
     if historic in {"city_gate", "gate"}:
         return OBJECT_GATE
@@ -272,7 +307,9 @@ def classify_place(provider_tags: dict[str, Any] | None, category: str | None = 
             # Documented significant object (wikipedia / heritage / major
             # type): kept, but never behaves like a general landmark unless
             # the provider itself designates it a tourist attraction.
-            notable_object = tourism != "attraction"
+            # A single amusement ride stays a notable object even when the
+            # provider tags it `tourism=attraction` (Section 202C.1C).
+            notable_object = tourism != "attraction" or obj == OBJECT_RIDE
 
     commercial_gallery = (tourism == "gallery" or tags.get("shop") == "art") and not strong
 
@@ -311,12 +348,22 @@ def classify_place(provider_tags: dict[str, Any] | None, category: str | None = 
         add(ART_CULTURE)
     if historic and not low_value:
         add(HISTORIC)
-    if (
+    # Section 202C.1C: architecture needs evidence about a BUILT STRUCTURE --
+    # a building/structure type, a building-type historic value, a named
+    # architect or architectural style, or a documented place of worship.
+    # Never a single object, and never `tourism=attraction` / `historic=yes`
+    # / a memorial on their own.
+    if obj is None and (
         tags.get("building") in _ARCHITECTURE_BUILDINGS
         or tags.get("man_made") in _ARCHITECTURE_MAN_MADE
-        or (historic in {"cathedral", "palace", "castle"})
+        or historic in _ARCHITECTURE_HISTORIC
+        or tags.get("architect")
+        or tags.get("building:architecture")
+        or (amenity == "place_of_worship" and strong)
     ):
         add(ARCHITECTURE)
+    if obj == OBJECT_RIDE:
+        add(ENTERTAINMENT)
     if amenity == "place_of_worship":
         add(RELIGIOUS)
     if tags.get("leisure") in {"park", "garden", "nature_reserve"} or tags.get("natural") in {"beach", "peak"}:
@@ -390,7 +437,11 @@ INTEREST_CATEGORIES: dict[str, frozenset[str]] = {
     "history": frozenset({HISTORIC, LANDMARK, MUSEUM}),
     "museum": frozenset({MUSEUM}),
     "art": frozenset({ART_CULTURE, MUSEUM}),
-    "architecture": frozenset({ARCHITECTURE, LANDMARK, HISTORIC, RELIGIOUS}),
+    # Section 202C.1C: only places the provider describes as a built
+    # structure (see the ARCHITECTURE rule in `classify_place`). LANDMARK /
+    # HISTORIC / RELIGIOUS no longer imply architecture: a pillory, a
+    # memorial or a restaurant in a `historic=yes` building is not it.
+    "architecture": frozenset({ARCHITECTURE}),
     "shopping": frozenset({SHOPPING}),
 }
 

@@ -123,7 +123,7 @@ def _valid_tool_input(**overrides: object) -> dict[str, object]:
             "pace": "balanced",
             "reason": "Matches the traveler's stated interests and pace.",
         },
-        "days": [_valid_day_dict(1, ["openstreetmap_places:way/1"])],
+        "days": [_valid_day_dict(1, ["c1"])],
         "overall_tradeoffs": [],
         "confidence": 0.7,
     }
@@ -216,7 +216,7 @@ def test_unknown_candidate_id_is_rejected() -> None:
 
 def test_missing_strategy_causes_rejected_result() -> None:
     client = _client_returning(
-        _tool_use_response({"days": [_valid_day_dict(1, ["openstreetmap_places:way/1"])], "confidence": 0.5})
+        _tool_use_response({"days": [_valid_day_dict(1, ["c1"])], "confidence": 0.5})
     )
     provider = AnthropicAIItineraryReasoningProvider(client=client)
 
@@ -239,8 +239,8 @@ def test_duplicate_candidate_across_days_is_rejected() -> None:
         _tool_use_response(
             _valid_tool_input(
                 days=[
-                    _valid_day_dict(1, ["openstreetmap_places:way/1"]),
-                    _valid_day_dict(2, ["openstreetmap_places:way/1"]),
+                    _valid_day_dict(1, ["c1"]),
+                    _valid_day_dict(2, ["c1"]),
                 ]
             )
         )

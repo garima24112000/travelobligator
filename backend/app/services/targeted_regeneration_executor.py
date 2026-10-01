@@ -33,6 +33,7 @@ from app.services.experience_identity import deterministic_experience_id, experi
 from app.services.ai_itinerary_repair_request_builder import AIItineraryRepairRequestBuilder
 from app.services.ai_itinerary_repair_service import AIItineraryRepairService
 from app.services.ai_itinerary_reasoning_request_builder import AIItineraryReasoningRequestBuilder
+from app.services.ai_candidate_discovery_service import _score_ai_directed_grounded_candidates
 from app.services.candidate_quality_service import CandidateQualityService
 from app.services.experience_planner_service import ExperiencePlannerService
 from app.services.itinerary_narrative_service import ItineraryNarrativeService, itinerary_narrative_service
@@ -303,7 +304,10 @@ class TargetedRegenerationExecutor:
 
         # Task 15/16: global profile mutation -- only real, existing fields.
         if plan.traveler_profile_mutation is not None:
+            interests_before = self._effective_interests(working_state)
             self._apply_profile_mutation(working_state, plan.traveler_profile_mutation)
+            if self._effective_interests(working_state) != interests_before:
+                self._rescore_candidates_for_changed_interests(working_state)
 
         # Task 17-20: user-requested new-place grounding. Never a fake
         # success -- an ungroundable/low-quality result stops execution
@@ -919,6 +923,50 @@ class TargetedRegenerationExecutor:
                 trip_request.interests.append(interest)
         if mutation.interests_to_remove:
             trip_request.interests = [i for i in trip_request.interests if i not in mutation.interests_to_remove]
+
+    # -- interest re-scoring (Section 202C.1C) -----------------------------
+
+    @staticmethod
+    def _effective_interests(working_state: PlanningState) -> list[str]:
+        profile = working_state.traveler_profile
+        return list(profile.interests if profile is not None else working_state.trip_request.interests)
+
+    def _rescore_candidates_for_changed_interests(self, working_state: PlanningState) -> None:
+        """A changed interest list changes every interest-dependent candidate
+        score (`matched_interests`, the interest boost, hence tier and rank).
+        202C.1B found the stored `candidate_quality_report` was left as it
+        was, so scoped reasoning and the interest-coverage findings ran on
+        scores computed for the OLD interests.
+
+        This re-scores the EXISTING factual pool only: no provider call, no
+        LLM call, no new place. Broad-pool scores are rebuilt by the same
+        `CandidateQualityService.build_report`; AI-directed (targeted-lookup)
+        scores are rebuilt from their stored grounding evidence. A state with
+        no report yet is left alone.
+        """
+        existing = working_state.candidate_quality_report
+        if existing is None:
+            return
+        rebuilt = self.quality_service.build_report(working_state)
+        ai_directed_scores = list(existing.ai_directed_scores)
+        grounding_batch = working_state.candidate_grounding_batch
+        proposal_batch = working_state.ai_candidate_proposal_batch
+        if (
+            grounding_batch is not None
+            and grounding_batch.result is not None
+            and proposal_batch is not None
+            and proposal_batch.result is not None
+        ):
+            working_state.candidate_quality_report = rebuilt
+            proposals_by_id = {
+                proposal.proposal_id: proposal for proposal in proposal_batch.result.proposals
+            }
+            ai_directed_scores = _score_ai_directed_grounded_candidates(
+                working_state, grounding_batch.result, proposals_by_id, self.quality_service
+            )
+        working_state.candidate_quality_report = rebuilt.model_copy(
+            update={"ai_directed_scores": ai_directed_scores}
+        )
 
     # -- new-place grounding (Task 17-20) ----------------------------------
 

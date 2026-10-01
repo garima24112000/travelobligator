@@ -383,6 +383,7 @@ def _promoted_candidate_to_poi_dict(promoted: PromotedAICandidate) -> dict[str, 
         "quality_tier": promoted.quality_bucket,
         "original_ai_candidate_id": promoted.original_ai_candidate_id,
         "provider_source": promoted.provider_source,
+        "provider_tags": promoted.provider_tags,
     }
 
 

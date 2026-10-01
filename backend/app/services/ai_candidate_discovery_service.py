@@ -126,15 +126,20 @@ def _score_ai_directed_grounded_candidates(
             # signal that must never substitute for provider-backed
             # quality; Task 16).
             confidence=grounded.evidence.confidence,
+            provider_tags=grounded.evidence.provider_tags,
         )
-        scores.append(
-            quality_service.score_provider_backed_candidate(
-                place,
-                candidate_type_hint,
-                user_interests=user_interests,
-                must_visit_names=must_visit_names,
-            )
+        score = quality_service.score_provider_backed_candidate(
+            place,
+            candidate_type_hint,
+            user_interests=user_interests,
+            must_visit_names=must_visit_names,
         )
+        # Section 202C.1C: `proposal.confidence` never enters the score
+        # itself (above); it only gates a small ranking adjustment that
+        # additionally requires STRONG provider significance evidence.
+        if proposal is not None:
+            score = quality_service.apply_corroborated_anchor_boost(score, proposal.confidence)
+        scores.append(score)
         scored_provider_ids.add(provider_place_id)
 
     return scores

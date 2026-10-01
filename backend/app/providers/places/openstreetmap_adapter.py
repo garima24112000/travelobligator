@@ -576,6 +576,11 @@ class OpenStreetMapPlacesAdapter(PlacesProvider):
                 "format": "jsonv2",
                 "limit": 1,
                 "namedetails": 1,
+                # Section 202C.1C: the place's own OSM tags, in the same single
+                # request. Without them a targeted-lookup result reached scoring
+                # with no provider evidence at all (no wikipedia/heritage/type),
+                # so a nationally significant museum ranked below minor objects.
+                "extratags": 1,
             },
         )
         response.raise_for_status()
@@ -603,6 +608,20 @@ class OpenStreetMapPlacesAdapter(PlacesProvider):
             else f"nominatim/{result.get('place_id')}"
         )
 
+        # Whitelisted tags only (`filter_provider_tags`): the primary OSM
+        # key/value Nominatim reports for the object (`category`/`class` +
+        # `type`, e.g. tourism=museum) plus its extratags (wikidata,
+        # wikipedia, heritage, building, ...). Never opening hours, phone,
+        # website, ratings or any other non-taxonomy tag.
+        raw_tags: dict[str, Any] = {}
+        extratags = result.get("extratags")
+        if isinstance(extratags, dict):
+            raw_tags.update(extratags)
+        primary_key = result.get("category") or result.get("class")
+        primary_value = result.get("type")
+        if isinstance(primary_key, str) and isinstance(primary_value, str):
+            raw_tags[primary_key] = primary_value
+
         return NormalizedPlace(
             place_id=place_id,
             name=name,
@@ -612,6 +631,7 @@ class OpenStreetMapPlacesAdapter(PlacesProvider):
             source=self.provider_name,
             data_status=DataStatus.LIVE,
             confidence=0.5,
+            provider_tags=filter_provider_tags(raw_tags) or None,
         )
 
     def _search(

@@ -276,6 +276,7 @@ class CandidateGroundingService:
             coordinates=provider_candidate.coordinates,
             data_status=provider_candidate.data_status,
             confidence=provider_candidate.confidence,
+            provider_tags=provider_candidate.provider_tags,
         )
 
         # AICandidateProposal.verification_requirements is required to be

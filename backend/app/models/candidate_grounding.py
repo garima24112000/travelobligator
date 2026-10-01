@@ -137,6 +137,11 @@ class ProviderCandidateForGrounding(BaseModel):
     coordinates: GeoPoint
     data_status: DataStatus
     confidence: float = Field(ge=0.0, le=1.0)
+    # Section 202C.1C: the provider's own whitelisted taxonomy tags
+    # (`place_taxonomy.filter_provider_tags`), carried verbatim so a
+    # targeted-lookup match is scored on the same evidence as a broad-pool
+    # candidate. Never AI-authored.
+    provider_tags: dict[str, str] | None = None
 
     @field_validator("provider_name", "provider_place_id", "name")
     @classmethod
@@ -166,6 +171,8 @@ class CandidateGroundingEvidence(BaseModel):
     coordinates: GeoPoint
     data_status: DataStatus
     confidence: float = Field(ge=0.0, le=1.0)
+    # Section 202C.1C: see `ProviderCandidateForGrounding.provider_tags`.
+    provider_tags: dict[str, str] | None = None
 
     @field_validator("provider_name", "provider_place_id", "matched_name")
     @classmethod

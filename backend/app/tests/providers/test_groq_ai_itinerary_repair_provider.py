@@ -128,7 +128,7 @@ def _valid_repaired_day_dict(day_index: int, candidate_ids: list[str]) -> dict[s
 
 def _valid_output(**overrides: object) -> dict[str, object]:
     fields: dict[str, object] = {
-        "repaired_days": [_valid_repaired_day_dict(2, ["openstreetmap_places:way/2"])],
+        "repaired_days": [_valid_repaired_day_dict(2, ["c2"])],
         "repair_summary": "Dropped the cafe stop from day 2 to reduce geographic spread.",
         "addressed_issue_types": ["geographic_spread"],
         "confidence": 0.7,
@@ -198,7 +198,7 @@ def test_unknown_candidate_id_is_rejected() -> None:
 def test_repairing_an_unaffected_day_is_rejected() -> None:
     client = _client_returning(
         _valid_output(
-            repaired_days=[_valid_repaired_day_dict(1, ["openstreetmap_places:way/1"])],
+            repaired_days=[_valid_repaired_day_dict(1, ["c1"])],
         )
     )
     provider = GroqAIItineraryReasoningProvider(client=client)
@@ -215,7 +215,7 @@ def test_repairing_an_unaffected_day_is_rejected() -> None:
 
 @pytest.mark.parametrize("forbidden_text", ["highly rated", "cheap", "open until", "17-minute"])
 def test_forbidden_factual_claim_in_rationale_is_rejected(forbidden_text: str) -> None:
-    day = _valid_repaired_day_dict(2, ["openstreetmap_places:way/2"])
+    day = _valid_repaired_day_dict(2, ["c2"])
     day["rationale"] = f"This stop is {forbidden_text} according to reviews."
     client = _client_returning(_valid_output(repaired_days=[day]))
     provider = GroqAIItineraryReasoningProvider(client=client)

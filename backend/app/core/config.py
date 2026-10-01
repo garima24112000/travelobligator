@@ -209,6 +209,17 @@ class Settings(BaseSettings):
         ge=0,
         alias="AI_DIRECTED_PROVIDER_DISCOVERY_MAX_SEARCHES",
     )
+    # Section 202C.1C: a small RESERVE on top of the bound above, spent only
+    # on high-confidence NAMED proposals and only while fewer than
+    # `max_searches` proposals have actually been matched. 202C.1B saw a flat
+    # cutoff of 5 leave a 0.78-confidence named landmark unsearched while an
+    # earlier lookup had come back empty. Hard ceiling on real provider calls
+    # per generation = max_searches + max_extra_searches (8 by default).
+    ai_directed_provider_discovery_max_extra_searches: int = Field(
+        default=3,
+        ge=0,
+        alias="AI_DIRECTED_PROVIDER_DISCOVERY_MAX_EXTRA_SEARCHES",
+    )
 
     # Section 193A (docs/14_backend_architecture.md section 141): bounds
     # how many `ItineraryCandidateReference` entries

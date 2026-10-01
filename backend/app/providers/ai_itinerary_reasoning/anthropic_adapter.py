@@ -25,6 +25,12 @@ from app.models.ai_itinerary_repair import (
     validate_repair_result_against_request,
 )
 from app.providers.ai_itinerary_reasoning.base import AIItineraryReasoningProvider
+from app.providers.ai_itinerary_reasoning.candidate_refs import (
+    CandidateRefMap,
+    UnknownCandidateReference,
+    resolve_day_refs,
+    scrub_output_prose,
+)
 
 # Anthropic/Claude-backed itinerary-reasoning adapter (Section 193B,
 # docs/14_backend_architecture.md section 142). Same tool-use pattern
@@ -147,9 +153,11 @@ _SYSTEM_PROMPT = (
 )
 
 
-def _format_candidate_line(candidate: Any) -> str:
+def _format_candidate_line(candidate: Any, ref: str) -> str:
+    # Section 202C.1C: the model sees only the short per-request reference
+    # (`candidate_refs.py`), never the provider-derived identity.
     line = (
-        f"- candidate_id={candidate.candidate_id!r} name={candidate.name!r} "
+        f"- candidate_id={ref!r} name={candidate.name!r} "
         f"category={candidate.category.value} quality_tier={candidate.quality_tier} "
         f"quality_score={candidate.quality_score:.2f}"
     )
@@ -163,10 +171,12 @@ def _format_candidate_line(candidate: Any) -> str:
     return line
 
 
-def _build_prompt(request: AIItineraryReasoningRequest) -> str:
+def _build_prompt(request: AIItineraryReasoningRequest, ref_map: CandidateRefMap | None = None) -> str:
     """Builds a minimal, controlled prompt from `request` fields only --
     never a raw `PlanningState` dump, and never a coordinate."""
     traveler = request.traveler_context
+    if ref_map is None:
+        ref_map = CandidateRefMap.for_candidates(request.allowed_candidates)
     lines = [
         *[f"Instruction: {instruction}" for instruction in request.reasoning_instructions],
         "",
@@ -192,7 +202,10 @@ def _build_prompt(request: AIItineraryReasoningRequest) -> str:
         f"Allowed candidates (use only these candidate_id values, "
         f"{len(request.allowed_candidates)} total):"
     )
-    lines.extend(_format_candidate_line(candidate) for candidate in request.allowed_candidates)
+    lines.extend(
+        _format_candidate_line(candidate, ref_map.ref_for(candidate.candidate_id))
+        for candidate in request.allowed_candidates
+    )
     return "\n".join(lines)
 
 
@@ -289,10 +302,12 @@ def _format_issue_line(issue: Any) -> str:
     )
 
 
-def _build_repair_prompt(request: AIItineraryRepairRequest) -> str:
+def _build_repair_prompt(request: AIItineraryRepairRequest, ref_map: CandidateRefMap | None = None) -> str:
     """Builds a minimal, controlled repair prompt from `request` fields
     only -- never a raw `PlanningState` dump, and never a coordinate."""
     traveler = request.traveler_context
+    if ref_map is None:
+        ref_map = CandidateRefMap.for_candidates(request.allowed_candidates)
     lines = [
         *[f"Instruction: {instruction}" for instruction in request.repair_instructions],
         "",
@@ -308,12 +323,15 @@ def _build_repair_prompt(request: AIItineraryRepairRequest) -> str:
     lines.extend(_format_issue_line(issue) for issue in request.issues)
     lines.append("Original day plans (unaffected days must come back unchanged, i.e. omitted):")
     for day in request.original_days:
-        lines.append(f"- day {day.day_index}: candidate_ids={day.candidate_ids}")
+        lines.append(f"- day {day.day_index}: candidate_ids={ref_map.refs_for(day.candidate_ids)}")
     lines.append(
         f"Allowed candidates (use only these candidate_id values, "
         f"{len(request.allowed_candidates)} total, same universe as the original plan):"
     )
-    lines.extend(_format_candidate_line(candidate) for candidate in request.allowed_candidates)
+    lines.extend(
+        _format_candidate_line(candidate, ref_map.ref_for(candidate.candidate_id))
+        for candidate in request.allowed_candidates
+    )
     return "\n".join(lines)
 
 
@@ -374,6 +392,7 @@ class AnthropicAIItineraryReasoningProvider(AIItineraryReasoningProvider):
                     request, f"Anthropic client could not be initialized: {exc}"
                 )
 
+        ref_map = CandidateRefMap.for_candidates(request.allowed_candidates)
         try:
             response = client.messages.create(
                 model=self._model,
@@ -382,7 +401,7 @@ class AnthropicAIItineraryReasoningProvider(AIItineraryReasoningProvider):
                 system=_SYSTEM_PROMPT,
                 tools=[_TOOL_DEFINITION],
                 tool_choice={"type": "tool", "name": _TOOL_NAME},
-                messages=[{"role": "user", "content": _build_prompt(request)}],
+                messages=[{"role": "user", "content": _build_prompt(request, ref_map)}],
             )
         except Exception as exc:  # API/runtime failure -> rejected, never fabricated
             kind, message = classify_and_message("Anthropic", exc)
@@ -392,6 +411,15 @@ class AnthropicAIItineraryReasoningProvider(AIItineraryReasoningProvider):
         if tool_input is None:
             return self._rejected_result(
                 request, "Claude did not return a structured tool_use response."
+            )
+
+        # Section 202C.1C: references -> exact allowed candidate_ids (see candidate_refs.py).
+        try:
+            tool_input = {**tool_input, "days": resolve_day_refs(tool_input.get("days"), ref_map)}
+            tool_input = scrub_output_prose(tool_input, ref_map)
+        except UnknownCandidateReference as exc:
+            return self._rejected_result(
+                request, f"Claude output referenced a candidate outside the allowed set: {exc}."
             )
 
         return self._build_result_from_tool_input(request, tool_input)
@@ -546,6 +574,7 @@ class AnthropicAIItineraryReasoningProvider(AIItineraryReasoningProvider):
                     request, f"Anthropic client could not be initialized: {exc}"
                 )
 
+        ref_map = CandidateRefMap.for_candidates(request.allowed_candidates)
         try:
             response = client.messages.create(
                 model=self._model,
@@ -554,7 +583,7 @@ class AnthropicAIItineraryReasoningProvider(AIItineraryReasoningProvider):
                 system=_REPAIR_SYSTEM_PROMPT,
                 tools=[_REPAIR_TOOL_DEFINITION],
                 tool_choice={"type": "tool", "name": _REPAIR_TOOL_NAME},
-                messages=[{"role": "user", "content": _build_repair_prompt(request)}],
+                messages=[{"role": "user", "content": _build_repair_prompt(request, ref_map)}],
             )
         except Exception as exc:  # API/runtime failure -> rejected, never fabricated
             return self._rejected_repair_result(request, classify_and_message("Anthropic", exc)[1])
@@ -563,6 +592,17 @@ class AnthropicAIItineraryReasoningProvider(AIItineraryReasoningProvider):
         if tool_input is None:
             return self._rejected_repair_result(
                 request, "Claude did not return a structured tool_use response."
+            )
+
+        try:
+            tool_input = {
+                **tool_input,
+                "repaired_days": resolve_day_refs(tool_input.get("repaired_days"), ref_map),
+            }
+            tool_input = scrub_output_prose(tool_input, ref_map)
+        except UnknownCandidateReference as exc:
+            return self._rejected_repair_result(
+                request, f"Claude repair output referenced a candidate outside the allowed set: {exc}."
             )
 
         return self._build_repair_result_from_tool_input(request, tool_input)

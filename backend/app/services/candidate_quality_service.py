@@ -74,6 +74,9 @@ _SIGNIFICANCE_BOOST_PER_SIGNAL = 0.03
 _SIGNIFICANCE_BOOST_MAX = 0.06
 _INTEREST_MATCH_BOOST = 0.1
 _STRONG_SIGNIFICANCE = frozenset({"wikipedia", "heritage", "major_historic_type"})
+# Section 202C.1C (see `apply_corroborated_anchor_boost`).
+_CORROBORATED_ANCHOR_BOOST = 0.05
+_CORROBORATED_ANCHOR_MIN_PROPOSAL_CONFIDENCE = 0.75
 
 _SEVERE_REJECT_REASONS = {
     CandidateRejectReason.UNSUITABLE_PLACE_TYPE,
@@ -657,6 +660,49 @@ class CandidateQualityService:
             return self.score_restaurant(place, user_interests=user_interests)
         return self.score_attraction(
             place, user_interests=user_interests, must_visit_names=must_visit_names
+        )
+
+    def apply_corroborated_anchor_boost(
+        self, score: CandidateQualityScore, proposal_confidence: float
+    ) -> CandidateQualityScore:
+        """Section 202C.1C: a small, bounded ranking adjustment for a place
+        that is corroborated twice -- independently proposed as a destination
+        anchor with high confidence AND confirmed by the provider with STRONG
+        structured significance evidence (wikipedia / heritage / major
+        historic type).
+
+        202C.1B evidence: such places (national museums grounded by a targeted
+        lookup) sat a few hundredths BELOW a long tail of minor broad-pool
+        places purely because the targeted-lookup path reports a lower
+        provider confidence (0.5 vs 0.6), so they never made the plan.
+
+        This is a ranking prior, never a fact and never an override: it is
+        applied only when the provider's own evidence is strong, never to a
+        candidate with a reject reason, never to a low-value / notable single
+        object or a commercial gallery, and it cannot lift a candidate out of
+        a tier the deterministic rules rejected. The AI's confidence alone
+        (no provider significance) earns nothing.
+        """
+        if proposal_confidence < _CORROBORATED_ANCHOR_MIN_PROPOSAL_CONFIDENCE:
+            return score
+        if score.reject_reasons or score.low_value_object or score.notable_object or score.commercial_gallery:
+            return score
+        if score.quality_tier not in (CandidateQualityTier.PRIMARY_ANCHOR, CandidateQualityTier.GOOD_CANDIDATE):
+            return score
+        if not (set(score.significance_signals) & _STRONG_SIGNIFICANCE):
+            return score
+        total = min(1.0, score.total_score + _CORROBORATED_ANCHOR_BOOST)
+        return score.model_copy(
+            update={
+                "total_score": total,
+                "quality_tier": _finalize_tier(total, score.reject_reasons),
+                "score_components": {**score.score_components, "corroborated_anchor_boost": _CORROBORATED_ANCHOR_BOOST},
+                "positive_signals": [
+                    *score.positive_signals,
+                    "Independently proposed as a destination anchor and confirmed by the provider with "
+                    "structured landmark evidence: a ranking adjustment only, not a quality claim.",
+                ],
+            }
         )
 
     def build_report(self, planning_state: PlanningState) -> CandidateQualityReport:

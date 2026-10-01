@@ -36,6 +36,10 @@ _PRIORITY_SEARCH_ORDER: dict[AICandidatePriorityHint, int] = {
     AICandidatePriorityHint.UNKNOWN: 3,
 }
 
+# Section 202C.1C: the minimum proposal confidence for a NAMED place to draw
+# on the reserve budget (see `discover`).
+_RESERVE_MIN_CONFIDENCE = 0.7
+
 # Section 192 (docs/14_backend_architecture.md section 138): the targeted,
 # AI-directed provider-discovery step between AI candidate proposals
 # (Sections 191A/191B) and grounding (`CandidateGroundingService`). This is
@@ -86,6 +90,7 @@ class AIDirectedProviderDiscoveryService:
         provider_candidates: list[ProviderCandidateForGrounding],
         *,
         max_searches: int | None = None,
+        max_extra_searches: int | None = None,
     ) -> AIProviderDiscoveryResult:
         destination_name = planning_state.trip_request.primary_destination
         bound = (
@@ -116,36 +121,59 @@ class AIDirectedProviderDiscoveryService:
                     continue
             eligible_indices.append(index)
 
-        selected_indices = set(
-            sorted(
-                eligible_indices,
-                key=lambda i: (
-                    _PRIORITY_SEARCH_ORDER.get(proposals[i].priority_hint, len(_PRIORITY_SEARCH_ORDER)),
-                    i,
-                ),
-            )[:bound]
+        # Section 202C.1C: bounded, ranked, de-duplicated selection.
+        #   1. De-duplicate: two proposals with the same normalised search
+        #      query cost one lookup, not two (the later one is `not_searched`).
+        #   2. Rank: priority hint, then named places before free-text ideas,
+        #      then the proposal's own confidence (higher first), then original
+        #      order -- never random. Confidence
+        #      only orders WHICH ideas are checked; it is never a fact and
+        #      never reaches scoring.
+        #   3. Base budget: the first `bound` ranked proposals are looked up.
+        #   4. Reserve: up to `extra_bound` further lookups, only for NAMED
+        #      proposals with confidence >= `_RESERVE_MIN_CONFIDENCE`, and only
+        #      while fewer than `bound` lookups have matched (i.e. a base
+        #      lookup came back empty/failed) -- then stop.
+        # Real provider calls per generation never exceed bound + extra_bound.
+        extra_bound = (
+            0
+            if max_searches is not None and max_extra_searches is None
+            else (
+                max_extra_searches
+                if max_extra_searches is not None
+                else get_settings().ai_directed_provider_discovery_max_extra_searches
+            )
         )
 
-        attempts: list[AIProviderDiscoveryAttempt] = []
-        searches_used = 0
-
+        seen_queries: set[str] = set()
+        duplicate_indices: set[int] = set()
         for index in eligible_indices:
+            key = " ".join(proposals[index].search_query.lower().split())
+            if key in seen_queries:
+                duplicate_indices.add(index)
+            else:
+                seen_queries.add(key)
+
+        ranked = sorted(
+            (i for i in eligible_indices if i not in duplicate_indices),
+            key=lambda i: (
+                _PRIORITY_SEARCH_ORDER.get(proposals[i].priority_hint, len(_PRIORITY_SEARCH_ORDER)),
+                # a NAMED place is something a geocoder can actually find; a free-text
+                # idea ("historic neighbourhood walk in ...") rarely is, so within one
+                # priority the named places are checked first
+                0 if proposals[i].proposal_type == AICandidateProposalType.NAMED_PLACE else 1,
+                -proposals[i].confidence,
+                i,
+            ),
+        )
+
+        attempts_by_index: dict[int, AIProviderDiscoveryAttempt] = {}
+        searches_used = 0
+        matched = 0
+
+        def run_search(index: int) -> None:
+            nonlocal searches_used, matched
             proposal = proposals[index]
-
-            if index not in selected_indices:
-                attempts.append(
-                    AIProviderDiscoveryAttempt(
-                        proposal_id=proposal.proposal_id,
-                        search_query=proposal.search_query,
-                        status=AIProviderDiscoveryAttemptStatus.NOT_SEARCHED,
-                        message=(
-                            "Provider search was not executed because the targeted-search "
-                            "limit for this generation was already reached."
-                        ),
-                    )
-                )
-                continue
-
             searches_used += 1
             started_at = time.monotonic()
             attempt = self._search_one(destination_name, proposal)
@@ -160,13 +188,50 @@ class AIDirectedProviderDiscoveryService:
                     "duration_ms": round(duration_ms, 3),
                 },
             )
-            attempts.append(attempt)
+            if attempt.status == AIProviderDiscoveryAttemptStatus.MATCHED:
+                matched += 1
+            attempts_by_index[index] = attempt
 
-        # Defensive invariant, not a business rule: the loop above can
-        # never spend more real provider calls than `bound` allows, since
-        # `selected_indices` was already capped to `bound` entries before
-        # any lookup ran.
-        assert searches_used <= bound
+        for index in ranked[:bound]:
+            run_search(index)
+
+        extras_used = 0
+        for index in ranked[bound:]:
+            if extras_used >= extra_bound or matched >= bound:
+                break
+            proposal = proposals[index]
+            if (
+                proposal.proposal_type != AICandidateProposalType.NAMED_PLACE
+                or proposal.confidence < _RESERVE_MIN_CONFIDENCE
+            ):
+                continue
+            extras_used += 1
+            run_search(index)
+
+        attempts: list[AIProviderDiscoveryAttempt] = []
+        for index in eligible_indices:
+            if index in attempts_by_index:
+                attempts.append(attempts_by_index[index])
+                continue
+            proposal = proposals[index]
+            attempts.append(
+                AIProviderDiscoveryAttempt(
+                    proposal_id=proposal.proposal_id,
+                    search_query=proposal.search_query,
+                    status=AIProviderDiscoveryAttemptStatus.NOT_SEARCHED,
+                    message=(
+                        "Provider search was not executed because an earlier proposal already "
+                        "searched for the same query."
+                        if index in duplicate_indices
+                        else "Provider search was not executed because the targeted-search "
+                        "limit for this generation was already reached."
+                    ),
+                )
+            )
+
+        # Defensive invariant, not a business rule: real provider calls can
+        # never exceed the base bound plus the reserve.
+        assert searches_used <= bound + extra_bound
 
         return AIProviderDiscoveryResult(
             attempts=attempts,
@@ -235,6 +300,7 @@ class AIDirectedProviderDiscoveryService:
             coordinates=place.coordinates,
             data_status=place.data_status,
             confidence=place.confidence,
+            provider_tags=place.provider_tags,
         )
         return AIProviderDiscoveryAttempt(
             proposal_id=proposal.proposal_id,

@@ -1,0 +1,1076 @@
+{
+ "_about": "Section 202C.1C regression fixture. `broad_pool` is the OpenStreetMap attraction pool the places provider returned for 'Washington, DC, USA' in the 202C.1B live run (place id, name, category, coordinates and the whitelisted taxonomy tags only; OpenStreetMap data, ODbL). `targeted_lookups` are CONTROLLED fixture rows: the four places that run grounded via a targeted lookup, with the kind of taxonomy tags such a lookup returns -- they are labelled test inputs, not a recording. Used only by tests; never read by the application.",
+ "destination": "Washington, DC, USA",
+ "interests": [
+  "history",
+  "museums"
+ ],
+ "broad_pool": [
+  {
+   "place_id": "node/358959871",
+   "name": "Almas Temple",
+   "category": "attraction",
+   "coordinates": {
+    "lat": 38.9027752,
+    "lng": -77.0313202
+   },
+   "source": "openstreetmap_places",
+   "data_status": "cached",
+   "confidence": 0.6,
+   "provider_tags": {
+    "amenity": "community_centre",
+    "tourism": "attraction",
+    "wikidata": "Q4733709"
+   }
+  },
+  {
+   "place_id": "node/358960302",
+   "name": "All Hallows Guild Traveling Carousel",
+   "category": "attraction",
+   "coordinates": {
+    "lat": 38.9303889,
+    "lng": -77.0702555
+   },
+   "source": "openstreetmap_places",
+   "data_status": "cached",
+   "confidence": 0.6,
+   "provider_tags": {
+    "tourism": "attraction",
+    "historic": "yes",
+    "wikidata": "Q4728796",
+    "wikipedia": "en:All Hallows Guild Carousel",
+    "attraction": "carousel"
+   }
+  },
+  {
+   "place_id": "node/367144248",
+   "name": "National Guard Memorial Museum",
+   "category": "museum",
+   "coordinates": {
+    "lat": 38.8979418,
+    "lng": -77.0093938
+   },
+   "source": "openstreetmap_places",
+   "data_status": "cached",
+   "confidence": 0.6,
+   "provider_tags": {
+    "tourism": "museum",
+    "wikidata": "Q15261124",
+    "wikipedia": "en:National Guard Memorial Museum"
+   }
+  },
+  {
+   "place_id": "node/515303981",
+   "name": "McClellan Gate",
+   "category": "attraction",
+   "coordinates": {
+    "lat": 38.8787992,
+    "lng": -77.067151
+   },
+   "source": "openstreetmap_places",
+   "data_status": "cached",
+   "confidence": 0.6,
+   "provider_tags": {
+    "tourism": "attraction",
+    "historic": "monument",
+    "wikidata": "Q14712810"
+   }
+  },
+  {
+   "place_id": "node/358955131",
+   "name": "Hahnemann Monument",
+   "category": "artwork",
+   "coordinates": {
+    "lat": 38.9072463,
+    "lng": -77.0357017
+   },
+   "source": "openstreetmap_places",
+   "data_status": "cached",
+   "confidence": 0.6,
+   "provider_tags": {
+    "tourism": "artwork",
+    "historic": "yes",
+    "wikidata": "Q7411599",
+    "wikipedia": "en:Samuel Hahnemann Monument",
+    "artwork_type": "statue"
+   }
+  },
+  {
+   "place_id": "node/367143116",
+   "name": "Warner Theatre",
+   "category": "theatre",
+   "coordinates": {
+    "lat": 38.8965108,
+    "lng": -77.0293531
+   },
+   "source": "openstreetmap_places",
+   "data_status": "cached",
+   "confidence": 0.6,
+   "provider_tags": {
+    "amenity": "theatre",
+    "wikidata": "Q7969769",
+    "wikipedia": "en:Warner Theatre (Washington, D.C.)"
+   }
+  },
+  {
+   "place_id": "node/750467903",
+   "name": "Black Cat",
+   "category": "nightclub",
+   "coordinates": {
+    "lat": 38.9146093,
+    "lng": -77.0317206
+   },
+   "source": "openstreetmap_places",
+   "data_status": "cached",
+   "confidence": 0.6,
+   "provider_tags": {
+    "amenity": "nightclub",
+    "wikidata": "Q4920503"
+   }
+  },
+  {
+   "place_id": "node/367141729",
+   "name": "Twin Oaks",
+   "category": "attraction",
+   "coordinates": {
+    "lat": 38.932122,
+    "lng": -77.0631264
+   },
+   "source": "openstreetmap_places",
+   "data_status": "cached",
+   "confidence": 0.6,
+   "provider_tags": {
+    "tourism": "attraction",
+    "wikidata": "Q7858247"
+   }
+  },
+  {
+   "place_id": "node/158467370",
+   "name": "Dupont Circle",
+   "category": "heritage",
+   "coordinates": {
+    "lat": 38.9109436,
+    "lng": -77.0427259
+   },
+   "source": "openstreetmap_places",
+   "data_status": "cached",
+   "confidence": 0.6,
+   "provider_tags": {
+    "place": "suburb",
+    "heritage": "2",
+    "historic": "heritage",
+    "wikidata": "Q1266597",
+    "wikipedia": "en:Dupont Circle"
+   }
+  },
+  {
+   "place_id": "node/367143103",
+   "name": "Howard University Museum",
+   "category": "museum",
+   "coordinates": {
+    "lat": 38.9223336,
+    "lng": -77.0194209
+   },
+   "source": "openstreetmap_places",
+   "data_status": "cached",
+   "confidence": 0.6,
+   "provider_tags": {
+    "tourism": "museum",
+    "building": "yes",
+    "wikidata": "Q110522788"
+   }
+  },
+  {
+   "place_id": "node/746876115",
+   "name": "Rough Riders Monument",
+   "category": "attraction",
+   "coordinates": {
+    "lat": 38.8754184,
+    "lng": -77.0759863
+   },
+   "source": "openstreetmap_places",
+   "data_status": "cached",
+   "confidence": 0.6,
+   "provider_tags": {
+    "tourism": "attraction",
+    "historic": "monument",
+    "wikidata": "Q14713163"
+   }
+  },
+  {
+   "place_id": "node/358955217",
+   "name": "Bernardo de Galvez",
+   "category": "artwork",
+   "coordinates": {
+    "lat": 38.8956874,
+    "lng": -77.0485651
+   },
+   "source": "openstreetmap_places",
+   "data_status": "cached",
+   "confidence": 0.6,
+   "provider_tags": {
+    "tourism": "artwork",
+    "historic": "memorial",
+    "wikidata": "Q4893974",
+    "wikipedia": "en:Bernardo de Gálvez (statue)",
+    "artwork_type": "statue"
+   }
+  },
+  {
+   "place_id": "node/750467923",
+   "name": "Bohemian Caverns",
+   "category": "nightclub",
+   "coordinates": {
+    "lat": 38.9171838,
+    "lng": -77.0268253
+   },
+   "source": "openstreetmap_places",
+   "data_status": "cached",
+   "confidence": 0.6,
+   "provider_tags": {
+    "amenity": "nightclub",
+    "wikidata": "Q4938092"
+   }
+  },
+  {
+   "place_id": "node/495375309",
+   "name": "Wallaby yard",
+   "category": "attraction",
+   "coordinates": {
+    "lat": 38.9307406,
+    "lng": -77.0488416
+   },
+   "source": "openstreetmap_places",
+   "data_status": "cached",
+   "confidence": 0.6,
+   "provider_tags": {
+    "tourism": "attraction",
+    "attraction": "animal"
+   }
+  },
+  {
+   "place_id": "node/158502198",
+   "name": "Capitol Hill",
+   "category": "heritage",
+   "coordinates": {
+    "lat": 38.8890009,
+    "lng": -77.0002537
+   },
+   "source": "openstreetmap_places",
+   "data_status": "cached",
+   "confidence": 0.6,
+   "provider_tags": {
+    "place": "suburb",
+    "heritage": "2",
+    "historic": "heritage",
+    "wikidata": "Q2305815",
+    "wikipedia": "en:Capitol Hill"
+   }
+  },
+  {
+   "place_id": "node/367144504",
+   "name": "National Museum of Women in the Arts",
+   "category": "museum",
+   "coordinates": {
+    "lat": 38.9000261,
+    "lng": -77.0292709
+   },
+   "source": "openstreetmap_places",
+   "data_status": "cached",
+   "confidence": 0.6,
+   "provider_tags": {
+    "tourism": "museum",
+    "wikidata": "Q861608"
+   }
+  },
+  {
+   "place_id": "node/306012833",
+   "name": "National Law Enforcement Officers Memorial",
+   "category": "memorial",
+   "coordinates": {
+    "lat": 38.8967566,
+    "lng": -77.0175537
+   },
+   "source": "openstreetmap_places",
+   "data_status": "cached",
+   "confidence": 0.6,
+   "provider_tags": {
+    "historic": "memorial",
+    "memorial": "stele",
+    "wikidata": "Q6974030",
+    "wikipedia": "en:National Law Enforcement Officers Memorial"
+   }
+  },
+  {
+   "place_id": "node/358958094",
+   "name": "James Cardinal Gibbons Statue",
+   "category": "artwork",
+   "coordinates": {
+    "lat": 38.9313991,
+    "lng": -77.0362003
+   },
+   "source": "openstreetmap_places",
+   "data_status": "cached",
+   "confidence": 0.6,
+   "provider_tags": {
+    "tourism": "artwork",
+    "historic": "memorial",
+    "wikidata": "Q7742932",
+    "wikipedia": "en:James Cardinal Gibbons Memorial Statue",
+    "artwork_type": "statue"
+   }
+  },
+  {
+   "place_id": "node/495421217",
+   "name": "Butterfly Garden",
+   "category": "attraction",
+   "coordinates": {
+    "lat": 38.9299728,
+    "lng": -77.0471079
+   },
+   "source": "openstreetmap_places",
+   "data_status": "cached",
+   "confidence": 0.6,
+   "provider_tags": {
+    "tourism": "attraction",
+    "attraction": "animal"
+   }
+  },
+  {
+   "place_id": "node/310856934",
+   "name": "Bay-Eva Castle",
+   "category": "ruins",
+   "coordinates": {
+    "lat": 38.9007435,
+    "lng": -77.0815136
+   },
+   "source": "openstreetmap_places",
+   "data_status": "cached",
+   "confidence": 0.6,
+   "provider_tags": {
+    "historic": "ruins"
+   }
+  },
+  {
+   "place_id": "node/457296753",
+   "name": "American University Museum at the Katzen",
+   "category": "museum",
+   "coordinates": {
+    "lat": 38.9387795,
+    "lng": -77.0863656
+   },
+   "source": "openstreetmap_places",
+   "data_status": "cached",
+   "confidence": 0.6,
+   "provider_tags": {
+    "tourism": "museum",
+    "wikidata": "Q4745303"
+   }
+  },
+  {
+   "place_id": "node/356582211",
+   "name": "Tomb of the Unknown Soldier",
+   "category": "memorial",
+   "coordinates": {
+    "lat": 38.8763864,
+    "lng": -77.072252
+   },
+   "source": "openstreetmap_places",
+   "data_status": "cached",
+   "confidence": 0.6,
+   "provider_tags": {
+    "historic": "memorial",
+    "memorial": "grave",
+    "wikidata": "Q3531107",
+    "wikipedia": "en:Tomb of the Unknown Soldier (Arlington)"
+   }
+  },
+  {
+   "place_id": "node/358958097",
+   "name": "Guglielmo Marconi Statue",
+   "category": "artwork",
+   "coordinates": {
+    "lat": 38.9304169,
+    "lng": -77.0367494
+   },
+   "source": "openstreetmap_places",
+   "data_status": "cached",
+   "confidence": 0.6,
+   "provider_tags": {
+    "tourism": "artwork",
+    "historic": "yes",
+    "wikidata": "Q5615249",
+    "wikipedia": "en:Guglielmo Marconi (Piccirilli)",
+    "artwork_type": "statue"
+   }
+  },
+  {
+   "place_id": "node/495552485",
+   "name": "Lesser Kudu",
+   "category": "attraction",
+   "coordinates": {
+    "lat": 38.9317129,
+    "lng": -77.0531323
+   },
+   "source": "openstreetmap_places",
+   "data_status": "cached",
+   "confidence": 0.6,
+   "provider_tags": {
+    "tourism": "attraction",
+    "attraction": "animal"
+   }
+  },
+  {
+   "place_id": "node/358253416",
+   "name": "Saint Cecilia Chapel (ruin)",
+   "category": "place_of_worship",
+   "coordinates": {
+    "lat": 38.9714994,
+    "lng": -76.9760867
+   },
+   "source": "openstreetmap_places",
+   "data_status": "cached",
+   "confidence": 0.6,
+   "provider_tags": {
+    "amenity": "place_of_worship",
+    "historic": "ruins"
+   }
+  },
+  {
+   "place_id": "node/611558742",
+   "name": "Smithsonian American Art Museum",
+   "category": "museum",
+   "coordinates": {
+    "lat": 38.8978665,
+    "lng": -77.0235904
+   },
+   "source": "openstreetmap_places",
+   "data_status": "cached",
+   "confidence": 0.6,
+   "provider_tags": {
+    "tourism": "museum",
+    "wikidata": "Q1192305"
+   }
+  },
+  {
+   "place_id": "node/358955061",
+   "name": "American Legion Freedom Bell",
+   "category": "memorial",
+   "coordinates": {
+    "lat": 38.8965674,
+    "lng": -77.0065333
+   },
+   "source": "openstreetmap_places",
+   "data_status": "cached",
+   "confidence": 0.6,
+   "provider_tags": {
+    "historic": "memorial",
+    "wikidata": "Q4744335",
+    "wikipedia": "en:Freedom Bell, American Legion"
+   }
+  },
+  {
+   "place_id": "node/367141740",
+   "name": "Theodore Hagans Cultural Center",
+   "category": "arts_centre",
+   "coordinates": {
+    "lat": 38.9242,
+    "lng": -76.9582
+   },
+   "source": "openstreetmap_places",
+   "data_status": "cached",
+   "confidence": 0.6,
+   "provider_tags": {
+    "amenity": "arts_centre"
+   }
+  },
+  {
+   "place_id": "node/495552486",
+   "name": "Abyssinian Ground Hornbill",
+   "category": "attraction",
+   "coordinates": {
+    "lat": 38.9316133,
+    "lng": -77.0530069
+   },
+   "source": "openstreetmap_places",
+   "data_status": "cached",
+   "confidence": 0.6,
+   "provider_tags": {
+    "tourism": "attraction",
+    "attraction": "animal"
+   }
+  },
+  {
+   "place_id": "node/611558744",
+   "name": "National Portrait Gallery",
+   "category": "museum",
+   "coordinates": {
+    "lat": 38.8978665,
+    "lng": -77.022372
+   },
+   "source": "openstreetmap_places",
+   "data_status": "cached",
+   "confidence": 0.6,
+   "provider_tags": {
+    "tourism": "museum",
+    "wikidata": "Q1967614"
+   }
+  },
+  {
+   "place_id": "node/358955985",
+   "name": "56 Signers of the Declaration of Independence Memorial",
+   "category": "memorial",
+   "coordinates": {
+    "lat": 38.8910882,
+    "lng": -77.0428692
+   },
+   "source": "openstreetmap_places",
+   "data_status": "cached",
+   "confidence": 0.6,
+   "provider_tags": {
+    "historic": "memorial",
+    "memorial": "sculpture",
+    "wikidata": "Q16895034",
+    "wikipedia": "en:Memorial to the 56 Signers of the Declaration of Independence"
+   }
+  },
+  {
+   "place_id": "node/495556224",
+   "name": "Grevy's Zebra",
+   "category": "attraction",
+   "coordinates": {
+    "lat": 38.9312999,
+    "lng": -77.0531495
+   },
+   "source": "openstreetmap_places",
+   "data_status": "cached",
+   "confidence": 0.6,
+   "provider_tags": {
+    "tourism": "attraction",
+    "attraction": "animal"
+   }
+  },
+  {
+   "place_id": "node/776362071",
+   "name": "National Bonsai and Penjing Museum",
+   "category": "museum",
+   "coordinates": {
+    "lat": 38.9124154,
+    "lng": -76.9689398
+   },
+   "source": "openstreetmap_places",
+   "data_status": "cached",
+   "confidence": 0.6,
+   "provider_tags": {
+    "tourism": "museum",
+    "wikidata": "Q102232157"
+   }
+  },
+  {
+   "place_id": "node/358958267",
+   "name": "Andrew Jackson Downing Urn",
+   "category": "memorial",
+   "coordinates": {
+    "lat": 38.8883953,
+    "lng": -77.0254044
+   },
+   "source": "openstreetmap_places",
+   "data_status": "cached",
+   "confidence": 0.6,
+   "provider_tags": {
+    "historic": "memorial",
+    "memorial": "sculpture",
+    "wikidata": "Q4757456",
+    "wikipedia": "en:Andrew Jackson Downing Urn"
+   }
+  },
+  {
+   "place_id": "node/495881933",
+   "name": "Red-Bellied Turtle",
+   "category": "attraction",
+   "coordinates": {
+    "lat": 38.9302088,
+    "lng": -77.0475748
+   },
+   "source": "openstreetmap_places",
+   "data_status": "cached",
+   "confidence": 0.6,
+   "provider_tags": {
+    "tourism": "attraction",
+    "attraction": "animal"
+   }
+  },
+  {
+   "place_id": "node/367144486",
+   "name": "Diplomatic Reception Rooms Museum",
+   "category": "museum",
+   "coordinates": {
+    "lat": 38.8938164,
+    "lng": -77.048159
+   },
+   "source": "openstreetmap_places",
+   "data_status": "cached",
+   "confidence": 0.6,
+   "provider_tags": {
+    "tourism": "museum"
+   }
+  },
+  {
+   "place_id": "node/358958274",
+   "name": "Japanese Lantern",
+   "category": "memorial",
+   "coordinates": {
+    "lat": 38.8865627,
+    "lng": -77.0413707
+   },
+   "source": "openstreetmap_places",
+   "data_status": "cached",
+   "confidence": 0.6,
+   "provider_tags": {
+    "historic": "memorial",
+    "memorial": "sculpture",
+    "wikidata": "Q6158251",
+    "wikipedia": "en:Japanese Lantern (Washington, D.C.)"
+   }
+  },
+  {
+   "place_id": "node/495884092",
+   "name": "Western Lowland Gorilla",
+   "category": "attraction",
+   "coordinates": {
+    "lat": 38.9300665,
+    "lng": -77.0483027
+   },
+   "source": "openstreetmap_places",
+   "data_status": "cached",
+   "confidence": 0.6,
+   "provider_tags": {
+    "tourism": "attraction",
+    "attraction": "animal"
+   }
+  },
+  {
+   "place_id": "node/367144492",
+   "name": "B'Nai B'Rith Klutznick Museum",
+   "category": "museum",
+   "coordinates": {
+    "lat": 38.9062227,
+    "lng": -77.0383102
+   },
+   "source": "openstreetmap_places",
+   "data_status": "cached",
+   "confidence": 0.6,
+   "provider_tags": {
+    "tourism": "museum"
+   }
+  },
+  {
+   "place_id": "node/356601041",
+   "name": "Alexandria Historic District",
+   "category": "district",
+   "coordinates": {
+    "lat": 38.8051394,
+    "lng": -77.046931
+   },
+   "source": "openstreetmap_places",
+   "data_status": "cached",
+   "confidence": 0.6,
+   "provider_tags": {
+    "place": "neighbourhood",
+    "historic": "district",
+    "wikidata": "Q4720976"
+   }
+  },
+  {
+   "place_id": "node/367144495",
+   "name": "Smithsonian Institution Anacostia Community Museum",
+   "category": "museum",
+   "coordinates": {
+    "lat": 38.8565015,
+    "lng": -76.9769195
+   },
+   "source": "openstreetmap_places",
+   "data_status": "cached",
+   "confidence": 0.6,
+   "provider_tags": {
+    "tourism": "museum"
+   }
+  },
+  {
+   "place_id": "node/358253374",
+   "name": "Mount Rainier Historic District",
+   "category": "district",
+   "coordinates": {
+    "lat": 38.9413941,
+    "lng": -76.9624102
+   },
+   "source": "openstreetmap_places",
+   "data_status": "cached",
+   "confidence": 0.6,
+   "provider_tags": {
+    "historic": "district",
+    "wikidata": "Q6923132"
+   }
+  },
+  {
+   "place_id": "node/367996966",
+   "name": "Drug Enforcement Agency Museum and Visitors Center",
+   "category": "museum",
+   "coordinates": {
+    "lat": 38.8646656,
+    "lng": -77.0581224
+   },
+   "source": "openstreetmap_places",
+   "data_status": "cached",
+   "confidence": 0.6,
+   "provider_tags": {
+    "tourism": "museum"
+   }
+  },
+  {
+   "place_id": "node/358955181",
+   "name": "Homeopathic Hospital",
+   "category": "hospital",
+   "coordinates": {
+    "lat": 38.905945,
+    "lng": -77.0141429
+   },
+   "source": "openstreetmap_places",
+   "data_status": "cached",
+   "confidence": 0.6,
+   "provider_tags": {
+    "historic": "hospital"
+   }
+  },
+  {
+   "place_id": "node/358957631",
+   "name": "Sisters Public School",
+   "category": "school",
+   "coordinates": {
+    "lat": 38.9017784,
+    "lng": -77.0119207
+   },
+   "source": "openstreetmap_places",
+   "data_status": "cached",
+   "confidence": 0.6,
+   "provider_tags": {
+    "historic": "school"
+   }
+  },
+  {
+   "place_id": "node/454393596",
+   "name": "USS Maine",
+   "category": "attraction",
+   "coordinates": {
+    "lat": 38.8765126,
+    "lng": -77.0747076
+   },
+   "source": "openstreetmap_places",
+   "data_status": "cached",
+   "confidence": 0.6,
+   "provider_tags": {
+    "tourism": "attraction",
+    "historic": "memorial",
+    "memorial": "ship_mast",
+    "wikidata": "Q14713401"
+   }
+  },
+  {
+   "place_id": "node/515463132",
+   "name": "USS Serpens Monument",
+   "category": "attraction",
+   "coordinates": {
+    "lat": 38.8740241,
+    "lng": -77.0686903
+   },
+   "source": "openstreetmap_places",
+   "data_status": "cached",
+   "confidence": 0.6,
+   "provider_tags": {
+    "tourism": "attraction",
+    "historic": "memorial",
+    "memorial": "plaque",
+    "wikidata": "Q110856310"
+   }
+  },
+  {
+   "place_id": "node/564589907",
+   "name": "Nurses Memorial",
+   "category": "attraction",
+   "coordinates": {
+    "lat": 38.8748637,
+    "lng": -77.0748492
+   },
+   "source": "openstreetmap_places",
+   "data_status": "cached",
+   "confidence": 0.6,
+   "provider_tags": {
+    "tourism": "attraction",
+    "historic": "memorial",
+    "memorial": "plaque",
+    "wikidata": "Q14713230"
+   }
+  },
+  {
+   "place_id": "node/453542780",
+   "name": "Rock of the Marne",
+   "category": "attraction",
+   "coordinates": {
+    "lat": 38.8767689,
+    "lng": -77.0737967
+   },
+   "source": "openstreetmap_places",
+   "data_status": "cached",
+   "confidence": 0.6,
+   "provider_tags": {
+    "tourism": "attraction",
+    "historic": "memorial"
+   }
+  },
+  {
+   "place_id": "node/453542784",
+   "name": "Challenger Space Shuttle Memorial",
+   "category": "attraction",
+   "coordinates": {
+    "lat": 38.8767466,
+    "lng": -77.0740393
+   },
+   "source": "openstreetmap_places",
+   "data_status": "cached",
+   "confidence": 0.6,
+   "provider_tags": {
+    "tourism": "attraction",
+    "historic": "memorial",
+    "memorial": "plaque"
+   }
+  },
+  {
+   "place_id": "node/453542787",
+   "name": "Iran Rescue Mission Memorial",
+   "category": "attraction",
+   "coordinates": {
+    "lat": 38.8767593,
+    "lng": -77.0740054
+   },
+   "source": "openstreetmap_places",
+   "data_status": "cached",
+   "confidence": 0.6,
+   "provider_tags": {
+    "tourism": "attraction",
+    "historic": "memorial",
+    "memorial": "war_memorial"
+   }
+  },
+  {
+   "place_id": "node/453542795",
+   "name": "Columbia Space Shuttle Memorial",
+   "category": "attraction",
+   "coordinates": {
+    "lat": 38.8767717,
+    "lng": -77.0739722
+   },
+   "source": "openstreetmap_places",
+   "data_status": "cached",
+   "confidence": 0.6,
+   "provider_tags": {
+    "tourism": "attraction",
+    "historic": "memorial",
+    "memorial": "plaque"
+   }
+  },
+  {
+   "place_id": "node/511968970",
+   "name": "September 11 Memorial",
+   "category": "attraction",
+   "coordinates": {
+    "lat": 38.8734624,
+    "lng": -77.0609141
+   },
+   "source": "openstreetmap_places",
+   "data_status": "cached",
+   "confidence": 0.6,
+   "provider_tags": {
+    "tourism": "attraction",
+    "historic": "memorial"
+   }
+  },
+  {
+   "place_id": "node/358955106",
+   "name": "General Jose de San Martin Memorial",
+   "category": "artwork",
+   "coordinates": {
+    "lat": 38.8950057,
+    "lng": -77.0452414
+   },
+   "source": "openstreetmap_places",
+   "data_status": "cached",
+   "confidence": 0.6,
+   "provider_tags": {
+    "tourism": "artwork",
+    "historic": "memorial",
+    "memorial": "statue",
+    "wikidata": "Q5531982",
+    "artwork_type": "statue"
+   }
+  },
+  {
+   "place_id": "node/75405297",
+   "name": "East Corner Boundary Stone",
+   "category": "boundary_stone",
+   "coordinates": {
+    "lat": 38.8928623,
+    "lng": -76.909366
+   },
+   "source": "openstreetmap_places",
+   "data_status": "cached",
+   "confidence": 0.6,
+   "provider_tags": {
+    "historic": "boundary_stone"
+   }
+  },
+  {
+   "place_id": "node/75405965",
+   "name": "North Corner Boundary Marker of the Original District of Columbia",
+   "category": "boundary_stone",
+   "coordinates": {
+    "lat": 38.995968,
+    "lng": -77.0409665
+   },
+   "source": "openstreetmap_places",
+   "data_status": "cached",
+   "confidence": 0.6,
+   "provider_tags": {
+    "historic": "boundary_stone"
+   }
+  },
+  {
+   "place_id": "node/358955682",
+   "name": "Jane A Delano and the Nurses Who Died in Service in World War I",
+   "category": "memorial",
+   "coordinates": {
+    "lat": 38.8949423,
+    "lng": -77.0407839
+   },
+   "source": "openstreetmap_places",
+   "data_status": "cached",
+   "confidence": 0.6,
+   "provider_tags": {
+    "historic": "memorial"
+   }
+  },
+  {
+   "place_id": "node/356568582",
+   "name": "Houston School",
+   "category": "school",
+   "coordinates": {
+    "lat": 38.8126132,
+    "lng": -77.0480325
+   },
+   "source": "openstreetmap_places",
+   "data_status": "cached",
+   "confidence": 0.6,
+   "provider_tags": {
+    "amenity": "school",
+    "historic": "yes"
+   }
+  },
+  {
+   "place_id": "node/358245326",
+   "name": "Lareine High School",
+   "category": "school",
+   "coordinates": {
+    "lat": 38.8541224,
+    "lng": -76.9193995
+   },
+   "source": "openstreetmap_places",
+   "data_status": "cached",
+   "confidence": 0.6,
+   "provider_tags": {
+    "amenity": "school",
+    "historic": "school"
+   }
+  },
+  {
+   "place_id": "node/358245442",
+   "name": "Pallotti College",
+   "category": "school",
+   "coordinates": {
+    "lat": 38.9707596,
+    "lng": -76.975367
+   },
+   "source": "openstreetmap_places",
+   "data_status": "cached",
+   "confidence": 0.6,
+   "provider_tags": {
+    "amenity": "school",
+    "historic": "yes"
+   }
+  }
+ ],
+ "targeted_lookups": [
+  {
+   "place_id": "way/398810868",
+   "name": "National Museum of African American History and Culture",
+   "category": "museum",
+   "coordinates": {
+    "lat": 38.8911,
+    "lng": -77.0327
+   },
+   "provider_tags": {
+    "tourism": "museum",
+    "wikidata": "Q1967614",
+    "wikipedia": "en:National Museum of African American History and Culture"
+   },
+   "proposal_confidence": 0.88
+  },
+  {
+   "place_id": "way/66418944",
+   "name": "National Gallery of Art",
+   "category": "museum",
+   "coordinates": {
+    "lat": 38.8913,
+    "lng": -77.0199
+   },
+   "provider_tags": {
+    "tourism": "museum",
+    "wikidata": "Q214867",
+    "wikipedia": "en:National Gallery of Art"
+   },
+   "proposal_confidence": 0.85
+  },
+  {
+   "place_id": "node/13009137100",
+   "name": "National Archives",
+   "category": "attraction",
+   "coordinates": {
+    "lat": 38.8928,
+    "lng": -77.023
+   },
+   "provider_tags": {
+    "tourism": "attraction",
+    "wikidata": "Q518155",
+    "wikipedia": "en:National Archives Building",
+    "heritage": "1"
+   },
+   "proposal_confidence": 0.8
+  },
+  {
+   "place_id": "way/1332068226",
+   "name": "Lincoln Memorial",
+   "category": "memorial",
+   "coordinates": {
+    "lat": 38.8893,
+    "lng": -77.0502
+   },
+   "provider_tags": {
+    "tourism": "attraction",
+    "historic": "memorial",
+    "wikidata": "Q213559",
+    "wikipedia": "en:Lincoln Memorial",
+    "heritage": "1"
+   },
+   "proposal_confidence": 0.95,
+   "must_visit": true
+  }
+ ]
+}

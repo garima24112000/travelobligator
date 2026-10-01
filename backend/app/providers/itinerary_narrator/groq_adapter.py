@@ -6,7 +6,6 @@ from typing import Any
 from pydantic import BaseModel, Field, ValidationError
 
 from app.providers.itinerary_narrator.contract import NARRATOR_SYSTEM_PROMPT, build_grounded_prompt_body
-from app.providers.ai_failure import classify_and_message
 from app.core.config import get_settings
 from app.models.itinerary_narrative import (
     ItineraryNarrativeDayOutput,
@@ -16,6 +15,13 @@ from app.models.itinerary_narrative import (
     validate_narrative_against_request,
 )
 from app.providers.itinerary_narrator.base import ItineraryNarratorProvider
+from app.providers.itinerary_narrator.structural_retry import (
+    MAX_NARRATOR_ATTEMPTS,
+    RETRY_FORMAT_REMINDER,
+    log_retry_outcome,
+    log_retrying,
+    structural_failure_message,
+)
 
 # Groq-backed itinerary narrator adapter (Step 182F,
 # docs/13_llm_reasoning_pipeline.md, docs/14_backend_architecture.md).
@@ -159,16 +165,32 @@ class GroqItineraryNarratorProvider(ItineraryNarratorProvider):
             except Exception as exc:  # missing package / bad config -> not_connected
                 return self._not_connected_result(f"Groq client could not be initialized: {exc}")
 
-        try:
-            raw_output = client.invoke(_build_prompt(request))
-        except Exception as exc:  # API/runtime/timeout failure -> failed, never fabricated
-            return self._failed_result(classify_and_message("Groq", exc)[1])
+        # Section 202C.1D: one initial attempt + at most one retry, and only for
+        # a STRUCTURAL output failure (see `structural_retry.py`). Everything
+        # else -- rate limit, auth, timeout, provider error, and any parsed
+        # result that `_build_result` rejects -- returns immediately.
+        prompt = _build_prompt(request)
+        failure_message = "Groq did not return a structured response."
+        for attempt in range(1, MAX_NARRATOR_ATTEMPTS + 1):
+            attempt_prompt = prompt if attempt == 1 else f"{prompt}\n\n{RETRY_FORMAT_REMINDER}"
+            try:
+                raw_output = client.invoke(attempt_prompt)
+            except Exception as exc:  # API/runtime/timeout failure -> failed, never fabricated
+                structural, failure_message = structural_failure_message("Groq", exc)
+                if not structural:
+                    return self._failed_result(failure_message)
+            else:
+                output_dict = self._coerce_output(raw_output)
+                if output_dict is not None:
+                    if attempt > 1:
+                        log_retry_outcome(self.provider_name, recovered=True)
+                    return self._build_result(request, output_dict)
+                failure_message = "Groq did not return a structured response."
+            if attempt == 1:
+                log_retrying(self.provider_name)
 
-        output_dict = self._coerce_output(raw_output)
-        if output_dict is None:
-            return self._failed_result("Groq did not return a structured response.")
-
-        return self._build_result(request, output_dict)
+        log_retry_outcome(self.provider_name, recovered=False)
+        return self._failed_result(failure_message)
 
     def _build_client(self) -> Any:
         """Lazily imports and constructs the real Groq client, bound to

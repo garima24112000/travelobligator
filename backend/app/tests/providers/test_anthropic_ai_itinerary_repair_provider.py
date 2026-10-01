@@ -131,7 +131,7 @@ def _valid_tool_input(**overrides: object) -> dict[str, object]:
         "repaired_days": [
             {
                 "day_index": 2,
-                "candidate_ids": ["openstreetmap_places:way/2"],
+                "candidate_ids": ["c2"],
                 "rationale": "Kept only the closer stop to reduce the day's spread.",
             }
         ],
@@ -192,7 +192,7 @@ def test_repairing_an_unaffected_day_is_rejected() -> None:
         repaired_days=[
             {
                 "day_index": 1,
-                "candidate_ids": ["openstreetmap_places:way/1"],
+                "candidate_ids": ["c1"],
                 "rationale": "Changed the unaffected day.",
             }
         ]
