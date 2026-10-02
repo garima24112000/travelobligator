@@ -877,24 +877,21 @@ class ExperiencePlannerService(PlanningStageService):
 
             # Section 193C: if LLM #2 explicitly selected one or more
             # restaurant-category candidates for this day, honor that
-            # choice instead of the geographic nearest-neighbor
-            # suggestion -- the same "use only what the LLM actually
-            # selected" principle as attractions above. A day the AI
-            # reasoning didn't mention any restaurant for still falls
-            # back to the existing geographic suggestion, unchanged.
+            # choice ahead of the geographic nearest-neighbor suggestion.
+            # Section 203C.2B (final correction): the model's pick is a
+            # PREFERENCE only. It was made for the day as the model proposed
+            # it, which a regroup may since have changed, so it goes through
+            # the same hard radius and no-repeat rules as every other
+            # candidate, measured against this day's final stops.
             ai_restaurants_for_day = ai_restaurants_by_day.get(day_number) if used_ai_reasoning else None
-            if ai_restaurants_for_day:
-                restaurant_suggestions = [
-                    _build_restaurant_suggestion(restaurant) for restaurant in ai_restaurants_for_day
-                ]
-            else:
-                restaurant_suggestions = _suggest_nearby_restaurants(
-                    experiences,
-                    candidate_restaurants,
-                    warnings,
-                    restaurant_quality_lookup,
-                    already_suggested=suggested_restaurant_keys,
-                )
+            restaurant_suggestions = _suggest_nearby_restaurants(
+                experiences,
+                candidate_restaurants,
+                warnings,
+                restaurant_quality_lookup,
+                already_suggested=suggested_restaurant_keys,
+                preferred=ai_restaurants_for_day,
+            )
             accommodation_suggestions = _suggest_nearby_accommodations(
                 experiences, candidate_accommodation_pois, warnings, accommodation_quality_lookup
             )
@@ -1694,6 +1691,7 @@ def _suggest_nearby_restaurants(
     warnings: list[str],
     quality_lookup: dict[int, CandidateQualityScore] | None = None,
     already_suggested: set[str] | None = None,
+    preferred: list[dict[str, Any]] | None = None,
 ) -> list[RestaurantSuggestion]:
     """Suggest up to `_MAX_RESTAURANT_SUGGESTIONS_PER_DAY` restaurants near
     this day's scheduled experiences.
@@ -1705,7 +1703,11 @@ def _suggest_nearby_restaurants(
         nearby; when none is, nothing is suggested and the day says so --
         a far-away restaurant is never presented as nearby;
       * a restaurant already suggested on an earlier day (`already_suggested`,
-        updated in place) is skipped while another nearby one is available.
+        updated in place) is never suggested again -- the day shows fewer
+        than two, or none, rather than a repeat;
+      * `preferred` (the model's own restaurant picks for the day) only
+        orders the nearby list; it never bypasses the radius or the
+        no-repeat rule.
 
     Only ever draws from `candidate_restaurants` (real provider-backed
     candidates); never invents a restaurant. The day anchor is the first
@@ -1759,15 +1761,166 @@ def _suggest_nearby_restaurants(
         nearby.sort(key=lambda item: _distance_and_quality_sort_key(item[1], quality_lookup.get(id(item[0]))))
     else:
         nearby.sort(key=lambda item: item[1])
+    if preferred:
+        # A model-picked restaurant only moves to the front of the nearby
+        # list; it is still subject to the radius and the no-repeat rule.
+        preferred_ids = {id(restaurant) for restaurant in preferred}
+        nearby.sort(key=lambda item: id(item[0]) not in preferred_ids)
 
-    # Prefer restaurants no earlier day already suggested; fall back to a
-    # repeat only when this day has no other nearby candidate.
+    # Hard contract: a place suggested on an earlier day is never suggested
+    # again. A day is shown fewer than two (or none) rather than a repeat.
     seen = already_suggested if already_suggested is not None else set()
-    fresh = [item for item in nearby if _restaurant_key(item[0]) not in seen]
-    repeats = [item for item in nearby if _restaurant_key(item[0]) in seen]
-    chosen = (fresh + repeats)[:_MAX_RESTAURANT_SUGGESTIONS_PER_DAY]
-    seen.update(_restaurant_key(restaurant) for restaurant, _ in chosen)
+    chosen: list[tuple[dict[str, Any], float]] = []
+    for item in nearby:
+        key = _restaurant_key(item[0])
+        if key in seen:
+            continue
+        seen.add(key)
+        chosen.append(item)
+        if len(chosen) == _MAX_RESTAURANT_SUGGESTIONS_PER_DAY:
+            break
+    if not chosen:
+        warnings.append(_NO_NEARBY_RESTAURANTS_WARNING)
     return [_build_restaurant_suggestion(restaurant) for restaurant, _ in chosen]
+
+
+_FOOD_WARNINGS = frozenset(
+    {
+        _NO_RESTAURANT_CANDIDATES_WARNING,
+        _NO_DAY_ANCHOR_WARNING,
+        _NO_COORDINATE_BACKED_RESTAURANTS_WARNING,
+        _NO_NEARBY_RESTAURANTS_WARNING,
+    }
+)
+
+
+def recompute_food_suggestions(planning_state: PlanningState) -> None:
+    """Rebuilds every day's restaurant suggestions from the FINAL schedule.
+
+    Called after a step changes which stops a day holds (Section 203C.2B,
+    final correction), so the radius and the no-repeat rule are always
+    judged against the stops the traveller is actually shown. A day's
+    current suggestions are kept first where they still qualify, so an
+    untouched day does not change.
+    """
+    plan = planning_state.experience_plan
+    if plan is None:
+        return
+    context = planning_state.destination_context
+    candidate_restaurants = list(context.candidate_restaurants) if context else []
+    quality_report = planning_state.candidate_quality_report
+    quality_lookup = _build_quality_lookup(
+        candidate_restaurants, quality_report.restaurant_scores if quality_report else None
+    )
+    seen: set[str] = set()
+    for day in plan.daily_plans:
+        current = {(suggestion.name, suggestion.address) for suggestion in day.restaurant_suggestions}
+        preferred = [
+            restaurant
+            for restaurant in candidate_restaurants
+            if (restaurant.get("name") or "", restaurant.get("address")) in current
+        ]
+        warnings = [warning for warning in day.warnings if warning not in _FOOD_WARNINGS]
+        day.restaurant_suggestions = _suggest_nearby_restaurants(
+            day.experiences,
+            candidate_restaurants,
+            warnings,
+            quality_lookup,
+            already_suggested=seen,
+            preferred=preferred,
+        )
+        day.warnings = warnings
+
+
+@dataclass(frozen=True)
+class ReplacementOption:
+    """An unused, schedulable grounded candidate that a bounded day repair
+    may put in place of an isolated stop."""
+
+    poi: dict[str, Any]
+    profile: _CandidateProfile
+    name: str
+    coordinates: GeoPoint
+
+    @property
+    def tier_rank(self) -> int:
+        return self.profile.tier_rank
+
+    @property
+    def matched_interests(self) -> frozenset[str]:
+        return frozenset(self.profile.matched_interests)
+
+
+def quality_tier_rank(tier: str | None) -> int:
+    """Rank of a scheduled stop's recorded quality tier, on the same scale
+    as `ReplacementOption.tier_rank` (unknown -> the neutral mid rank)."""
+    try:
+        return _QUALITY_TIER_RANK.get(CandidateQualityTier(tier), 2)
+    except ValueError:
+        return 2
+
+
+def unused_replacement_options(planning_state: PlanningState) -> list[ReplacementOption]:
+    """Every grounded candidate the planner itself could have scheduled but
+    did not: quality-eligible (so never rejected/private/low-priority),
+    coordinate-backed, not a low-value object, and not already on any day
+    (by provider id or name). Read-only."""
+    plan = planning_state.experience_plan
+    context = planning_state.destination_context
+    if plan is None or context is None:
+        return []
+    candidate_pois = list(context.candidate_pois)
+    quality_report = planning_state.candidate_quality_report
+    quality_lookup = _build_quality_lookup(
+        candidate_pois, quality_report.attraction_scores if quality_report else None
+    )
+    promoted_pois, _ = _build_promoted_candidate_pois(planning_state, candidate_pois)
+    pool = _select_candidates_by_quality(candidate_pois, quality_lookup) + promoted_pois
+
+    traveler_profile = planning_state.traveler_profile
+    interest_terms = (
+        traveler_profile.interests if traveler_profile else planning_state.trip_request.interests
+    )
+    canonical_interests = taxonomy.canonical_interests(interest_terms)
+
+    scheduled: set[tuple[str, str]] = set()
+    for day in plan.daily_plans:
+        for experience in day.experiences:
+            if experience.provider_place_id:
+                scheduled.add(("place_id", str(experience.provider_place_id)))
+            scheduled.add(("name", _normalize_candidate_name(experience.name)))
+
+    options: list[ReplacementOption] = []
+    for poi in pool:
+        point = _poi_coordinates(poi)
+        if point is None or _candidate_identity_keys(poi) & scheduled:
+            continue
+        profile = _candidate_profile(poi, quality_lookup.get(id(poi)), canonical_interests)
+        if profile.low_value:
+            continue
+        options.append(
+            ReplacementOption(poi=poi, profile=profile, name=str(poi.get("name") or ""), coordinates=point)
+        )
+    return options
+
+
+def build_replacement_experience(planning_state: PlanningState, option: ReplacementOption) -> ExperienceItem:
+    """The `ExperienceItem` for `option`, built exactly as the planner
+    builds any scheduled stop (same provider identity, same stable id)."""
+    plan = planning_state.experience_plan
+    used_ids = {
+        experience.experience_id
+        for day in (plan.daily_plans if plan else [])
+        for experience in day.experiences
+    }
+    return _build_experience_item(
+        option.poi,
+        set(),
+        {id(option.poi)} if option.profile.matched_interests else set(),
+        trip_id=planning_state.trip_id,
+        used_experience_ids=used_ids,
+        profile=option.profile,
+    )
 
 
 def _restaurant_key(restaurant: dict[str, Any]) -> str:

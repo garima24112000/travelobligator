@@ -531,7 +531,11 @@ def test_not_searched_status_is_distinguishable_from_other_outcomes() -> None:
 
 def test_skipped_proposals_never_produce_a_match() -> None:
     proposals = [_discovery_query(f"proposal_{i:03d}", f"query {i}") for i in range(5)]
-    places = _FakePlacesProvider(lambda term, dest: _found_response())
+    # Section 203C.2B: each query grounds to a DIFFERENT real place -- two
+    # proposals grounding to the same place would now count as one anchor.
+    places = _FakePlacesProvider(
+        lambda term, dest: _found_response(_normalized_place(name=f"Mercado {term}", place_id=f"way/{term}"))
+    )
     gateway = ProviderGateway(places=places)
     service = AIDirectedProviderDiscoveryService(gateway=gateway)
 

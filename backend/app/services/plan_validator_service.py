@@ -20,6 +20,7 @@ from app.models.routing import (
 )
 from app.core.errors import DESTINATION_UNRESOLVED_MESSAGE
 from app.services.plan_quality_findings import build_plan_quality_findings
+from app.services.must_visit_matching import resolve_must_visits
 from app.services.route_burden import day_route_burdens
 from app.services.usefulness_contract import evaluate_usefulness, usefulness_findings
 from app.services.experience_identity import experience_stable_key
@@ -451,20 +452,17 @@ class PlanValidatorService(PlanningStageService):
         # quality reason (missing coordinates, insufficient provider
         # confidence, Step 156C/156E) -- that case must still surface an
         # honest warning, not be silently treated as "found."
-        scheduled_names_lower = (
-            [
-                experience.name.lower()
-                for day_plan in planning_state.experience_plan.daily_plans
-                for experience in day_plan.experiences
-            ]
-            if planning_state.experience_plan
-            else []
-        )
-        unmatched_must_visit = [
-            term
-            for term in must_visit_terms
-            if not any(term.lower() in name for name in scheduled_names_lower)
-        ]
+        # Section 203C.2B (final correction): a must-visit is resolved by
+        # IDENTITY -- the place the provider grounded for the user's term --
+        # not by looking for the user's wording inside a scheduled name. The
+        # provider's name often differs from what the user typed (another
+        # language, another word order), and that used to report a grounded,
+        # scheduled must-visit as missing. A term that is grounded AND
+        # scheduled raises nothing; only a real problem is a warning.
+        del must_visit_terms  # resolved through `resolve_must_visits` below
+        unscheduled = [resolution for resolution in resolve_must_visits(planning_state) if not resolution.scheduled]
+        unmatched_must_visit = [resolution.term for resolution in unscheduled]
+        grounded_but_unscheduled = [resolution.term for resolution in unscheduled if resolution.grounded]
 
         if unmatched_must_visit:
             unmatched_list = ", ".join(unmatched_must_visit)
@@ -476,6 +474,13 @@ class PlanValidatorService(PlanningStageService):
                         f"The following must-visit place(s) were requested but were not "
                         f"grounded/scheduled for this destination: {unmatched_list}. "
                         f"They were not replaced with unrelated attractions."
+                        + (
+                            " Found by the provider but not scheduled: "
+                            + ", ".join(grounded_but_unscheduled)
+                            + "."
+                            if grounded_but_unscheduled
+                            else ""
+                        )
                     ),
                     affected_section="experience_plan",
                     suggested_fix=(

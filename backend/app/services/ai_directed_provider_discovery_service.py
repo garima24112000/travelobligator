@@ -17,9 +17,13 @@ from app.models.ai_provider_discovery import (
 from app.models.candidate_grounding import ProviderCandidateForGrounding
 from app.models.common import ProviderStatus
 from app.models.planning_state import PlanningState
+import re
+import unicodedata
 from typing import Any
 
 from app.providers.gateway import ProviderGateway, provider_gateway
+from app.services.anchor_category_compatibility import CATEGORY_MISMATCH_REASON, anchor_category_compatible
+from app.utils.geo import haversine_distance_km
 from app.core.provider_usage import GenerationProviderContext
 from app.services.candidate_grounding_service import find_broad_pool_name_matches
 
@@ -66,6 +70,24 @@ _RESERVE_MIN_CONFIDENCE = 0.7
 # a `NormalizedPlace` a real `PlacesProvider` call returned -- never from
 # `AICandidateProposal.candidate_name`/`search_query` text itself, and
 # never guessed when the provider finds nothing or fails.
+
+
+_SAME_ANCHOR_METERS = 150.0
+
+
+def _normalized_anchor_name(name: str) -> str:
+    plain = "".join(c for c in unicodedata.normalize("NFKD", name or "") if not unicodedata.combining(c))
+    return re.sub(r"[^a-z0-9]+", " ", plain.casefold()).strip()
+
+
+def _same_anchor(a: ProviderCandidateForGrounding, b: ProviderCandidateForGrounding) -> bool:
+    """Provider identity first; then normalised name + geographic proximity."""
+    if a.provider_name == b.provider_name and a.provider_place_id == b.provider_place_id:
+        return True
+    if _normalized_anchor_name(a.name) != _normalized_anchor_name(b.name):
+        return False
+    distance_km = haversine_distance_km(a.coordinates, b.coordinates)
+    return distance_km is not None and distance_km * 1000.0 <= _SAME_ANCHOR_METERS
 
 
 class AIDirectedProviderDiscoveryService:
@@ -175,6 +197,7 @@ class AIDirectedProviderDiscoveryService:
         )
 
         attempts_by_index: dict[int, AIProviderDiscoveryAttempt] = {}
+        kept_matches: list[ProviderCandidateForGrounding] = []
         searches_used = 0
         matched = 0
 
@@ -195,8 +218,21 @@ class AIDirectedProviderDiscoveryService:
                     "duration_ms": round(duration_ms, 3),
                 },
             )
-            if attempt.status == AIProviderDiscoveryAttemptStatus.MATCHED:
-                matched += 1
+            if attempt.status == AIProviderDiscoveryAttemptStatus.MATCHED and attempt.match is not None:
+                # Section 203C.2B (final correction): two proposals that ground
+                # to the same real place -- same provider identity, or the same
+                # normalised name within a short distance -- are ONE anchor.
+                # Searches run best-first, so the earlier (stronger) one is kept.
+                if any(_same_anchor(attempt.match, kept) for kept in kept_matches):
+                    attempt = AIProviderDiscoveryAttempt(
+                        proposal_id=proposal.proposal_id,
+                        search_query=proposal.search_query,
+                        status=AIProviderDiscoveryAttemptStatus.DUPLICATE_ANCHOR,
+                        message="Provider result is the same place an earlier proposal already grounded.",
+                    )
+                else:
+                    kept_matches.append(attempt.match)
+                    matched += 1
             attempts_by_index[index] = attempt
 
         for index in ranked[:bound]:
@@ -299,6 +335,22 @@ class AIDirectedProviderDiscoveryService:
                 search_query=query,
                 status=AIProviderDiscoveryAttemptStatus.NOT_FOUND,
                 message=response.message or "Provider search returned no usable result.",
+            )
+
+        # Section 203C.2B (final correction): geographic grounding is not
+        # enough. The provider's OWN category for the place must fit the
+        # proposed anchor type -- an apartment is not a neighbourhood, a
+        # hotel is not a landmark. Decided from provider categories only,
+        # never from the name; the place itself is not exposed further.
+        if not anchor_category_compatible(proposal.candidate_type, place.provider_tags, place.category):
+            return AIProviderDiscoveryAttempt(
+                proposal_id=proposal.proposal_id,
+                search_query=query,
+                status=AIProviderDiscoveryAttemptStatus.CATEGORY_MISMATCH,
+                message=(
+                    "Provider found a place, but its category is not compatible with the proposed "
+                    f"anchor type ({CATEGORY_MISMATCH_REASON})."
+                ),
             )
 
         match = ProviderCandidateForGrounding(

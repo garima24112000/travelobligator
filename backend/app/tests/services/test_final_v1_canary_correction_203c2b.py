@@ -453,8 +453,11 @@ def test_food_is_chosen_near_the_days_own_stops_and_not_repeated_across_days() -
 
     assert suggest(_stops(west))[0] == ["Restaurant w1", "Restaurant w2"]
     assert suggest(_stops(east))[0] == ["Restaurant e1"]  # only what is near THIS day; never the west ones
-    # a second west day gets the unused west restaurant first, then (only then) a repeat
-    assert suggest(_stops(west))[0] == ["Restaurant w3", "Restaurant w1"]
+    # a second west day gets only the unused west restaurant -- never a repeat
+    assert suggest(_stops(west))[0] == ["Restaurant w3"]
+    # and a third west day gets nothing at all rather than a repeat
+    names, warnings = suggest(_stops(west))
+    assert names == [] and planner_module._NO_NEARBY_RESTAURANTS_WARNING in warnings
 
     # proximity is to the NEAREST stop of the day, not just the first one
     used.clear()

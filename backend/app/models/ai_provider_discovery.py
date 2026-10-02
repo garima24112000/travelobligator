@@ -35,6 +35,13 @@ class AIProviderDiscoveryAttemptStatus(str, Enum):
     PROVIDER_FAILED = "provider_failed"
     PROVIDER_NOT_CONNECTED = "provider_not_connected"
     NOT_SEARCHED = "not_searched"
+    # Section 203C.2B (final correction). The provider found a real place,
+    # but it is not an eligible anchor: its own category does not fit the
+    # proposed anchor type (e.g. an apartment for a neighbourhood), or it is
+    # the same place an earlier proposal already grounded. Neither carries a
+    # `match`, so neither can ever be promoted.
+    CATEGORY_MISMATCH = "grounding_category_mismatch"
+    DUPLICATE_ANCHOR = "duplicate_grounded_anchor"
 
 
 class AIProviderDiscoveryAttempt(BaseModel):

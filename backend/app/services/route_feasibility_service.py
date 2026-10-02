@@ -180,6 +180,33 @@ class RouteFeasibilityService:
             movement_data_provenance=movement_data_provenance_from_status(report_status),
         )
 
+    def replace_day_legs(
+        self,
+        report: RouteFeasibilityReport,
+        previous: list[ExperienceItem],
+        current: list[ExperienceItem],
+        results: list[RouteResult],
+    ) -> None:
+        """Swaps one day's legs in `report` for legs built from `results`
+        (the routing provider's answer for `current`, already obtained), so
+        a changed day is never routed a second time."""
+        provider_name = getattr(self.gateway.routing, "provider_name", "routing_provider")
+        stale = {(a.experience_id, b.experience_id) for a, b in zip(previous, previous[1:])}
+        positions = [
+            index
+            for index, leg in enumerate(report.legs)
+            if (leg.from_experience_id, leg.to_experience_id) in stale
+        ]
+        insert_at = positions[0] if positions else len(report.legs)
+        kept = [leg for index, leg in enumerate(report.legs) if index not in set(positions)]
+        fresh = [
+            self._build_leg(a, b, provider_name, result=result)
+            for a, b, result in zip(current, current[1:], results)
+        ]
+        report.legs = kept[:insert_at] + fresh + kept[insert_at:]
+        report.status = _aggregate_status([leg.status for leg in report.legs])
+        report.movement_data_provenance = movement_data_provenance_from_status(report.status)
+
     def _route_day(
         self,
         experiences: list[ExperienceItem],

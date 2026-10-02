@@ -80,6 +80,7 @@ def _run(args: argparse.Namespace, cache_hits: dict[str, int]) -> dict[str, Any]
     from app.repositories.factory import get_planning_state_repository
     from app.services import place_taxonomy as taxonomy
     from app.services.day_rationale import RATIONALE_WARNING_PREFIX, current_day_rationale
+    from app.services.must_visit_matching import resolve_must_visits
     from app.services.planning_orchestrator import planning_orchestrator
     from app.services.route_burden import day_route_burdens
     from app.services.usefulness_contract import evaluate_usefulness, is_meaningful_stop
@@ -160,6 +161,15 @@ def _run(args: argparse.Namespace, cache_hits: dict[str, int]) -> dict[str, Any]
         "grounded_names": [a.match.name for a in grounded_attempts],
         "promoted_names": [c.name for c in promotion.promoted_candidates] if promotion is not None else [],
     }
+    category_mismatch = not_grounded.get("grounding_category_mismatch", 0)
+    duplicate_anchors = not_grounded.get("duplicate_grounded_anchor", 0)
+    report["anchor_hygiene"] = {
+        # geographically grounded by the provider, before the category filter and de-duplication
+        "grounded_before_category_filter": len(grounded_attempts) + category_mismatch + duplicate_anchors,
+        "category_mismatch_rejected": category_mismatch,
+        "duplicate_anchors_removed": duplicate_anchors,
+        "final_promoted_anchors": len(promotion.promoted_candidates) if promotion is not None else 0,
+    }
 
     # -- schedule -----------------------------------------------------------------------
     plan = state.experience_plan
@@ -168,20 +178,15 @@ def _run(args: argparse.Namespace, cache_hits: dict[str, int]) -> dict[str, Any]
     scheduled_ids = {experience.provider_place_id for experience in scheduled if experience.provider_place_id}
 
     # -- must-visits ---------------------------------------------------------------------
-    grounded_terms: dict[str, dict[str, Any]] = {}
-    for term in must_visit:
-        match = next(
-            (
-                poi for poi in pois
-                if _norm(poi.get("must_visit_term")) == _norm(term) or _norm(term) in _norm(poi.get("name"))
-            ),
-            None,
-        )
-        grounded_terms[term] = {
-            "grounded": match is not None,
-            "grounded_as": match.get("name") if match else None,
-            "scheduled": bool(match and match.get("place_id") in scheduled_ids),
+    # The same identity-based resolution the validator uses (never a second, looser rule).
+    grounded_terms: dict[str, dict[str, Any]] = {
+        resolution.term: {
+            "grounded": resolution.grounded,
+            "grounded_as": resolution.grounded_names[0] if resolution.grounded_names else None,
+            "scheduled": resolution.grounded and resolution.scheduled,
         }
+        for resolution in resolve_must_visits(state)
+    }
     report["must_visits"] = {
         "requested": must_visit,
         "grounded": [term for term, info in grounded_terms.items() if info["grounded"]],
@@ -323,6 +328,24 @@ def _run(args: argparse.Namespace, cache_hits: dict[str, int]) -> dict[str, Any]
         for burden in day_route_burdens(state)
     ]
 
+    # -- route repair (one bounded attempt per long-route day) ------------------------------------
+    repair = state.route_burden_repair_report
+    report["route_repair"] = [
+        {
+            "day": attempt.day_number,
+            "route_burden_repair_attempted": attempt.route_burden_repair_attempted,
+            "reason": attempt.reason,
+            "replaced_place": attempt.replaced_place,
+            "replacement_place": attempt.replacement_place,
+            "before_distance_meters": attempt.before_distance_meters,
+            "before_duration_seconds": attempt.before_duration_seconds,
+            "after_distance_meters": attempt.after_distance_meters,
+            "after_duration_seconds": attempt.after_duration_seconds,
+            "accepted": attempt.accepted,
+        }
+        for attempt in (repair.attempts if repair is not None else [])
+    ]
+
     # -- food locality ---------------------------------------------------------------------------
     all_suggestions = [suggestion.name for day in days for suggestion in day.restaurant_suggestions]
     food_days: list[dict[str, Any]] = []
@@ -337,11 +360,17 @@ def _run(args: argparse.Namespace, cache_hits: dict[str, int]) -> dict[str, Any]
             {
                 "day": day.day_number,
                 "suggestions": [suggestion.name for suggestion in day.restaurant_suggestions],
-                "proximity_available": bool(distances) and max(distances) <= _FOOD_NEARBY_KM,
+                # yes only when EVERY displayed suggestion is measurably within the radius
+                "proximity_available": bool(day.restaurant_suggestions)
+                and len(distances) == len(day.restaurant_suggestions)
+                and max(distances) <= _FOOD_NEARBY_KM,
                 "farthest_suggestion_km": round(max(distances), 2) if distances else None,
+                "suggestions_beyond_radius": (len(day.restaurant_suggestions) - len(distances))
+                + sum(1 for distance in distances if distance > _FOOD_NEARBY_KM),
             }
         )
     report["food_locality"] = {
+        "suggestions_beyond_radius": sum(day["suggestions_beyond_radius"] for day in food_days),
         "repeated_suggestion_count": len(all_suggestions) - len(set(all_suggestions)),
         "days": food_days,
     }
@@ -465,6 +494,7 @@ def _acceptance(report: dict[str, Any]) -> dict[str, Any]:
     )
     food = report.get("food_locality") or {}
     check("no restaurant repeated across days", food.get("repeated_suggestion_count", 0) == 0, "food locality")
+    check("no food suggestion beyond the nearby radius", food.get("suggestions_beyond_radius", 0) == 0, "food locality")
     check(
         "no stale rationale",
         not (report.get("rationale_consistency") or {}).get("stale_rationale_detected"),
@@ -540,6 +570,13 @@ def _render(report: dict[str, Any]) -> str:
     row("promoted", anchors["promoted"])
     row("grounded names", "; ".join(anchors["grounded_names"]) or "none")
 
+    hygiene = report["anchor_hygiene"]
+    section("ANCHOR HYGIENE")
+    row("grounded before category filter", hygiene["grounded_before_category_filter"])
+    row("category mismatch rejected", hygiene["category_mismatch_rejected"])
+    row("duplicate anchors removed", hygiene["duplicate_anchors_removed"])
+    row("final promoted anchors", hygiene["final_promoted_anchors"])
+
     must = report["must_visits"]
     section("MUST-VISITS")
     for key in ("requested", "grounded", "scheduled", "unresolved"):
@@ -588,9 +625,22 @@ def _render(report: dict[str, Any]) -> str:
             f"{day['max_leg_duration_seconds']} s | long-route flag: {'YES' if day['long_route'] else 'no'}"
         )
 
+    section("ROUTE REPAIR")
+    if not report["route_repair"]:
+        lines.append("- no long-route day; no repair needed")
+    for attempt in report["route_repair"]:
+        lines.append(
+            f"- day {attempt['day']}: attempted: {'yes' if attempt['route_burden_repair_attempted'] else 'no'}"
+            f" | before: {attempt['before_distance_meters']} m, {attempt['before_duration_seconds']} s"
+            f" | replaced: {attempt['replaced_place'] or 'none'} -> {attempt['replacement_place'] or 'none'}"
+            f" | after: {attempt['after_distance_meters']} m, {attempt['after_duration_seconds']} s"
+            f" | accepted: {'yes' if attempt['accepted'] else 'no'} ({attempt['reason']})"
+        )
+
     food = report["food_locality"]
     section("FOOD LOCALITY")
     row("repeated suggestion count", food["repeated_suggestion_count"])
+    row("suggestions beyond radius", food["suggestions_beyond_radius"])
     for day in food["days"]:
         lines.append(
             f"- day {day['day']}: proximity available: {'yes' if day['proximity_available'] else 'no'}"

@@ -18,6 +18,7 @@ from app.models.candidate_quality import CandidateQualityReport
 from app.models.flight import FlightSearchResult
 from app.models.inventory_sufficiency import InventorySufficiencyReport, ProviderUsageReport
 from app.models.itinerary_narrative import ItineraryNarrativeReport
+from app.models.route_burden_repair import RouteBurdenRepairReport
 from app.models.common import (
     AccommodationType,
     ChecklistItemStatus,
@@ -1411,6 +1412,9 @@ class PlanningState(BaseModel):
     inventory_sufficiency_report: InventorySufficiencyReport | None = None
     # Provider calls/credits the LAST generation spent (counts only).
     provider_usage_report: ProviderUsageReport | None = None
+    # What the single bounded post-routing repair did for each long-route
+    # day of the LAST generation (None when no day needed one).
+    route_burden_repair_report: RouteBurdenRepairReport | None = None
     # True once this generation used its single deterministic top-up pass
     # for an underfilled plan (reset by the inventory sufficiency gate at
     # the start of every generation).

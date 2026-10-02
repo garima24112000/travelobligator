@@ -59,6 +59,7 @@ from app.services.plan_validator_service import PlanValidatorService
 from app.services.regeneration_readiness_service import RegenerationReadinessService
 from app.services.revision_lineage_service import RevisionLineageService
 from app.services.route_aware_sequencing_service import RouteAwareSequencingService
+from app.services.route_burden_repair_service import apply_route_burden_repair_safely
 from app.services.route_feasibility_service import RouteFeasibilityService
 from app.services.stay_transport_service import StayTransportService
 from app.services.travel_time_buffer_service import TravelTimeBufferService
@@ -909,6 +910,12 @@ class PlanningOrchestrator:
                 # legs are built from consecutive scheduled pairs, which
                 # just changed for at least one day.
                 self._build_route_feasibility_report_safe(planning_state, provider_context)
+
+        # Section 203C.2B (final correction): one bounded repair attempt per
+        # long-route day, on the final routed order. Fails safe.
+        apply_route_burden_repair_safely(
+            planning_state, self.route_feasibility_service, provider_context
+        )
 
         # Step 166C: provider-backed travel-time buffer reporting for
         # consecutive scheduled experiences, computed after

@@ -437,7 +437,12 @@ class GeoapifyPlacesAdapter(DestinationResolutionMixin, PlacesProvider):
         return response
 
     def _enrich_with_details(self, place: NormalizedPlace) -> NormalizedPlace | None:
-        if place.provider_tags or not place.place_id.startswith("geoapify/"):
+        existing_tags = dict(place.provider_tags or {})
+        # Details add Wikipedia/Wikidata/heritage evidence. They are only
+        # worth a call for a place that has none yet.
+        if not place.place_id.startswith("geoapify/") or any(
+            existing_tags.get(key) for key in ("wikipedia", "wikidata", "heritage")
+        ):
             return None
         raw_id = place.place_id.split("/", 1)[1]
         query_hash = make_query_hash({"id": raw_id, "lang": _LANGUAGE, "schema": _CACHE_SCHEMA})
@@ -490,6 +495,7 @@ class GeoapifyPlacesAdapter(DestinationResolutionMixin, PlacesProvider):
         tags.update(evidence_tags(properties))
         if not tags:
             return None
+        tags = {**existing_tags, **tags}
         category = next((tags[key] for key in _CATEGORY_TAG_ORDER if tags.get(key)), place.category)
         # Identity, name and coordinates stay exactly as the geocoder returned them.
         return place.model_copy(update={"provider_tags": tags, "category": category})

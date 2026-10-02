@@ -25,6 +25,7 @@ from app.models.common import GeoPoint
 from app.providers import geoapify_client
 from app.providers.errors import ProviderRequestError
 from app.providers.geocoding.base import BoundingBox, GeocodeHit, GeocoderError, GeocodingProvider
+from app.providers.places.geoapify_categories import taxonomy_tags_from_categories
 from app.core.provider_usage import ProviderUsageTracker
 
 _LANGUAGE = "en"
@@ -131,10 +132,21 @@ class GeoapifyGeocoder(GeocodingProvider):
             source=self.provider_name,
             provider_place_id=f"{self.provider_name}/{place_id}",
             feature_class="place" if result_type in _AREA_RESULT_TYPES else (result_type or "unknown"),
-            feature_type=category.rsplit(".", 1)[-1] if category else result_type,
+            # An area keeps its own type (suburb, district, ...); a specific
+            # feature is described by the leaf of Geoapify's category path.
+            feature_type=(
+                result_type
+                if result_type in _AREA_RESULT_TYPES
+                else (category.rsplit(".", 1)[-1] if category else result_type)
+            ),
             alt_names=tuple(n for n in (own_component,) if n),
             address=address,
             bounding_box=_bounding_box(result.get("bbox")),
+            # Section 203C.2B (final correction): Geoapify's own category for
+            # the place, renamed into the taxonomy's tag vocabulary, so a
+            # grounded place can be checked against the kind of anchor that
+            # was proposed. Provider classification only -- never the name.
+            tags=taxonomy_tags_from_categories([category]) if category else {},
         )
 
     def search_destination(self, client: httpx.Client, query: str) -> GeocodeHit | None:

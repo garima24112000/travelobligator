@@ -470,6 +470,14 @@ class Settings(BaseSettings):
     route_burden_max_day_seconds_packed: int = Field(
         default=7200, alias="ROUTE_BURDEN_MAX_DAY_SECONDS_PACKED", ge=60
     )
+    # One bounded, deterministic replacement of a geographically isolated
+    # stop per long-route day (`services/route_burden_repair_service.py`).
+    # Kept only when the provider-measured walking total falls by at least
+    # this share and no leg gets longer.
+    route_burden_repair_enabled: bool = Field(default=True, alias="ROUTE_BURDEN_REPAIR_ENABLED")
+    route_burden_repair_min_improvement_ratio: float = Field(
+        default=0.15, alias="ROUTE_BURDEN_REPAIR_MIN_IMPROVEMENT_RATIO", gt=0.0, lt=1.0
+    )
     # Open-Meteo's forecast endpoint only covers the next ~16 days. A trip
     # that starts beyond it is not requested at all (reported as
     # `forecast_not_yet_available`); future weather is never invented.

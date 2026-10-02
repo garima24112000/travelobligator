@@ -45,6 +45,7 @@ from app.services.inventory_sufficiency_service import (
 from app.services.plan_validator_service import PlanValidatorService
 from app.services.usefulness_contract import evaluate_usefulness
 from app.services.route_aware_sequencing_service import RouteAwareSequencingService
+from app.services.route_burden_repair_service import apply_route_burden_repair_safely
 from app.services.route_feasibility_service import RouteFeasibilityService
 from app.services.stay_transport_service import StayTransportService
 from app.services.travel_time_buffer_service import TravelTimeBufferService
@@ -664,6 +665,11 @@ def build_route_aware_sequencing_node(
                     planning_state.provider_coverage.routes = _ROUTE_STATUS_TO_COVERAGE_VALUE.get(
                         rebuilt.status, "not_connected"
                     )
+            # Section 203C.2B (final correction): one bounded repair attempt
+            # per long-route day, on the final routed order.
+            apply_route_burden_repair_safely(
+                planning_state, resolved_route_feasibility_service, state.get("provider_context")
+            )
         except Exception:
             return {
                 "failed_nodes": ["route_aware_sequencing"],

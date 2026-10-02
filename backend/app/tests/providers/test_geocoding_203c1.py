@@ -172,7 +172,9 @@ def test_geoapify_named_place_keeps_geoapify_identity_and_is_constrained_to_the_
     # Geoapify returns no OSM type/id: the identity is Geoapify's own, never an OSM-looking id.
     assert (hit.source, hit.provider_place_id) == ("geoapify", "geoapify/51bb")
     assert hit.feature_type == "tower"
-    assert hit.tags == {}
+    # Section 203C.2B: Geoapify's own category, renamed into the taxonomy's tag
+    # vocabulary (provider classification only; no OSM identity is claimed).
+    assert hit.tags == {"man_made": "tower", "category_path": "tourism.sights.tower"}
 
 
 def test_geoapify_no_match_is_none(geoapify: GeoapifyGeocoder) -> None:
