@@ -430,7 +430,9 @@ _INTEREST_WORDS: dict[str, frozenset[str]] = {
     "museum": frozenset({"museum"}),
     "art": frozenset({"art", "gallery", "painting", "sculpture"}),
     "architecture": frozenset({"architecture", "architectural", "building", "skyscraper", "cathedral"}),
-    "shopping": frozenset({"shopping", "shop", "boutique"}),
+    # Section 203C.2B: an explicit request for markets is a shopping request
+    # (generic words only -- no place or city name).
+    "shopping": frozenset({"shopping", "shop", "boutique", "market", "bazaar", "souk"}),
 }
 
 INTEREST_CATEGORIES: dict[str, frozenset[str]] = {
@@ -449,7 +451,7 @@ INTEREST_CATEGORIES: dict[str, frozenset[str]] = {
     # HISTORIC / RELIGIOUS no longer imply architecture: a pillory, a
     # memorial or a restaurant in a `historic=yes` building is not it.
     "architecture": frozenset({ARCHITECTURE}),
-    "shopping": frozenset({SHOPPING}),
+    "shopping": frozenset({SHOPPING, FOOD_MARKET}),
 }
 
 

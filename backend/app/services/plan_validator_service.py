@@ -391,22 +391,36 @@ class PlanValidatorService(PlanningStageService):
         # routing coverage is not enough -- a day of real walking beyond its
         # pace's limit, or a single very long leg, gets a user-facing
         # long-travel warning. Provider leg data only; no transit, taxi or
-        # driving time is ever substituted.
+        # driving time is ever substituted. Mixed-mode transfers: walking is
+        # judged on WALK legs only, so a leg that became a reasonable vehicle
+        # transfer no longer makes its day a long-travel day; a day whose
+        # vehicle transfers are themselves unreasonable still is one.
         for burden in day_route_burdens(planning_state):
             if not burden.long_route:
                 continue
+            if burden.excessive_walking:
+                message = (
+                    f"Day {burden.day_number} involves about "
+                    f"{round(burden.walking_duration_seconds / 60)} minutes of walking "
+                    f"({burden.walking_distance_meters / 1000:.1f} km) between stops; the longest "
+                    f"single leg is about {round(burden.max_walk_leg_duration_seconds / 60)} minutes. "
+                    "These are walking routes from the routing provider -- no public-transport "
+                    "or taxi time is available, so allow extra time or use local transport."
+                )
+            else:
+                message = (
+                    f"Day {burden.day_number} involves about "
+                    f"{round(burden.total_duration_seconds / 60)} minutes of transfers between stops, "
+                    f"including a vehicle transfer of about "
+                    f"{round(burden.max_drive_leg_duration_seconds / 60)} minutes. These are the routing "
+                    "provider's walking and driving route estimates -- no vehicle availability, fare or "
+                    "public-transport schedule is implied."
+                )
             warnings.append(
                 ValidationIssue(
                     severity=ValidationSeverity.WARNING,
                     category="long_travel_day",
-                    message=(
-                        f"Day {burden.day_number} involves about "
-                        f"{round(burden.total_duration_seconds / 60)} minutes of walking "
-                        f"({burden.total_distance_meters / 1000:.1f} km) between stops; the longest "
-                        f"single leg is about {round(burden.max_leg_duration_seconds / 60)} minutes. "
-                        "These are walking routes from the routing provider -- no public-transport "
-                        "or taxi time is available, so allow extra time or use local transport."
-                    ),
+                    message=message,
                     affected_section=f"experience_plan.daily_plans[{burden.day_number}]",
                     suggested_fix="Request changes to group this day's stops closer together.",
                 )

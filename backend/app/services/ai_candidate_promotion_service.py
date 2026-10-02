@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import logging
-import re
-import unicodedata
 from datetime import datetime, timezone
 
 from app.models.ai_candidate_promotion import AICandidatePromotionReport, PromotedAICandidate
@@ -10,6 +8,7 @@ from app.models.candidate_grounding import GroundedCandidate
 from app.models.planning_state import PlanningState
 from app.services.ai_candidate_review_service import AICandidateReviewService
 from app.utils.geo import haversine_distance_km
+from app.utils.names import same_name
 
 logger = logging.getLogger(__name__)
 
@@ -48,11 +47,6 @@ def _utc_now() -> datetime:
 _SAME_PLACE_METERS = 150.0
 
 
-def _normalized_place_name(name: str) -> str:
-    plain = "".join(c for c in unicodedata.normalize("NFKD", name or "") if not unicodedata.combining(c))
-    return re.sub(r"[^a-z0-9]+", " ", plain.casefold()).strip()
-
-
 def _same_promoted_place(existing: PromotedAICandidate, name: str, grounded: GroundedCandidate) -> bool:
     evidence = grounded.evidence
     if (
@@ -61,7 +55,8 @@ def _same_promoted_place(existing: PromotedAICandidate, name: str, grounded: Gro
         and existing.provider_source == evidence.provider_name
     ):
         return True
-    if _normalized_place_name(existing.name) != _normalized_place_name(name):
+    # Compared in any script; an empty name never matches.
+    if not same_name(existing.name, name):
         return False
     distance_km = haversine_distance_km(existing.coordinates, evidence.coordinates)
     return distance_km is not None and distance_km * 1000.0 <= _SAME_PLACE_METERS

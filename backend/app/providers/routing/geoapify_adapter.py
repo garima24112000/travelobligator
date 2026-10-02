@@ -4,7 +4,10 @@
 One request routes a whole day's ordered stops and returns one leg per
 consecutive pair, so `get_route_sequence` costs ONE request per day
 (Geoapify charges 1 credit per waypoint pair). In-city legs are walking
-routes (`GEOAPIFY_ROUTING_MODE`); no transit schedule is ever invented.
+routes (`GEOAPIFY_ROUTING_MODE`); a caller may ask for a DRIVING route for
+specific legs (`profile=RoutingProfile.DRIVING`, mixed-mode transfers),
+which is a separate request, cache entry, usage label and per-generation
+cap. No transit schedule is ever invented.
 
 Every leg result is remembered for the generation (so the feasibility,
 sequencing and buffer services read the same data without another
@@ -42,6 +45,7 @@ _ROUTE_CACHE_SOURCE = "geoapify_route"
 _CACHE_SCHEMA = "203c2b-v1"
 _SOURCE = "geoapify_routing"
 _COORDINATE_PRECISION = 6
+_DRIVE_MODE = "drive"
 
 _FAILURE_MESSAGES = {
     "not_connected": "The routing provider is not connected.",
@@ -56,6 +60,8 @@ Point = tuple[float, float]  # (lat, lon)
 
 class GeoapifyRoutingAdapter(RoutingProvider):
     provider_name = "geoapify_routing"
+    # A driving route can be requested for a single leg (mixed-mode transfers).
+    supports_alternate_mode = True
 
     def __init__(self, cache_store: ProviderCacheStore | None = None) -> None:
         settings = get_settings()
@@ -99,15 +105,31 @@ class GeoapifyRoutingAdapter(RoutingProvider):
         if not self._api_key:
             return [self._result(ProviderStatus.NOT_CONNECTED, _FAILURE_MESSAGES["not_connected"])] * len(legs)
 
-        known = [self._known_leg(origin, destination) for origin, destination in legs]
+        # Section 203C.2B (mixed-mode transfers): the configured mode (walk)
+        # unless the caller asks for a driving route for these legs.
+        alternate = profile == RoutingProfile.DRIVING and self._mode != _DRIVE_MODE
+        mode = _DRIVE_MODE if alternate else self._mode
+
+        known = [self._known_leg(origin, destination, mode) for origin, destination in legs]
         if all(result is not None for result in known):
             return [result for result in known if result is not None]
 
         context = self._context
         if context is not None:
-            if context.route_requests_left <= 0:
-                return [self._result(ProviderStatus.UNAVAILABLE, _FAILURE_MESSAGES["budget_exhausted"])] * len(legs)
-            context.route_requests_left -= 1
+            # An alternate-mode request draws on its own per-generation cap,
+            # never on the day-route allowance.
+            if alternate:
+                if context.alternate_mode_requests_left <= 0:
+                    return [
+                        self._result(ProviderStatus.UNAVAILABLE, _FAILURE_MESSAGES["budget_exhausted"])
+                    ] * len(legs)
+                context.alternate_mode_requests_left -= 1
+            else:
+                if context.route_requests_left <= 0:
+                    return [
+                        self._result(ProviderStatus.UNAVAILABLE, _FAILURE_MESSAGES["budget_exhausted"])
+                    ] * len(legs)
+                context.route_requests_left -= 1
 
         try:
             with httpx.Client(timeout=self._timeout) as client:
@@ -117,11 +139,13 @@ class GeoapifyRoutingAdapter(RoutingProvider):
                     path="/v1/routing",
                     params={
                         "waypoints": "|".join(f"{lat},{lon}" for lat, lon in points),
-                        "mode": self._mode,
+                        "mode": mode,
                     },
                     api_key=self._api_key,
                     timeout=self._timeout,
-                    api="routing",
+                    # Usage is accounted per mode: `routing` is the configured
+                    # (walking) mode, `routing_drive` the alternate one.
+                    api="routing_drive" if alternate else "routing",
                     usage=context.usage_tracker if context is not None else None,
                     # Geoapify Routing: 1 credit per waypoint pair.
                     reserve_credits=len(legs),
@@ -137,10 +161,10 @@ class GeoapifyRoutingAdapter(RoutingProvider):
             )
             return [self._result(status, _FAILURE_MESSAGES.get(exc.kind, _FAILED_MESSAGE))] * len(legs)
 
-        results = self._normalize(payload, len(legs))
+        results = self._normalize(payload, len(legs), mode)
         for (origin, destination), result in zip(legs, results):
             if result.status == ProviderStatus.SUCCESS:
-                self._remember_leg(origin, destination, result)
+                self._remember_leg(origin, destination, result, mode)
         return results
 
     # -- response ------------------------------------------------------------------
@@ -148,7 +172,7 @@ class GeoapifyRoutingAdapter(RoutingProvider):
     def _result(self, status: ProviderStatus, message: str) -> RouteResult:
         return RouteResult(provider=self.provider_name, status=status, source=_SOURCE, message=message)
 
-    def _normalize(self, payload: dict[str, Any], leg_count: int) -> list[RouteResult]:
+    def _normalize(self, payload: dict[str, Any], leg_count: int, mode: str) -> list[RouteResult]:
         features = payload.get("features")
         feature = features[0] if isinstance(features, list) and features else None
         properties = feature.get("properties") if isinstance(feature, dict) else None
@@ -183,25 +207,28 @@ class GeoapifyRoutingAdapter(RoutingProvider):
                     geometry=_parse_geojson_linestring({"type": "LineString", "coordinates": line}),
                     source=_SOURCE,
                     confidence=0.8,
-                    message=f"{self._mode} route from Geoapify Routing.",
+                    message=f"{mode} route from Geoapify Routing.",
+                    mode=mode,
                 )
             )
         return results
 
     # -- per-generation memo + provider cache ----------------------------------------
 
-    def _leg_key(self, origin: Point, destination: Point) -> str:
+    def _leg_key(self, origin: Point, destination: Point, mode: str) -> str:
+        # Coordinates + mode: a walking and a driving route for the same two
+        # points are different facts and never share a cache entry.
         return make_query_hash(
             {
                 "from": [round(origin[0], _COORDINATE_PRECISION), round(origin[1], _COORDINATE_PRECISION)],
                 "to": [round(destination[0], _COORDINATE_PRECISION), round(destination[1], _COORDINATE_PRECISION)],
-                "mode": self._mode,
+                "mode": mode,
                 "schema": _CACHE_SCHEMA,
             }
         )
 
-    def _known_leg(self, origin: Point, destination: Point) -> RouteResult | None:
-        key = self._leg_key(origin, destination)
+    def _known_leg(self, origin: Point, destination: Point, mode: str) -> RouteResult | None:
+        key = self._leg_key(origin, destination, mode)
         if self._context is not None and key in self._context.route_memo:
             return self._context.route_memo[key]
         cache_store = self._resolve_cache_store()
@@ -220,7 +247,8 @@ class GeoapifyRoutingAdapter(RoutingProvider):
                 geometry=_geometry_from_cache_payload(payload.get("geometry")),
                 source=_SOURCE,
                 confidence=0.8,
-                message=f"{self._mode} route from Geoapify Routing (cached).",
+                message=f"{mode} route from Geoapify Routing (cached).",
+                mode=mode,
             )
         except Exception:
             logger.warning("Route cache read failed; falling back to live request.")
@@ -229,8 +257,8 @@ class GeoapifyRoutingAdapter(RoutingProvider):
             self._context.route_memo[key] = result
         return result
 
-    def _remember_leg(self, origin: Point, destination: Point, result: RouteResult) -> None:
-        key = self._leg_key(origin, destination)
+    def _remember_leg(self, origin: Point, destination: Point, result: RouteResult, mode: str) -> None:
+        key = self._leg_key(origin, destination, mode)
         if self._context is not None:
             self._context.route_memo[key] = result
         cache_store = self._resolve_cache_store()

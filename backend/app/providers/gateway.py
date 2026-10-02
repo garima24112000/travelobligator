@@ -9,7 +9,7 @@ from app.models.accommodation import AccommodationSearchRequest, AccommodationSe
 from app.models.common import ProviderCoverage, ProviderStatusEntry
 from app.models.flight import FlightSearchRequest, FlightSearchResult
 from app.models.providers import ProviderResponse
-from app.models.routing import RouteRequest, RouteResult
+from app.models.routing import RouteRequest, RouteResult, RoutingProfile
 from app.providers.accommodation.base import AccommodationInventoryProvider
 from app.providers.accommodation.factory import get_accommodation_provider
 from app.providers.base import (
@@ -293,6 +293,31 @@ class ProviderGateway:
             duration_ms=duration_ms,
         )
         return results
+
+    def get_alternate_mode_route(
+        self,
+        origin: tuple[float, float],
+        destination: tuple[float, float],
+        provider_context: GenerationProviderContext | None = None,
+    ) -> RouteResult | None:
+        """ONE driving route for ONE leg (Section 203C.2B, mixed-mode
+        transfers) -- asked only for a leg whose walking route is too long.
+        None when the routing provider does not offer a second mode; never
+        a matrix, never a search over modes."""
+        provider = self.routing_for(provider_context)
+        if not getattr(provider, "supports_alternate_mode", False):
+            return None
+        started_at = time.monotonic()
+        results = provider.get_route_sequence([origin, destination], RoutingProfile.DRIVING)
+        duration_ms = (time.monotonic() - started_at) * 1000
+        result = results[0] if results else None
+        _log_provider_call(
+            provider=getattr(provider, "provider_name", None),
+            stage="routing",
+            status=_provider_status(result) if result is not None else "unavailable",
+            duration_ms=duration_ms,
+        )
+        return result
 
     def get_route(
         self, request: RouteRequest, provider_context: GenerationProviderContext | None = None

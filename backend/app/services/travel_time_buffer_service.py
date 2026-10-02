@@ -7,13 +7,16 @@ from datetime import time as time_of_day
 from app.models.common import ProviderStatus
 from app.models.planning_state import ExperienceItem, PlanningState
 from app.models.routing import (
+    TRANSFER_MODE_WALK,
     BufferSufficiencyStatus,
     MovementDataProvenance,
+    RouteLegFeasibility,
     RouteRequest,
     RouteResult,
     TravelTimeBuffer,
     TravelTimeBufferReport,
     TravelTimeBufferStatus,
+    leg_mode,
     movement_data_provenance_from_status,
 )
 from app.providers.gateway import ProviderGateway, provider_gateway
@@ -161,6 +164,13 @@ class TravelTimeBufferService:
         provider_name = getattr(self.gateway.routing, "provider_name", "routing_provider")
         buffers: list[TravelTimeBuffer] = []
 
+        feasibility = planning_state.route_feasibility_report
+        vehicle_transfers = {
+            (leg.from_experience_id, leg.to_experience_id): leg
+            for leg in (feasibility.legs if feasibility is not None else [])
+            if leg.status == ProviderStatus.SUCCESS and leg_mode(leg.mode) != TRANSFER_MODE_WALK
+        }
+
         experience_plan = planning_state.experience_plan
         if experience_plan is not None:
             for day_plan in experience_plan.daily_plans:
@@ -171,7 +181,13 @@ class TravelTimeBufferService:
                     # back from the generation's own results.
                     buffers.append(
                         self._build_buffer(
-                            experiences[index], experiences[index + 1], provider_name, provider_context
+                            experiences[index],
+                            experiences[index + 1],
+                            provider_name,
+                            provider_context,
+                            transfer=vehicle_transfers.get(
+                                (experiences[index].experience_id, experiences[index + 1].experience_id)
+                            ),
                         )
                     )
 
@@ -191,6 +207,7 @@ class TravelTimeBufferService:
         to_experience: ExperienceItem,
         provider_name: str,
         provider_context: GenerationProviderContext | None = None,
+        transfer: RouteLegFeasibility | None = None,
     ) -> TravelTimeBuffer:
         from_point = from_experience.coordinates
         to_point = to_experience.coordinates
@@ -218,7 +235,21 @@ class TravelTimeBufferService:
             destination_lat=to_point.lat,
             destination_lon=to_point.lng,
         )
-        result = _safe_get_route(self.gateway, request, provider_context)
+        if transfer is not None:
+            # Section 203C.2B (mixed-mode transfers): this leg is a vehicle
+            # transfer in the route report, so its buffer is based on that
+            # same provider driving route -- not on the walking route.
+            result = RouteResult(
+                provider=transfer.provider,
+                status=transfer.status,
+                distance_meters=transfer.distance_meters,
+                duration_seconds=transfer.duration_seconds,
+                geometry=transfer.route_geometry,
+                source=transfer.provider,
+                mode=transfer.mode,
+            )
+        else:
+            result = _safe_get_route(self.gateway, request, provider_context)
         gap_seconds = _schedule_gap_seconds(from_experience, to_experience)
 
         status, route_duration, route_distance, recommended_buffer = _buffer_fields_from_result(

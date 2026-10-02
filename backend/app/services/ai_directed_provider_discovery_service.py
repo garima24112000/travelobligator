@@ -17,13 +17,12 @@ from app.models.ai_provider_discovery import (
 from app.models.candidate_grounding import ProviderCandidateForGrounding
 from app.models.common import ProviderStatus
 from app.models.planning_state import PlanningState
-import re
-import unicodedata
 from typing import Any
 
 from app.providers.gateway import ProviderGateway, provider_gateway
 from app.services.anchor_category_compatibility import CATEGORY_MISMATCH_REASON, anchor_category_compatible
 from app.utils.geo import haversine_distance_km
+from app.utils.names import same_name
 from app.core.provider_usage import GenerationProviderContext
 from app.services.candidate_grounding_service import find_broad_pool_name_matches
 
@@ -75,16 +74,12 @@ _RESERVE_MIN_CONFIDENCE = 0.7
 _SAME_ANCHOR_METERS = 150.0
 
 
-def _normalized_anchor_name(name: str) -> str:
-    plain = "".join(c for c in unicodedata.normalize("NFKD", name or "") if not unicodedata.combining(c))
-    return re.sub(r"[^a-z0-9]+", " ", plain.casefold()).strip()
-
-
 def _same_anchor(a: ProviderCandidateForGrounding, b: ProviderCandidateForGrounding) -> bool:
-    """Provider identity first; then normalised name + geographic proximity."""
+    """Provider identity first; then normalised name + geographic proximity.
+    Names are compared in any script, and an empty name never matches."""
     if a.provider_name == b.provider_name and a.provider_place_id == b.provider_place_id:
         return True
-    if _normalized_anchor_name(a.name) != _normalized_anchor_name(b.name):
+    if not same_name(a.name, b.name):
         return False
     distance_km = haversine_distance_km(a.coordinates, b.coordinates)
     return distance_km is not None and distance_km * 1000.0 <= _SAME_ANCHOR_METERS

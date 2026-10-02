@@ -775,8 +775,31 @@ class ReadinessChecklist(BaseModel):
     items: list[ReadinessChecklistItem] = Field(default_factory=list)
 
 
+class DiversityReplacement(BaseModel):
+    replaced_place: str
+    replacement_place: str
+
+
+class DayDiversityReport(BaseModel):
+    """What the schedule-diversity pass found and did for one day when the
+    plan was scheduled (Section 203C.2B; see `services/schedule_diversity.py`).
+    Class names and place names only."""
+
+    day_number: int
+    # Stops per coarse attraction class, as scheduled by the planner.
+    class_counts: dict[str, int] = Field(default_factory=dict)
+    # True when the day still breaks a concentration rule after the pass.
+    concentration_violation: bool = False
+    # Whether an unused, quality-eligible candidate of another class existed.
+    alternatives_available: bool = False
+    repair_attempted: bool = False
+    replacements: list[DiversityReplacement] = Field(default_factory=list)
+
+
 class ExperiencePlan(BaseModel):
     experience_plan_id: str = Field(default_factory=lambda: _new_id("experience_plan"))
+    # Optional with an empty default: a plan stored before this field loads unchanged.
+    schedule_diversity: list[DayDiversityReport] = Field(default_factory=list)
 
     trip_overview: str | None = None
     daily_plans: list[DailyPlan] = Field(default_factory=list)

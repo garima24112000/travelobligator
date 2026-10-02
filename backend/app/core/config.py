@@ -478,6 +478,32 @@ class Settings(BaseSettings):
     route_burden_repair_min_improvement_ratio: float = Field(
         default=0.15, alias="ROUTE_BURDEN_REPAIR_MIN_IMPROVEMENT_RATIO", gt=0.0, lt=1.0
     )
+    # Mixed-mode transfers (Section 203C.2B). A walking leg longer than
+    # `ROUTE_BURDEN_MAX_LEG_SECONDS` gets ONE driving-route request for that
+    # same leg; this caps how many such requests one generation may make.
+    # With the cap used up, the leg stays a walking leg and keeps its warning.
+    route_alternate_mode_max_requests_per_generation: int = Field(
+        default=6, alias="ROUTE_ALTERNATE_MODE_MAX_REQUESTS_PER_GENERATION", ge=0
+    )
+    # A vehicle transfer is "reasonable" up to this long; a day's transfers
+    # of every mode together up to the day total. Beyond either the day is
+    # still a long-travel day.
+    route_burden_max_drive_leg_seconds: int = Field(
+        default=2700, alias="ROUTE_BURDEN_MAX_DRIVE_LEG_SECONDS", ge=60
+    )
+    route_burden_max_day_transfer_seconds: int = Field(
+        default=9000, alias="ROUTE_BURDEN_MAX_DAY_TRANSFER_SECONDS", ge=60
+    )
+    # Schedule diversity (`services/schedule_diversity.py`): stops of one
+    # coarse attraction class per day, and marketplace stops per day unless
+    # the traveller explicitly asked for markets/shopping.
+    schedule_diversity_enabled: bool = Field(default=True, alias="SCHEDULE_DIVERSITY_ENABLED")
+    schedule_diversity_max_per_class_per_day: int = Field(
+        default=2, alias="SCHEDULE_DIVERSITY_MAX_PER_CLASS_PER_DAY", ge=1
+    )
+    schedule_diversity_max_markets_per_day: int = Field(
+        default=1, alias="SCHEDULE_DIVERSITY_MAX_MARKETS_PER_DAY", ge=1
+    )
     # Open-Meteo's forecast endpoint only covers the next ~16 days. A trip
     # that starts beyond it is not requested at all (reported as
     # `forecast_not_yet_available`); future weather is never invented.

@@ -304,7 +304,11 @@ def test_place_round_trip_through_redis_keeps_provider_identity_and_gains_no_uns
     assert (back.place_id, back.name, back.source, back.category) == ("node/1", "Museu X", "openstreetmap_places", "museum")
     assert back.coordinates == place.coordinates and back.provider_tags == place.provider_tags
     assert back.data_status == DataStatus.CACHED  # marked cached, not re-verified
-    assert set(back.model_dump()) == set(NormalizedPlace.model_fields)  # exactly the validated boundary
+    # exactly the validated boundary: every SERIALISED field (the internal de-duplication
+    # identity is excluded from dumps by design and never leaves the provider layer)
+    serialised = {name for name, field in NormalizedPlace.model_fields.items() if not field.exclude}
+    assert set(back.model_dump()) == serialised
+    assert serialised == set(NormalizedPlace.model_fields) - {"source_entity_id", "alt_names"}
     for forbidden in ("price", "rating", "opening_hours", "hours", "availability", "booking_url", "safety"):
         assert forbidden not in back.model_dump()
         assert forbidden not in fake.data[next(iter(fake.data))][0].decode()

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timezone
 from enum import Enum
-from typing import Generic, TypeVar
+from typing import Any, Generic, TypeVar
 
 from pydantic import BaseModel, Field
 
@@ -69,6 +69,20 @@ class NormalizedPlace(BaseModel):
     # with, so classification is tag-based instead of name-based. Never a
     # rating/price/hours/review field.
     provider_tags: dict[str, str] | None = None
+    # Section 203C.2B (entity de-duplication). INTERNAL corroboration only,
+    # never an id: the sanitised identity of the underlying source object
+    # (`osm/<type>/<id>`) and the place's own other names from that record.
+    # `place_id` stays the public identity. Both are EXCLUDED from
+    # serialisation, so they never reach `PlanningState`, an API response or
+    # a log line; the provider cache stores them explicitly (see
+    # `internal_identity`). Both default to None, so places stored or cached
+    # before this section load unchanged.
+    source_entity_id: str | None = Field(default=None, exclude=True)
+    alt_names: list[str] | None = Field(default=None, exclude=True)
+
+    def internal_identity(self) -> dict[str, Any]:
+        """The excluded identity fields, for the provider cache only."""
+        return {"source_entity_id": self.source_entity_id, "alt_names": self.alt_names}
 
 
 class NormalizedDailyWeather(BaseModel):

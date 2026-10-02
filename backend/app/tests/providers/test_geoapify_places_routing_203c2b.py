@@ -15,7 +15,15 @@ from app.core.provider_usage import (
     route_request_allowance,
 )
 from app.models.candidate_quality import CandidateQualityTier
-from app.models.common import DataStatus, ProviderStatus
+from app.models.common import DataStatus, GeoPoint, ProviderStatus
+from app.models.planning_state import (
+    DailyPlan,
+    ExperienceItem,
+    ExperiencePlan,
+    PlanningState,
+    TravelGroupType,
+    TripRequest,
+)
 from app.models.routing import RouteRequest
 from app.providers import geoapify_client
 from app.providers.errors import ProviderRequestError
@@ -39,6 +47,7 @@ from app.providers.routing import geoapify_adapter as routing_module
 from app.providers.routing.factory import get_routing_provider
 from app.providers.routing.geoapify_adapter import GeoapifyRoutingAdapter
 from app.services.candidate_quality_service import CandidateQualityService
+from app.services.route_feasibility_service import RouteFeasibilityService
 from app.storage.provider_cache_store import ProviderCacheStore
 
 # Section 203C.2B: Geoapify Places + Routing + per-generation usage accounting.
@@ -729,3 +738,167 @@ def test_the_live_places_response_shape_maps_cleanly_without_wiki_fields_or_extr
     # a broad Places result never triggers Place Details, wiki fields or not
     assert network.requests["details"] == []
     assert context.usage_tracker.credits_used("place_details") == 0
+
+
+# -- generalization correction: mixed-mode routing ------------------------------------------------------
+
+
+def _mode_route_response(request: httpx.Request) -> httpx.Response:
+    """A walking route of 7500 s per leg, a driving route of 900 s per leg."""
+    waypoints = request.url.params["waypoints"].split("|")
+    drive = request.url.params["mode"] == "drive"
+    legs = [
+        {"distance": 9000.0 if drive else 7500.0, "time": 900.0 if drive else 7500.0}
+        for _ in range(len(waypoints) - 1)
+    ]
+    return httpx.Response(200, json={"features": [{"properties": {"legs": legs}, "geometry": None}]})
+
+
+def test_a_driving_route_is_a_separate_request_cache_entry_usage_label_and_cap(
+    monkeypatch: pytest.MonkeyPatch, configured: None, tmp_path: Path
+) -> None:
+    network = _Network(routing=_mode_route_response)
+    store = ProviderCacheStore(tmp_path / "c.sqlite3")
+    context = _context()
+    context.alternate_mode_requests_left = 1
+    gateway = ProviderGateway(routing=_routing(monkeypatch, network, store))
+    leg = [(50.0, 10.0), (50.0, 11.0)]
+
+    walk = gateway.get_route_sequence(leg, context)[0]
+    assert (walk.mode, walk.duration_seconds) == ("walk", 7500.0)
+    day_routes_left = context.route_requests_left
+
+    drive = gateway.get_alternate_mode_route(leg[0], leg[1], context)
+    assert (drive.mode, drive.status, drive.distance_meters, drive.duration_seconds) == (
+        "drive", ProviderStatus.SUCCESS, 9000.0, 900.0,
+    )
+    assert [request.url.params["mode"] for request in network.requests["routing"]] == ["walk", "drive"]
+    # its own cap and its own usage label; the day-route allowance is untouched
+    assert context.alternate_mode_requests_left == 0 and context.route_requests_left == day_routes_left
+    assert context.usage_tracker.credits_used("routing") == 1
+    assert context.usage_tracker.credits_used("routing_drive") == 1
+
+    # coordinates + mode is the cache key: each mode is read back as itself, with no further request
+    assert gateway.get_alternate_mode_route(leg[0], leg[1], context).duration_seconds == 900.0
+    assert gateway.get_route_sequence(leg, context)[0].duration_seconds == 7500.0
+    assert len(network.requests["routing"]) == 2
+
+    # the cap is used up: a driving route for ANOTHER leg is refused locally, never requested
+    refused = gateway.get_alternate_mode_route((50.0, 20.0), (50.0, 21.0), context)
+    assert refused.status == ProviderStatus.UNAVAILABLE and refused.distance_meters is None
+    assert len(network.requests["routing"]) == 2 and context.usage_tracker.credits_used() == 2
+
+    # a NEW generation reads both modes from the provider cache at zero cost
+    other = _context()
+    cached = ProviderGateway(routing=_routing(monkeypatch, network, ProviderCacheStore(tmp_path / "c.sqlite3")))
+    assert cached.get_alternate_mode_route(leg[0], leg[1], other).mode == "drive"
+    assert len(network.requests["routing"]) == 2 and other.usage_tracker.credits_used() == 0
+
+
+def test_a_rebuilt_route_report_never_pays_for_the_same_leg_twice_in_either_mode(
+    monkeypatch: pytest.MonkeyPatch, configured: None, tmp_path: Path
+) -> None:
+    network = _Network(routing=_mode_route_response)
+    context = _context(trip_days=1)
+    gateway = ProviderGateway(routing=_routing(monkeypatch, network, ProviderCacheStore(tmp_path / "c.sqlite3")))
+    stops = [
+        ExperienceItem(
+            experience_id=f"s{index}", name=f"Stop {index}", category="museum",
+            coordinates=GeoPoint(lat=50.0, lng=10.0 + index), provider_place_id=f"geoapify/s{index}",
+            provider_source="geoapify_places",
+        )
+        for index in range(2)
+    ]
+    state = PlanningState(
+        trip_request=TripRequest(
+            primary_destination="Fixtureville, Fixtureland", start_date="2026-11-10", end_date="2026-11-10",
+            travelers_count=2, travel_group_type=TravelGroupType.COUPLE,
+        )
+    )
+    state.experience_plan = ExperiencePlan(daily_plans=[DailyPlan(day_number=1, date="2026-11-10", experiences=stops)])
+    service = RouteFeasibilityService(gateway=gateway)
+
+    first = service.build_report(state, context)
+    second = service.build_report(state, context)  # e.g. after sequencing or a repair
+
+    for report in (first, second):
+        leg = report.legs[0]
+        assert (leg.mode, leg.duration_seconds, leg.walking_duration_seconds) == ("drive", 900.0, 7500.0)
+        assert leg.provider == "geoapify_routing" and leg.status == ProviderStatus.SUCCESS
+    # one walking day-route request and ONE driving request for the long leg, in total
+    assert [request.url.params["mode"] for request in network.requests["routing"]] == ["walk", "drive"]
+    assert context.usage_tracker.credits_used("routing") == 1
+    assert context.usage_tracker.credits_used("routing_drive") == 1
+    assert context.alternate_mode_requests_left == 5
+
+
+# -- generalization correction: one candidate per real entity -------------------------------------------
+
+
+def _osm(osm_type: str, osm_id: int, **raw: Any) -> dict[str, Any]:
+    return {"sourcename": "openstreetmap", "raw": {"osm_type": osm_type, "osm_id": osm_id, **raw}}
+
+
+def test_one_real_entity_under_an_english_and_a_local_script_name_is_one_candidate(
+    monkeypatch: pytest.MonkeyPatch, configured: None, tmp_path: Path
+) -> None:
+    """The same source object reaches the pool twice -- once per category
+    query, once under an English name and once under a local-script name,
+    with different Geoapify place ids -- and is grounded again by name."""
+    local_name = "खगोल वेधशाला"
+
+    def _places(request: httpx.Request) -> list[dict[str, Any]]:
+        categories = request.url.params["categories"]
+        if "tourism.sights" in categories:
+            return [
+                _feature("obs-en", "Royal Observatory", ["tourism", "tourism.sights"], 50.0100, 10.0100,
+                         datasource=_osm("w", 4711, tourism="attraction", name=local_name)),
+                # a DIFFERENT source object 30 m away with a different name: never merged
+                _feature("gate", "Observatory Gate", ["tourism", "tourism.sights"], 50.0102, 10.0102,
+                         datasource=_osm("n", 9001, historic="city_gate")),
+            ]
+        if "entertainment.museum" in categories:
+            return [
+                _feature("obs-local", local_name, ["entertainment", "entertainment.museum"], 50.0101, 10.0101,
+                         datasource=_osm("way", "4711", tourism="museum")),
+            ]
+        return []
+
+    def _named(text: str) -> dict[str, Any] | None:
+        if not text.startswith("Royal Astronomical Observatory"):
+            return None
+        return {"name": "Royal Astronomical Observatory", "lat": 50.01005, "lon": 10.01005, "place_id": "geo-obs",
+                "result_type": "amenity", "formatted": "Royal Astronomical Observatory",
+                "rank": {"confidence": 1, "match_type": "full_match"}}
+
+    network = _Network(
+        places=_places,
+        named=_named,
+        # Place Details reveals the grounded place's source object
+        details=lambda place_id: {"categories": ["tourism.sights"], "datasource": _osm("W", 4711, tourism="attraction")},
+    )
+    context = _context()
+    adapter = _adapter(monkeypatch, network, ProviderCacheStore(tmp_path / "c.sqlite3")).bound_to(context)
+    pool = adapter.search_attractions("Fixtureville, Fixtureland").data
+
+    assert sorted(place.name for place in pool) == ["Observatory Gate", "Royal Observatory"]
+    observatory = next(place for place in pool if place.name == "Royal Observatory")
+    # the public identity is still the Geoapify place id; the source identity is internal only
+    assert (observatory.place_id, observatory.source) == ("geoapify/obs-en", "geoapify_places")
+    assert observatory.source_entity_id == "osm/way/4711"
+    dumped = observatory.model_dump(mode="json")
+    assert "source_entity_id" not in dumped and "alt_names" not in dumped
+    assert "osm" not in str(dumped) and "raw" not in dumped
+
+    # a named lookup under a THIRD name is recognised as the same entity through its source identity
+    grounded = adapter.search_must_visit_place("Royal Astronomical Observatory", "Fixtureville, Fixtureland").data[0]
+    assert grounded.place_id == "geoapify/obs-en"
+    assert context.entity_merges == {"source_identity": 2}
+
+    # the identity survives the provider cache, so a later generation de-duplicates the same way
+    other = _context()
+    cached = _adapter(monkeypatch, network, ProviderCacheStore(tmp_path / "c.sqlite3")).bound_to(other)
+    assert sorted(p.name for p in cached.search_attractions("Fixtureville, Fixtureland").data) == [
+        "Observatory Gate", "Royal Observatory",
+    ]
+    assert other.entity_merges == {"source_identity": 1} and other.usage_tracker.credits_used("places") == 0

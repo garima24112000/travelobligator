@@ -193,6 +193,23 @@ class RouteResult(BaseModel):
     source: str
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
     message: str | None = None
+    # Section 203C.2B (mixed-mode transfers): the mode the provider routed
+    # this leg in (`walk` / `drive`). `None` only for a result that carries
+    # no route, or one from an adapter that predates the field.
+    mode: str | None = None
+
+
+# Factual transfer modes of one itinerary leg (Section 203C.2B). `drive` is
+# a vehicle transfer described only by the provider's driving route -- never
+# a claim about taxis, ride-hailing, fares, transit or the traveller's car.
+TRANSFER_MODE_WALK = "walk"
+TRANSFER_MODE_DRIVE = "drive"
+
+
+def leg_mode(mode: str | None) -> str:
+    """The mode of a stored leg. A leg stored before modes existed has
+    none, and is what every leg was then: a walking route."""
+    return mode or TRANSFER_MODE_WALK
 
 
 class RouteFeasibilityStatus(str, Enum):
@@ -264,6 +281,15 @@ class RouteLegFeasibility(BaseModel):
     # `RouteLegFeasibility` persisted before this step simply has this
     # field default to `None` on load.
     route_geometry: list[RoutePathPoint] | None = None
+    # Section 203C.2B (mixed-mode transfers). All optional, so a leg stored
+    # before this section loads unchanged and reads as a walking leg (see
+    # `leg_mode`). `distance_meters`/`duration_seconds` above always describe
+    # `mode`. When a long walking leg was adapted to a vehicle transfer, the
+    # provider's original walking figures are kept alongside for reference.
+    mode: str | None = None
+    mode_adaptation_attempted: bool = False
+    walking_distance_meters: float | None = None
+    walking_duration_seconds: float | None = None
 
 
 class RouteFeasibilityReport(BaseModel):

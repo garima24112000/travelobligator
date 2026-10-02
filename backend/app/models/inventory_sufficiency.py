@@ -66,3 +66,6 @@ class ProviderUsageReport(BaseModel):
     credits_by_api: dict[str, int] = Field(default_factory=dict)
     calls_by_api: dict[str, int] = Field(default_factory=dict)
     refused_calls: int = 0
+    # Duplicate candidates merged during this generation, by the rule that
+    # matched: `place_id`, `source_identity`, `name_proximity`.
+    entity_merges: dict[str, int] = Field(default_factory=dict)

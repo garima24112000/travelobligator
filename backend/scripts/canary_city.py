@@ -80,6 +80,8 @@ def _run(args: argparse.Namespace, cache_hits: dict[str, int]) -> dict[str, Any]
     from app.repositories.factory import get_planning_state_repository
     from app.services import place_taxonomy as taxonomy
     from app.services.day_rationale import RATIONALE_WARNING_PREFIX, current_day_rationale
+    from app.models.routing import TRANSFER_MODE_DRIVE, TRANSFER_MODE_WALK, leg_mode
+    from app.services import schedule_diversity as diversity
     from app.services.must_visit_matching import resolve_must_visits
     from app.services.planning_orchestrator import planning_orchestrator
     from app.services.route_burden import day_route_burdens
@@ -260,9 +262,15 @@ def _run(args: argparse.Namespace, cache_hits: dict[str, int]) -> dict[str, Any]
                 "route_legs": [
                     {
                         "from": a.name, "to": b.name,
+                        # the mode the provider routed this leg in (a leg stored without one is a walk)
+                        "mode": leg_mode(leg.mode) if leg and leg.distance_meters is not None else None,
                         "distance_meters": leg.distance_meters if leg else None,
                         "duration_seconds": leg.duration_seconds if leg else None,
                         "status": _value(leg.status) if leg else "missing",
+                        "mode_adaptation_attempted": bool(leg.mode_adaptation_attempted) if leg else False,
+                        # the provider's original walking figures, kept when the leg became a vehicle transfer
+                        "walking_distance_meters": leg.walking_distance_meters if leg else None,
+                        "walking_duration_seconds": leg.walking_duration_seconds if leg else None,
                     }
                     for (a, b), leg in zip(zip(stops, stops[1:]), day_legs)
                 ],
@@ -317,16 +325,63 @@ def _run(args: argparse.Namespace, cache_hits: dict[str, int]) -> dict[str, Any]
     report["daily_travel_burden"] = [
         {
             "day": burden.day_number,
-            "total_walking_distance_meters": round(burden.total_distance_meters, 1),
-            "total_walking_duration_seconds": round(burden.total_duration_seconds, 1),
+            # walking burden: WALK legs only
+            "total_walking_distance_meters": round(burden.walking_distance_meters, 1),
+            "total_walking_duration_seconds": round(burden.walking_duration_seconds, 1),
+            "max_walk_leg_distance_meters": round(burden.max_walk_leg_distance_meters, 1),
+            "max_walk_leg_duration_seconds": round(burden.max_walk_leg_duration_seconds, 1),
+            # total transfer: every mode, for information
+            "total_transfer_distance_meters": round(burden.total_distance_meters, 1),
+            "total_transfer_duration_seconds": round(burden.total_duration_seconds, 1),
             "max_leg_distance_meters": round(burden.max_leg_distance_meters, 1),
             "max_leg_duration_seconds": round(burden.max_leg_duration_seconds, 1),
+            "vehicle_transfer_legs": burden.drive_legs,
+            "max_vehicle_transfer_duration_seconds": round(burden.max_drive_leg_duration_seconds, 1),
             "routed_legs": burden.routed_legs,
             "required_legs": burden.required_legs,
+            "excessive_walking": burden.excessive_walking,
+            "unreasonable_transfers": burden.over_transfer_limit,
             "long_route": burden.long_route,
         }
         for burden in day_route_burdens(state)
     ]
+
+    # -- movement modes: no leg may carry movement data the provider did not return ---------------
+    known_modes = {TRANSFER_MODE_WALK, TRANSFER_MODE_DRIVE}
+    report["movement_modes"] = {
+        "legs_by_mode": {
+            mode: sum(1 for leg in routed_legs if leg_mode(leg.mode) == mode) for mode in sorted(known_modes)
+        },
+        "mode_adaptations_attempted": sum(1 for leg in legs if leg.mode_adaptation_attempted),
+        "legs_adapted_to_vehicle_transfer": sum(1 for leg in legs if leg.walking_duration_seconds is not None),
+        "legs_with_unverified_movement_data": sum(
+            1
+            for leg in routed_legs
+            if _value(leg.status) != "success" or not leg.provider or leg_mode(leg.mode) not in known_modes
+        ),
+    }
+
+    # -- diversity (coarse attraction classes of the FINAL schedule) ------------------------------
+    markets_requested = diversity.markets_requested_for(state)
+    planned_diversity = {entry.day_number: entry for entry in (plan.schedule_diversity if plan is not None else [])}
+    diversity_days: list[dict[str, Any]] = []
+    for day in days:
+        classes = [diversity.coarse_class(stop.normalized_category) for stop in day.experiences]
+        planned = planned_diversity.get(day.day_number)
+        diversity_days.append(
+            {
+                "day": day.day_number,
+                "coarse_category_counts": {name: classes.count(name) for name in sorted(set(classes))},
+                "concentration_violation": diversity.concentration_violation(classes, markets_requested),
+                "eligible_alternatives_existed": bool(planned and planned.alternatives_available),
+                "diversity_repair_attempted": bool(planned and planned.repair_attempted),
+                "replacements": [
+                    {"replaced_place": r.replaced_place, "replacement_place": r.replacement_place}
+                    for r in (planned.replacements if planned else [])
+                ],
+            }
+        )
+    report["diversity"] = {"markets_explicitly_requested": markets_requested, "days": diversity_days}
 
     # -- route repair (one bounded attempt per long-route day) ------------------------------------
     repair = state.route_burden_repair_report
@@ -409,6 +464,12 @@ def _run(args: argparse.Namespace, cache_hits: dict[str, int]) -> dict[str, Any]
 
     # -- provider usage ----------------------------------------------------------------------
     usage = state.provider_usage_report
+    merges = dict(usage.entity_merges) if usage is not None else {}
+    report["entity_dedup"] = {
+        "candidates_merged_by_place_id": merges.get("place_id", 0),
+        "candidates_merged_by_source_identity": merges.get("source_identity", 0),
+        "candidates_merged_by_name_proximity": merges.get("name_proximity", 0),
+    }
     reasoning = state.ai_itinerary_reasoning_result
     groq_stages = {
         "anchor_proposal": 1 if batch is not None and _value(batch.result.status) != "not_connected" else 0,
@@ -422,6 +483,11 @@ def _run(args: argparse.Namespace, cache_hits: dict[str, int]) -> dict[str, Any]
         "total_geoapify_credits": usage.credits_used if usage is not None else None,
         "geoapify_credit_budget": usage.budget if usage is not None else None,
         "geoapify_calls_refused_by_budget": usage.refused_calls if usage is not None else None,
+        # routing is accounted per mode: `routing` = walking day routes, `routing_drive` = vehicle transfers
+        "routing_credits_by_mode": {
+            "walk": (usage.credits_by_api.get("routing", 0) if usage is not None else 0),
+            "drive": (usage.credits_by_api.get("routing_drive", 0) if usage is not None else 0),
+        },
         "provider_cache_hits": dict(cache_hits),
         # Stage-level count: a stage's own internal retries are not visible here.
         "groq_stage_calls": groq_stages,
@@ -487,11 +553,33 @@ def _acceptance(report: dict[str, Any]) -> dict[str, Any]:
             "validation / readiness",
         )
     burden = report.get("daily_travel_burden") or []
+    # A long ORIGINAL walk does not fail when the leg became a factual vehicle
+    # transfer: `long_route` is judged on the final legs (walk legs for the
+    # walking burden, every mode for the transfer burden).
     check(
-        "no long-route day",
-        not any(day["long_route"] for day in burden),
+        "no day with unresolved excessive walking",
+        not any(day.get("excessive_walking", day["long_route"]) for day in burden),
         "day clustering / route burden",
     )
+    check(
+        "no day with an unreasonable transfer burden",
+        not any(day.get("unreasonable_transfers", False) for day in burden),
+        "day clustering / route burden",
+    )
+    check(
+        "no movement data the routing provider did not return",
+        (report.get("movement_modes") or {}).get("legs_with_unverified_movement_data", 0) == 0,
+        "routing",
+    )
+    if inventory["viable_meaningful_candidate_count"] >= inventory.get("T", inventory["R"]):
+        check(
+            "no category-concentrated day while eligible alternatives existed",
+            not any(
+                day["concentration_violation"] and day["eligible_alternatives_existed"]
+                for day in (report.get("diversity") or {}).get("days", [])
+            ),
+            "schedule diversity",
+        )
     food = report.get("food_locality") or {}
     check("no restaurant repeated across days", food.get("repeated_suggestion_count", 0) == 0, "food locality")
     check("no food suggestion beyond the nearby radius", food.get("suggestions_beyond_radius", 0) == 0, "food locality")
@@ -620,10 +708,50 @@ def _render(report: dict[str, Any]) -> str:
     section("DAILY TRAVEL BURDEN")
     for day in report["daily_travel_burden"]:
         lines.append(
-            f"- day {day['day']}: {day['total_walking_distance_meters']} m, "
-            f"{day['total_walking_duration_seconds']} s total | longest leg {day['max_leg_distance_meters']} m, "
-            f"{day['max_leg_duration_seconds']} s | long-route flag: {'YES' if day['long_route'] else 'no'}"
+            f"- day {day['day']}: walking {day['total_walking_distance_meters']} m, "
+            f"{day['total_walking_duration_seconds']} s | longest walk leg {day['max_walk_leg_distance_meters']} m, "
+            f"{day['max_walk_leg_duration_seconds']} s | all transfers {day['total_transfer_distance_meters']} m, "
+            f"{day['total_transfer_duration_seconds']} s | vehicle transfers: {day['vehicle_transfer_legs']}"
+            f" | excessive walking: {'YES' if day['excessive_walking'] else 'no'}"
+            f" | unreasonable transfers: {'YES' if day['unreasonable_transfers'] else 'no'}"
         )
+
+    modes = report["movement_modes"]
+    section("MOVEMENT MODES")
+    row("legs by mode", modes["legs_by_mode"])
+    row("mode adaptations attempted", modes["mode_adaptations_attempted"])
+    row("legs adapted to vehicle transfer", modes["legs_adapted_to_vehicle_transfer"])
+    row("legs with unverified movement data", modes["legs_with_unverified_movement_data"])
+    for day in report["final_itinerary"]:
+        lines.append(f"Day {day['day']}")
+        for leg in day["route_legs"]:
+            lines.append(f"  {leg['from']} -> {leg['to']}")
+            lines.append(f"    mode: {leg['mode'] or 'none (' + str(leg['status']) + ')'}")
+            lines.append(f"    distance (m): {leg['distance_meters']}")
+            lines.append(f"    duration (s): {leg['duration_seconds']}")
+            lines.append(f"    mode adaptation attempted: {'yes' if leg['mode_adaptation_attempted'] else 'no'}")
+            if leg["walking_duration_seconds"] is not None:
+                lines.append(
+                    f"    original walking route: {leg['walking_distance_meters']} m, "
+                    f"{leg['walking_duration_seconds']} s (vehicle transfer; driving route estimate)"
+                )
+
+    section("DIVERSITY")
+    row("markets explicitly requested", "yes" if report["diversity"]["markets_explicitly_requested"] else "no")
+    for day in report["diversity"]["days"]:
+        swaps = "; ".join(f"{r['replaced_place']} -> {r['replacement_place']}" for r in day["replacements"])
+        lines.append(
+            f"- day {day['day']}: {day['coarse_category_counts']}"
+            f" | concentration violation: {'YES' if day['concentration_violation'] else 'no'}"
+            f" | repair attempted: {'yes' if day['diversity_repair_attempted'] else 'no'}"
+            f" | replaced -> replacement: {swaps or 'none'}"
+        )
+
+    dedup = report["entity_dedup"]
+    section("ENTITY DEDUP")
+    row("candidates merged by place id", dedup["candidates_merged_by_place_id"])
+    row("candidates merged by source identity", dedup["candidates_merged_by_source_identity"])
+    row("candidates merged by name/proximity", dedup["candidates_merged_by_name_proximity"])
 
     section("ROUTE REPAIR")
     if not report["route_repair"]:
@@ -676,6 +804,7 @@ def _render(report: dict[str, Any]) -> str:
     row("Geoapify calls by API", usage["geoapify_calls_by_api"])
     row("Geoapify credits by API", usage["geoapify_credits_by_api"])
     row("total Geoapify credits", f"{usage['total_geoapify_credits']} of {usage['geoapify_credit_budget']}")
+    row("routing credits by mode", usage["routing_credits_by_mode"])
     row("calls refused by budget", usage["geoapify_calls_refused_by_budget"])
     row("provider cache hits", usage["provider_cache_hits"] or 0)
     row("Groq calls (by stage)", usage["groq_stage_calls"])

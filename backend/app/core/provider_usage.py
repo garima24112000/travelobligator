@@ -134,6 +134,16 @@ class GenerationProviderContext:
     # Broad factual pool fetched during this generation, so a grounded
     # named place that is already in it reuses the pool identity.
     place_pool: list = field(default_factory=list)
+    # Alternate-mode (driving) route requests still allowed: one per long
+    # walking leg, capped per generation. Separate from `route_requests_left`
+    # so adapting a leg never uses up a day's own route request.
+    alternate_mode_requests_left: int = 6
+    # Legs whose alternate-mode route was already asked for and did not
+    # succeed, so a rebuilt route report never asks for the same leg twice.
+    alternate_mode_failed_legs: set = field(default_factory=set)
+    # How many duplicate candidates were merged, by the rule that matched
+    # (`place_id` / `source_identity` / `name_proximity`). Counts only.
+    entity_merges: dict = field(default_factory=dict)
 
     @classmethod
     def new(
@@ -148,13 +158,18 @@ class GenerationProviderContext:
             usage_tracker=tracker,
             route_requests_left=route_request_allowance(trip_days),
             place_details_left=settings.geoapify_max_place_details_per_generation,
+            alternate_mode_requests_left=settings.route_alternate_mode_max_requests_per_generation,
         )
         if generation_id is not None:
             context.generation_id = generation_id
         return context
 
     def usage_report(self) -> dict[str, object]:
-        return {"generation_id": self.generation_id, **self.usage_tracker.snapshot()}
+        return {
+            "generation_id": self.generation_id,
+            **self.usage_tracker.snapshot(),
+            "entity_merges": dict(self.entity_merges),
+        }
 
 
 def context_kwargs(provider_context: GenerationProviderContext | None) -> dict[str, GenerationProviderContext]:

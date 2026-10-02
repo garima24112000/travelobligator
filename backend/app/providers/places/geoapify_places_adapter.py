@@ -45,9 +45,14 @@ from app.providers.geocoding.factory import get_geocoding_provider
 from app.providers.places.destination_resolution import (
     DestinationResolutionMixin,
     _is_within_destination,
-    _normalize_text,
     _ResolvedDestination,
     _user_agent,
+)
+from app.providers.places.entity_identity import (
+    alternate_names,
+    dedupe_places,
+    merge_rule,
+    source_entity_id,
 )
 from app.providers.places.geoapify_categories import (
     ACCOMMODATION_GROUP,
@@ -65,13 +70,13 @@ from app.storage.provider_cache_store import (
     get_provider_cache_store,
     make_query_hash,
 )
-from app.utils.geo import haversine_distance_km
 
 logger = logging.getLogger(__name__)
 
 _POI_CACHE_SOURCE = "geoapify_places"
 _DETAILS_CACHE_SOURCE = "geoapify_place_details"
-_CACHE_SCHEMA = "203c2b-v1"
+# v2: cached places carry the sanitised source identity used for de-duplication.
+_CACHE_SCHEMA = "203c2b-v2"
 _LANGUAGE = "en"
 _PLACES_PER_CREDIT = 20
 _DEFAULT_ATTRACTION_POOL = 60
@@ -95,25 +100,6 @@ def places_request_credits(limit: int, returned: int | None = None) -> int:
         return 1
     count = limit if returned is None else returned
     return 1 + math.ceil(count / _PLACES_PER_CREDIT)
-
-
-def _same_place(a: NormalizedPlace, b: NormalizedPlace, meters: float) -> bool:
-    if _normalize_text(a.name) != _normalize_text(b.name):
-        return False
-    distance_km = haversine_distance_km(a.coordinates, b.coordinates) if a.coordinates and b.coordinates else None
-    return distance_km is not None and distance_km * 1000.0 <= meters
-
-
-def _dedupe(places: list[NormalizedPlace]) -> list[NormalizedPlace]:
-    """Provider identity first, then normalised name + proximity."""
-    kept: list[NormalizedPlace] = []
-    seen_ids: set[str] = set()
-    for place in places:
-        if place.place_id in seen_ids or any(_same_place(place, other, _SAME_PLACE_METERS) for other in kept):
-            continue
-        seen_ids.add(place.place_id)
-        kept.append(place)
-    return kept
 
 
 class GeoapifyPlacesAdapter(DestinationResolutionMixin, PlacesProvider):
@@ -222,9 +208,12 @@ class GeoapifyPlacesAdapter(DestinationResolutionMixin, PlacesProvider):
         except GeocoderError as exc:
             return self._geocoder_failure_response(exc, field_name)
 
+        # One candidate per real entity: Geoapify place id, then the
+        # underlying source identity, then an equal name close by.
+        merges = self._context.entity_merges if self._context is not None else None
         contained = [
             place
-            for place in _dedupe(places)
+            for place in dedupe_places(places, _SAME_PLACE_METERS, merges)
             if place.coordinates is not None
             and _is_within_destination(place.coordinates, resolved, _CONTAINMENT_RADIUS_METERS)
         ]
@@ -357,7 +346,13 @@ class GeoapifyPlacesAdapter(DestinationResolutionMixin, PlacesProvider):
             # empty category is not paid for again on the next generation.
             ttl = self._poi_cache_ttl_seconds if places else self._empty_cache_ttl_seconds
             self._write_cache(
-                cache_store, _POI_CACHE_SOURCE, query_hash, [p.model_dump(mode="json") for p in places], ttl
+                cache_store,
+                _POI_CACHE_SOURCE,
+                query_hash,
+                # The internal identity is excluded from a normal dump, so it
+                # is written to the cache explicitly.
+                [{**p.model_dump(mode="json"), **p.internal_identity()} for p in places],
+                ttl,
             )
         return places
 
@@ -402,6 +397,10 @@ class GeoapifyPlacesAdapter(DestinationResolutionMixin, PlacesProvider):
             data_status=DataStatus.LIVE,
             confidence=0.6,
             provider_tags=tags or None,
+            # Sanitised internal identity for de-duplication only; the raw
+            # source record itself is never kept.
+            source_entity_id=source_entity_id(raw),
+            alt_names=alternate_names(raw, name.strip()),
         )
 
     # -- named places (must-visits, AI anchors) -----------------------------------------
@@ -425,16 +424,30 @@ class GeoapifyPlacesAdapter(DestinationResolutionMixin, PlacesProvider):
             return response
         place = response.data[0]
 
-        pool = self._context.place_pool if self._context is not None else []
-        match = next((p for p in pool if _same_place(place, p, _POOL_MATCH_METERS)), None)
+        match = self._pool_match(place)
         if match is not None:
             response.data = [match]
             return response
 
         enriched = self._enrich_with_details(place)
         if enriched is not None:
-            response.data = [enriched]
+            # Details can reveal the source identity or another name of the
+            # place, which may show it IS a pool place after all (e.g. the
+            # pool holds it under its local-script name).
+            response.data = [self._pool_match(enriched) or enriched]
         return response
+
+    def _pool_match(self, place: NormalizedPlace) -> NormalizedPlace | None:
+        """The pool place that is the same real entity as `place`, if any."""
+        if self._context is None:
+            return None
+        for candidate in self._context.place_pool:
+            rule = merge_rule(candidate, place, _POOL_MATCH_METERS)
+            if rule is not None:
+                merges = self._context.entity_merges
+                merges[rule] = merges.get(rule, 0) + 1
+                return candidate
+        return None
 
     def _enrich_with_details(self, place: NormalizedPlace) -> NormalizedPlace | None:
         existing_tags = dict(place.provider_tags or {})
@@ -493,12 +506,16 @@ class GeoapifyPlacesAdapter(DestinationResolutionMixin, PlacesProvider):
         if isinstance(raw, dict):
             tags.update(filter_provider_tags(raw))
         tags.update(evidence_tags(properties))
+        identity = {
+            "source_entity_id": place.source_entity_id or source_entity_id(raw),
+            "alt_names": place.alt_names or alternate_names(raw, place.name),
+        }
         if not tags:
-            return None
+            return place.model_copy(update=identity) if any(identity.values()) else None
         tags = {**existing_tags, **tags}
         category = next((tags[key] for key in _CATEGORY_TAG_ORDER if tags.get(key)), place.category)
         # Identity, name and coordinates stay exactly as the geocoder returned them.
-        return place.model_copy(update={"provider_tags": tags, "category": category})
+        return place.model_copy(update={"provider_tags": tags, "category": category, **identity})
 
     # -- cache -----------------------------------------------------------------------
 

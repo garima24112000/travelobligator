@@ -74,6 +74,9 @@ class GeocodeHit:
     address: dict[str, str] = field(default_factory=dict)
     bounding_box: BoundingBox | None = None
     tags: dict[str, Any] = field(default_factory=dict)
+    # Sanitised identity of the underlying source object (`osm/<type>/<id>`)
+    # when the provider's result carries one. De-duplication evidence only.
+    source_entity_id: str | None = None
 
 
 class GeocodingProvider:

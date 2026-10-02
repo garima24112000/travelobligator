@@ -393,6 +393,7 @@ class DestinationResolutionMixin:
             data_status=DataStatus.LIVE,
             confidence=0.5,
             provider_tags=filter_provider_tags(hit.tags) or None,
+            source_entity_id=hit.source_entity_id,
         )
         if cache_store is not None:
             try:

@@ -1,10 +1,17 @@
 """Bounded post-routing day repair (Section 203C.2B, final correction).
 
-A long-route day is not only reported. When unused grounded inventory
-exists, each such day gets exactly ONE deterministic repair attempt:
+This runs AFTER the bounded per-leg mode adaptation: a leg that is too long
+to walk has already been given a factual driving route where the provider
+has one, and a day whose long walk became a reasonable vehicle transfer is
+no longer a long-route day and is not touched here.
+
+A day that is STILL a long-route day is not only reported. When unused
+grounded inventory exists, each such day gets exactly ONE deterministic
+repair attempt:
 
   1. the geographically isolated stop of the day is identified -- never a
-     grounded user must-visit and never a user-locked stop;
+     grounded user must-visit, a user-locked stop, a primary anchor or a
+     grounded AI anchor;
   2. the unused, schedulable candidates are filtered: quality tier not
      materially worse, the plan's interest coverage preserved, not a
      low-value/private place, and closer to the rest of the day;
@@ -23,11 +30,14 @@ from __future__ import annotations
 import logging
 
 from app.core.config import get_settings
-from app.core.provider_usage import GenerationProviderContext, context_kwargs
+from app.core.provider_usage import GenerationProviderContext
+from app.models.candidate_quality import CandidateQualityTier
 from app.models.common import GeoPoint, ProviderStatus
 from app.models.planning_state import DailyPlan, ExperienceItem, PlanningState
 from app.models.route_burden_repair import RouteBurdenRepairAttempt, RouteBurdenRepairReport
-from app.models.routing import RouteResult
+from app.models.routing import RouteLegFeasibility
+from app.services import schedule_diversity as diversity
+from app.services.pace_targets import pace_of
 from app.services.day_order_heuristics import centroid, nearest_next_order, path_length_km
 from app.services.day_rationale import RATIONALE_WARNING_PREFIX, deterministic_day_summary
 from app.services.experience_planner_service import (
@@ -38,7 +48,7 @@ from app.services.experience_planner_service import (
     unused_replacement_options,
 )
 from app.services.must_visit_matching import must_visit_place_ids
-from app.services.route_burden import DayRouteBurden, day_route_burdens
+from app.services.route_burden import DayRouteBurden, burden_of_legs, day_route_burdens
 from app.services.route_feasibility_service import RouteFeasibilityService
 from app.services.usefulness_contract import is_meaningful_stop
 
@@ -127,6 +137,10 @@ class RouteBurdenRepairService:
                 stop.coordinates is None
                 or stop.experience_id in locked_ids
                 or (stop.provider_place_id and stop.provider_place_id in protected_place_ids)
+                # A primary anchor or a grounded AI anchor is never traded
+                # away for a shorter route; its transfer is adapted instead.
+                or stop.quality_tier == CandidateQualityTier.PRIMARY_ANCHOR.value
+                or stop.promoted_from_ai
             ):
                 continue
             centre = centroid([other.coordinates for other in stops if other is not stop])
@@ -147,12 +161,29 @@ class RouteBurdenRepairService:
         }
         must_cover = set(isolated.matched_interests) - covered_without
         floor_rank = quality_tier_rank(isolated.quality_tier) - _MAX_TIER_DROP
+        # A replacement never makes the day more concentrated in one coarse
+        # attraction class than it already is (schedule-diversity contract).
+        markets_requested = diversity.markets_requested_for(planning_state)
+        rest_classes = [
+            diversity.coarse_class(stop.normalized_category) for stop in stops if stop is not isolated
+        ]
+        current_excess = sum(
+            diversity.excess_by_class(
+                [*rest_classes, diversity.coarse_class(isolated.normalized_category)], markets_requested
+            ).values()
+        )
+
+        def keeps_diversity(option: ReplacementOption) -> bool:
+            classes = [*rest_classes, diversity.coarse_class(option.profile.primary)]
+            return sum(diversity.excess_by_class(classes, markets_requested).values()) <= current_excess
+
         suitable = [
             option
             for option in options
             if option.tier_rank >= floor_rank
             and must_cover <= option.matched_interests
             and _km(option.coordinates, rest_centre) < isolated_km
+            and keeps_diversity(option)
         ]
         if not suitable:
             return outcome("no_suitable_candidate", replaced_place=isolated.name), None
@@ -174,63 +205,58 @@ class RouteBurdenRepairService:
             key=lambda order: path_length_km([stop.coordinates for stop in order]),
         )
 
-        # 4. ONE real routing request for the changed day.
+        # 4. ONE real routing request for the changed day (plus, as for every
+        #    day, at most one driving request per over-long walking leg).
         if provider_context is not None and provider_context.route_requests_left <= 0:
             return outcome("route_budget_exhausted", **named), None
-        results = self._route(new_order, provider_context)
-        if results is None:
+        legs = self._route(new_order, provider_context)
+        if legs is None:
             return outcome("replacement_route_unavailable", route_burden_repair_attempted=True, **named), None
 
-        after_duration = sum(result.duration_seconds for result in results)
-        after_distance = sum(result.distance_meters for result in results)
+        after = burden_of_legs(day.day_number, len(new_order) - 1, legs, pace_of(planning_state))
         measured = {
             "route_burden_repair_attempted": True,
-            "after_duration_seconds": after_duration,
-            "after_distance_meters": after_distance,
+            "after_duration_seconds": after.total_duration_seconds,
+            "after_distance_meters": after.total_distance_meters,
             **named,
         }
         min_ratio = get_settings().route_burden_repair_min_improvement_ratio
         improved = (
-            after_duration <= burden.total_duration_seconds * (1.0 - min_ratio)
-            and max(result.duration_seconds for result in results) <= burden.max_leg_duration_seconds
+            after.total_duration_seconds <= burden.total_duration_seconds * (1.0 - min_ratio)
+            and after.max_leg_duration_seconds <= burden.max_leg_duration_seconds
+            and after.walking_duration_seconds <= burden.walking_duration_seconds
         )
         if not improved:
             return outcome("no_material_improvement", **measured), None
 
-        self._apply(planning_state, day, new_order, results)
+        self._apply(planning_state, day, new_order, legs)
         return outcome("accepted", accepted=True, **measured), best
 
     def _route(
         self,
         ordered: list[ExperienceItem],
         provider_context: GenerationProviderContext | None,
-    ) -> list[RouteResult] | None:
-        """Provider legs for `ordered` from one request, or None unless every
-        leg came back with a real distance and duration."""
-        route_sequence = getattr(self.gateway, "get_route_sequence", None)
-        if not callable(route_sequence):
-            return None
-        points = [(stop.coordinates.lat, stop.coordinates.lng) for stop in ordered]
+    ) -> list[RouteLegFeasibility] | None:
+        """The final-mode legs of `ordered`, or None unless every leg came
+        back with a real provider distance and duration."""
         try:
-            results = route_sequence(points, **context_kwargs(provider_context))
+            legs = self.route_feasibility_service.route_day_legs(ordered, provider_context)
         except Exception:
             logger.warning("Routing the repaired day failed; the day is left unchanged.", exc_info=True)
             return None
-        if len(results) != len(ordered) - 1 or any(
-            result.status != ProviderStatus.SUCCESS
-            or result.duration_seconds is None
-            or result.distance_meters is None
-            for result in results
+        if len(legs) != len(ordered) - 1 or any(
+            leg.status != ProviderStatus.SUCCESS or leg.duration_seconds is None or leg.distance_meters is None
+            for leg in legs
         ):
             return None
-        return results
+        return legs
 
     def _apply(
         self,
         planning_state: PlanningState,
         day: DailyPlan,
         new_order: list[ExperienceItem],
-        results: list[RouteResult],
+        legs: list[RouteLegFeasibility],
     ) -> None:
         previous = list(day.experiences)
         for stop_index, stop in enumerate(new_order, start=1):
@@ -241,9 +267,7 @@ class RouteBurdenRepairService:
         # the superseded day is dropped.
         day.goal = deterministic_day_summary([stop.name for stop in new_order])
         day.warnings = [w for w in day.warnings if not w.startswith(RATIONALE_WARNING_PREFIX)]
-        self.route_feasibility_service.replace_day_legs(
-            planning_state.route_feasibility_report, previous, new_order, results
-        )
+        self.route_feasibility_service.replace_day_legs(planning_state.route_feasibility_report, previous, legs)
         sequencing = planning_state.route_aware_sequencing_report
         if sequencing is not None:
             # A reorder suggestion computed for the superseded day is stale.

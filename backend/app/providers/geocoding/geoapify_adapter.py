@@ -25,6 +25,7 @@ from app.models.common import GeoPoint
 from app.providers import geoapify_client
 from app.providers.errors import ProviderRequestError
 from app.providers.geocoding.base import BoundingBox, GeocodeHit, GeocoderError, GeocodingProvider
+from app.providers.places.entity_identity import source_entity_id
 from app.providers.places.geoapify_categories import taxonomy_tags_from_categories
 from app.core.provider_usage import ProviderUsageTracker
 
@@ -124,6 +125,7 @@ class GeoapifyGeocoder(GeocodingProvider):
         # of that feature (e.g. `city` of a `result_type: city`).
         own_component = address.get(result_type) if result_type in _AREA_RESULT_TYPES else None
         category = result.get("category") if isinstance(result.get("category"), str) else None
+        datasource = result.get("datasource")
         return GeocodeHit(
             lat=lat,
             lon=lon,
@@ -147,6 +149,9 @@ class GeoapifyGeocoder(GeocodingProvider):
             # grounded place can be checked against the kind of anchor that
             # was proposed. Provider classification only -- never the name.
             tags=taxonomy_tags_from_categories([category]) if category else {},
+            # Only when the result itself carries the source object's type
+            # and id; nothing else of the source record is read.
+            source_entity_id=source_entity_id(datasource.get("raw") if isinstance(datasource, dict) else None),
         )
 
     def search_destination(self, client: httpx.Client, query: str) -> GeocodeHit | None:
