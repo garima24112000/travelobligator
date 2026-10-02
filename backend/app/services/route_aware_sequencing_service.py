@@ -15,6 +15,8 @@ from app.models.routing import (
     route_aware_suggestion_provenance,
 )
 from app.providers.gateway import ProviderGateway, provider_gateway
+from app.core.provider_usage import GenerationProviderContext, context_kwargs
+from app.services.day_order_heuristics import clearly_shorter_alternative
 
 logger = logging.getLogger(__name__)
 
@@ -139,7 +141,11 @@ class RouteAwareSequencingService:
     def __init__(self, gateway: ProviderGateway | None = None) -> None:
         self.gateway = gateway or provider_gateway
 
-    def build_report(self, planning_state: PlanningState) -> RouteAwareSequencingReport:
+    def build_report(
+        self,
+        planning_state: PlanningState,
+        provider_context: GenerationProviderContext | None = None,
+    ) -> RouteAwareSequencingReport:
         provider_name = getattr(self.gateway.routing, "provider_name", "routing_provider")
         suggestions: list[RouteAwareSequenceSuggestion] = []
 
@@ -148,7 +154,7 @@ class RouteAwareSequencingService:
             for day_plan in experience_plan.daily_plans:
                 if len(day_plan.experiences) < 2:
                     continue
-                suggestions.append(self._build_day_suggestion(day_plan, provider_name))
+                suggestions.append(self._build_day_suggestion(day_plan, provider_name, provider_context))
 
         report_status = _aggregate_report_status([suggestion.status for suggestion in suggestions])
 
@@ -161,8 +167,36 @@ class RouteAwareSequencingService:
             movement_data_provenance=movement_data_provenance_from_status(report_status),
         )
 
+    def _route_order(
+        self,
+        ordered: list[ExperienceItem],
+        provider_context: GenerationProviderContext | None,
+    ) -> list[RouteResult]:
+        """Provider routes for the consecutive legs of `ordered` -- a single
+        multi-waypoint request through the gateway when it offers one."""
+        route_sequence = getattr(self.gateway, "get_route_sequence", None)
+        if callable(route_sequence):
+            points = [(e.coordinates.lat, e.coordinates.lng) for e in ordered]
+            try:
+                results = route_sequence(points, **context_kwargs(provider_context))
+                if len(results) == len(ordered) - 1:
+                    return results
+            except Exception:
+                logger.warning(
+                    "ProviderGateway.get_route_sequence raised unexpectedly; treating this day's legs as failed.",
+                    exc_info=True,
+                )
+                return [_failed_result(self.gateway)] * (len(ordered) - 1)
+        return [
+            self._get_route(from_experience, to_experience, provider_context)
+            for from_experience, to_experience in zip(ordered, ordered[1:])
+        ]
+
     def _build_day_suggestion(
-        self, day_plan: DailyPlan, provider_name: str
+        self,
+        day_plan: DailyPlan,
+        provider_name: str,
+        provider_context: GenerationProviderContext | None = None,
     ) -> RouteAwareSequenceSuggestion:
         experiences = day_plan.experiences
         original_order = [experience.experience_id for experience in experiences]
@@ -186,23 +220,39 @@ class RouteAwareSequencingService:
                 movement_data_provenance=MovementDataProvenance.NOT_COMPUTABLE,
             )
 
+        # Section 203C.2B: bounded, non-quadratic. ONE real route for the
+        # day's current order; then at most ONE alternative order, and only
+        # when a cheap straight-line check says it is clearly shorter. The
+        # straight-line check only decides whether the alternative is worth
+        # a request -- every reported duration/distance is the provider's.
         route_lookup: dict[tuple[str, str], RouteResult] = {}
-        for from_experience in coord_backed:
-            for to_experience in coord_backed:
-                if from_experience is to_experience:
-                    continue
-                key = _route_key(from_experience.experience_id, to_experience.experience_id)
-                if key in route_lookup:
-                    continue
-                route_lookup[key] = self._get_route(from_experience, to_experience)
+        original_results = self._route_order(coord_backed, provider_context)
+        _record_results(route_lookup, coord_backed, original_results)
+        original_duration, original_distance, original_all_success = _sum_results(original_results)
 
-        original_duration, original_all_success = _sum_consecutive_duration(
-            coord_backed, route_lookup
-        )
+        suggested_coord_order = coord_backed
+        suggested_duration, suggested_distance = original_duration, original_distance
+        suggested_all_success = original_all_success
 
-        suggested_coord_order, suggested_duration, suggested_distance, suggested_all_success = (
-            _nearest_next_order(coord_backed, route_lookup)
+        alternative = (
+            clearly_shorter_alternative(coord_backed, [e.coordinates for e in coord_backed])
+            if original_all_success
+            else None
         )
+        if alternative is not None:
+            alternative_results = self._route_order(alternative, provider_context)
+            _record_results(route_lookup, alternative, alternative_results)
+            alternative_duration, alternative_distance, alternative_all_success = _sum_results(
+                alternative_results
+            )
+            if (
+                alternative_all_success
+                and alternative_duration is not None
+                and original_duration is not None
+                and alternative_duration < original_duration
+            ):
+                suggested_coord_order = alternative
+                suggested_duration, suggested_distance = alternative_duration, alternative_distance
 
         suggested_order = [experience.experience_id for experience in suggested_coord_order] + [
             experience.experience_id for experience in missing_coord
@@ -356,7 +406,12 @@ class RouteAwareSequencingService:
 
         return applied_any
 
-    def _get_route(self, from_experience: ExperienceItem, to_experience: ExperienceItem) -> RouteResult:
+    def _get_route(
+        self,
+        from_experience: ExperienceItem,
+        to_experience: ExperienceItem,
+        provider_context: GenerationProviderContext | None = None,
+    ) -> RouteResult:
         from_point = from_experience.coordinates
         to_point = to_experience.coordinates
         request = RouteRequest(
@@ -365,7 +420,7 @@ class RouteAwareSequencingService:
             destination_lat=to_point.lat,
             destination_lon=to_point.lng,
         )
-        return _safe_get_route(self.gateway, request)
+        return _safe_get_route(self.gateway, request, provider_context)
 
 
 def _sum_consecutive_duration(
@@ -509,7 +564,51 @@ def _apply_day_order(day_plan: DailyPlan, suggested_order: list[str]) -> None:
         experience.route_aware_provenance = MovementDataProvenance.PROVIDER_BACKED
 
 
-def _safe_get_route(gateway: ProviderGateway, request: RouteRequest) -> RouteResult:
+def _failed_result(gateway: ProviderGateway) -> RouteResult:
+    provider_name = getattr(gateway.routing, "provider_name", "routing_provider")
+    return RouteResult(
+        provider=provider_name,
+        status=ProviderStatus.FAILED,
+        distance_meters=None,
+        duration_seconds=None,
+        source=provider_name,
+        confidence=0.0,
+        message=_UNEXPECTED_FAILURE_MESSAGE,
+    )
+
+
+def _record_results(
+    route_lookup: dict[tuple[str, str], RouteResult],
+    ordered: list[ExperienceItem],
+    results: list[RouteResult],
+) -> None:
+    for (from_experience, to_experience), result in zip(zip(ordered, ordered[1:]), results):
+        route_lookup[_route_key(from_experience.experience_id, to_experience.experience_id)] = result
+
+
+def _sum_results(results: list[RouteResult]) -> tuple[float | None, float | None, bool]:
+    """`(total_duration, total_distance, all_success)` over one order's
+    legs -- `(None, None, False)` unless EVERY leg is a real provider
+    success with both values. Never a partial sum."""
+    duration = 0.0
+    distance = 0.0
+    for result in results:
+        if (
+            result.status != ProviderStatus.SUCCESS
+            or result.duration_seconds is None
+            or result.distance_meters is None
+        ):
+            return None, None, False
+        duration += result.duration_seconds
+        distance += result.distance_meters
+    return duration, distance, True
+
+
+def _safe_get_route(
+    gateway: ProviderGateway,
+    request: RouteRequest,
+    provider_context: GenerationProviderContext | None = None,
+) -> RouteResult:
     """Calls `gateway.get_route(request)`, but never lets an unexpected
     exception from that call escape (Step 166D hardening) -- mirrors
     `RouteFeasibilityService`'s own `_safe_get_route` exactly (duplicated
@@ -526,22 +625,13 @@ def _safe_get_route(gateway: ProviderGateway, request: RouteRequest) -> RouteRes
     server-side (never shown to a caller).
     """
     try:
-        return gateway.get_route(request)
+        return gateway.get_route(request, **context_kwargs(provider_context))
     except Exception:
         logger.warning(
             "ProviderGateway.get_route raised unexpectedly; treating this leg as failed.",
             exc_info=True,
         )
-        provider_name = getattr(gateway.routing, "provider_name", "routing_provider")
-        return RouteResult(
-            provider=provider_name,
-            status=ProviderStatus.FAILED,
-            distance_meters=None,
-            duration_seconds=None,
-            source=provider_name,
-            confidence=0.0,
-            message=_UNEXPECTED_FAILURE_MESSAGE,
-        )
+        return _failed_result(gateway)
 
 
 def _aggregate_report_status(day_statuses: list[ProviderStatus]) -> ProviderStatus:

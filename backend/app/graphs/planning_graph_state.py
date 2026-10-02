@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import operator
-from typing import Annotated, TypedDict
+from typing import Annotated, NotRequired, TypedDict
 
 from app.models.planning_state import PlanningState, TripRequest
+from app.core.provider_usage import GenerationProviderContext
 
 # LangGraph state schema for the planning graph skeleton (Step 171A,
 # docs/13_llm_reasoning_pipeline.md, docs/14_backend_architecture.md). This
@@ -57,12 +58,17 @@ class PlanningGraphState(TypedDict):
     warnings: Annotated[list[str], operator.add]
     completed_nodes: Annotated[list[str], operator.add]
     failed_nodes: Annotated[list[str], operator.add]
+    # Section 203C.2B: this run's provider usage context, handed explicitly
+    # to every node that can spend provider credits. Runtime-only: it is
+    # never part of `planning_state` and is never persisted.
+    provider_context: NotRequired[GenerationProviderContext | None]
 
 
 def build_initial_planning_graph_state(
     trip_id: str,
     trip_request: TripRequest,
     planning_state: PlanningState,
+    provider_context: GenerationProviderContext | None = None,
 ) -> PlanningGraphState:
     """Builds a fresh `PlanningGraphState` from an already-existing
     `trip_id`/`TripRequest`/`PlanningState` -- never invents any of the
@@ -78,4 +84,5 @@ def build_initial_planning_graph_state(
         "warnings": [],
         "completed_nodes": [],
         "failed_nodes": [],
+        "provider_context": provider_context,
     }

@@ -740,6 +740,15 @@ class ExperiencePlannerService(PlanningStageService):
             )
             day_groups = _group_candidates_into_balanced_days(selected, num_days, max_per_day)
 
+        # Section 203C.2B: deterministic fallback for an underfilled plan.
+        # Only when the usefulness contract found the plan underfilled while
+        # enough verified inventory existed (and any single repair pass has
+        # already had its turn): days are topped up, to the pace cap, from
+        # unused quality-eligible candidates -- never a rejected, low-value
+        # or duplicate place, and never an invented one.
+        if planning_state.usefulness_fallback_applied:
+            day_groups = _top_up_underfilled_days(day_groups, scheduling_candidate_pois, profiles, max_per_day)
+
         reasoning_result = planning_state.ai_itinerary_reasoning_result
         logger.info(
             "ExperiencePlannerService resolved day grouping.",
@@ -928,7 +937,13 @@ class ExperiencePlannerService(PlanningStageService):
 
 def _matches_must_visit(poi: dict[str, Any], terms_lower: list[str]) -> bool:
     name = str(poi.get("name") or "").lower()
-    return any(term in name for term in terms_lower)
+    if any(term in name for term in terms_lower):
+        return True
+    # Section 203C.2B: a place the provider grounded FOR a must-visit term
+    # carries that term, so it matches even when the provider's name for it
+    # differs from what the user typed.
+    grounded_term = str(poi.get("must_visit_term") or "").lower()
+    return bool(grounded_term) and grounded_term in terms_lower
 
 
 def _matches_interests(poi: dict[str, Any], terms_lower: list[str]) -> bool:
@@ -1473,6 +1488,50 @@ def _fill_empty_days(
         if group or not unused:
             continue
         filled[index] = [unused.pop(0)]
+    return filled
+
+
+def _top_up_underfilled_days(
+    day_groups: list[list[dict[str, Any]]],
+    pool: list[dict[str, Any]],
+    profiles: dict[int, _CandidateProfile],
+    max_per_day: int,
+) -> list[list[dict[str, Any]]]:
+    """Section 203C.2B deterministic fallback: fills each day up to the pace
+    cap from unused quality-eligible candidates, emptiest days first. A
+    candidate joins the day whose stops it is nearest to (best-ranked first
+    for a still-empty day). Low-value single objects and places without
+    coordinates are never used as filler; with nothing eligible left a day
+    simply stays as it is."""
+    used = {id(p) for group in day_groups for p in group}
+    unused = sorted(
+        (
+            p
+            for p in pool
+            if id(p) not in used and not profiles[id(p)].low_value and _poi_coordinates(p) is not None
+        ),
+        key=lambda p: (profiles[id(p)].tier_rank, profiles[id(p)].score),
+        reverse=True,
+    )
+    filled = [list(group) for group in day_groups]
+    while unused:
+        open_days = [index for index, group in enumerate(filled) if len(group) < max_per_day]
+        if not open_days:
+            break
+        day_index = min(open_days, key=lambda index: len(filled[index]))
+        anchors = [point for point in (_poi_coordinates(p) for p in filled[day_index]) if point is not None]
+        if anchors:
+            centre = GeoPoint(
+                lat=sum(point.lat for point in anchors) / len(anchors),
+                lng=sum(point.lng for point in anchors) / len(anchors),
+            )
+            pick = min(
+                range(len(unused)),
+                key=lambda index: haversine_distance_km(centre, _poi_coordinates(unused[index])) or float("inf"),
+            )
+        else:
+            pick = 0
+        filled[day_index].append(unused.pop(pick))
     return filled
 
 

@@ -144,6 +144,13 @@ def _isolate_ai_candidate_proposal_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("GROQ_API_KEY", "")
     monkeypatch.setenv("ANTHROPIC_MODEL", Settings.model_fields["anthropic_model"].default)
     monkeypatch.setenv("GROQ_MODEL", Settings.model_fields["groq_model"].default)
+    # Section 203C.2B: the inventory sufficiency gate + usefulness contract
+    # are ON by default (and required in production). This suite's legacy
+    # fixtures use a deliberately tiny deterministic pool (two attractions),
+    # which the contract would correctly report as insufficient inventory,
+    # so the gate is off here unless a test opts in with the
+    # `inventory_sufficiency_gate_enabled` fixture.
+    monkeypatch.setenv("INVENTORY_SUFFICIENCY_GATE_ENABLED", "false")
     get_settings.cache_clear()
     yield
     get_settings.cache_clear()
@@ -372,7 +379,9 @@ def _isolate_provider_cache_store(request: pytest.FixtureRequest, monkeypatch: p
     import app.providers.flights.scraped_adapter as scraped_flight_adapter_module
     import app.providers.holidays.nager_date_adapter as nager_date_adapter_module
     import app.providers.hotel_ratings.scraped_adapter as scraped_hotel_ratings_adapter_module
+    import app.providers.places.geoapify_places_adapter as geoapify_places_adapter_module
     import app.providers.places.openstreetmap_adapter as openstreetmap_adapter_module
+    import app.providers.routing.geoapify_adapter as geoapify_routing_adapter_module
     import app.providers.routing.osrm_adapter as osrm_adapter_module
     import app.providers.weather.open_meteo_adapter as open_meteo_adapter_module
 
@@ -380,6 +389,8 @@ def _isolate_provider_cache_store(request: pytest.FixtureRequest, monkeypatch: p
     fresh_store = ProviderCacheStore(isolation_dir / "test_provider_cache.sqlite3")
     for adapter_module in (
         openstreetmap_adapter_module,
+        geoapify_places_adapter_module,
+        geoapify_routing_adapter_module,
         open_meteo_adapter_module,
         nager_date_adapter_module,
         frankfurter_adapter_module,
@@ -392,6 +403,16 @@ def _isolate_provider_cache_store(request: pytest.FixtureRequest, monkeypatch: p
 
     yield
     shutil.rmtree(isolation_dir, ignore_errors=True)
+
+
+@pytest.fixture()
+def inventory_sufficiency_gate_enabled(monkeypatch: pytest.MonkeyPatch):
+    """Section 203C.2B: opts a test into the production default -- the
+    inventory sufficiency gate and the usefulness contract enforced."""
+    monkeypatch.setenv("INVENTORY_SUFFICIENCY_GATE_ENABLED", "true")
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
 
 
 @pytest.fixture(autouse=True)

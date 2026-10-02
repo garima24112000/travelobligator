@@ -35,6 +35,10 @@ _PRODUCTION = {
     # Section 203C.1: production geocoding is Geoapify, never the public Nominatim endpoint
     "GEOCODING_PROVIDER": "geoapify",
     "GEOAPIFY_API_KEY": "SENTINEL_203C1_GEOAPIFY_KEY_5527",
+    # Section 203C.2B: production POI discovery and routing are Geoapify
+    "PLACES_PROVIDER": "geoapify",
+    "ROUTING_PROVIDER": "geoapify",
+    "INVENTORY_SUFFICIENCY_GATE_ENABLED": "true",
 }
 
 

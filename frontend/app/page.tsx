@@ -40,6 +40,11 @@ import BranchWorkspacePanel from "./BranchWorkspacePanel";
 import { readSelectedTripId, writeSelectedTripId } from "@/lib/trip-selection";
 import { DisclosureSection, TravelerLimitationsSection } from "./TravelerSections";
 import {
+  InventorySufficiencyPanel,
+  ProviderUsagePanel,
+  TravelerInventoryNotice,
+} from "./PlanInsightPanels";
+import {
   aggregateCaveats,
   humanizeIdentifier,
   placeDataLabel,
@@ -72,6 +77,8 @@ import type {
   FeedbackChangePreview,
   FeedbackEvent,
   FlightInventoryReport,
+  InventorySufficiencyReport,
+  ProviderUsageReport,
   FlightOffer,
   FlightSegment,
   GenerationProgress,
@@ -161,6 +168,8 @@ type PlanResult = {
   regenerationAttempts: RegenerationAttempt[];
   accommodationInventoryReport: AccommodationInventoryReport | null;
   flightInventoryReport: FlightInventoryReport | null;
+  inventorySufficiencyReport: InventorySufficiencyReport | null;
+  providerUsageReport: ProviderUsageReport | null;
   aiCandidateReviewReport: AICandidateReviewReport | null;
   aiCandidatePromotionReport: AICandidatePromotionReport | null;
   routeAwareSequencingReport: RouteAwareSequencingReport | null;
@@ -2382,6 +2391,8 @@ function dataStatusLabel(dataStatus: string): string {
 // raw providerName unchanged.
 const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
   openstreetmap_places: "OpenStreetMap / Overpass",
+  geoapify_places: "Geoapify Places",
+  geoapify_routing: "Geoapify Routing",
   open_meteo: "Open-Meteo",
   nager_date: "Nager.Date",
   frankfurter: "Frankfurter",
@@ -6121,6 +6132,8 @@ async function loadPlanResult(tripId: string): Promise<PlanResult> {
     accommodationInventoryReport:
       trip.planning_state.accommodation_inventory_report,
     flightInventoryReport: trip.planning_state.flight_inventory_report,
+    inventorySufficiencyReport: trip.planning_state.inventory_sufficiency_report ?? null,
+    providerUsageReport: trip.planning_state.provider_usage_report ?? null,
     aiCandidateReviewReport: aiCandidateReview.ai_candidate_review_report,
     aiCandidatePromotionReport:
       trip.planning_state.ai_candidate_promotion_report,
@@ -8669,6 +8682,11 @@ PY`}
 
                 <ProviderCoverageSection coverage={result.providerCoverage} />
 
+                {/* Section 203C.2B: Developer-only diagnostics. */}
+                <InventorySufficiencyPanel report={result.inventorySufficiencyReport} />
+
+                <ProviderUsagePanel report={result.providerUsageReport} />
+
                 <div id="inventories" className="flex flex-col gap-6">
                   <AccommodationInventorySection
                     report={result.accommodationInventoryReport}
@@ -8730,6 +8748,14 @@ PY`}
                     detail (disclosures). Same underlying data as
                     Developer view; nothing deleted, only reordered or
                     tucked behind disclosure controls. ---- */}
+                {/* Section 203C.2B: a material warning (not enough verified
+                    places / underfilled plan) is shown above the itinerary,
+                    never inside a disclosure. Renders nothing otherwise. */}
+                <TravelerInventoryNotice
+                  validationReport={result.validationReport}
+                  inventoryReport={result.inventorySufficiencyReport}
+                />
+
                 <div id="draft-itinerary" className="flex flex-col gap-6">
                   <LockedItemsSummarySection
                     tripId={result.summary.trip_id}
@@ -8817,7 +8843,7 @@ PY`}
                   <DisclosureSection
                     id="where-to-stay"
                     title="Where to stay"
-                    hint="Area guidance and any accommodation data that was found."
+                    hint="Area guidance from place locations. These are not bookable offers: no prices, availability or booking."
                   >
                     <TravelerWhereToStaySection
                       accommodationInventoryReport={result.accommodationInventoryReport}

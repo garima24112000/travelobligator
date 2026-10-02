@@ -135,6 +135,7 @@ def production_configuration_problems(settings: Settings) -> list[str]:
         except RedisConfigurationError as exc:
             problems.append(str(exc))
     problems.extend(_production_geocoder_problems(settings))
+    problems.extend(_production_places_and_routing_problems(settings))
     if settings.app_debug:
         problems.append("APP_ENV=production requires APP_DEBUG=false.")
     if len(settings.session_secret_key or "") < MIN_PRODUCTION_SESSION_SECRET_LENGTH:
@@ -179,6 +180,26 @@ def _production_geocoder_problems(settings: Settings) -> list[str]:
     return []
 
 
+def _production_places_and_routing_problems(settings: Settings) -> list[str]:
+    """Section 203C.2B: production POI discovery is Geoapify Places (Overpass is development/experimental
+    only -- it is not release-critical and there is no fallback to it), a keyed provider needs its key, and
+    the inventory sufficiency gate / usefulness contract cannot be switched off."""
+    problems: list[str] = []
+    has_key = bool((settings.geoapify_api_key or "").strip())
+    if settings.places_provider != "geoapify":
+        problems.append(
+            "APP_ENV=production requires PLACES_PROVIDER=geoapify (the OpenStreetMap/Overpass places provider "
+            "is development-only)."
+        )
+    elif not has_key:
+        problems.append("APP_ENV=production with PLACES_PROVIDER=geoapify requires GEOAPIFY_API_KEY.")
+    if settings.routing_provider == "geoapify" and not has_key:
+        problems.append("APP_ENV=production with ROUTING_PROVIDER=geoapify requires GEOAPIFY_API_KEY.")
+    if not settings.inventory_sufficiency_gate_enabled:
+        problems.append("APP_ENV=production requires INVENTORY_SUFFICIENCY_GATE_ENABLED=true.")
+    return list(dict.fromkeys(problems))
+
+
 def startup_config_summary(settings: Settings | None = None, migration_head: str | None = None) -> dict[str, object]:
     """The safe, fixed set of configuration facts logged at startup (Task 22)."""
     resolved = settings or get_settings()
@@ -188,6 +209,8 @@ def startup_config_summary(settings: Settings | None = None, migration_head: str
             "none" if not resolved.provider_cache_enabled else resolved.provider_cache_backend
         ),
         "geocoding_provider": resolved.geocoding_provider,
+        "places_provider": resolved.places_provider,
+        "routing_provider": resolved.routing_provider,
         "async_generation_enabled": resolved.async_generation_enabled,
         "metrics_enabled": resolved.metrics_enabled,
         "migration_head": migration_head,

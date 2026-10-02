@@ -17,6 +17,7 @@ from app.models.ai_candidate_proposal import (
     AICandidateType,
     AICandidateVerificationRequirement,
 )
+from app.providers.ai_candidate_proposal.anchor_guidance import ANCHOR_DISCOVERY_GUIDANCE, PROVIDER_POOL_NOTE
 from app.providers.ai_candidate_proposal.base import AICandidateProposalProvider
 from app.providers.ai_candidate_proposal.proposal_dedup import deduplicate_proposals
 
@@ -166,6 +167,8 @@ _SYSTEM_PROMPT = (
     "'sunset viewpoint'). Prefer this whenever you don't have a genuinely useful named "
     "place in mind -- do not invent an obscure or uncertain establishment name just to "
     "produce a named_place proposal.\n\n"
+    + ANCHOR_DISCOVERY_GUIDANCE
+    + "\n\n"
     "Reflect the traveler's stated interests, respect their explicit constraints and "
     "trip length, and consider pace and destination. Provide a mixture of high-priority "
     "anchors and supporting ideas; avoid excessive duplicates (do not propose near-"
@@ -193,8 +196,7 @@ def _build_prompt(request: AICandidateProposalRequest) -> str:
             f"Interests: {', '.join(request.interests) if request.interests else 'none specified'}",
             f"Must-visit: {', '.join(request.must_visit) if request.must_visit else 'none specified'}",
             f"Constraints: {', '.join(request.constraints) if request.constraints else 'none specified'}",
-            "Existing provider candidate counts (already covered, do not restate as new ideas): "
-            f"{request.provider_candidate_summary or 'none'}",
+            PROVIDER_POOL_NOTE + f"{request.provider_candidate_summary or 'none'}",
             "Unavailable data fields: "
             f"{', '.join(request.unavailable_data) if request.unavailable_data else 'none'}",
             f"Maximum candidates to propose: {request.max_candidates}",

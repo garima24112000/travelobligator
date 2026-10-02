@@ -80,6 +80,7 @@ def test_shadow_run_on_existing_trip_returns_expected_shape(client: TestClient) 
         "destination_context",
         "candidate_quality",
         "ai_candidate",
+        "inventory_sufficiency",  # Section 203C.2B
         "trip_strategy",
         "stay_transport",
         "accommodation_inventory",

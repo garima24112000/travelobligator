@@ -24,7 +24,15 @@ from app.models.routing import (
     RouteFeasibilityReport,
     TravelTimeBufferReport,
 )
+from app.models.inventory_sufficiency import ProviderUsageReport
 from app.providers.gateway import provider_gateway
+from app.core.provider_usage import GenerationProviderContext, context_kwargs
+from app.services.inventory_sufficiency_service import (
+    InventorySufficiencyService,
+    apply_inventory_sufficiency_safely,
+)
+from app.services.pace_targets import trip_days_of
+from app.services.usefulness_contract import evaluate_usefulness
 from app.repositories.factory import get_planning_state_repository, get_trip_repository
 from app.repositories.errors import ConcurrentStateUpdateError
 from app.repositories.unit_of_work import run_atomic
@@ -59,6 +67,11 @@ from app.services.trip_strategy_service import TripStrategyService
 from app.services.versioning_service import VersioningService
 
 logger = logging.getLogger(__name__)
+
+# Section 203C.2B: the stages that can spend provider credits receive the
+# generation's `GenerationProviderContext` explicitly.
+_PROVIDER_CONTEXT_STAGE_KEYS = frozenset({"destination_context", "experience_plan"})
+_PROVIDER_CONTEXT_STAGES = frozenset({PlanningStage.DESTINATION_CONTEXT, PlanningStage.EXPERIENCE_PLAN})
 
 _READINESS_TO_PIPELINE_STATUS = {
     "ready": PipelineStatus.VALIDATED,
@@ -407,6 +420,9 @@ class PlanningOrchestrator:
         # Step 183B-FIX found and fixed for `provider_gateway` --
         # `Settings.persistence_backend` must be read fresh on every
         # access, not baked in once at import time.
+        self.inventory_sufficiency_service = InventorySufficiencyService(
+            quality_service=self.candidate_quality_service
+        )
         self._planning_state_repo_override = planning_state_repo
         self._trip_repo_override = trip_repo
 
@@ -546,8 +562,14 @@ class PlanningOrchestrator:
         planning_state.set_pipeline_status(PipelineStatus.PROFILE_CREATED)
         return planning_state
 
-    def run_destination_context_stage(self, planning_state: PlanningState) -> PlanningState:
-        planning_state = self.destination_context_service.run(planning_state)
+    def run_destination_context_stage(
+        self,
+        planning_state: PlanningState,
+        provider_context: GenerationProviderContext | None = None,
+    ) -> PlanningState:
+        planning_state = self.destination_context_service.run(
+            planning_state, **context_kwargs(provider_context)
+        )
         # Deterministic pre-ranking metadata only (Step 156A/156B,
         # docs/18_candidate_quality.md) -- scores destination_context's
         # existing candidates; never a provider/AI/LLM/LangGraph/LangSmith
@@ -562,7 +584,7 @@ class PlanningOrchestrator:
         # Optional, config-gated shadow-mode integration (Step 161B) -- a
         # pure no-op unless AI_CANDIDATE_DISCOVERY_SHADOW_MODE_ENABLED is set.
         # See _run_ai_candidate_discovery_shadow_stage's docstring.
-        planning_state = self._run_ai_candidate_discovery_shadow_stage(planning_state)
+        planning_state = self._run_ai_candidate_discovery_shadow_stage(planning_state, provider_context)
         # Step 170D: auto-computes ai_candidate_promotion_report right
         # after the shadow stage (and after candidate_quality_report
         # above), so any promoted candidates are already available to
@@ -571,9 +593,19 @@ class PlanningOrchestrator:
         # whenever ai_candidate_proposal_batch is None (shadow mode
         # disabled, the default).
         planning_state = self._run_ai_candidate_promotion_stage(planning_state)
+        # Section 203C.2B: the inventory sufficiency gate, on the grounded
+        # pool, before strategy/scheduling (same runner the LangGraph engine
+        # uses).
+        planning_state = apply_inventory_sufficiency_safely(
+            planning_state, self.inventory_sufficiency_service, provider_context
+        )
         return planning_state
 
-    def _run_ai_candidate_discovery_shadow_stage(self, planning_state: PlanningState) -> PlanningState:
+    def _run_ai_candidate_discovery_shadow_stage(
+        self,
+        planning_state: PlanningState,
+        provider_context: GenerationProviderContext | None = None,
+    ) -> PlanningState:
         """Optional, config-gated shadow-mode integration (Step 161B,
         docs/13_llm_reasoning_pipeline.md section 40,
         docs/14_backend_architecture.md section 26).
@@ -621,6 +653,7 @@ class PlanningOrchestrator:
             planning_state,
             self.ai_candidate_discovery_service,
             stage_label="ai_candidate_proposal",
+            provider_context=provider_context,
         )
 
     def _run_ai_candidate_promotion_stage(self, planning_state: PlanningState) -> PlanningState:
@@ -765,7 +798,11 @@ class PlanningOrchestrator:
         planning_state.set_pipeline_status(PipelineStatus.STAY_TRANSPORT_CREATED)
         return planning_state
 
-    def _build_route_feasibility_report_safe(self, planning_state: PlanningState) -> None:
+    def _build_route_feasibility_report_safe(
+        self,
+        planning_state: PlanningState,
+        provider_context: GenerationProviderContext | None = None,
+    ) -> None:
         """Builds and stores `route_feasibility_report` plus the derived
         `ProviderCoverage.routes` value (Step 165E), failing safe (Step
         166D hardening): an unexpected exception from
@@ -776,7 +813,7 @@ class PlanningOrchestrator:
         """
         try:
             planning_state.route_feasibility_report = self.route_feasibility_service.build_report(
-                planning_state
+                planning_state, **context_kwargs(provider_context)
             )
         except Exception:
             logger.warning(
@@ -792,8 +829,23 @@ class PlanningOrchestrator:
             planning_state.route_feasibility_report.status, "not_connected"
         )
 
-    def run_experience_plan_stage(self, planning_state: PlanningState) -> PlanningState:
+    def run_experience_plan_stage(
+        self,
+        planning_state: PlanningState,
+        provider_context: GenerationProviderContext | None = None,
+    ) -> PlanningState:
         planning_state = self.experience_planner_service.run(planning_state)
+        # Section 203C.2B: the legacy engine has no AI repair step, so an
+        # underfilled plan (enough verified inventory, too few meaningful
+        # stops or an empty day) goes straight to its single deterministic
+        # top-up pass. Never run for insufficient inventory.
+        if (
+            planning_state.inventory_sufficiency_report is not None
+            and not planning_state.usefulness_fallback_applied
+            and evaluate_usefulness(planning_state).underfilled
+        ):
+            planning_state.usefulness_fallback_applied = True
+            planning_state = self.experience_planner_service.run(planning_state)
         # Step 165E: route feasibility for consecutive scheduled experiences
         # within each day, computed after experience_plan exists and before
         # PlanValidatorService runs. Never reorders/drops a scheduled
@@ -801,7 +853,7 @@ class PlanningOrchestrator:
         # route-aware-scheduling boundary (Section 166). Saved alongside
         # experience_plan by generate_full_plan's existing
         # save-after-each-stage cadence; no extra save call needed here.
-        self._build_route_feasibility_report_safe(planning_state)
+        self._build_route_feasibility_report_safe(planning_state, provider_context)
 
         # Step 166A: shadow/report-only route-aware day-sequencing
         # suggestions, computed after route_feasibility_report and before
@@ -813,7 +865,9 @@ class PlanningOrchestrator:
         # crash generation.
         try:
             planning_state.route_aware_sequencing_report = (
-                self.route_aware_sequencing_service.build_report(planning_state)
+                self.route_aware_sequencing_service.build_report(
+                    planning_state, **context_kwargs(provider_context)
+                )
             )
         except Exception:
             logger.warning(
@@ -854,7 +908,7 @@ class PlanningOrchestrator:
                 # now-reordered schedule rather than leaving it stale --
                 # legs are built from consecutive scheduled pairs, which
                 # just changed for at least one day.
-                self._build_route_feasibility_report_safe(planning_state)
+                self._build_route_feasibility_report_safe(planning_state, provider_context)
 
         # Step 166C: provider-backed travel-time buffer reporting for
         # consecutive scheduled experiences, computed after
@@ -867,7 +921,7 @@ class PlanningOrchestrator:
         # an unexpected exception is never allowed to crash generation.
         try:
             planning_state.travel_time_buffer_report = self.travel_time_buffer_service.build_report(
-                planning_state
+                planning_state, **context_kwargs(provider_context)
             )
         except Exception:
             logger.warning(
@@ -920,6 +974,8 @@ class PlanningOrchestrator:
         # committed in between makes the next save fail with ConcurrentStateUpdateError instead
         # of being silently overwritten.
         persisted = planning_state
+        # Section 203C.2B: ONE provider context for this generation.
+        provider_context = GenerationProviderContext.new(trip_days=trip_days_of(planning_state))
 
         try:
             stage_runners = (
@@ -932,7 +988,11 @@ class PlanningOrchestrator:
             )
             for stage_key, run_stage in stage_runners:
                 planning_state = self._mark_stage_started(planning_state, stage_key)
-                planning_state = run_stage(planning_state)
+                planning_state = (
+                    run_stage(planning_state, provider_context)
+                    if stage_key in _PROVIDER_CONTEXT_STAGE_KEYS
+                    else run_stage(planning_state)
+                )
                 planning_state = self._mark_stage_finished(planning_state, stage_key)
                 if stage_key == "destination_context":
                     planning_state = self._mark_stage_finished(planning_state, "candidate_quality")
@@ -946,6 +1006,7 @@ class PlanningOrchestrator:
             planning_state = self.plan_diff_preview_service.recompute(planning_state)
             planning_state = self.regeneration_readiness_service.recompute(planning_state)
             planning_state = self.itinerary_narrative_service.generate(planning_state)
+            planning_state.provider_usage_report = ProviderUsageReport(**provider_context.usage_report())
             planning_state = self._mark_stage_finished(planning_state, "post_processing")
             planning_state = self._finish_generation_progress(planning_state)
             self._carry_lock_token(persisted, planning_state)
@@ -970,8 +1031,15 @@ class PlanningOrchestrator:
         persisted = planning_state
 
         try:
+            # Section 203C.2B: ONE provider context for this generation,
+            # passed explicitly into the graph (repair runs inside the same
+            # graph run and therefore charges this same generation).
+            provider_context = GenerationProviderContext.new(trip_days=trip_days_of(planning_state))
             result = self.langgraph_planning_service.run(
-                trip_id, planning_state.trip_request, planning_state
+                trip_id, planning_state.trip_request, planning_state, provider_context=provider_context
+            )
+            result.planning_state.provider_usage_report = ProviderUsageReport(
+                **provider_context.usage_report()
             )
             new_state = self._carry_lock_token(persisted, result.planning_state)
 
@@ -1055,6 +1123,7 @@ class PlanningOrchestrator:
         affected_stages: list[PlanningStage],
         *,
         persist_each_stage: bool = True,
+        provider_context: GenerationProviderContext | None = None,
     ) -> PlanningState:
         """Reruns `affected_stages` in order. `persist_each_stage=True` (default, legacy
         callers) saves after every stage. Section 200C: legacy regeneration passes
@@ -1072,11 +1141,20 @@ class PlanningOrchestrator:
         }
 
         persisted = planning_state
+        # Section 203C.2B: a regeneration is its own generation with its own
+        # isolated budget, unless the caller supplies the one it runs under.
+        provider_context = provider_context or GenerationProviderContext.new(
+            trip_days=trip_days_of(planning_state)
+        )
         for stage in affected_stages:
             run_stage = stage_runner_by_stage.get(stage)
             if run_stage is None:
                 continue
-            planning_state = run_stage(planning_state)
+            planning_state = (
+                run_stage(planning_state, provider_context)
+                if stage in _PROVIDER_CONTEXT_STAGES
+                else run_stage(planning_state)
+            )
             self._carry_lock_token(persisted, planning_state)
             if persist_each_stage:
                 self.planning_state_repository.save(planning_state)

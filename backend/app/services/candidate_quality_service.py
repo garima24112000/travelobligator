@@ -75,6 +75,9 @@ _SIGNIFICANCE_BOOST_MAX = 0.06
 _INTEREST_MATCH_BOOST = 0.1
 _STRONG_SIGNIFICANCE = frozenset({"wikipedia", "heritage", "major_historic_type"})
 # Section 202C.1C (see `apply_corroborated_anchor_boost`).
+_MUST_VISIT_SCORE_FLOOR = 0.95
+_CATEGORY_SPECIFICITY_BOOST = 0.03
+_NO_PUBLIC_ACCESS_VALUES = frozenset({"private", "no"})
 _CORROBORATED_ANCHOR_BOOST = 0.05
 _CORROBORATED_ANCHOR_MIN_PROPOSAL_CONFIDENCE = 0.75
 
@@ -421,8 +424,31 @@ class CandidateQualityService:
             if object_cap is not None:
                 category_score = min(category_score, object_cap)
 
+        # -- Section 203C.2B: provider access + category specificity -----------------
+        tags = provider_tags if isinstance(provider_tags, dict) else {}
+        if str(tags.get("access") or "").lower() in _NO_PUBLIC_ACCESS_VALUES:
+            # A real place a traveler cannot enter (the provider marks it
+            # private / no access) is not an itinerary stop.
+            category_score = min(category_score, 0.1)
+            negative_signals.append("Provider data marks this place as private or not publicly accessible.")
+            if CandidateRejectReason.UNSUITABLE_PLACE_TYPE not in reject_reasons:
+                reject_reasons.append(CandidateRejectReason.UNSUITABLE_PLACE_TYPE)
+        elif (
+            str(tags.get("category_path") or "").count(".") >= 2
+            and classification.object_kind is None
+            and not classification.is_unsuitable
+        ):
+            # The provider classifies this as a specific kind of sight
+            # (e.g. a castle or a monastery), not just "an attraction".
+            category_score += _CATEGORY_SPECIFICITY_BOOST
+            positive_signals.append("Provider classifies this as a specific type of place.")
+
         must_visit_lower = [term.lower() for term in (must_visit_names or []) if term]
-        if must_visit_lower and any(term in haystack for term in must_visit_lower):
+        grounded_must_visit_term = str(_field(place, "must_visit_term") or "").lower()
+        is_must_visit = bool(must_visit_lower) and (
+            any(term in haystack for term in must_visit_lower) or grounded_must_visit_term in must_visit_lower
+        )
+        if is_must_visit:
             category_score = max(category_score, 0.9)
             positive_signals.append(
                 "Matches a must-visit request, which overrides weak-category signals."
@@ -446,6 +472,11 @@ class CandidateQualityService:
 
         category_score = max(0.0, min(1.0, category_score))
         total_score = max(0.0, min(1.0, 0.65 * category_score + 0.35 * confidence))
+        if is_must_visit and CandidateRejectReason.MISSING_COORDINATES not in reject_reasons:
+            # Section 203C.2B: a grounded user must-visit is a deterministic
+            # preference, not a slightly larger number -- it is never
+            # outranked by an ordinary candidate on a small score difference.
+            total_score = max(total_score, _MUST_VISIT_SCORE_FLOOR)
         quality_tier = _finalize_tier(total_score, reject_reasons)
 
         return CandidateQualityScore(

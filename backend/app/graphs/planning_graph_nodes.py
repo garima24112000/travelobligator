@@ -36,8 +36,14 @@ from app.services.ai_itinerary_repair_service import AIItineraryRepairService, a
 from app.services.candidate_quality_service import CandidateQualityService
 from app.services.destination_context_service import DestinationContextService
 from app.services.experience_planner_service import ExperiencePlannerService
+from app.core.provider_usage import context_kwargs
 from app.services.flight_inventory_service import FlightInventoryService
+from app.services.inventory_sufficiency_service import (
+    InventorySufficiencyService,
+    apply_inventory_sufficiency_safely,
+)
 from app.services.plan_validator_service import PlanValidatorService
+from app.services.usefulness_contract import evaluate_usefulness
 from app.services.route_aware_sequencing_service import RouteAwareSequencingService
 from app.services.route_feasibility_service import RouteFeasibilityService
 from app.services.stay_transport_service import StayTransportService
@@ -108,6 +114,13 @@ from app.services.trip_strategy_service import TripStrategyService
 logger = logging.getLogger(__name__)
 
 PlanningGraphNode = Callable[[PlanningGraphState], dict[str, Any]]
+
+
+def _context(state: PlanningGraphState) -> dict[str, Any]:
+    """The generation's provider context as keyword arguments (Section
+    203C.2B) -- passed explicitly to every service that can spend provider
+    credits; empty when the run has none."""
+    return context_kwargs(state.get("provider_context"))
 
 
 def _safe_error(node_name: str) -> str:
@@ -224,7 +237,7 @@ def build_destination_context_node(
 
     def destination_context_node(state: PlanningGraphState) -> dict[str, Any]:
         try:
-            planning_state = resolved_service.run(state["planning_state"])
+            planning_state = resolved_service.run(state["planning_state"], **_context(state))
         except Exception:
             return {
                 "failed_nodes": ["destination_context"],
@@ -363,6 +376,7 @@ def build_ai_candidate_node(
                 planning_state,
                 resolved_discovery_service,
                 stage_label="ai_candidate_discovery",
+                provider_context=state.get("provider_context"),
             )
             # Mirrors PlanningOrchestrator._run_ai_candidate_promotion_stage's
             # own guard exactly: no proposal batch means there is nothing
@@ -379,6 +393,25 @@ def build_ai_candidate_node(
         return {"planning_state": planning_state, "completed_nodes": ["ai_candidate"]}
 
     return ai_candidate_node
+
+
+def build_inventory_sufficiency_node(
+    service: InventorySufficiencyService | None = None,
+) -> PlanningGraphNode:
+    """Section 203C.2B: the inventory sufficiency gate, after candidate
+    quality and AI anchor grounding/promotion and before trip strategy and
+    itinerary reasoning. Never fails the run: `insufficient` inventory is a
+    recorded outcome that later surfaces as blocked readiness, not an
+    error."""
+    resolved_service = service or InventorySufficiencyService()
+
+    def inventory_sufficiency_node(state: PlanningGraphState) -> dict[str, Any]:
+        planning_state = apply_inventory_sufficiency_safely(
+            state["planning_state"], resolved_service, state.get("provider_context")
+        )
+        return {"planning_state": planning_state, "completed_nodes": ["inventory_sufficiency"]}
+
+    return inventory_sufficiency_node
 
 
 def build_trip_strategy_node(
@@ -573,7 +606,7 @@ def build_route_feasibility_node(
     def route_feasibility_node(state: PlanningGraphState) -> dict[str, Any]:
         planning_state = state["planning_state"]
         try:
-            report = resolved_service.build_report(planning_state)
+            report = resolved_service.build_report(planning_state, **_context(state))
         except Exception:
             return {
                 "failed_nodes": ["route_feasibility"],
@@ -615,7 +648,7 @@ def build_route_aware_sequencing_node(
     def route_aware_sequencing_node(state: PlanningGraphState) -> dict[str, Any]:
         planning_state = state["planning_state"]
         try:
-            report = resolved_sequencing_service.build_report(planning_state)
+            report = resolved_sequencing_service.build_report(planning_state, **_context(state))
             planning_state.route_aware_sequencing_report = report
 
             settings = get_settings()
@@ -626,7 +659,7 @@ def build_route_aware_sequencing_node(
                     settings.route_aware_scheduling_min_improvement_seconds,
                 )
                 if applied:
-                    rebuilt = resolved_route_feasibility_service.build_report(planning_state)
+                    rebuilt = resolved_route_feasibility_service.build_report(planning_state, **_context(state))
                     planning_state.route_feasibility_report = rebuilt
                     planning_state.provider_coverage.routes = _ROUTE_STATUS_TO_COVERAGE_VALUE.get(
                         rebuilt.status, "not_connected"
@@ -659,7 +692,7 @@ def build_travel_time_buffer_node(
     def travel_time_buffer_node(state: PlanningGraphState) -> dict[str, Any]:
         planning_state = state["planning_state"]
         try:
-            report = resolved_service.build_report(planning_state)
+            report = resolved_service.build_report(planning_state, **_context(state))
         except Exception:
             return {
                 "failed_nodes": ["travel_time_buffer"],
@@ -893,25 +926,55 @@ def route_after_validation(state: PlanningGraphState) -> str:
     planning_state = state["planning_state"]
     settings = get_settings()
 
+    # Section 203C.2B: whenever the AI repair is not (or no longer) taken,
+    # an underfilled plan with enough verified inventory still gets its
+    # single deterministic top-up pass before the run finishes.
+    no_repair = _underfill_fallback_or_finish(planning_state)
+
     if not settings.ai_itinerary_repair_enabled or not settings.ai_itinerary_reasoning_enabled:
-        return "provider_coverage"
+        return no_repair
 
     reasoning_result = planning_state.ai_itinerary_reasoning_result
     if reasoning_result is None or reasoning_result.status != AIItineraryReasoningStatus.COMPLETED:
-        return "provider_coverage"
+        return no_repair
 
     if planning_state.ai_itinerary_repair_attempt_count >= settings.ai_itinerary_repair_max_attempts:
-        return "provider_coverage"
+        return no_repair
 
     if not classify_repairable_issues(planning_state):
-        return "provider_coverage"
+        return no_repair
 
     next_attempt_number = planning_state.ai_itinerary_repair_attempt_count + 1
     request = AIItineraryRepairRequestBuilder().build_request(planning_state, attempt_number=next_attempt_number)
     if request is None:
-        return "provider_coverage"
+        return no_repair
 
     return "ai_itinerary_repair"
+
+
+def _underfill_fallback_or_finish(planning_state: PlanningState) -> str:
+    """`"underfill_fallback"` when the usefulness contract is enforced for
+    this plan, the plan is underfilled although enough verified inventory
+    existed, and this generation's single fallback pass is still unused;
+    otherwise `"provider_coverage"`."""
+    if planning_state.inventory_sufficiency_report is None or planning_state.usefulness_fallback_applied:
+        return "provider_coverage"
+    return "underfill_fallback" if evaluate_usefulness(planning_state).underfilled else "provider_coverage"
+
+
+def build_underfill_fallback_node() -> PlanningGraphNode:
+    """Section 203C.2B: marks this generation's single deterministic
+    fallback pass as used; `experience_planning` then tops underfilled days
+    up from unused verified candidates and the routing/validation chain
+    reruns. If the plan is still underfilled afterwards it finishes as
+    `needs_review` with `UNDERFILLED_PLAN` -- there is no second pass."""
+
+    def underfill_fallback_node(state: PlanningGraphState) -> dict[str, Any]:
+        planning_state = state["planning_state"]
+        planning_state.usefulness_fallback_applied = True
+        return {"planning_state": planning_state, "completed_nodes": ["underfill_fallback"]}
+
+    return underfill_fallback_node
 
 
 def route_after_repair(state: PlanningGraphState) -> str:
@@ -925,7 +988,9 @@ def route_after_repair(state: PlanningGraphState) -> str:
     repair_result = state["planning_state"].ai_itinerary_repair_result
     if repair_result is not None and repair_result.status == AIItineraryRepairStatus.COMPLETED:
         return "experience_planning"
-    return "provider_coverage"
+    # Section 203C.2B: a repair that did not complete still leaves an
+    # underfilled plan its single deterministic fallback pass.
+    return _underfill_fallback_or_finish(state["planning_state"])
 
 
 def build_provider_coverage_node() -> PlanningGraphNode:

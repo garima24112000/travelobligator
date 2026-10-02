@@ -45,6 +45,7 @@ _ALLOWED_PERSISTENCE_BACKENDS = frozenset({"local_json", "postgres"})
 # the two settings never overlap. An unknown value raises (no silent switch).
 _ALLOWED_PROVIDER_CACHE_BACKENDS = frozenset({"redis", "sqlite"})
 _ALLOWED_GEOCODING_PROVIDERS = frozenset({"nominatim", "geoapify"})
+_ALLOWED_PLACES_PROVIDERS = frozenset({"openstreetmap", "geoapify"})
 
 # Step 187B: allowed values for the structured-logging foundation's log
 # level. An unrecognized value normalizes to "INFO" rather than raising
@@ -416,6 +417,41 @@ class Settings(BaseSettings):
     geoapify_api_key: str | None = Field(default=None, alias="GEOAPIFY_API_KEY", repr=False)
     geoapify_api_url: str = Field(default="https://api.geoapify.com", alias="GEOAPIFY_API_URL")
     geoapify_timeout_seconds: float = Field(default=10.0, alias="GEOAPIFY_TIMEOUT_SECONDS", gt=0.0)
+    # Section 203C.2B: places (POI discovery) provider. "openstreetmap"
+    # (default; Overpass, development/experiments) or "geoapify" (the
+    # production provider: Geoapify Places inside the destination boundary).
+    # There is no automatic fallback between them.
+    places_provider: str = Field(default="openstreetmap", alias="PLACES_PROVIDER")
+    # Hard cap on the Geoapify credits ONE generation may spend (geocoding +
+    # places + place details + routing). A call beyond it is refused locally
+    # and reported honestly; nothing falls through to another provider.
+    # Worst-case math per trip shape: docs/22_free_tier_deployment.md.
+    geoapify_max_credits_per_generation: int = Field(
+        default=100, alias="GEOAPIFY_MAX_CREDITS_PER_GENERATION", ge=1
+    )
+    # A successful Places response with ZERO results is cached for this
+    # short time, so repeated generations do not keep paying for the same
+    # empty category. Failures (auth, 429, 5xx, timeout, malformed) are
+    # never cached.
+    geoapify_empty_result_cache_ttl_seconds: int = Field(
+        default=21600, alias="GEOAPIFY_EMPTY_RESULT_CACHE_TTL_SECONDS", ge=0
+    )
+    # Place Details lookups (category/evidence for a grounded anchor that is
+    # not already in the broad pool) allowed per generation.
+    geoapify_max_place_details_per_generation: int = Field(
+        default=12, alias="GEOAPIFY_MAX_PLACE_DETAILS_PER_GENERATION", ge=0
+    )
+    # Section 203C.2B: the inventory sufficiency gate + usefulness contract
+    # (T / R / H; `app.services.usefulness_contract`). On by default and
+    # required in production. The hermetic test suite turns it off for its
+    # small legacy fixtures and enables it explicitly where it is tested.
+    inventory_sufficiency_gate_enabled: bool = Field(
+        default=True, alias="INVENTORY_SUFFICIENCY_GATE_ENABLED"
+    )
+    # Travel mode for Geoapify Routing legs (ROUTING_PROVIDER=geoapify).
+    # In-city itinerary legs are walking routes; no transit schedule is
+    # ever requested or invented.
+    geoapify_routing_mode: str = Field(default="walk", alias="GEOAPIFY_ROUTING_MODE")
     allow_public_nominatim_in_production: bool = Field(
         default=False, alias="ALLOW_PUBLIC_NOMINATIM_IN_PRODUCTION"
     )
@@ -1280,6 +1316,14 @@ class Settings(BaseSettings):
                 "PERSISTENCE_BACKEND must be 'postgres' (default) or 'local_json' (explicit "
                 "development/test fallback)."
             )
+        return normalized
+
+    @field_validator("places_provider", mode="after")
+    @classmethod
+    def _normalize_places_provider(cls, value: str) -> str:
+        normalized = (value or "").strip().lower()
+        if normalized not in _ALLOWED_PLACES_PROVIDERS:
+            raise ValueError("PLACES_PROVIDER must be 'openstreetmap' (default) or 'geoapify'.")
         return normalized
 
     @field_validator("geocoding_provider", mode="after")

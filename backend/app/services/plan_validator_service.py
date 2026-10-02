@@ -20,6 +20,7 @@ from app.models.routing import (
 )
 from app.core.errors import DESTINATION_UNRESOLVED_MESSAGE
 from app.services.plan_quality_findings import build_plan_quality_findings
+from app.services.usefulness_contract import evaluate_usefulness, usefulness_findings
 from app.services.experience_identity import experience_stable_key
 from app.services.base import PlanningStageService
 from app.utils.geo import haversine_distance_km
@@ -370,6 +371,20 @@ class PlanValidatorService(PlanningStageService):
             warnings.append(quality_issue)
         provider_coverage_notes.extend(quality_notes)
 
+        # Section 203C.2B: inventory semantics + the usefulness contract.
+        # Applied whenever the inventory sufficiency gate ran for this plan.
+        # `viable < R` is the ONLY case that blocks (an honest domain
+        # outcome); `viable >= R` with too few meaningful stops or an empty
+        # day is an underfilled plan that still needs review.
+        blocking_codes: list[str] = []
+        review_codes: list[str] = []
+        if planning_state.inventory_sufficiency_report is not None:
+            usefulness_critical, usefulness_warnings, blocking_codes, review_codes = usefulness_findings(
+                evaluate_usefulness(planning_state)
+            )
+            critical_issues.extend(usefulness_critical)
+            warnings.extend(usefulness_warnings)
+
         captured_constraints: list[str] = []
         for constraint in planning_state.trip_request.constraints:
             if constraint not in captured_constraints:
@@ -533,6 +548,8 @@ class PlanValidatorService(PlanningStageService):
             warnings=warnings,
             provider_coverage_notes=provider_coverage_notes,
             unavailable_data_notes=unavailable_data_notes,
+            blocking_codes=blocking_codes,
+            review_codes=review_codes,
         )
 
         planning_state.validation_report = validation_report

@@ -18,7 +18,9 @@ _DOWNGRADE_COVERAGE_STATUSES = {"failed", "not_connected", "unavailable"}
 # OSM only returns real accommodation *locations*, never bookable inventory
 # (price/availability/booking links), so its accommodation coverage is
 # labeled distinctly from a connected booking-capable AccommodationProvider.
-_OPEN_DATA_PLACES_PROVIDER = "openstreetmap_places"
+# Section 203C.2B: Geoapify Places accommodation POIs are the same kind of
+# data -- locations only, never bookable inventory.
+_OPEN_DATA_PLACES_PROVIDERS = frozenset({"openstreetmap_places", "geoapify_places"})
 _OPEN_DATA_ACCOMMODATION_STATUSES = {"success", "partial", "fallback_used"}
 
 # A provider only counts as a "data source used" when both its call status
@@ -84,7 +86,7 @@ class ProviderCoverageService:
             new_value = response.status.value
             if (
                 coverage_field == "accommodations"
-                and response.provider_name == _OPEN_DATA_PLACES_PROVIDER
+                and response.provider_name in _OPEN_DATA_PLACES_PROVIDERS
                 and new_value in _OPEN_DATA_ACCOMMODATION_STATUSES
             ):
                 new_value = "open_poi_available"

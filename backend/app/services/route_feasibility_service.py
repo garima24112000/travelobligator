@@ -16,6 +16,7 @@ from app.models.routing import (
     movement_data_provenance_from_status,
 )
 from app.providers.gateway import ProviderGateway, provider_gateway
+from app.core.provider_usage import GenerationProviderContext, context_kwargs
 
 logger = logging.getLogger(__name__)
 
@@ -139,7 +140,11 @@ class RouteFeasibilityService:
     def __init__(self, gateway: ProviderGateway | None = None) -> None:
         self.gateway = gateway or provider_gateway
 
-    def build_report(self, planning_state: PlanningState) -> RouteFeasibilityReport:
+    def build_report(
+        self,
+        planning_state: PlanningState,
+        provider_context: GenerationProviderContext | None = None,
+    ) -> RouteFeasibilityReport:
         provider_name = getattr(self.gateway.routing, "provider_name", "routing_provider")
         legs: list[RouteLegFeasibility] = []
 
@@ -147,9 +152,18 @@ class RouteFeasibilityService:
         if experience_plan is not None:
             for day_plan in experience_plan.daily_plans:
                 experiences = day_plan.experiences
+                # Section 203C.2B: ONE routing request for the day's ordered
+                # stops (a multi-waypoint route), never a request per pair.
+                day_results = self._route_day(experiences, provider_context)
                 for index in range(len(experiences) - 1):
                     legs.append(
-                        self._build_leg(experiences[index], experiences[index + 1], provider_name)
+                        self._build_leg(
+                            experiences[index],
+                            experiences[index + 1],
+                            provider_name,
+                            result=day_results[index] if day_results is not None else None,
+                            provider_context=provider_context,
+                        )
                     )
 
         report_status = _aggregate_status([leg.status for leg in legs])
@@ -166,11 +180,38 @@ class RouteFeasibilityService:
             movement_data_provenance=movement_data_provenance_from_status(report_status),
         )
 
+    def _route_day(
+        self,
+        experiences: list[ExperienceItem],
+        provider_context: GenerationProviderContext | None,
+    ) -> list[RouteResult] | None:
+        """One result per consecutive leg of a day, from a single gateway
+        call -- or None when the day cannot be routed as one sequence (fewer
+        than two stops, a stop without coordinates, or a gateway that only
+        offers per-leg lookups), in which case each leg is handled alone."""
+        route_sequence = getattr(self.gateway, "get_route_sequence", None)
+        if len(experiences) < 2 or not callable(route_sequence):
+            return None
+        if any(experience.coordinates is None for experience in experiences):
+            return None
+        points = [(e.coordinates.lat, e.coordinates.lng) for e in experiences]
+        try:
+            results = route_sequence(points, **context_kwargs(provider_context))
+        except Exception:
+            logger.warning(
+                "ProviderGateway.get_route_sequence raised unexpectedly; treating this day's legs as failed.",
+                exc_info=True,
+            )
+            return [_failed_route_result(self.gateway)] * (len(experiences) - 1)
+        return results if len(results) == len(experiences) - 1 else None
+
     def _build_leg(
         self,
         from_experience: ExperienceItem,
         to_experience: ExperienceItem,
         provider_name: str,
+        result: RouteResult | None = None,
+        provider_context: GenerationProviderContext | None = None,
     ) -> RouteLegFeasibility:
         from_point = from_experience.coordinates
         to_point = to_experience.coordinates
@@ -194,13 +235,14 @@ class RouteFeasibilityService:
                 movement_data_provenance=MovementDataProvenance.NOT_COMPUTABLE,
             )
 
-        request = RouteRequest(
-            origin_lat=from_point.lat,
-            origin_lon=from_point.lng,
-            destination_lat=to_point.lat,
-            destination_lon=to_point.lng,
-        )
-        result = _safe_get_route(self.gateway, request)
+        if result is None:
+            request = RouteRequest(
+                origin_lat=from_point.lat,
+                origin_lon=from_point.lng,
+                destination_lat=to_point.lat,
+                destination_lon=to_point.lng,
+            )
+            result = _safe_get_route(self.gateway, request, provider_context)
         feasibility_status, message = _feasibility_from_result(result, from_experience, to_experience)
 
         return RouteLegFeasibility(
@@ -227,7 +269,24 @@ class RouteFeasibilityService:
         )
 
 
-def _safe_get_route(gateway: ProviderGateway, request: RouteRequest) -> RouteResult:
+def _failed_route_result(gateway: ProviderGateway) -> RouteResult:
+    provider_name = getattr(gateway.routing, "provider_name", "routing_provider")
+    return RouteResult(
+        provider=provider_name,
+        status=ProviderStatus.FAILED,
+        distance_meters=None,
+        duration_seconds=None,
+        source=provider_name,
+        confidence=0.0,
+        message=_UNEXPECTED_FAILURE_MESSAGE,
+    )
+
+
+def _safe_get_route(
+    gateway: ProviderGateway,
+    request: RouteRequest,
+    provider_context: GenerationProviderContext | None = None,
+) -> RouteResult:
     """Calls `gateway.get_route(request)`, but never lets an unexpected
     exception from that call escape (Step 166D hardening). Every real
     routing adapter already converts its own failure modes (network
@@ -245,22 +304,13 @@ def _safe_get_route(gateway: ProviderGateway, request: RouteRequest) -> RouteRes
     server-side (never shown to a caller).
     """
     try:
-        return gateway.get_route(request)
+        return gateway.get_route(request, **context_kwargs(provider_context))
     except Exception:
         logger.warning(
             "ProviderGateway.get_route raised unexpectedly; treating this leg as failed.",
             exc_info=True,
         )
-        provider_name = getattr(gateway.routing, "provider_name", "routing_provider")
-        return RouteResult(
-            provider=provider_name,
-            status=ProviderStatus.FAILED,
-            distance_meters=None,
-            duration_seconds=None,
-            source=provider_name,
-            confidence=0.0,
-            message=_UNEXPECTED_FAILURE_MESSAGE,
-        )
+        return _failed_route_result(gateway)
 
 
 def _aggregate_status(leg_statuses: list[ProviderStatus]) -> ProviderStatus:

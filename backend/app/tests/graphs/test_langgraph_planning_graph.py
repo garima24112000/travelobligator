@@ -140,6 +140,7 @@ def test_graph_executes_nodes_in_expected_order() -> None:
         "destination_context",
         "candidate_quality",
         "ai_candidate",
+        "inventory_sufficiency",  # Section 203C.2B
         "trip_strategy",
         "stay_transport",
         "accommodation_inventory",
@@ -192,6 +193,7 @@ def test_run_planning_graph_convenience_function_uses_default_services() -> None
         "destination_context",
         "candidate_quality",
         "ai_candidate",
+        "inventory_sufficiency",  # Section 203C.2B
         "trip_strategy",
         "stay_transport",
         "accommodation_inventory",
@@ -481,6 +483,7 @@ def test_ai_guided_plan_still_runs_routing_sequencing_buffer_and_validation() ->
         "destination_context",
         "candidate_quality",
         "ai_candidate",
+        "inventory_sufficiency",  # Section 203C.2B
         "trip_strategy",
         "stay_transport",
         "accommodation_inventory",

@@ -39,7 +39,7 @@ class _RequestGuard(CooldownBreaker):
     min_interval_seconds = 1.0
 
     def __init__(self) -> None:
-        super().__init__()
+        super().__init__(error_cls=GeocoderError)
         self._request_lock = threading.Lock()
         self._last_request_at: float | None = None
 

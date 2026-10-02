@@ -30,7 +30,7 @@ from app.providers.geocoding.base import GeocoderError, GeocodingProvider
 from app.providers.geocoding.factory import get_geocoding_provider
 from app.providers.geocoding.geoapify_adapter import GeoapifyGeocoder
 from app.providers.geocoding.nominatim_adapter import NominatimGeocoder
-from app.providers.places import openstreetmap_adapter
+from app.providers.places import destination_resolution, openstreetmap_adapter
 from app.providers.places.openstreetmap_adapter import OpenStreetMapPlacesAdapter
 from app.services.ai_directed_provider_discovery_service import AIDirectedProviderDiscoveryService
 from app.services.destination_context_service import DestinationContextService
@@ -305,6 +305,10 @@ _PRODUCTION = {
     "SESSION_SECRET_KEY": "SENTINEL_203C1_SESSION_SECRET_" + "x" * 24,
     "SESSION_COOKIE_SECURE": "true",
     "BACKEND_CORS_ORIGINS": "https://frontend.example.test",
+    # Section 203C.2B: a complete production configuration also selects Geoapify Places
+    # and keeps the inventory sufficiency gate on.
+    "PLACES_PROVIDER": "geoapify",
+    "INVENTORY_SUFFICIENCY_GATE_ENABLED": "true",
 }
 
 
@@ -324,8 +328,12 @@ def test_production_requires_a_geoapify_key_when_geoapify_is_selected() -> None:
 def test_production_rejects_public_nominatim_unless_explicitly_allowed() -> None:
     assert "public Nominatim" in _production_rejection()  # the default geocoder
     assert "public Nominatim" in _production_rejection(GEOCODING_PROVIDER="nominatim", GEOAPIFY_API_KEY=_KEY)
-    validate_runtime_configuration(_settings(**_PRODUCTION, ALLOW_PUBLIC_NOMINATIM_IN_PRODUCTION="true"))
-    validate_runtime_configuration(_settings(**_PRODUCTION, NOMINATIM_API_URL="https://nominatim.internal.example.test"))
+    validate_runtime_configuration(
+        _settings(**_PRODUCTION, GEOAPIFY_API_KEY=_KEY, ALLOW_PUBLIC_NOMINATIM_IN_PRODUCTION="true")
+    )
+    validate_runtime_configuration(
+        _settings(**_PRODUCTION, GEOAPIFY_API_KEY=_KEY, NOMINATIM_API_URL="https://nominatim.internal.example.test")
+    )
 
 
 def test_development_keeps_nominatim_and_geoapify_without_a_key_usable() -> None:
@@ -436,7 +444,7 @@ def test_nominatim_requests_carry_an_identifying_user_agent(
     assert network.geocode_requests[0].headers["User-Agent"].startswith("TravelObligator/")
 
     monkeypatch.setattr(
-        openstreetmap_adapter, "get_settings", lambda: _settings(OSM_USER_AGENT_CONTACT="ops@example.test")
+        destination_resolution, "get_settings", lambda: _settings(OSM_USER_AGENT_CONTACT="ops@example.test")
     )
     adapter = _places_adapter(monkeypatch, network, NominatimGeocoder(), ProviderCacheStore(tmp_path / "d.sqlite3"))
     assert adapter.resolve_coordinates("Lisbon, Portugal") is not None

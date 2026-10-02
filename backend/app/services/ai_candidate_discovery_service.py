@@ -27,7 +27,9 @@ from app.providers.ai_candidate_proposal import (
     AICandidateProposalProvider,
     get_ai_candidate_proposal_provider,
 )
+from app.core.provider_usage import GenerationProviderContext, context_kwargs
 from app.services.ai_candidate_proposal_request_builder import AICandidateProposalRequestBuilder
+from app.services.pace_targets import pace_targets_for
 from app.services.ai_directed_provider_discovery_service import AIDirectedProviderDiscoveryService
 from app.services.candidate_grounding_request_builder import CandidateGroundingRequestBuilder
 from app.services.candidate_grounding_service import CandidateGroundingService
@@ -259,6 +261,7 @@ class AICandidateDiscoveryService:
         planning_state: PlanningState,
         task: AICandidateProposalTask = AICandidateProposalTask.DESTINATION_CANDIDATE_DISCOVERY,
         max_candidates: int = 15,
+        provider_context: GenerationProviderContext | None = None,
     ) -> AICandidateDiscoveryDryRunResult:
         proposal_request = self.proposal_request_builder.build_request(
             planning_state, task=task, max_candidates=max_candidates
@@ -270,7 +273,10 @@ class AICandidateDiscoveryService:
         )
 
         provider_discovery_result = self.provider_discovery_service.discover(
-            planning_state, proposal_result.proposals, grounding_request.provider_candidates
+            planning_state,
+            proposal_result.proposals,
+            grounding_request.provider_candidates,
+            **context_kwargs(provider_context),
         )
         if provider_discovery_result.matches_by_proposal_id():
             grounding_request = grounding_request.model_copy(
@@ -304,13 +310,27 @@ class AICandidateDiscoveryService:
 # max_candidates=...)` method works -- including the real
 # `AICandidateDiscoveryService` and every existing test double built for
 # the pre-191A shadow-stage tests.
+_MIN_ANCHOR_PROPOSALS = 12
+_MAX_ANCHOR_PROPOSALS = 20
+_ANCHOR_PROPOSAL_MARGIN = 8
+
+
+def anchor_proposal_count(planning_state: PlanningState) -> int:
+    """Section 203C.2B: how many semantic anchors to ask the AI for --
+    the trip's target stops plus a margin, bounded to 12..20. Every one is
+    only a hypothesis until a provider grounds it."""
+    target = pace_targets_for(planning_state).target_stops
+    return max(_MIN_ANCHOR_PROPOSALS, min(target + _ANCHOR_PROPOSAL_MARGIN, _MAX_ANCHOR_PROPOSALS))
+
+
 def apply_discovery_to_state(
     planning_state: PlanningState,
     discovery_service: AICandidateDiscoveryService,
     *,
     task: AICandidateProposalTask = AICandidateProposalTask.DESTINATION_CANDIDATE_DISCOVERY,
-    max_candidates: int = 15,
+    max_candidates: int | None = None,
     stage_label: str = "ai_candidate_discovery",
+    provider_context: GenerationProviderContext | None = None,
 ) -> PlanningState:
     """Runs one `discovery_service.dry_run(...)` call and, on success,
     stores its result onto `planning_state.ai_candidate_proposal_batch`/
@@ -344,9 +364,13 @@ def apply_discovery_to_state(
 
     proposal_provider = getattr(discovery_service, "proposal_provider", None)
     provider_name = getattr(proposal_provider, "provider_name", "ai_candidate_proposal_provider")
+    if max_candidates is None:
+        max_candidates = anchor_proposal_count(planning_state)
     started_at = time.monotonic()
     try:
-        dry_run_result = discovery_service.dry_run(planning_state, task=task, max_candidates=max_candidates)
+        dry_run_result = discovery_service.dry_run(
+            planning_state, task=task, max_candidates=max_candidates, **context_kwargs(provider_context)
+        )
     except Exception:
         duration_ms = (time.monotonic() - started_at) * 1000
         logger.warning(

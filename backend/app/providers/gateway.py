@@ -27,9 +27,10 @@ from app.providers.currency.frankfurter_adapter import FrankfurterCurrencyAdapte
 from app.providers.flights.base import FlightInventoryProvider
 from app.providers.flights.factory import get_flight_provider
 from app.providers.holidays.nager_date_adapter import NagerDateHolidaysAdapter
-from app.providers.places.openstreetmap_adapter import OpenStreetMapPlacesAdapter
+from app.providers.places.factory import get_places_provider
 from app.providers.routing.base import RoutingProvider
 from app.providers.routing.factory import get_routing_provider
+from app.core.provider_usage import GenerationProviderContext
 from app.providers.weather.open_meteo_adapter import OpenMeteoWeatherAdapter
 
 logger = logging.getLogger(__name__)
@@ -241,7 +242,7 @@ class ProviderGateway:
         accommodation_inventory: AccommodationInventoryProvider | None = None,
         flight_inventory: FlightInventoryProvider | None = None,
     ) -> None:
-        self.places = places or OpenStreetMapPlacesAdapter()
+        self.places = places or get_places_provider()
         self.routes = routes or RoutesProvider()
         self.transit = transit or TransitProvider()
         self.accommodation = accommodation or AccommodationProvider()
@@ -254,7 +255,48 @@ class ProviderGateway:
         self.accommodation_inventory = accommodation_inventory or get_accommodation_provider()
         self.flight_inventory = flight_inventory or get_flight_provider()
 
-    def get_route(self, request: RouteRequest) -> RouteResult:
+    # -- Section 203C.2B: explicit per-generation provider views ---------------------
+    #
+    # A generation's `GenerationProviderContext` is passed in by the caller
+    # and handed to the provider itself (`bound_to`), which returns a view
+    # that charges that generation's usage tracker. Nothing here reads a
+    # global: with `provider_context=None` the process-level provider is
+    # returned unchanged (and a credit-spending provider refuses to run
+    # unaccounted in production).
+
+    def places_for(self, provider_context: GenerationProviderContext | None = None) -> PlacesProvider:
+        bind = getattr(self.places, "bound_to", None)
+        return bind(provider_context) if callable(bind) and provider_context is not None else self.places
+
+    def routing_for(self, provider_context: GenerationProviderContext | None = None) -> RoutingProvider:
+        bind = getattr(self.routing, "bound_to", None)
+        return bind(provider_context) if callable(bind) and provider_context is not None else self.routing
+
+    def get_route_sequence(
+        self,
+        points: list[tuple[float, float]],
+        provider_context: GenerationProviderContext | None = None,
+    ) -> list[RouteResult]:
+        """Real routes for the consecutive legs of ONE day's ordered stops
+        (`(lat, lon)` pairs) -- a single provider request when the routing
+        provider supports several waypoints. Never an all-pairs lookup."""
+        provider = self.routing_for(provider_context)
+        provider_name = getattr(provider, "provider_name", None)
+        started_at = time.monotonic()
+        results = provider.get_route_sequence(points)
+        duration_ms = (time.monotonic() - started_at) * 1000
+        statuses = {_provider_status(result) for result in results}
+        _log_provider_call(
+            provider=provider_name,
+            stage="routing",
+            status=statuses.pop() if len(statuses) == 1 else "partial",
+            duration_ms=duration_ms,
+        )
+        return results
+
+    def get_route(
+        self, request: RouteRequest, provider_context: GenerationProviderContext | None = None
+    ) -> RouteResult:
         """Look up a point-to-point route through the configured routing
         provider (Step 165B). Delegates entirely to `self.routing` -- the
         gateway does not add, guess, or backfill any distance/duration
@@ -272,9 +314,10 @@ class ProviderGateway:
         describing the call's outcome -- see this module's own top-of-
         file note for exactly what is/isn't logged.
         """
-        provider_name = getattr(self.routing, "provider_name", None)
+        routing = self.routing_for(provider_context)
+        provider_name = getattr(routing, "provider_name", None)
         started_at = time.monotonic()
-        result = self.routing.get_route(request)
+        result = routing.get_route(request)
         duration_ms = (time.monotonic() - started_at) * 1000
         _log_provider_call(
             provider=provider_name,

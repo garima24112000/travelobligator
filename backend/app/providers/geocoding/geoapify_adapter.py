@@ -15,19 +15,17 @@ category as evidence.
 
 from __future__ import annotations
 
+import copy
 from typing import Any
 
 import httpx
 
 from app.core.config import get_settings
 from app.models.common import GeoPoint
-from app.providers.geocoding.base import (
-    BoundingBox,
-    CooldownBreaker,
-    GeocodeHit,
-    GeocoderError,
-    GeocodingProvider,
-)
+from app.providers import geoapify_client
+from app.providers.errors import ProviderRequestError
+from app.providers.geocoding.base import BoundingBox, GeocodeHit, GeocoderError, GeocodingProvider
+from app.core.provider_usage import ProviderUsageTracker
 
 _LANGUAGE = "en"
 _MAX_RESULTS = 1
@@ -46,7 +44,8 @@ _ADDRESS_KEYS = (
     "suburb", "district", "city", "county", "state", "country", "country_code",
 )
 
-request_breaker = CooldownBreaker()
+# One outage breaker for every Geoapify API (see `geoapify_client`).
+request_breaker = geoapify_client.request_breaker
 
 
 def _bounding_box(raw: Any) -> BoundingBox | None:
@@ -70,48 +69,33 @@ class GeoapifyGeocoder(GeocodingProvider):
         self._base_url = settings.geoapify_api_url.rstrip("/")
         self._api_key = (settings.geoapify_api_key or "").strip()
         self._timeout = settings.geoapify_timeout_seconds
+        # Section 203C.2B: the usage tracker of the generation this view is
+        # bound to (`bound_to`); None for the unbound process-level instance.
+        self._usage: ProviderUsageTracker | None = None
+
+    def bound_to(self, provider_context: Any) -> "GeoapifyGeocoder":
+        bound = copy.copy(self)
+        bound._usage = provider_context.usage_tracker if provider_context is not None else None
+        return bound
 
     def destination_cache_query(self, query: str) -> dict[str, Any]:
         return {**super().destination_cache_query(query), "lang": _LANGUAGE, "schema": "v1"}
 
     def _first_result(self, client: httpx.Client, params: dict[str, Any]) -> dict[str, Any] | None:
-        if not self._api_key:
-            raise GeocoderError("not_connected")
-        request_breaker.check()
         try:
-            response = client.get(
-                f"{self._base_url}/v1/geocode/search",
-                params={
-                    **params,
-                    "format": "json",
-                    "limit": _MAX_RESULTS,
-                    "lang": _LANGUAGE,
-                    "apiKey": self._api_key,
-                },
+            payload = geoapify_client.geoapify_get(
+                client,
+                base_url=self._base_url,
+                path="/v1/geocode/search",
+                params={**params, "format": "json", "limit": _MAX_RESULTS, "lang": _LANGUAGE},
+                api_key=self._api_key,
                 timeout=self._timeout,
+                api="geocoding",
+                usage=self._usage,
             )
-            status = response.status_code
-        except httpx.TimeoutException:
-            raise GeocoderError("timeout") from None
-        except httpx.HTTPError:
-            raise GeocoderError("network") from None
-
-        if status == 429:
-            request_breaker.trip("rate_limited", response.headers.get("Retry-After"))
-            raise GeocoderError("rate_limited")
-        if status in (401, 403):
-            request_breaker.trip("auth")
-            raise GeocoderError("auth")
-        if status >= 500:
-            raise GeocoderError("server")
-        if status >= 400:
-            raise GeocoderError("bad_request")
-
-        try:
-            payload = response.json()
-        except ValueError:
-            raise GeocoderError("malformed") from None
-        results = payload.get("results") if isinstance(payload, dict) else None
+        except ProviderRequestError as exc:
+            raise GeocoderError(exc.kind) from None
+        results = payload.get("results")
         if not isinstance(results, list):
             raise GeocoderError("malformed")
         if not results:

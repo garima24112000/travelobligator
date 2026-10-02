@@ -60,6 +60,27 @@ services:
       # hosting egress (HTTP 429) and is rejected as the production geocoder. Overpass POI discovery is unchanged.
       - key: GEOCODING_PROVIDER
         value: geoapify
+      # Section 203C.2B: the production itinerary engine. Geoapify Places supplies the broad factual pool and
+      # Geoapify Routing the real walking distance/time (one request per itinerary day); Overpass is not used in
+      # production and there is no fallback to it. AI anchor proposals are hypotheses only: each is grounded
+      # through Geoapify before it can be scheduled. The inventory sufficiency gate cannot be turned off here.
+      - key: PLACES_PROVIDER
+        value: geoapify
+      - key: ROUTING_PROVIDER
+        value: geoapify
+      - key: INVENTORY_SUFFICIENCY_GATE_ENABLED
+        value: "true"
+      # Hard cap on Geoapify credits per generation (free plan: 3,000 credits/day).
+      - key: GEOAPIFY_MAX_CREDITS_PER_GENERATION
+        value: "100"
+      - key: AI_CANDIDATE_PROPOSAL_PROVIDER
+        value: groq
+      - key: AI_CANDIDATE_DISCOVERY_ENABLED
+        value: "true"
+      - key: AI_DIRECTED_PROVIDER_DISCOVERY_MAX_SEARCHES
+        value: "16"
+      - key: AI_DIRECTED_PROVIDER_DISCOVERY_MAX_EXTRA_SEARCHES
+        value: "4"
       # ---- secrets (dashboard only)
       - key: DATABASE_URL
         sync: false

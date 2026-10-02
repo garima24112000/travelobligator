@@ -38,6 +38,8 @@ from app.services.candidate_quality_service import CandidateQualityService
 from app.services.experience_planner_service import ExperiencePlannerService
 from app.services.itinerary_narrative_service import ItineraryNarrativeService, itinerary_narrative_service
 from app.services.plan_validator_service import PlanValidatorService
+from app.core.provider_usage import GenerationProviderContext, context_kwargs
+from app.services.pace_targets import trip_days_of
 from app.services.route_aware_sequencing_service import RouteAwareSequencingService, route_aware_sequencing_service
 from app.services.route_feasibility_service import RouteFeasibilityService, route_feasibility_service
 from app.services.travel_time_buffer_service import TravelTimeBufferService, travel_time_buffer_service
@@ -151,10 +153,19 @@ class TargetedRegenerationExecutor:
     # -- public entry point --------------------------------------------
 
     def execute(
-        self, planning_state: PlanningState, plan: TargetedRegenerationPlan
+        self,
+        planning_state: PlanningState,
+        plan: TargetedRegenerationPlan,
+        provider_context: GenerationProviderContext | None = None,
     ) -> TargetedRegenerationExecutionResult:
+        # Section 203C.2B: a targeted regeneration is its own generation with
+        # its own isolated provider budget (unless the caller supplies the
+        # context it runs under). Its bounded repair shares this context.
+        provider_context = provider_context or GenerationProviderContext.new(
+            trip_days=trip_days_of(planning_state)
+        )
         started_at = time.monotonic()
-        result = self._execute(planning_state, plan)
+        result = self._execute(planning_state, plan, provider_context)
         duration_ms = (time.monotonic() - started_at) * 1000
         # Task 55: safe fields only -- plain counts/booleans/status
         # strings, never a raw instruction, feedback text, or credential.
@@ -176,7 +187,10 @@ class TargetedRegenerationExecutor:
         return result
 
     def _execute(
-        self, planning_state: PlanningState, plan: TargetedRegenerationPlan
+        self,
+        planning_state: PlanningState,
+        plan: TargetedRegenerationPlan,
+        provider_context: GenerationProviderContext | None = None,
     ) -> TargetedRegenerationExecutionResult:
         base_kwargs: dict[str, Any] = dict(
             trip_id=planning_state.trip_id,
@@ -239,8 +253,8 @@ class TargetedRegenerationExecutor:
                 # `_execute_pure_additive_new_place`'s own docstring for
                 # why this is not the same pipeline as every other plan
                 # shape.
-                return self._execute_pure_additive_new_place(planning_state, plan, base_kwargs)
-            return self._execute_ready_plan(planning_state, plan, base_kwargs)
+                return self._execute_pure_additive_new_place(planning_state, plan, base_kwargs, provider_context)
+            return self._execute_ready_plan(planning_state, plan, base_kwargs, provider_context)
         except Exception as exc:  # never let an unexpected failure fabricate a result
             logger.warning(
                 "TargetedRegenerationExecutor.execute failed unexpectedly.",
@@ -256,7 +270,11 @@ class TargetedRegenerationExecutor:
     # -- main pipeline ----------------------------------------------------
 
     def _execute_ready_plan(
-        self, planning_state: PlanningState, plan: TargetedRegenerationPlan, base_kwargs: dict[str, Any]
+        self,
+        planning_state: PlanningState,
+        plan: TargetedRegenerationPlan,
+        base_kwargs: dict[str, Any],
+        provider_context: GenerationProviderContext | None = None,
     ) -> TargetedRegenerationExecutionResult:
         original_experience_plan = planning_state.experience_plan
         assert original_experience_plan is not None  # guarded by the caller
@@ -316,7 +334,7 @@ class TargetedRegenerationExecutor:
         if plan.new_place_lookups:
             provider_lookup_status = "grounded"
             for lookup in plan.new_place_lookups:
-                candidate = self._ground_new_place(working_state, lookup.query)
+                candidate = self._ground_new_place(working_state, lookup.query, provider_context)
                 if candidate is None:
                     return TargetedRegenerationExecutionResult(
                         status=TargetedRegenerationExecutionStatus.PROVIDER_UNAVAILABLE,
@@ -374,7 +392,7 @@ class TargetedRegenerationExecutor:
         self._enforce_unique_places(working_state, preserved_day_snapshot)
 
         # Task 24/25/26: routing / sequencing / buffers, recomputed fresh.
-        self._rerun_routing_reports(working_state, hard_preserved_days)
+        self._rerun_routing_reports(working_state, hard_preserved_days, provider_context)
 
         # Task 27: validator is authoritative.
         self.plan_validator_service.run(working_state)
@@ -394,7 +412,7 @@ class TargetedRegenerationExecutor:
             if repair_attempted and repair_status == AIItineraryRepairStatus.COMPLETED.value:
                 self._splice_preserved_days(working_state, preserved_day_snapshot)
                 self._enforce_unique_places(working_state, preserved_day_snapshot)
-                self._rerun_routing_reports(working_state, hard_preserved_days)
+                self._rerun_routing_reports(working_state, hard_preserved_days, provider_context)
                 self.plan_validator_service.run(working_state)
                 validation_status = (
                     working_state.validation_report.readiness_status.value
@@ -443,7 +461,11 @@ class TargetedRegenerationExecutor:
     # -- pure additive new-place execution (Section 197B.1) ----------------
 
     def _execute_pure_additive_new_place(
-        self, planning_state: PlanningState, plan: TargetedRegenerationPlan, base_kwargs: dict[str, Any]
+        self,
+        planning_state: PlanningState,
+        plan: TargetedRegenerationPlan,
+        base_kwargs: dict[str, Any],
+        provider_context: GenerationProviderContext | None = None,
     ) -> TargetedRegenerationExecutionResult:
         """A bare "I also want to visit X" request never carries permission
         to touch anything already scheduled -- Task 2's core invariant.
@@ -480,7 +502,7 @@ class TargetedRegenerationExecutor:
         # inserted (never a silent partial success).
         grounded_candidates: list[ItineraryCandidateReference] = []
         for lookup in plan.new_place_lookups:
-            candidate = self._ground_new_place(working_state, lookup.query)
+            candidate = self._ground_new_place(working_state, lookup.query, provider_context)
             if candidate is None:
                 return TargetedRegenerationExecutionResult(
                     status=TargetedRegenerationExecutionStatus.PROVIDER_UNAVAILABLE,
@@ -566,7 +588,7 @@ class TargetedRegenerationExecutor:
         # sub-order." All days are passed as excluded from `apply_report`;
         # `build_report`'s feasibility data is still computed and attached
         # honestly either way.
-        self._rerun_routing_reports(working_state, set(range(1, day_count + 1)))
+        self._rerun_routing_reports(working_state, set(range(1, day_count + 1)), provider_context)
 
         # Task 8: validator remains authoritative; a resulting issue is
         # reported honestly, never used as license to remove/move an
@@ -970,10 +992,17 @@ class TargetedRegenerationExecutor:
 
     # -- new-place grounding (Task 17-20) ----------------------------------
 
-    def _ground_new_place(self, working_state: PlanningState, query: str) -> ItineraryCandidateReference | None:
+    def _ground_new_place(
+        self,
+        working_state: PlanningState,
+        query: str,
+        provider_context: GenerationProviderContext | None = None,
+    ) -> ItineraryCandidateReference | None:
         destination_name = working_state.trip_request.primary_destination
+        places_for = getattr(self.gateway, "places_for", None)
+        places = places_for(provider_context) if callable(places_for) else self.gateway.places
         try:
-            response = self.gateway.places.search_must_visit_place(query, destination_name)
+            response = places.search_must_visit_place(query, destination_name)
         except Exception:
             return None
 
@@ -1190,10 +1219,16 @@ class TargetedRegenerationExecutor:
 
     # -- routing / sequencing / buffers (Task 24/25/26) --------------------
 
-    def _rerun_routing_reports(self, working_state: PlanningState, hard_preserved_days: set[int]) -> None:
-        working_state.route_feasibility_report = self.route_feasibility_service.build_report(working_state)
+    def _rerun_routing_reports(
+        self,
+        working_state: PlanningState,
+        hard_preserved_days: set[int],
+        provider_context: GenerationProviderContext | None = None,
+    ) -> None:
+        context = context_kwargs(provider_context)
+        working_state.route_feasibility_report = self.route_feasibility_service.build_report(working_state, **context)
 
-        sequencing_report = self.route_aware_sequencing_service.build_report(working_state)
+        sequencing_report = self.route_aware_sequencing_service.build_report(working_state, **context)
         working_state.route_aware_sequencing_report = sequencing_report
 
         settings = get_settings()
@@ -1210,9 +1245,11 @@ class TargetedRegenerationExecutor:
                     min_improvement_seconds=settings.route_aware_scheduling_min_improvement_seconds,
                 )
                 if applied:
-                    working_state.route_feasibility_report = self.route_feasibility_service.build_report(working_state)
+                    working_state.route_feasibility_report = self.route_feasibility_service.build_report(
+                        working_state, **context
+                    )
 
-        working_state.travel_time_buffer_report = self.travel_time_buffer_service.build_report(working_state)
+        working_state.travel_time_buffer_report = self.travel_time_buffer_service.build_report(working_state, **context)
 
     # -- bounded repair (Task 28/29/31) ------------------------------------
 

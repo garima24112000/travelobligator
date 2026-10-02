@@ -17,7 +17,10 @@ from app.models.ai_provider_discovery import (
 from app.models.candidate_grounding import ProviderCandidateForGrounding
 from app.models.common import ProviderStatus
 from app.models.planning_state import PlanningState
+from typing import Any
+
 from app.providers.gateway import ProviderGateway, provider_gateway
+from app.core.provider_usage import GenerationProviderContext
 from app.services.candidate_grounding_service import find_broad_pool_name_matches
 
 logger = logging.getLogger(__name__)
@@ -91,7 +94,11 @@ class AIDirectedProviderDiscoveryService:
         *,
         max_searches: int | None = None,
         max_extra_searches: int | None = None,
+        provider_context: GenerationProviderContext | None = None,
     ) -> AIProviderDiscoveryResult:
+        # Section 203C.2B: every lookup below is charged to THIS generation.
+        places_for = getattr(self.gateway, "places_for", None)
+        places = places_for(provider_context) if callable(places_for) else self.gateway.places
         destination_name = planning_state.trip_request.primary_destination
         bound = (
             max_searches
@@ -176,7 +183,7 @@ class AIDirectedProviderDiscoveryService:
             proposal = proposals[index]
             searches_used += 1
             started_at = time.monotonic()
-            attempt = self._search_one(destination_name, proposal)
+            attempt = self._search_one(destination_name, proposal, places)
             duration_ms = (time.monotonic() - started_at) * 1000
             logger.info(
                 "AI-directed provider discovery attempt completed.",
@@ -244,7 +251,9 @@ class AIDirectedProviderDiscoveryService:
             ),
         )
 
-    def _search_one(self, destination_name: str, proposal: AICandidateProposal) -> AIProviderDiscoveryAttempt:
+    def _search_one(
+        self, destination_name: str, proposal: AICandidateProposal, places: Any = None
+    ) -> AIProviderDiscoveryAttempt:
         """One real `search_must_visit_place(search_query, destination_name)`
         call -- the same targeted Nominatim lookup
         `DestinationContextService` already uses for must-visit terms,
@@ -255,7 +264,7 @@ class AIDirectedProviderDiscoveryService:
         """
         query = proposal.search_query
         try:
-            response = self.gateway.places.search_must_visit_place(query, destination_name)
+            response = (places or self.gateway.places).search_must_visit_place(query, destination_name)
         except Exception as exc:  # provider/test-double failure -> honest, non-fatal
             logger.warning(
                 "AI-directed provider discovery lookup raised unexpectedly: %s", exc

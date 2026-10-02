@@ -206,6 +206,7 @@ def test_run_returns_result_with_final_planning_state_and_completed_nodes() -> N
         "destination_context",
         "candidate_quality",
         "ai_candidate",
+        "inventory_sufficiency",  # Section 203C.2B
         "trip_strategy",
         "stay_transport",
         "accommodation_inventory",

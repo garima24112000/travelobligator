@@ -13,12 +13,14 @@ from app.graphs.planning_graph_nodes import (
     build_experience_planning_node,
     build_final_state_node,
     build_flight_inventory_node,
+    build_inventory_sufficiency_node,
     build_provider_coverage_node,
     build_route_aware_sequencing_node,
     build_route_feasibility_node,
     build_stay_transport_node,
     build_travel_time_buffer_node,
     build_traveler_profile_node,
+    build_underfill_fallback_node,
     build_trip_strategy_node,
     build_validation_node,
     route_after_repair,
@@ -26,6 +28,7 @@ from app.graphs.planning_graph_nodes import (
 )
 from app.graphs.planning_graph_state import PlanningGraphState, build_initial_planning_graph_state
 from app.models.planning_state import PlanningState, TripRequest
+from app.core.provider_usage import GenerationProviderContext
 from app.services.accommodation_inventory_service import AccommodationInventoryService
 from app.services.ai_candidate_discovery_service import AICandidateDiscoveryService
 from app.services.ai_candidate_promotion_service import AICandidatePromotionService
@@ -194,6 +197,10 @@ def build_planning_graph(
         "ai_candidate",
         build_ai_candidate_node(ai_candidate_promotion_service, ai_candidate_discovery_service),
     )
+    # Section 203C.2B: the inventory sufficiency gate runs on the grounded
+    # pool, before strategy and itinerary reasoning.
+    graph.add_node("inventory_sufficiency", build_inventory_sufficiency_node())
+    graph.add_node("underfill_fallback", build_underfill_fallback_node())
     graph.add_node("trip_strategy", build_trip_strategy_node(resolved_trip_strategy_service))
     graph.add_node("stay_transport", build_stay_transport_node(resolved_stay_transport_service))
     graph.add_node(
@@ -233,7 +240,8 @@ def build_planning_graph(
     graph.add_edge("traveler_profile", "destination_context")
     graph.add_edge("destination_context", "candidate_quality")
     graph.add_edge("candidate_quality", "ai_candidate")
-    graph.add_edge("ai_candidate", "trip_strategy")
+    graph.add_edge("ai_candidate", "inventory_sufficiency")
+    graph.add_edge("inventory_sufficiency", "trip_strategy")
     graph.add_edge("trip_strategy", "stay_transport")
     graph.add_edge("stay_transport", "accommodation_inventory")
     graph.add_edge("accommodation_inventory", "flight_inventory")
@@ -256,13 +264,24 @@ def build_planning_graph(
     graph.add_conditional_edges(
         "validation",
         route_after_validation,
-        {"ai_itinerary_repair": "ai_itinerary_repair", "provider_coverage": "provider_coverage"},
+        {
+            "ai_itinerary_repair": "ai_itinerary_repair",
+            "underfill_fallback": "underfill_fallback",
+            "provider_coverage": "provider_coverage",
+        },
     )
     graph.add_conditional_edges(
         "ai_itinerary_repair",
         route_after_repair,
-        {"experience_planning": "experience_planning", "provider_coverage": "provider_coverage"},
+        {
+            "experience_planning": "experience_planning",
+            "underfill_fallback": "underfill_fallback",
+            "provider_coverage": "provider_coverage",
+        },
     )
+    # Section 203C.2B: the single deterministic top-up pass for an
+    # underfilled plan re-enters the same planning/routing/validation chain.
+    graph.add_edge("underfill_fallback", "experience_planning")
     graph.add_edge("provider_coverage", "final_state")
     graph.add_edge("final_state", END)
 
@@ -363,6 +382,7 @@ class PlanningGraphRunner:
         trip_id: str,
         trip_request: TripRequest,
         planning_state: PlanningState,
+        provider_context: GenerationProviderContext | None = None,
     ) -> PlanningGraphState:
         """Runs the full graph once and returns the resulting
         `PlanningGraphState` (including `completed_nodes`/`failed_nodes`/
@@ -372,7 +392,9 @@ class PlanningGraphRunner:
         responsibility of the caller, exactly like
         `PlanningOrchestrator`'s own stage-runner methods.
         """
-        initial_state = build_initial_planning_graph_state(trip_id, trip_request, planning_state)
+        initial_state = build_initial_planning_graph_state(
+            trip_id, trip_request, planning_state, provider_context
+        )
         result = self._graph.invoke(initial_state)
         return result
 

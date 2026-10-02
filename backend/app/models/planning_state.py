@@ -16,6 +16,7 @@ from app.models.ai_provider_discovery import AIProviderDiscoveryResult
 from app.models.candidate_grounding import CandidateGroundingBatch
 from app.models.candidate_quality import CandidateQualityReport
 from app.models.flight import FlightSearchResult
+from app.models.inventory_sufficiency import InventorySufficiencyReport, ProviderUsageReport
 from app.models.itinerary_narrative import ItineraryNarrativeReport
 from app.models.common import (
     AccommodationType,
@@ -833,6 +834,14 @@ class ValidationReport(BaseModel):
     provider_coverage_notes: list[str] = Field(default_factory=list)
     unavailable_data_notes: list[str] = Field(default_factory=list)
 
+    # Section 203C.2B: machine-readable outcome codes. `blocking_codes` name
+    # WHY readiness is blocked (e.g. INSUFFICIENT_VERIFIED_INVENTORY -- a
+    # completed computation with an honest result, not a failed job);
+    # `review_codes` name why a usable plan still needs review (e.g.
+    # UNDERFILLED_PLAN). Empty for every report stored before this section.
+    blocking_codes: list[str] = Field(default_factory=list)
+    review_codes: list[str] = Field(default_factory=list)
+
     validated_at: datetime = Field(default_factory=_utc_now)
 
 
@@ -1394,6 +1403,18 @@ class PlanningState(BaseModel):
     # `itinerary_narrative_report.status` is `not_connected` and no
     # provider/network call is ever made.
     itinerary_narrative_report: ItineraryNarrativeReport | None = None
+
+    # Section 203C.2B. Both optional with a `None` default, so every trip
+    # stored before this section loads unchanged.
+    # Whether the grounded candidate pool can support a useful itinerary
+    # (T / R / H semantics), computed before itinerary reasoning.
+    inventory_sufficiency_report: InventorySufficiencyReport | None = None
+    # Provider calls/credits the LAST generation spent (counts only).
+    provider_usage_report: ProviderUsageReport | None = None
+    # True once this generation used its single deterministic top-up pass
+    # for an underfilled plan (reset by the inventory sufficiency gate at
+    # the start of every generation).
+    usefulness_fallback_applied: bool = False
 
     metadata: PlanningMetadata = Field(default_factory=PlanningMetadata)
 

@@ -1,0 +1,46 @@
+{
+  "_comment": "Section 203C.2B benchmark data. BENCHMARK-ONLY: never imported by backend/app. The 18/10 tuning/holdout split and the 8 holdout stress scenarios are fixed; holdout entries are not run while tuning.",
+  "canonical": {"trip_days": 3, "pace": "balanced"},
+  "tuning": [
+    "New York, United States",
+    "Mexico City, Mexico",
+    "New Orleans, United States",
+    "Buenos Aires, Argentina",
+    "Medellín, Colombia",
+    "Paris, France",
+    "Lisbon, Portugal",
+    "Kraków, Poland",
+    "Córdoba, Spain",
+    "Cape Town, South Africa",
+    "Marrakech, Morocco",
+    "Nairobi, Kenya",
+    "Jaipur, India",
+    "Colombo, Sri Lanka",
+    "Kyoto, Japan",
+    "Hanoi, Vietnam",
+    "Istanbul, Türkiye",
+    "Melbourne, Australia"
+  ],
+  "holdout": [
+    "Vancouver, Canada",
+    "Cusco, Peru",
+    "São Paulo, Brazil",
+    "Tromsø, Norway",
+    "Accra, Ghana",
+    "Kathmandu, Nepal",
+    "Seoul, South Korea",
+    "Taipei, Taiwan",
+    "Amman, Jordan",
+    "Queenstown, New Zealand"
+  ],
+  "holdout_stress": [
+    {"id": "S1", "destination": "Queenstown, New Zealand", "trip_days": 1, "pace": "relaxed", "covers": "1-day relaxed; smaller destination"},
+    {"id": "S2", "destination": "Tromsø, Norway", "trip_days": 1, "pace": "relaxed", "interests": ["polar history", "nature"], "covers": "1-day relaxed; accented name; niche interests"},
+    {"id": "S3", "destination": "Cusco, Peru", "trip_days": 3, "pace": "balanced", "must_visit": ["Sacsayhuamán", "Qorikancha"], "covers": "explicit must-visits"},
+    {"id": "S4", "destination": "Amman, Jordan", "trip_days": 3, "pace": "balanced", "must_visit": ["Amman Citadel", "Roman Theatre"], "covers": "explicit must-visits"},
+    {"id": "S5", "destination": "Seoul, South Korea", "trip_days": 5, "pace": "packed", "covers": "5-day packed; routing pressure"},
+    {"id": "S6", "destination": "São Paulo, Brazil", "trip_days": 5, "pace": "packed", "covers": "5-day packed; accented name; large city"},
+    {"id": "S7", "destination": "Kathmandu, Nepal", "trip_days": 3, "pace": "balanced", "interests": ["temples", "handicrafts"], "covers": "niche interest profile"},
+    {"id": "S8", "destination": "Accra, Ghana", "trip_days": 2, "pace": "balanced", "interests": ["markets", "art"], "must_visit": ["Kwame Nkrumah Memorial Park"], "covers": "mid-sized; niche interests + must-visit"}
+  ]
+}

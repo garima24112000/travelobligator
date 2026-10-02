@@ -17,6 +17,7 @@ from app.models.routing import (
     movement_data_provenance_from_status,
 )
 from app.providers.gateway import ProviderGateway, provider_gateway
+from app.core.provider_usage import GenerationProviderContext, context_kwargs
 
 logger = logging.getLogger(__name__)
 
@@ -152,7 +153,11 @@ class TravelTimeBufferService:
     def __init__(self, gateway: ProviderGateway | None = None) -> None:
         self.gateway = gateway or provider_gateway
 
-    def build_report(self, planning_state: PlanningState) -> TravelTimeBufferReport:
+    def build_report(
+        self,
+        planning_state: PlanningState,
+        provider_context: GenerationProviderContext | None = None,
+    ) -> TravelTimeBufferReport:
         provider_name = getattr(self.gateway.routing, "provider_name", "routing_provider")
         buffers: list[TravelTimeBuffer] = []
 
@@ -161,8 +166,13 @@ class TravelTimeBufferService:
             for day_plan in experience_plan.daily_plans:
                 experiences = day_plan.experiences
                 for index in range(len(experiences) - 1):
+                    # Section 203C.2B: with a generation context these legs
+                    # were already routed (one request per day) and are read
+                    # back from the generation's own results.
                     buffers.append(
-                        self._build_buffer(experiences[index], experiences[index + 1], provider_name)
+                        self._build_buffer(
+                            experiences[index], experiences[index + 1], provider_name, provider_context
+                        )
                     )
 
         report_status = _aggregate_buffer_report_status([buffer.status for buffer in buffers])
@@ -180,6 +190,7 @@ class TravelTimeBufferService:
         from_experience: ExperienceItem,
         to_experience: ExperienceItem,
         provider_name: str,
+        provider_context: GenerationProviderContext | None = None,
     ) -> TravelTimeBuffer:
         from_point = from_experience.coordinates
         to_point = to_experience.coordinates
@@ -207,7 +218,7 @@ class TravelTimeBufferService:
             destination_lat=to_point.lat,
             destination_lon=to_point.lng,
         )
-        result = _safe_get_route(self.gateway, request)
+        result = _safe_get_route(self.gateway, request, provider_context)
         gap_seconds = _schedule_gap_seconds(from_experience, to_experience)
 
         status, route_duration, route_distance, recommended_buffer = _buffer_fields_from_result(
@@ -239,7 +250,11 @@ class TravelTimeBufferService:
         )
 
 
-def _safe_get_route(gateway: ProviderGateway, request: RouteRequest) -> RouteResult:
+def _safe_get_route(
+    gateway: ProviderGateway,
+    request: RouteRequest,
+    provider_context: GenerationProviderContext | None = None,
+) -> RouteResult:
     """Calls `gateway.get_route(request)`, but never lets an unexpected
     exception from that call escape (Step 166D hardening) -- mirrors
     `RouteFeasibilityService`'s own `_safe_get_route` exactly (duplicated
@@ -256,7 +271,7 @@ def _safe_get_route(gateway: ProviderGateway, request: RouteRequest) -> RouteRes
     server-side (never shown to a caller).
     """
     try:
-        return gateway.get_route(request)
+        return gateway.get_route(request, **context_kwargs(provider_context))
     except Exception:
         logger.warning(
             "ProviderGateway.get_route raised unexpectedly; treating this leg as failed.",

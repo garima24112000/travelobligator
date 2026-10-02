@@ -133,6 +133,12 @@ class RepairableIssueType(str, Enum):
     GEOGRAPHIC_SPREAD = "geographic_spread"
     ROUTE_NEEDS_REVIEW = "route_needs_review"
     INSUFFICIENT_TRAVEL_BUFFER = "insufficient_travel_buffer"
+    # Section 203C.2B: the usefulness contract found the plan underfilled
+    # (too few meaningful stops, or an empty day) while enough verified
+    # inventory existed, and THIS day is below its pace target. Backed by
+    # `usefulness_contract.evaluate_usefulness` over the real schedule and
+    # the real inventory report -- never raised for insufficient inventory.
+    UNDERFILLED_DAY = "underfilled_day"
 
 
 class AIItineraryRepairIssue(BaseModel):

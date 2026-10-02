@@ -210,6 +210,61 @@ cached. A place found by Geoapify keeps a `geoapify/<id>` identity and carries n
 reaches candidate scoring with less structured evidence than a Nominatim/Overpass result. A geocoder outage is
 reported as "Place geocoding provider (Geoapify) was unavailable.", distinct from an Overpass failure.
 
+**Final V1 itinerary engine (Section 203C.2B).** Overpass is no longer release-critical: it stays selectable for
+development (`PLACES_PROVIDER=openstreetmap`) and production refuses to start with it. Production variables
+(all public, set in `render.yaml`):
+
+| Variable | Value | Meaning |
+|---|---|---|
+| `PLACES_PROVIDER` | `geoapify` | broad factual pool (attractions, food, stay-area POIs) from Geoapify Places, inside the destination's boundary |
+| `ROUTING_PROVIDER` | `geoapify` | real walking distance/time, one multi-waypoint request per itinerary day |
+| `INVENTORY_SUFFICIENCY_GATE_ENABLED` | `true` | required in production |
+| `GEOAPIFY_MAX_CREDITS_PER_GENERATION` | `100` | hard per-generation cap |
+| `AI_CANDIDATE_PROPOSAL_PROVIDER` | `groq` | semantic anchor proposals (hypotheses only) |
+| `AI_CANDIDATE_DISCOVERY_ENABLED` | `true` | every proposal is grounded through Geoapify before it is eligible |
+| `AI_DIRECTED_PROVIDER_DISCOVERY_MAX_SEARCHES` / `..._MAX_EXTRA_SEARCHES` | `16` / `4` | bounded named lookups |
+
+Itinerary reasoning, repair and the narrator (`AI_ITINERARY_REASONING_ENABLED`, `AI_ITINERARY_REPAIR_ENABLED`,
+`ITINERARY_NARRATOR_ENABLED` and their `*_PROVIDER=groq` selectors) are part of the same engine and are set in the
+Render dashboard alongside `GROQ_API_KEY`.
+
+*Verified provider facts (checked 2026-10-01 against Geoapify's documentation).* Category identifiers used are
+listed in `backend/app/providers/places/geoapify_categories.py` and checked by a contract test against a snapshot
+of the official taxonomy. Pricing: geocoding 1 credit per request; Places 1 credit up to 20 places, plus 1 per
+further 20 returned; Place Details 1 credit; Routing 1 credit per waypoint pair. Free plan: 3,000 credits per day.
+
+*Inventory and usefulness.* With `T = trip days × pace target` (relaxed 2, balanced 3, packed 4),
+`R = ceil(0.8 × T)` and `H = ceil(2.25 × T)`, the verified, non-trivial candidate count `viable` is `healthy`
+(≥ H), `sufficient` (≥ T), `thin_but_usable` (≥ R) or `insufficient` (< R). Whenever `viable ≥ R` a plan must
+schedule at least R meaningful stops with no empty day; otherwise it gets one AI repair, then one deterministic
+top-up from unused verified places, and finishes `needs_review` with `UNDERFILLED_PLAN` if it still falls short.
+Only `viable < R` ends as `readiness=blocked` with `INSUFFICIENT_VERIFIED_INVENTORY` -- and that is a normally
+completed generation (job `succeeded`, state persisted), not a failed one. Nothing is ever padded.
+
+*Worst-case Geoapify credits per generation (cold cache).*
+
+| Item | 1-day relaxed | 3-day balanced | 5-day packed |
+|---|---|---|---|
+| Destination geocode | 1 | 1 | 1 |
+| Places (6 requests; 1 credit per 20 places reserved, settled to what is returned) | 9 | 9 | 9 |
+| Anchor + must-visit named lookups | 12 | 20 | 20 |
+| Place Details for off-pool anchors | 12 | 12 | 12 |
+| Routing (requests × legs) | 2 × 1 = 2 | 10 × 2 = 20 | 14 × 3 = 42 |
+| Expansion round | 8 | 8 | 8 |
+| **Worst case** | **44** | **70** | **92** |
+
+Routing is bounded and never quadratic: one request for each day's order, at most one alternative per day (only
+when a straight-line check says a different order is clearly shorter), and a fixed allowance of four further
+requests. Usage is tracked per generation (`provider_usage_report`); each generation, regeneration and targeted
+regeneration has its own isolated budget, a call beyond it is refused locally, and nothing falls through to
+another provider or a paid tier. Cache hits cost nothing. A successful but empty Places answer is cached for
+`GEOAPIFY_EMPTY_RESULT_CACHE_TTL_SECONDS` (6 h); failures are never cached.
+
+*Before release.* The fixed 28-city benchmark (18 tuning, 10 holdout, 8 holdout stress scenarios;
+`backend/scripts/benchmark_cities.py`) must pass: destination resolution 100%, zero fabricated identities,
+duplicate scheduled places and unsupported claims, no empty day and at least R meaningful stops whenever
+`viable ≥ R`, routing coverage ≥ 90%, persistence/reload 100%, and the provider budget never exceeded.
+
 The AI feature switches (`AI_ITINERARY_REASONING_ENABLED`, `AI_FEEDBACK_INTERPRETER_ENABLED`,
 `TARGETED_REGENERATION_ENABLED`, `ITINERARY_NARRATOR_ENABLED` and their `*_PROVIDER` selectors) are public
 configuration and default to off / `not_connected`. Which of them the portfolio release turns on is a product

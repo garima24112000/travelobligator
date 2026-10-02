@@ -649,6 +649,36 @@ export type ValidationReport = {
   warnings: ValidationIssue[];
   provider_coverage_notes: string[];
   unavailable_data_notes: string[];
+  // Section 203C.2B: machine-readable outcome codes. Absent on reports
+  // stored before that section.
+  blocking_codes?: string[];
+  review_codes?: string[];
+};
+
+// Section 203C.2B (backend: app.models.inventory_sufficiency). Whether the
+// verified candidate pool can support a useful itinerary: T = target stops,
+// R = minimum useful (ceil(0.8 T)), H = healthy buffer (ceil(2.25 T)).
+export type InventorySufficiencyReport = {
+  status: "healthy" | "sufficient" | "thin_but_usable" | "insufficient";
+  trip_days: number;
+  pace: string;
+  target_stops: number;
+  minimum_useful: number;
+  healthy_buffer: number;
+  viable_candidates: number;
+  expansion_attempted: boolean;
+  viable_before_expansion: number | null;
+  message: string;
+};
+
+// Counts only: what the last generation spent per provider API.
+export type ProviderUsageReport = {
+  generation_id: string;
+  budget: number | null;
+  credits_used: number;
+  credits_by_api: Record<string, number>;
+  calls_by_api: Record<string, number>;
+  refused_calls: number;
 };
 
 export type ValidationReportData = {
@@ -1272,6 +1302,9 @@ export type TripData = {
     regeneration_attempts: RegenerationAttempt[];
     accommodation_inventory_report: AccommodationInventoryReport | null;
     flight_inventory_report: FlightInventoryReport | null;
+    // Section 203C.2B: absent on trips stored before that section.
+    inventory_sufficiency_report?: InventorySufficiencyReport | null;
+    provider_usage_report?: ProviderUsageReport | null;
     ai_candidate_promotion_report: AICandidatePromotionReport | null;
     route_aware_sequencing_report: RouteAwareSequencingReport | null;
     route_feasibility_report: RouteFeasibilityReport | null;

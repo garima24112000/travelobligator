@@ -5,6 +5,7 @@ import re
 from pydantic import ValidationError
 
 from app.models.ai_itinerary_reasoning import AIItineraryReasoningStatus
+from app.services.usefulness_contract import evaluate_usefulness, is_meaningful_stop
 from app.models.ai_itinerary_repair import AIItineraryRepairIssue, AIItineraryRepairRequest, RepairableIssueType
 from app.models.common import ProviderStatus, ValidationSeverity
 from app.models.planning_state import PlanningState
@@ -198,9 +199,44 @@ def classify_repairable_issues(
                 )
             )
 
+    issues.extend(_underfilled_day_issues(planning_state))
+
     if allowed_day_indices is not None:
         issues = [issue for issue in issues if issue.day_index in allowed_day_indices]
 
+    return issues
+
+
+def _underfilled_day_issues(planning_state: PlanningState) -> list[AIItineraryRepairIssue]:
+    """Section 203C.2B: when the inventory sufficiency gate ran and the
+    usefulness contract finds the plan underfilled although enough verified
+    inventory existed, every day below its pace target is a repairable
+    issue (the repair may only add candidates already in
+    `allowed_candidates`). Nothing is raised when inventory is insufficient
+    -- that is a supply limit, not something a repair can fix."""
+    plan = planning_state.experience_plan
+    if planning_state.inventory_sufficiency_report is None or plan is None:
+        return []
+    verdict = evaluate_usefulness(planning_state)
+    if not verdict.underfilled:
+        return []
+    issues: list[AIItineraryRepairIssue] = []
+    for day in plan.daily_plans:
+        meaningful = sum(1 for experience in day.experiences if is_meaningful_stop(experience))
+        if meaningful >= verdict.targets.per_day:
+            continue
+        issues.append(
+            AIItineraryRepairIssue(
+                issue_type=RepairableIssueType.UNDERFILLED_DAY,
+                day_index=day.day_number,
+                source_category="underfilled_plan",
+                message=(
+                    f"Day {day.day_number} has {meaningful} meaningful stop(s); the trip's pace targets "
+                    f"{verdict.targets.per_day} per day and verified candidates remain unscheduled."
+                ),
+                severity=ValidationSeverity.WARNING,
+            )
+        )
     return issues
 
 

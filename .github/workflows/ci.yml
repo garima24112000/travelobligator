@@ -191,6 +191,11 @@ jobs:
       - name: Lint
         run: npm run lint
 
+      # Section 203C.2B: Traveler/Developer section visibility + the inventory notice view model
+      # (Node's built-in test runner; no test framework dependency).
+      - name: Unit tests
+        run: npm test
+
       # No backend, no API URL and no secret is needed to build: the API URL is a RUNTIME value (see image audit).
       - name: Build
         run: npm run build

@@ -14,7 +14,9 @@ from app.models.planning_state import (
 )
 from app.providers.gateway import ProviderGateway, provider_gateway
 from app.providers.holidays.nager_date_adapter import infer_country_code
+from app.core.provider_usage import GenerationProviderContext
 from app.services.base import PlanningStageService
+from app.services.pace_targets import pace_targets_for
 from app.services.experience_planner_service import _matches_must_visit
 from app.services.provider_coverage_service import ProviderCoverageService, provider_coverage_service
 
@@ -100,20 +102,49 @@ class DestinationContextService(PlanningStageService):
         self.gateway = gateway or provider_gateway
         self.coverage_service = coverage_service or provider_coverage_service
 
-    def run(self, planning_state: PlanningState) -> PlanningState:
+    def _places(self, provider_context: GenerationProviderContext | None) -> Any:
+        """The places provider for THIS generation (Section 203C.2B): a view
+        bound to the generation's usage tracker when a context is given."""
+        places_for = getattr(self.gateway, "places_for", None)
+        return places_for(provider_context) if callable(places_for) else self.gateway.places
+
+    def run(
+        self,
+        planning_state: PlanningState,
+        provider_context: GenerationProviderContext | None = None,
+    ) -> PlanningState:
         planning_state.set_active_stage(PlanningStage.DESTINATION_CONTEXT)
 
         destination_name = planning_state.trip_request.primary_destination
+        places = self._places(provider_context)
 
-        attractions_response = self.gateway.places.search_attractions(destination_name)
+        # Section 203C.2B: a provider that sizes its own inventory is told
+        # the trip-derived pool sizes (bounded retrieval, never "as many as
+        # possible"); other providers are called exactly as before.
+        attraction_filters: dict[str, Any] | None = None
+        food_filters: dict[str, Any] | None = None
+        if getattr(places, "supports_inventory_sizing", False):
+            targets = pace_targets_for(planning_state)
+            attraction_filters = {"pool_size": max(60, min(5 * targets.target_stops, 110))}
+            food_filters = {"pool_size": max(20, min(8 * targets.trip_days, 40))}
+
+        attractions_response = (
+            places.search_attractions(destination_name, attraction_filters)
+            if attraction_filters is not None
+            else places.search_attractions(destination_name)
+        )
         self.coverage_service.record_provider_result(planning_state, attractions_response, "places")
 
-        restaurants_response = self.gateway.places.search_restaurants(destination_name)
+        restaurants_response = (
+            places.search_restaurants(destination_name, food_filters)
+            if food_filters is not None
+            else places.search_restaurants(destination_name)
+        )
         self.coverage_service.record_provider_result(
             planning_state, restaurants_response, "restaurants"
         )
 
-        accommodation_response = self.gateway.places.search_accommodation_pois(destination_name)
+        accommodation_response = places.search_accommodation_pois(destination_name)
         self.coverage_service.record_provider_result(
             planning_state, accommodation_response, "accommodations"
         )
@@ -123,7 +154,7 @@ class DestinationContextService(PlanningStageService):
         )
         self.coverage_service.record_provider_result(planning_state, transit_response, "routes")
 
-        weather_context = self._build_weather_context(planning_state, destination_name)
+        weather_context = self._build_weather_context(planning_state, destination_name, places=places)
         planning_state.weather_context = weather_context
 
         holiday_context = self._build_holiday_context(planning_state, destination_name)
@@ -137,8 +168,8 @@ class DestinationContextService(PlanningStageService):
             if attractions_response.data
             else []
         )
-        candidate_pois = self._append_must_visit_candidates(
-            planning_state, destination_name, candidate_pois
+        candidate_pois, ungrounded_must_visits = self._append_must_visit_candidates(
+            planning_state, destination_name, candidate_pois, places=places
         )
         candidate_restaurants = (
             [poi.model_dump(mode="json") for poi in restaurants_response.data]
@@ -177,10 +208,17 @@ class DestinationContextService(PlanningStageService):
                 "the places provider returned no usable accommodation data for this "
                 "destination."
             )
+        # Section 203C.2B: an ungroundable must-visit is disclosed, never
+        # fabricated, and the rest of the plan continues.
+        for term in ungrounded_must_visits:
+            assumptions.append(
+                f"Must-visit '{term}' could not be matched to a verified place in this "
+                "destination, so it was not scheduled."
+            )
 
         # Section 202B.2 (Task 33): show how the provider interpreted the
         # destination text (only when the places provider can say).
-        describe = getattr(self.gateway.places, "describe_destination", None)
+        describe = getattr(places, "describe_destination", None)
         resolved_destination = describe(destination_name) if callable(describe) else None
 
         context = DestinationContext(
@@ -204,7 +242,7 @@ class DestinationContextService(PlanningStageService):
         return planning_state
 
     def _build_weather_context(
-        self, planning_state: PlanningState, destination_name: str
+        self, planning_state: PlanningState, destination_name: str, places: Any = None
     ) -> WeatherContext:
         """Plan-level provider-backed weather forecast for the trip's date
         range (docs/12_provider_architecture.md section 15).
@@ -220,7 +258,7 @@ class DestinationContextService(PlanningStageService):
         severe-weather value is ever invented.
         """
         trip_request = planning_state.trip_request
-        coordinates = self.gateway.places.resolve_coordinates(destination_name)
+        coordinates = (places or self.gateway.places).resolve_coordinates(destination_name)
 
         weather_response = self.gateway.weather.get_weather_forecast(
             destination_name,
@@ -419,9 +457,18 @@ class DestinationContextService(PlanningStageService):
         planning_state: PlanningState,
         destination_name: str,
         candidate_pois: list[dict[str, Any]],
-    ) -> list[dict[str, Any]]:
+        places: Any = None,
+    ) -> tuple[list[dict[str, Any]], list[str]]:
         """Targeted provider lookup fallback for must-visit places the
-        general attraction search missed.
+        general attraction search missed. Returns `(candidate_pois,
+        ungrounded_terms)`.
+
+        Section 203C.2B: this runs BEFORE candidate ranking. A grounded
+        must-visit is tagged with the user's own term (`must_visit_term`)
+        so the deterministic preference follows the grounded place even
+        when the provider's name differs from what the user typed; a term
+        the provider cannot ground is returned in `ungrounded_terms` and
+        disclosed, never fabricated.
 
         For each must_visit term not already matched by name in
         `candidate_pois`, ask the places provider for that specific place
@@ -441,8 +488,10 @@ class DestinationContextService(PlanningStageService):
             else planning_state.trip_request.must_visit
         )
         if not must_visit_terms:
-            return candidate_pois
+            return candidate_pois, []
 
+        places = places or self.gateway.places
+        ungrounded_terms: list[str] = []
         seen_place_ids = {poi.get("place_id") for poi in candidate_pois if poi.get("place_id")}
         seen_names = {
             _normalize_name(poi.get("name")) for poi in candidate_pois if poi.get("name")
@@ -458,8 +507,9 @@ class DestinationContextService(PlanningStageService):
             if already_matched:
                 continue
 
-            response = self.gateway.places.search_must_visit_place(term, destination_name)
+            response = places.search_must_visit_place(term, destination_name)
             if not response.data:
+                ungrounded_terms.append(term)
                 continue
 
             for place in response.data:
@@ -467,12 +517,20 @@ class DestinationContextService(PlanningStageService):
                 place_id = place_dict.get("place_id")
                 normalized_name = _normalize_name(place_dict.get("name"))
                 if place_id in seen_place_ids or normalized_name in seen_names:
+                    # The grounded place is already in the pool under its
+                    # own name: carry the user's term onto that candidate.
+                    for poi in candidate_pois:
+                        if (place_id and poi.get("place_id") == place_id) or (
+                            normalized_name and _normalize_name(poi.get("name")) == normalized_name
+                        ):
+                            poi.setdefault("must_visit_term", term)
                     continue
 
+                place_dict["must_visit_term"] = term
                 candidate_pois.append(place_dict)
                 if place_id:
                     seen_place_ids.add(place_id)
                 if normalized_name:
                     seen_names.add(normalized_name)
 
-        return candidate_pois
+        return candidate_pois, ungrounded_terms

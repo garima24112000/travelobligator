@@ -12,6 +12,7 @@ from app.models.planning_state import (
     TripRequest,
 )
 from app.providers.gateway import provider_gateway
+from app.core.provider_usage import GenerationProviderContext, context_kwargs
 from app.services.accommodation_inventory_service import AccommodationInventoryService
 from app.services.ai_candidate_discovery_service import AICandidateDiscoveryService
 from app.services.ai_candidate_promotion_service import AICandidatePromotionService
@@ -162,6 +163,7 @@ class LangGraphPlanningService:
         trip_id: str,
         trip_request: TripRequest,
         planning_state: PlanningState | None = None,
+        provider_context: GenerationProviderContext | None = None,
     ) -> LangGraphPlanningResult:
         """Runs the full planning graph once and returns a
         `LangGraphPlanningResult`.
@@ -189,7 +191,9 @@ class LangGraphPlanningService:
             planning_state = self._build_new_planning_state(trip_id, trip_request)
 
         try:
-            graph_state = self._runner.run(trip_id, trip_request, planning_state)
+            graph_state = self._runner.run(
+                trip_id, trip_request, planning_state, **context_kwargs(provider_context)
+            )
         except Exception:
             logger.warning(
                 "LangGraphPlanningService.run failed unexpectedly while invoking the "

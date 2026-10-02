@@ -67,6 +67,10 @@ PROVIDER_TAG_KEYS: tuple[str, ...] = (
     # Section 202C.1C: explicit architecture evidence.
     "architect",
     "building:architecture",
+    # Section 203C.2B: whether the public can enter (private / no), and the
+    # provider's own most specific category path when it publishes one.
+    "access",
+    "category_path",
 )
 
 
@@ -178,6 +182,7 @@ for _key, _values in {
 OBJECT_TREE = "tree"
 OBJECT_ARTWORK = "artwork"
 OBJECT_FOUNTAIN = "fountain"
+OBJECT_CLOCK = "clock"
 OBJECT_MEMORIAL = "memorial"
 OBJECT_GATE = "gate"
 OBJECT_RIDE = "amusement_ride"
@@ -242,6 +247,8 @@ def object_kind_of(tags: dict[str, str]) -> str | None:
         return OBJECT_ARTWORK
     if tags.get("amenity") == "fountain":
         return OBJECT_FOUNTAIN
+    if tags.get("amenity") == "clock":
+        return OBJECT_CLOCK
     if tags.get("attraction") in _RIDE_ATTRACTION_TYPES and tags.get("tourism") not in {"theme_park", "zoo", "aquarium", "museum"}:
         return OBJECT_RIDE
     historic = tags.get("historic")

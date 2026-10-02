@@ -80,4 +80,5 @@ def test_planning_graph_state_typed_dict_has_expected_keys() -> None:
         "warnings",
         "completed_nodes",
         "failed_nodes",
+        "provider_context",  # Section 203C.2B: runtime-only, never persisted
     }

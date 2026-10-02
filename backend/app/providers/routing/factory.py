@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from app.core.config import get_settings
 from app.providers.routing.base import RoutingProvider
+from app.providers.routing.geoapify_adapter import GeoapifyRoutingAdapter
 from app.providers.routing.not_connected_adapter import NotConnectedRoutingProvider
 from app.providers.routing.osrm_adapter import OSRMRoutingAdapter
 
@@ -23,6 +24,10 @@ from app.providers.routing.osrm_adapter import OSRMRoutingAdapter
 _SUPPORTED_PROVIDERS: dict[str, type[RoutingProvider]] = {
     "not_connected": NotConnectedRoutingProvider,
     "osrm": OSRMRoutingAdapter,
+    # Section 203C.2B: the production routing provider (one multi-waypoint
+    # walking request per itinerary day). Without GEOAPIFY_API_KEY it
+    # reports an honest `not_connected`.
+    "geoapify": GeoapifyRoutingAdapter,
 }
 
 

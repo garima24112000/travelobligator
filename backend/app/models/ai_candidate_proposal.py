@@ -105,6 +105,13 @@ class AICandidateType(str, Enum):
     CULTURAL_AREA = "cultural_area"
     SHOPPING_AREA = "shopping_area"
     DAY_CLUSTER_IDEA = "day_cluster_idea"
+    # Section 203C.2B: anchor classes for semantic anchor discovery
+    # (additive; a hint about what KIND of place the model means, never a
+    # fact about it).
+    LANDMARK = "landmark"
+    HISTORIC_SITE = "historic_site"
+    ARCHITECTURE = "architecture"
+    MARKET = "market"
 
 
 class AICandidatePriorityHint(str, Enum):
