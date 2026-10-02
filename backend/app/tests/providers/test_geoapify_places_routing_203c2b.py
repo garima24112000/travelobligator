@@ -676,3 +676,56 @@ def test_category_rename_examples() -> None:
     }
     assert taxonomy_tags_from_categories(["commercial.marketplace", "no_access"])["access"] == "no"
     assert taxonomy_tags_from_categories(["fee", "wheelchair.yes"]) == {}
+
+
+def test_the_live_places_response_shape_maps_cleanly_without_wiki_fields_or_extra_details_calls(
+    monkeypatch: pytest.MonkeyPatch, configured: None, tmp_path: Path
+) -> None:
+    """Regression fixture for the shape observed in the live check (2026-10-02):
+    `datasource.raw` present with only a few keys (building, lat, lon, name,
+    osm_id, osm_type, tourism), `categories` present, `wiki_and_media` absent.
+    A second place has no `datasource.raw` at all. Both must map from whatever
+    factual fields exist, and neither may trigger a Place Details call."""
+
+    def _places(request: httpx.Request) -> list[dict[str, Any]]:
+        if "tourism.sights" not in request.url.params["categories"]:
+            return []
+        return [
+            _feature(
+                "live1", "Harbour Fort", ["building", "building.tourism", "tourism", "tourism.sights", "tourism.sights.fort"],
+                50.01, 10.01,
+                datasource={
+                    "sourcename": "openstreetmap",
+                    "raw": {"building": "yes", "lat": 50.01, "lon": 10.01, "name": "Harbour Fort",
+                            "osm_id": 123456, "osm_type": "w", "tourism": "attraction"},
+                },
+            ),
+            _feature("live2", "Quiet Square", ["tourism", "tourism.sights"], 50.02, 10.02, datasource={"sourcename": "openstreetmap"}),
+        ]
+
+    network = _Network(places=_places)
+    context = _context()
+    adapter = _adapter(monkeypatch, network, ProviderCacheStore(tmp_path / "c.sqlite3")).bound_to(context)
+    places = {place.name: place for place in adapter.search_attractions("Fixtureville, Fixtureland").data}
+
+    fort = places["Harbour Fort"]
+    # raw OSM tags are used where present (whitelisted keys only) on top of the category rename
+    assert fort.provider_tags == {
+        "historic": "fort", "tourism": "attraction", "building": "yes", "category_path": "tourism.sights.fort",
+    }
+    assert (fort.place_id, fort.source) == ("geoapify/live1", "geoapify_places")  # Geoapify identity, not the OSM id
+    assert "wikipedia" not in fort.provider_tags and "wikidata" not in fort.provider_tags  # nothing invented
+
+    # no raw tags and no wiki fields: degrades to the categories alone
+    square = places["Quiet Square"]
+    assert square.provider_tags == {"category_path": "tourism.sights"}
+    assert square.category == "sights"
+
+    quality = CandidateQualityService()
+    assert quality.score_attraction(fort).quality_tier != CandidateQualityTier.REJECTED
+    assert quality.score_attraction(square).quality_tier != CandidateQualityTier.REJECTED
+    assert quality.score_attraction(fort).total_score > quality.score_attraction(square).total_score
+
+    # a broad Places result never triggers Place Details, wiki fields or not
+    assert network.requests["details"] == []
+    assert context.usage_tracker.credits_used("place_details") == 0
