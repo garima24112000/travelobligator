@@ -691,6 +691,12 @@ class DailyPlan(BaseModel):
     energy_level: str | None = None
     warnings: list[str] = Field(default_factory=list)
     assumptions: list[str] = Field(default_factory=list)
+    # Section 203C.2B (rationale provenance): the exact `warnings` entry that
+    # carries an AI itinerary-reasoning rationale for this day, or None when
+    # the day shows none. Lets the rationale be invalidated structurally when
+    # the day changes (`services/day_rationale.finalize_day_explanations`).
+    # Optional: a day stored before this field loads unchanged.
+    ai_rationale_warning: str | None = None
 
 
 class StayAreaGuidance(BaseModel):

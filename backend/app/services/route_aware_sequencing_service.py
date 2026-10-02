@@ -17,7 +17,7 @@ from app.models.routing import (
 from app.providers.gateway import ProviderGateway, provider_gateway
 from app.core.provider_usage import GenerationProviderContext, context_kwargs
 from app.services.day_order_heuristics import clearly_shorter_alternative
-from app.services.day_rationale import RATIONALE_WARNING_PREFIX, deterministic_day_summary
+from app.services.day_rationale import clear_day_rationale, deterministic_day_summary
 
 logger = logging.getLogger(__name__)
 
@@ -566,7 +566,7 @@ def _apply_day_order(day_plan: DailyPlan, suggested_order: list[str]) -> None:
     # Section 203C.2B (canary correction): the day's order just changed, so a
     # rationale written for the previous order no longer describes it, and the
     # factual day summary is rebuilt from the final order.
-    day_plan.warnings = [w for w in day_plan.warnings if not w.startswith(RATIONALE_WARNING_PREFIX)]
+    clear_day_rationale(day_plan)
     day_plan.goal = deterministic_day_summary([experience.name for experience in day_plan.experiences])
 
 

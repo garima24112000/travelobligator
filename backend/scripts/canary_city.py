@@ -83,6 +83,7 @@ def _run(args: argparse.Namespace, cache_hits: dict[str, int]) -> dict[str, Any]
     from app.models.routing import TRANSFER_MODE_DRIVE, TRANSFER_MODE_WALK, leg_mode
     from app.services import schedule_diversity as diversity
     from app.services.entity_collisions import scheduled_unresolved_collisions
+    from app.services.interest_coverage import final_food_evidence, interest_coverage
     from app.services.must_visit_matching import resolve_must_visits
     from app.services.planning_orchestrator import planning_orchestrator
     from app.services.route_burden import day_route_burdens
@@ -282,7 +283,6 @@ def _run(args: argparse.Namespace, cache_hits: dict[str, int]) -> dict[str, Any]
 
     # -- quality ---------------------------------------------------------------------------
     validation = state.validation_report
-    canonical = taxonomy.canonical_interests(interests)
     low_value_scheduled = [stop.name for stop in scheduled if stop.low_value_object]
     report["quality"] = {
         "meaningful_scheduled_stops": verdict.scheduled_meaningful_stops,
@@ -290,9 +290,9 @@ def _run(args: argparse.Namespace, cache_hits: dict[str, int]) -> dict[str, Any]
         "empty_days": list(verdict.empty_days),
         "duplicates": list(verdict.duplicate_place_ids),
         "low_value_scheduled_objects": low_value_scheduled,
-        "interest_coverage": {
-            interest: any(interest in stop.matched_interests for stop in scheduled) for interest in canonical
-        },
+        # the validator's own rule: final scheduled stops, and for food also the final nearby food
+        "interest_coverage": interest_coverage(state),
+        "food_interest_evidence": final_food_evidence(state),
         "unrecognised_interests": [term for term in interests if not taxonomy.canonical_interests([term])],
         "usefulness_verdict": (
             "not_enforced (viable < R)" if not verdict.enforced else "pass" if verdict.passed else "underfilled"

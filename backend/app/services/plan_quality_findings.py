@@ -4,6 +4,7 @@ from app.models.candidate_quality import CandidateQualityScore, CandidateQuality
 from app.models.common import ValidationSeverity
 from app.models.planning_state import PlanningState, TripPace, ValidationIssue
 from app.services import place_taxonomy as taxonomy
+from app.services.interest_coverage import interest_coverage
 
 # Section 202B.2 (Tasks 23, 26-29, 31): factual, case-specific itinerary
 # quality findings. Pure read of `PlanningState` -- never repairs, drops or
@@ -135,10 +136,13 @@ def build_plan_quality_findings(planning_state: PlanningState) -> tuple[list[Val
         )
 
     # -- interest coverage ----------------------------------------------------------------
+    # Section 203C.2B: judged on the FINAL user-visible itinerary -- scheduled
+    # stops, and for `food` also the final nearby food suggestions
+    # (`services/interest_coverage`).
+    coverage = interest_coverage(planning_state)
     for interest in canonical:
         supply = [s for s in viable if interest in s.matched_interests]
-        covered = any(interest in e.matched_interests for e in scheduled)
-        if covered:
+        if coverage.get(interest, False):
             continue
         if supply:
             issues.append(

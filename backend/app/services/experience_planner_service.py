@@ -52,7 +52,7 @@ from app.services.day_order_heuristics import (
     centroid,
     grouping_length_km,
 )
-from app.services.day_rationale import RATIONALE_WARNING_PREFIX, deterministic_day_summary
+from app.services.day_rationale import deterministic_day_summary, finalize_day_explanations
 from app.services.entity_collisions import SUSPECT_COLLISION_KEY
 from app.utils.geo import haversine_distance_km
 
@@ -96,6 +96,8 @@ _NO_COORDINATE_BACKED_RESTAURANTS_WARNING = (
 # day's own stops. Straight-line distance to the nearest stop; beyond this
 # it is not "nearby" and is not suggested.
 _MAX_FOOD_SUGGESTION_KM = 1.5
+# Public name of the same radius, for checks of the final food suggestions.
+FOOD_NEARBY_RADIUS_KM = _MAX_FOOD_SUGGESTION_KM
 _NO_NEARBY_RESTAURANTS_WARNING = (
     "No restaurant candidate was found near this day's stops, so no nearby "
     "food suggestion is shown for this day."
@@ -789,7 +791,6 @@ class ExperiencePlannerService(PlanningStageService):
         # which of them share a day. Its own day grouping/order is kept when
         # it is already geographically sound, and replaced by the spatial
         # grouping of the same places when that is clearly shorter.
-        ai_original_groups = [list(group) for group in ai_day_groups] if ai_day_groups is not None else None
         ai_order_kept = ai_day_groups is not None
         if ai_day_groups is not None and get_settings().ai_day_spatial_regrouping_enabled:
             regrouped = _spatially_regroup_days(day_groups, profiles, must_visit_ids, num_days, max_per_day)
@@ -887,23 +888,11 @@ class ExperiencePlannerService(PlanningStageService):
                     # exclusion here would be a real fact about the wrong
                     # cause, not a fabrication but still misleading.
                     warnings.append(_LOW_PRIORITY_OR_REJECTED_EXCLUDED_WARNING)
-            # Section 203C.2B (canary correction): the model's rationale is
-            # attached only when THIS final day is exactly the day it proposed
-            # (same places, same order). After a regroup, a top-up or the pace
-            # cap it would describe a superseded day, so it is dropped.
-            if ai_original_groups is not None and [id(poi) for poi in day_pois] == [
-                id(poi) for poi in ai_original_groups[day_number - 1]
-            ]:
-                reasoning_day = next(
-                    (
-                        day
-                        for day in planning_state.ai_itinerary_reasoning_result.days
-                        if day.day_index == day_number
-                    ),
-                    None,
-                )
-                if reasoning_day is not None:
-                    warnings.append(f"{RATIONALE_WARNING_PREFIX}{reasoning_day.rationale}")
+            # Section 203C.2B: the model's rationale is NOT attached here. It
+            # is attached once the plan is built, by the single authority
+            # (`finalize_day_explanations`), and only to a day that is exactly
+            # the day the model proposed -- before the pace cap, a regroup, a
+            # diversity or duplicate replacement, or a top-up changed it.
 
             experiences = [
                 _build_experience_item(
@@ -1023,6 +1012,7 @@ class ExperiencePlannerService(PlanningStageService):
         )
 
         planning_state.experience_plan = experience_plan
+        finalize_day_explanations(planning_state)
         planning_state.touch()
         return planning_state
 

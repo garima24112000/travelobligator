@@ -59,6 +59,7 @@ from app.services.plan_validator_service import PlanValidatorService
 from app.services.regeneration_readiness_service import RegenerationReadinessService
 from app.services.revision_lineage_service import RevisionLineageService
 from app.services.route_aware_sequencing_service import RouteAwareSequencingService
+from app.services.day_rationale import finalize_day_explanations
 from app.services.route_burden_repair_service import apply_route_burden_repair_safely
 from app.services.route_feasibility_service import RouteFeasibilityService
 from app.services.stay_transport_service import StayTransportService
@@ -916,6 +917,8 @@ class PlanningOrchestrator:
         apply_route_burden_repair_safely(
             planning_state, self.route_feasibility_service, provider_context
         )
+        # The days are final now: one authoritative explanation per day.
+        finalize_day_explanations(planning_state)
 
         # Step 166C: provider-backed travel-time buffer reporting for
         # consecutive scheduled experiences, computed after

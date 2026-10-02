@@ -39,7 +39,7 @@ from app.models.routing import RouteLegFeasibility
 from app.services import schedule_diversity as diversity
 from app.services.pace_targets import pace_of
 from app.services.day_order_heuristics import centroid, nearest_next_order, path_length_km
-from app.services.day_rationale import RATIONALE_WARNING_PREFIX, deterministic_day_summary
+from app.services.day_rationale import clear_day_rationale, deterministic_day_summary
 from app.services.experience_planner_service import (
     ReplacementOption,
     build_replacement_experience,
@@ -266,7 +266,7 @@ class RouteBurdenRepairService:
         # The day changed: its summary is rebuilt and a rationale written for
         # the superseded day is dropped.
         day.goal = deterministic_day_summary([stop.name for stop in new_order])
-        day.warnings = [w for w in day.warnings if not w.startswith(RATIONALE_WARNING_PREFIX)]
+        clear_day_rationale(day)
         self.route_feasibility_service.replace_day_legs(planning_state.route_feasibility_report, previous, legs)
         sequencing = planning_state.route_aware_sequencing_report
         if sequencing is not None:

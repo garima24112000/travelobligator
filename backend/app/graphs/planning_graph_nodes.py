@@ -45,6 +45,7 @@ from app.services.inventory_sufficiency_service import (
 from app.services.plan_validator_service import PlanValidatorService
 from app.services.usefulness_contract import evaluate_usefulness
 from app.services.route_aware_sequencing_service import RouteAwareSequencingService
+from app.services.day_rationale import finalize_day_explanations
 from app.services.route_burden_repair_service import apply_route_burden_repair_safely
 from app.services.route_feasibility_service import RouteFeasibilityService
 from app.services.stay_transport_service import StayTransportService
@@ -670,6 +671,8 @@ def build_route_aware_sequencing_node(
             apply_route_burden_repair_safely(
                 planning_state, resolved_route_feasibility_service, state.get("provider_context")
             )
+            # The days are final now: one authoritative explanation per day.
+            finalize_day_explanations(planning_state)
         except Exception:
             return {
                 "failed_nodes": ["route_aware_sequencing"],
