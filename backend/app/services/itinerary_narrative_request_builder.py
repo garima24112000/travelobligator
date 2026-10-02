@@ -13,6 +13,7 @@ from app.models.itinerary_narrative import (
 from app.models.planning_state import PlanningState, WeatherContext
 from app.models.routing import TravelTimeBufferStatus
 from app.services import place_taxonomy as taxonomy
+from app.services.day_rationale import current_day_rationale
 
 # Step 182F: strict, read-only input builder for the itinerary narrator.
 # `build_request` only ever reads `planning_state` -- it never calls a
@@ -95,7 +96,15 @@ class ItineraryNarrativeRequestBuilder:
                     experiences=experiences,
                     restaurant_names=restaurant_names,
                     has_movement_data=has_movement_data,
-                    reasoning_rationale=rationale_by_day_index.get(day_plan.day_number),
+                    # Section 203C.2B (canary correction): only a rationale that
+                    # still describes THIS final day (same places, same order)
+                    # is passed on; a regroup, top-up, reorder or repair that
+                    # changed the day makes it stale and it is dropped.
+                    reasoning_rationale=(
+                        current_day_rationale(planning_state, day_plan)
+                        if day_plan.day_number in rationale_by_day_index
+                        else None
+                    ),
                 )
             )
 

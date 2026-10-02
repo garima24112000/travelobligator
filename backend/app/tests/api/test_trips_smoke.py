@@ -2726,9 +2726,12 @@ class _RestaurantSuggestionTestPlacesProvider(PlacesProvider):
         self, area: str, filters: dict[str, Any] | None = None
     ) -> ProviderResponse[Any]:
         places = [
+            # Section 203C.2B: a suggestion must be within ~1.5 km of a stop, so
+            # the near/mid fixtures sit ~0.3 km and ~1.0 km away (degrees of
+            # longitude on the equator) and the far one well outside.
             _geo_place("test/restaurant-suggest/far", "Far Restaurant", "restaurant", 6.0),
-            _geo_place("test/restaurant-suggest/near", "Near Restaurant", "restaurant", 1.0),
-            _geo_place("test/restaurant-suggest/mid", "Mid Restaurant", "restaurant", 3.0),
+            _geo_place("test/restaurant-suggest/near", "Near Restaurant", "restaurant", 0.003),
+            _geo_place("test/restaurant-suggest/mid", "Mid Restaurant", "restaurant", 0.009),
         ]
         return ProviderResponse[list[NormalizedPlace]](
             provider_name=self.provider_name,

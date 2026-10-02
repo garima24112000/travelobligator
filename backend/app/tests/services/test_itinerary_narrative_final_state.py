@@ -54,6 +54,12 @@ def _trip_request(**overrides: Any) -> TripRequest:
     return TripRequest(**fields)
 
 
+# Section 203C.2B: each final stop carries the provider identity the reasoning
+# result's candidate_ids refer to -- a rationale is only attached to a day
+# whose final stops are exactly the ones the model proposed, in order.
+_PROVIDER_PLACE_IDS = {"exp_a": "way/1", "exp_b": "way/2", "exp_c": "way/3"}
+
+
 def _experience(experience_id: str, name: str, day_number: int, stop_order: int) -> ExperienceItem:
     return ExperienceItem(
         experience_id=experience_id,
@@ -62,6 +68,8 @@ def _experience(experience_id: str, name: str, day_number: int, stop_order: int)
         day_number=day_number,
         stop_order=stop_order,
         why_included="Matches the traveler's stated interests.",
+        provider_source="openstreetmap_places",
+        provider_place_id=_PROVIDER_PLACE_IDS.get(experience_id),
     )
 
 

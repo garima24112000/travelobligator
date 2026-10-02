@@ -8,6 +8,7 @@ from app.providers.ai_failure import classify_and_message
 from app.core.config import get_settings
 from app.models.ai_candidate_proposal import (
     AICandidateProposal,
+    AICandidateProposalFailureKind,
     AICandidateProposalGuardrailReport,
     AICandidateProposalRequest,
     AICandidateProposalResult,
@@ -20,6 +21,7 @@ from app.models.ai_candidate_proposal import (
 from app.providers.ai_candidate_proposal.anchor_guidance import ANCHOR_DISCOVERY_GUIDANCE, PROVIDER_POOL_NOTE
 from app.providers.ai_candidate_proposal.base import AICandidateProposalProvider
 from app.providers.ai_candidate_proposal.proposal_dedup import deduplicate_proposals
+from app.providers.ai_candidate_proposal.proposal_validation import validate_proposals
 
 # Anthropic/Claude-backed AI candidate proposal adapter (Step 161A,
 # itinerary-generator-build-spec.md Stage 5, docs/13_llm_reasoning_
@@ -268,7 +270,11 @@ class AnthropicAICandidateProposalProvider(AICandidateProposalProvider):
                 messages=[{"role": "user", "content": _build_prompt(request)}],
             )
         except Exception as exc:  # API/runtime failure -> rejected, never fabricated
-            return self._rejected_result(request, classify_and_message("Anthropic", exc)[1])
+            return self._rejected_result(
+                request,
+                classify_and_message("Anthropic", exc)[1],
+                AICandidateProposalFailureKind.PROVIDER_FAILURE,
+            )
 
         tool_input = self._extract_tool_input(response)
         if tool_input is None:
@@ -310,20 +316,21 @@ class AnthropicAICandidateProposalProvider(AICandidateProposalProvider):
         raw_proposals = tool_input.get("proposals")
         if not isinstance(raw_proposals, list):
             return self._rejected_result(request, "Tool output did not include a proposals list.")
+        if not raw_proposals:
+            return self._rejected_result(
+                request, "Claude returned no candidate proposals.", AICandidateProposalFailureKind.EMPTY_RESPONSE
+            )
 
-        proposals: list[AICandidateProposal] = []
-        for raw_proposal in raw_proposals:
-            if not isinstance(raw_proposal, dict):
-                return self._rejected_result(request, "Tool output contained a malformed proposal entry.")
-            try:
-                proposals.append(AICandidateProposal(**raw_proposal))
-            except ValidationError as exc:
-                return self._rejected_result(
-                    request, f"Tool output failed AICandidateProposal validation: {exc}"
-                )
-
+        # Section 203C.2B: each proposal is validated on its own (see
+        # `proposal_validation`); an invalid one no longer discards the rest.
+        proposals, dropped_count, dropped_summary = validate_proposals(raw_proposals)
         if not proposals:
-            return self._rejected_result(request, "Claude returned no candidate proposals.")
+            return self._rejected_result(
+                request,
+                f"Every Claude proposal failed validation ({dropped_summary}).",
+                AICandidateProposalFailureKind.CANDIDATE_VALIDATION,
+                dropped_proposal_count=dropped_count,
+            )
 
         proposals = deduplicate_proposals(proposals)
 
@@ -349,9 +356,14 @@ class AnthropicAICandidateProposalProvider(AICandidateProposalProvider):
                 provider_name=self.provider_name,
                 model_name=self._model,
                 confidence=confidence,
+                dropped_proposal_count=dropped_count,
             )
-        except ValidationError as exc:
-            return self._rejected_result(request, f"Assembled proposal result failed validation: {exc}")
+        except ValidationError:
+            return self._rejected_result(
+                request,
+                "Assembled proposal result failed validation.",
+                AICandidateProposalFailureKind.CANDIDATE_VALIDATION,
+            )
 
     def _not_connected_result(
         self, request: AICandidateProposalRequest, reason: str
@@ -369,10 +381,15 @@ class AnthropicAICandidateProposalProvider(AICandidateProposalProvider):
             provider_name=self.provider_name,
             model_name=self._model,
             confidence=0.0,
+            failure_kind=AICandidateProposalFailureKind.NOT_CONNECTED,
         )
 
     def _rejected_result(
-        self, request: AICandidateProposalRequest, reason: str
+        self,
+        request: AICandidateProposalRequest,
+        reason: str,
+        failure_kind: AICandidateProposalFailureKind = AICandidateProposalFailureKind.PARSE_FAILURE,
+        dropped_proposal_count: int = 0,
     ) -> AICandidateProposalResult:
         return AICandidateProposalResult(
             task=request.task,
@@ -387,4 +404,6 @@ class AnthropicAICandidateProposalProvider(AICandidateProposalProvider):
             provider_name=self.provider_name,
             model_name=self._model,
             confidence=0.0,
+            failure_kind=failure_kind,
+            dropped_proposal_count=dropped_proposal_count,
         )

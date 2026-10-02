@@ -131,16 +131,20 @@ def test_ai_guided_grouping_and_order_is_used_when_completed_result_present() ->
     planning_state = _planning_state(candidates, start_date="2026-08-10", end_date="2026-08-11")
     planning_state.ai_itinerary_reasoning_result = _completed_result(
         [
-            _day(1, [_candidate_id("c"), _candidate_id("a")]),
-            _day(2, [_candidate_id("d")]),
+            # A geographically sound proposal (D then its neighbour C; A on its
+            # own day) is used exactly as the model gave it. Section 203C.2B:
+            # a clearly poor grouping would instead be regrouped by geography
+            # (see test_final_v1_canary_correction_203c2b.py).
+            _day(1, [_candidate_id("d"), _candidate_id("c")]),
+            _day(2, [_candidate_id("a")]),
         ]
     )
 
     ExperiencePlannerService().run(planning_state)
 
     assert _scheduled_names_by_day(planning_state) == [
-        ["Candidate C", "Candidate A"],
-        ["Candidate D"],
+        ["Candidate D", "Candidate C"],
+        ["Candidate A"],
     ]
     all_scheduled = [name for day in _scheduled_names_by_day(planning_state) for name in day]
     assert "Candidate B" not in all_scheduled

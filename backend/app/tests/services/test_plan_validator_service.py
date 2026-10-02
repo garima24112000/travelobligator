@@ -361,9 +361,12 @@ def test_successful_route_data_replaces_blanket_warning_with_provider_backed_mes
     assert "checks are not implemented yet" not in warning.message
     assert "provider-backed" in warning.message
     assert "osrm" in warning.message
-    # Still never claims the plan is ready -- full route-aware scheduling
-    # (Section 166) is still not implemented.
-    assert planning_state.validation_report.readiness_status.value == "needs_review"
+    # Section 203C.2B (canary correction): readiness is no longer hard-coded
+    # to `needs_review`. `needs_review` always carries a machine-readable
+    # review code; with real provider route data and no warning left there
+    # is none, so the plan is `ready`.
+    assert planning_state.validation_report.review_codes == []
+    assert planning_state.validation_report.readiness_status.value == "ready"
 
 
 def test_not_connected_routing_keeps_needs_review_and_names_no_provider_connected() -> None:

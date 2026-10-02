@@ -42,6 +42,13 @@ from app.models.planning_state import (
 )
 from app.services import place_taxonomy as taxonomy
 from app.services.base import PlanningStageService
+from app.services.day_order_heuristics import (
+    ALTERNATIVE_MAX_LENGTH_RATIO,
+    balanced_day_sizes,
+    balanced_spatial_clusters,
+    grouping_length_km,
+)
+from app.services.day_rationale import RATIONALE_WARNING_PREFIX, deterministic_day_summary
 from app.utils.geo import haversine_distance_km
 
 logger = logging.getLogger(__name__)
@@ -79,6 +86,14 @@ _NO_DAY_ANCHOR_WARNING = (
 _NO_COORDINATE_BACKED_RESTAURANTS_WARNING = (
     "No coordinate-backed restaurant candidates are available, so nearby "
     "restaurant suggestions could not be computed for this day."
+)
+# Section 203C.2B (canary correction): a food suggestion must be near the
+# day's own stops. Straight-line distance to the nearest stop; beyond this
+# it is not "nearby" and is not suggested.
+_MAX_FOOD_SUGGESTION_KM = 1.5
+_NO_NEARBY_RESTAURANTS_WARNING = (
+    "No restaurant candidate was found near this day's stops, so no nearby "
+    "food suggestion is shown for this day."
 )
 
 _MAX_ACCOMMODATION_SUGGESTIONS_PER_DAY = 2
@@ -738,7 +753,23 @@ class ExperiencePlannerService(PlanningStageService):
             selected = _select_diverse_scheduling_set(
                 ordered_pois, profiles, num_days * max_per_day, canonical_interests, must_visit_ids
             )
-            day_groups = _group_candidates_into_balanced_days(selected, num_days, max_per_day)
+            # Section 203C.2B (canary correction): the selected set is grouped
+            # into days by geography (balanced spatial clustering), not by
+            # walking down the ranking one anchor at a time.
+            day_groups = _cluster_selected_into_days(selected, num_days, max_per_day)
+
+        # Section 203C.2B (canary correction): the reasoning model chooses
+        # WHICH places to visit; deterministic geography is authoritative for
+        # which of them share a day. Its own day grouping/order is kept when
+        # it is already geographically sound, and replaced by the spatial
+        # grouping of the same places when that is clearly shorter.
+        ai_original_groups = [list(group) for group in ai_day_groups] if ai_day_groups is not None else None
+        ai_order_kept = ai_day_groups is not None
+        if ai_day_groups is not None and get_settings().ai_day_spatial_regrouping_enabled:
+            regrouped = _spatially_regroup_days(day_groups, profiles, must_visit_ids, num_days, max_per_day)
+            if regrouped is not None:
+                day_groups = regrouped
+                ai_order_kept = False
 
         # Section 203C.2B: deterministic fallback for an underfilled plan.
         # Only when the usefulness contract found the plan underfilled while
@@ -768,6 +799,8 @@ class ExperiencePlannerService(PlanningStageService):
 
         daily_plans: list[DailyPlan] = []
         used_experience_ids: set[str] = set()
+        # Restaurants already suggested on an earlier day of this plan.
+        suggested_restaurant_keys: set[str] = set()
         for day_number in range(1, num_days + 1):
             day_date = trip_request.start_date + timedelta(days=day_number - 1)
             # Section 193C: an AI-guided day keeps LLM #2's own chosen
@@ -776,7 +809,7 @@ class ExperiencePlannerService(PlanningStageService):
             # decide (ordering). The deterministic path is unchanged.
             day_pois = (
                 day_groups[day_number - 1]
-                if used_ai_reasoning
+                if ai_order_kept
                 else _order_day_by_distance(day_groups[day_number - 1])
             )
 
@@ -804,7 +837,13 @@ class ExperiencePlannerService(PlanningStageService):
                     # exclusion here would be a real fact about the wrong
                     # cause, not a fabrication but still misleading.
                     warnings.append(_LOW_PRIORITY_OR_REJECTED_EXCLUDED_WARNING)
-            if used_ai_reasoning:
+            # Section 203C.2B (canary correction): the model's rationale is
+            # attached only when THIS final day is exactly the day it proposed
+            # (same places, same order). After a regroup, a top-up or the pace
+            # cap it would describe a superseded day, so it is dropped.
+            if ai_original_groups is not None and [id(poi) for poi in day_pois] == [
+                id(poi) for poi in ai_original_groups[day_number - 1]
+            ]:
                 reasoning_day = next(
                     (
                         day
@@ -814,9 +853,7 @@ class ExperiencePlannerService(PlanningStageService):
                     None,
                 )
                 if reasoning_day is not None:
-                    warnings.append(
-                        f"AI itinerary reasoning rationale for this day: {reasoning_day.rationale}"
-                    )
+                    warnings.append(f"{RATIONALE_WARNING_PREFIX}{reasoning_day.rationale}")
 
             experiences = [
                 _build_experience_item(
@@ -852,7 +889,11 @@ class ExperiencePlannerService(PlanningStageService):
                 ]
             else:
                 restaurant_suggestions = _suggest_nearby_restaurants(
-                    experiences, candidate_restaurants, warnings, restaurant_quality_lookup
+                    experiences,
+                    candidate_restaurants,
+                    warnings,
+                    restaurant_quality_lookup,
+                    already_suggested=suggested_restaurant_keys,
                 )
             accommodation_suggestions = _suggest_nearby_accommodations(
                 experiences, candidate_accommodation_pois, warnings, accommodation_quality_lookup
@@ -866,6 +907,8 @@ class ExperiencePlannerService(PlanningStageService):
                     restaurant_suggestions=restaurant_suggestions,
                     accommodation_suggestions=accommodation_suggestions,
                     warnings=warnings,
+                    # A factual description of the FINAL day (names only).
+                    goal=deterministic_day_summary([experience.name for experience in experiences]),
                 )
             )
 
@@ -1491,6 +1534,50 @@ def _fill_empty_days(
     return filled
 
 
+def _cluster_selected_into_days(
+    selected: list[dict[str, Any]], num_days: int, max_per_day: int
+) -> list[list[dict[str, Any]]]:
+    """Section 203C.2B (canary correction): groups the already selected,
+    priority-ordered set into day-sized GEOGRAPHIC clusters (see
+    `balanced_spatial_clusters`). Day sizes stay balanced under the pace
+    cap, so a short supply never leaves a day empty while others are full.
+    Places close to each other share a day -- including two must-visits
+    that happen to be neighbours; nothing spreads them apart."""
+    if num_days <= 0:
+        return []
+    sizes = balanced_day_sizes(len(selected), num_days, max_per_day)
+    chosen = selected[: sum(sizes)]
+    return balanced_spatial_clusters(chosen, [_poi_coordinates(poi) for poi in chosen], sizes)
+
+
+def _spatially_regroup_days(
+    day_groups: list[list[dict[str, Any]]],
+    profiles: dict[int, _CandidateProfile],
+    must_visit_ids: set[int],
+    num_days: int,
+    max_per_day: int,
+) -> list[list[dict[str, Any]]] | None:
+    """The same places as `day_groups` (an AI-proposed grouping), regrouped
+    geographically -- returned only when that is CLEARLY shorter by
+    straight-line length (at most `ALTERNATIVE_MAX_LENGTH_RATIO` of the
+    proposed grouping's), otherwise None so the proposed days stand. The
+    comparison is a cheap geometric heuristic for choosing a grouping; real
+    distances and durations still come only from the routing provider."""
+    flat = [poi for group in day_groups for poi in group]
+    if len(flat) < 3:
+        return None
+    ranked = sorted(
+        flat,
+        key=lambda poi: (0 if id(poi) in must_visit_ids else 1, -profiles[id(poi)].tier_rank, -profiles[id(poi)].score),
+    )
+    regrouped = [_order_day_by_distance(group) for group in _cluster_selected_into_days(ranked, num_days, max_per_day)]
+    proposed_km = grouping_length_km([[_poi_coordinates(poi) for poi in group] for group in day_groups])
+    regrouped_km = grouping_length_km([[_poi_coordinates(poi) for poi in group] for group in regrouped])
+    if proposed_km <= 0 or proposed_km == float("inf") or regrouped_km > ALTERNATIVE_MAX_LENGTH_RATIO * proposed_km:
+        return None
+    return regrouped
+
+
 def _top_up_underfilled_days(
     day_groups: list[list[dict[str, Any]]],
     pool: list[dict[str, Any]],
@@ -1606,9 +1693,19 @@ def _suggest_nearby_restaurants(
     candidate_restaurants: list[dict[str, Any]],
     warnings: list[str],
     quality_lookup: dict[int, CandidateQualityScore] | None = None,
+    already_suggested: set[str] | None = None,
 ) -> list[RestaurantSuggestion]:
     """Suggest up to `_MAX_RESTAURANT_SUGGESTIONS_PER_DAY` restaurants near
     this day's scheduled experiences.
+
+    Section 203C.2B (canary correction) -- food is local to the day:
+      * a candidate's distance is to its NEAREST scheduled stop of this day
+        (the whole day's cluster, not just the first stop);
+      * only candidates within `_MAX_FOOD_SUGGESTION_KM` of a stop count as
+        nearby; when none is, nothing is suggested and the day says so --
+        a far-away restaurant is never presented as nearby;
+      * a restaurant already suggested on an earlier day (`already_suggested`,
+        updated in place) is skipped while another nearby one is available.
 
     Only ever draws from `candidate_restaurants` (real provider-backed
     candidates); never invents a restaurant. The day anchor is the first
@@ -1631,37 +1728,50 @@ def _suggest_nearby_restaurants(
         warnings.append(_NO_RESTAURANT_CANDIDATES_WARNING)
         return []
 
-    anchor_point = next(
-        (experience.coordinates for experience in experiences if experience.coordinates), None
-    )
-    if anchor_point is None:
+    stop_points = [experience.coordinates for experience in experiences if experience.coordinates]
+    if not stop_points:
         warnings.append(_NO_DAY_ANCHOR_WARNING)
         return []
 
     quality_lookup = quality_lookup or {}
-    with_coords: list[tuple[dict[str, Any], GeoPoint]] = []
+    with_coords: list[tuple[dict[str, Any], float]] = []
     for restaurant in candidate_restaurants:
         score = quality_lookup.get(id(restaurant))
         if score is not None and score.quality_tier == CandidateQualityTier.REJECTED:
             continue
         point = _poi_coordinates(restaurant)
         if point is not None:
-            with_coords.append((restaurant, point))
+            # Distance to the nearest stop of this day's cluster.
+            with_coords.append(
+                (restaurant, min(haversine_distance_km(stop, point) for stop in stop_points))
+            )
 
     if not with_coords:
         warnings.append(_NO_COORDINATE_BACKED_RESTAURANTS_WARNING)
         return []
 
+    nearby = [item for item in with_coords if item[1] <= _MAX_FOOD_SUGGESTION_KM]
+    if not nearby:
+        warnings.append(_NO_NEARBY_RESTAURANTS_WARNING)
+        return []
+
     if quality_lookup:
-        with_coords.sort(
-            key=lambda item: _distance_and_quality_sort_key(
-                haversine_distance_km(anchor_point, item[1]), quality_lookup.get(id(item[0]))
-            )
-        )
+        nearby.sort(key=lambda item: _distance_and_quality_sort_key(item[1], quality_lookup.get(id(item[0]))))
     else:
-        with_coords.sort(key=lambda item: haversine_distance_km(anchor_point, item[1]))
-    nearest = with_coords[:_MAX_RESTAURANT_SUGGESTIONS_PER_DAY]
-    return [_build_restaurant_suggestion(restaurant) for restaurant, _ in nearest]
+        nearby.sort(key=lambda item: item[1])
+
+    # Prefer restaurants no earlier day already suggested; fall back to a
+    # repeat only when this day has no other nearby candidate.
+    seen = already_suggested if already_suggested is not None else set()
+    fresh = [item for item in nearby if _restaurant_key(item[0]) not in seen]
+    repeats = [item for item in nearby if _restaurant_key(item[0]) in seen]
+    chosen = (fresh + repeats)[:_MAX_RESTAURANT_SUGGESTIONS_PER_DAY]
+    seen.update(_restaurant_key(restaurant) for restaurant, _ in chosen)
+    return [_build_restaurant_suggestion(restaurant) for restaurant, _ in chosen]
+
+
+def _restaurant_key(restaurant: dict[str, Any]) -> str:
+    return str(restaurant.get("place_id") or _normalize_candidate_name(str(restaurant.get("name") or "")))
 
 
 def _build_restaurant_suggestion(restaurant: dict[str, Any]) -> RestaurantSuggestion:

@@ -237,6 +237,11 @@ def repair_enabled_env(monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setenv("AI_ITINERARY_REASONING_ENABLED", "true")
         monkeypatch.setenv("AI_ITINERARY_REPAIR_ENABLED", "true")
         monkeypatch.setenv("AI_ITINERARY_REPAIR_MAX_ATTEMPTS", str(max_attempts))
+        # Section 203C.2B: these tests exercise the repair LOOP on a day the
+        # reasoning result deliberately spreads far apart. With the default
+        # spatial regrouping on, that day would be regrouped before it ever
+        # needed a repair, so it is switched off here to keep the loop under test.
+        monkeypatch.setenv("AI_DAY_SPATIAL_REGROUPING_ENABLED", "false")
         get_settings.cache_clear()
 
     yield _apply

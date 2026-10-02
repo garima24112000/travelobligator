@@ -20,6 +20,7 @@ from app.models.routing import (
 )
 from app.core.errors import DESTINATION_UNRESOLVED_MESSAGE
 from app.services.plan_quality_findings import build_plan_quality_findings
+from app.services.route_burden import day_route_burdens
 from app.services.usefulness_contract import evaluate_usefulness, usefulness_findings
 from app.services.experience_identity import experience_stable_key
 from app.services.base import PlanningStageService
@@ -385,6 +386,31 @@ class PlanValidatorService(PlanningStageService):
             critical_issues.extend(usefulness_critical)
             warnings.extend(usefulness_warnings)
 
+        # Section 203C.2B (canary correction): route-burden quality. Full
+        # routing coverage is not enough -- a day of real walking beyond its
+        # pace's limit, or a single very long leg, gets a user-facing
+        # long-travel warning. Provider leg data only; no transit, taxi or
+        # driving time is ever substituted.
+        for burden in day_route_burdens(planning_state):
+            if not burden.long_route:
+                continue
+            warnings.append(
+                ValidationIssue(
+                    severity=ValidationSeverity.WARNING,
+                    category="long_travel_day",
+                    message=(
+                        f"Day {burden.day_number} involves about "
+                        f"{round(burden.total_duration_seconds / 60)} minutes of walking "
+                        f"({burden.total_distance_meters / 1000:.1f} km) between stops; the longest "
+                        f"single leg is about {round(burden.max_leg_duration_seconds / 60)} minutes. "
+                        "These are walking routes from the routing provider -- no public-transport "
+                        "or taxi time is available, so allow extra time or use local transport."
+                    ),
+                    affected_section=f"experience_plan.daily_plans[{burden.day_number}]",
+                    suggested_fix="Request changes to group this day's stops closer together.",
+                )
+            )
+
         captured_constraints: list[str] = []
         for constraint in planning_state.trip_request.constraints:
             if constraint not in captured_constraints:
@@ -538,9 +564,27 @@ class PlanValidatorService(PlanningStageService):
 
         warnings.extend(_build_regeneration_lifecycle_issues(planning_state))
 
-        readiness_status = (
-            ReadinessStatus.BLOCKED if critical_issues else ReadinessStatus.NEEDS_REVIEW
+        # Section 203C.2B (canary correction): readiness is never
+        # `needs_review` without a machine-readable reason. Every WARNING
+        # contributes its category as a review code (e.g. `FEASIBILITY`,
+        # `LONG_TRAVEL_DAY`, `UNDERFILLED_PLAN`); a plan with no critical
+        # issue and no warning is `ready`. Suggestions never affect readiness.
+        review_codes = sorted(
+            {
+                *review_codes,
+                *(
+                    issue.category.upper()
+                    for issue in warnings
+                    if issue.severity == ValidationSeverity.WARNING and issue.category
+                ),
+            }
         )
+        if critical_issues:
+            readiness_status = ReadinessStatus.BLOCKED
+        elif review_codes:
+            readiness_status = ReadinessStatus.NEEDS_REVIEW
+        else:
+            readiness_status = ReadinessStatus.READY
 
         validation_report = ValidationReport(
             readiness_status=readiness_status,

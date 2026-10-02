@@ -67,6 +67,123 @@ def clearly_shorter_alternative(items: Sequence[T], points: Sequence[GeoPoint | 
     return alternative
 
 
+def balanced_day_sizes(total: int, num_days: int, max_per_day: int) -> list[int]:
+    """`total` stops spread over `num_days` as evenly as the pace cap allows."""
+    if num_days <= 0:
+        return []
+    total = min(total, num_days * max_per_day)
+    base, extra = divmod(total, num_days)
+    return [min(max_per_day, base + (1 if index < extra else 0)) for index in range(num_days)]
+
+
+def balanced_spatial_clusters(
+    items: Sequence[T], points: Sequence[GeoPoint | None], sizes: Sequence[int]
+) -> list[list[T]]:
+    """Deterministic, capacity-balanced geographic grouping of an already
+    SELECTED set into day-sized groups (Section 203C.2B, canary correction).
+
+    `items` are in priority order (best first). The result has one group per
+    entry of `sizes`; group sizes are a permutation-free match of `sizes` as
+    far as the items allow, and every group lists its items in priority
+    order. Days are returned with the group holding the best-ranked item
+    first.
+
+    Method (no randomness, no external dependency):
+      1. seeds are spatially separated: the best-ranked located item, then
+         repeatedly the item farthest from every seed chosen so far;
+      2. remaining items are assigned by largest regret first (the item that
+         loses most if it cannot have its nearest group), each to the
+         nearest group that still has capacity, recomputing that group's
+         centroid as it grows;
+      3. a group left below the smallest target size takes the nearest item
+         from a larger group;
+      4. items without coordinates cannot be placed geographically and go
+         to the smallest groups.
+
+    This only decides WHICH stops share a day. It produces no distance or
+    duration: the routing provider remains the only source of movement data.
+    """
+    group_count = sum(1 for size in sizes if size > 0)
+    total = sum(sizes)
+    chosen = list(range(min(total, len(items))))
+    if group_count == 0 or not chosen:
+        return [[] for _ in sizes]
+
+    located = [index for index in chosen if points[index] is not None]
+    unlocated = [index for index in chosen if points[index] is None]
+    capacity = max(sizes)
+    smallest_target = min(size for size in sizes if size > 0)
+
+    seeds: list[int] = []
+    if located:
+        seeds.append(located[0])
+        while len(seeds) < min(group_count, len(located)):
+            seeds.append(
+                max(
+                    (index for index in located if index not in seeds),
+                    key=lambda index: (min(_gap_km(points[index], points[seed]) for seed in seeds), -index),
+                )
+            )
+    groups: list[list[int]] = [[seed] for seed in seeds]
+    while len(groups) < group_count:
+        groups.append([])
+
+    def group_centre(group: list[int]) -> GeoPoint | None:
+        return centroid([points[index] for index in group])
+
+    unassigned = [index for index in located if index not in seeds]
+    while unassigned:
+        best: tuple[float, float, int, int] | None = None  # (-regret, nearest distance, item, group)
+        for index in unassigned:
+            distances = sorted(
+                (_gap_km(points[index], group_centre(group)), group_index)
+                for group_index, group in enumerate(groups)
+                if len(group) < capacity
+            )
+            if not distances:
+                break
+            nearest_distance, nearest_group = distances[0]
+            regret = (distances[1][0] - nearest_distance) if len(distances) > 1 else float("inf")
+            candidate = (-regret, nearest_distance, index, nearest_group)
+            if best is None or candidate < best:
+                best = candidate
+        if best is None:
+            break
+        _, _, index, group_index = best
+        groups[group_index].append(index)
+        unassigned.remove(index)
+
+    for index in unlocated:
+        open_groups = [group for group in groups if len(group) < capacity] or groups
+        min(open_groups, key=len).append(index)
+
+    # No day far below the others while another has room to give.
+    for group in groups:
+        while len(group) < smallest_target:
+            donors = [donor for donor in groups if donor is not group and len(donor) > smallest_target]
+            if not donors:
+                break
+            centre = group_centre(group)
+            donor, moved = min(
+                ((donor, index) for donor in donors for index in donor),
+                key=lambda pair: (_gap_km(points[pair[1]], centre), pair[1]),
+            )
+            donor.remove(moved)
+            group.append(moved)
+
+    ordered = sorted((sorted(group) for group in groups if group), key=lambda group: group[0])
+    result = [[items[index] for index in group] for group in ordered]
+    while len(result) < len(sizes):
+        result.append([])
+    return result
+
+
+def grouping_length_km(groups: Sequence[Sequence[GeoPoint | None]]) -> float:
+    """Total straight-line length of every day's path, each day visited in
+    the given order. Used only to compare two candidate groupings."""
+    return sum(path_length_km(group) for group in groups)
+
+
 def centroid(points: Sequence[GeoPoint | None]) -> GeoPoint | None:
     real = [point for point in points if point is not None]
     if not real:

@@ -287,16 +287,29 @@ def test_validator_reports_blocking_and_review_codes_only_when_the_gate_ran() ->
     assert insufficient.blocking_codes == [INSUFFICIENT_VERIFIED_INVENTORY]
 
     underfilled = validator.run(_with_schedule(_with_inventory(_state(), 24), [3, 2, 2])).validation_report
-    assert underfilled.review_codes == [UNDERFILLED_PLAN]
+    assert UNDERFILLED_PLAN in underfilled.review_codes
+    assert underfilled.readiness_status == ReadinessStatus.NEEDS_REVIEW
     assert INSUFFICIENT_VERIFIED_INVENTORY not in underfilled.blocking_codes
 
     useful = validator.run(_with_schedule(_with_inventory(_state(), 24), [3, 3, 3])).validation_report
-    assert useful.blocking_codes == [] and useful.review_codes == []
+    assert useful.blocking_codes == [] and UNDERFILLED_PLAN not in useful.review_codes
 
     # no inventory report (gate off / a plan stored before this section): contract not asserted
     legacy_state = _with_schedule(_state(), [1, 0, 0])
     legacy = validator.run(legacy_state).validation_report
-    assert legacy.blocking_codes == [] and legacy.review_codes == []
+    assert legacy.blocking_codes == [] and UNDERFILLED_PLAN not in legacy.review_codes
+
+    # readiness always matches its machine-readable reasons
+    for report in (insufficient, underfilled, useful, legacy):
+        expected = (
+            ReadinessStatus.BLOCKED if report.critical_issues
+            else ReadinessStatus.NEEDS_REVIEW if report.review_codes
+            else ReadinessStatus.READY
+        )
+        assert report.readiness_status == expected
+        assert set(report.review_codes) == {
+            issue.category.upper() for issue in report.warnings if issue.severity.value == "warning"
+        }
 
 
 # -- sufficiency gate: bounded expansion --------------------------------------------------------------------
@@ -798,9 +811,12 @@ def _production_like_network() -> tuple[Any, dict[str, list[httpx.Request]]]:
             if int(request.url.params["offset"]) > 0:
                 return httpx.Response(200, json={"features": []})
             if "catering" in categories:
+                # three cafes next to each attraction family's area
                 return httpx.Response(200, json={"features": [
-                    {"properties": {"place_id": f"food{i}", "name": f"Cafe {i}", "categories": ["catering.cafe"],
-                                    "lat": 50.0 + i * 0.002, "lon": 10.0}} for i in range(6)
+                    {"properties": {"place_id": f"food{area}_{i}", "name": f"Cafe {area}-{i}",
+                                    "categories": ["catering.cafe"],
+                                    "lat": 50.0 + area * 0.01 + i * 0.001, "lon": 10.0 + area * 0.01 + 0.001}}
+                    for area in range(len(families)) for i in range(3)
                 ]})
             for index, (key, (leaf, label)) in enumerate(families.items()):
                 if key in categories:
@@ -862,11 +878,14 @@ def test_production_wiring_builds_a_useful_grounded_plan_within_the_credit_budge
         assert experience["provider_source"] == "geoapify_places"
         assert experience["provider_place_id"].startswith("geoapify/") and experience["coordinates"]
     assert all(day["restaurant_suggestions"] for day in days)  # food stays a nearby suggestion, not a stop
+    suggested = [s["name"] for day in days for s in day["restaurant_suggestions"]]
+    assert len(suggested) == len(set(suggested))  # local to each day: no restaurant repeated across days
     assert not any("Cafe" in experience["name"] for experience in scheduled)
 
     validation = state["validation_report"]
     assert validation["blocking_codes"] == [] and validation["review_codes"] == []
-    assert validation["readiness_status"] == "needs_review"
+    # useful, grounded, fully routed, nothing to review: the plan is ready
+    assert validation["readiness_status"] == "ready"
 
     # routing: real provider legs for every consecutive pair, never more than 2 requests per day
     legs = state["route_feasibility_report"]["legs"]

@@ -8,6 +8,7 @@ from app.providers.ai_failure import AIProviderFailureKind, classify_and_message
 from app.core.config import get_settings
 from app.models.ai_candidate_proposal import (
     AICandidateProposal,
+    AICandidateProposalFailureKind,
     AICandidateProposalGuardrailReport,
     AICandidateProposalRequest,
     AICandidateProposalResult,
@@ -20,6 +21,7 @@ from app.models.ai_candidate_proposal import (
 from app.providers.ai_candidate_proposal.anchor_guidance import ANCHOR_DISCOVERY_GUIDANCE, PROVIDER_POOL_NOTE
 from app.providers.ai_candidate_proposal.base import AICandidateProposalProvider
 from app.providers.ai_candidate_proposal.proposal_dedup import deduplicate_proposals
+from app.providers.ai_candidate_proposal.proposal_validation import validate_proposals
 
 # Groq-backed AI candidate proposal adapter (Step 162A,
 # itinerary-generator-build-spec.md Stage 5, docs/13_llm_reasoning_
@@ -184,6 +186,8 @@ class _GroqProposalBatchSchema(BaseModel):
 # Section 202B.2 (Task 15): at most one retry, structural failures only.
 _MAX_STRUCTURAL_ATTEMPTS = 2
 _RETRY_MIN_CANDIDATES = 5
+_BASE_TOKENS = 1500
+_TOKENS_PER_PROPOSAL = 250
 
 _SYSTEM_PROMPT = (
     "You are proposing things to investigate for a travel planning system. You are NOT "
@@ -299,7 +303,12 @@ class GroqAICandidateProposalProvider(AICandidateProposalProvider):
             client = self._client
         else:
             try:
-                client = self._build_client()
+                # Section 203C.2B: the completion budget grows with the batch
+                # (anchor discovery asks for up to 20 proposals; 4000 tokens
+                # was sized for 15 and a truncated document is a structural
+                # failure).
+                budget = max(self._max_tokens, _BASE_TOKENS + _TOKENS_PER_PROPOSAL * request.max_candidates)
+                client = self._build_client() if budget == self._max_tokens else self._build_client(budget)
             except Exception as exc:  # missing package / bad config -> not_connected
                 return self._not_connected_result(
                     request, f"Groq client could not be initialized: {exc}"
@@ -321,28 +330,32 @@ class GroqAICandidateProposalProvider(AICandidateProposalProvider):
         while True:
             attempts += 1
             structural_failure: str | None = None
+            structural_kind = AICandidateProposalFailureKind.SCHEMA_VALIDATION
             try:
                 raw_output = client.invoke(_build_prompt(active_request))
             except Exception as exc:  # API/runtime failure -> rejected, never fabricated
                 kind, message = classify_and_message("Groq", exc)
                 if kind != AIProviderFailureKind.MALFORMED_OUTPUT:
-                    return self._rejected_result(request, message)
+                    return self._rejected_result(
+                        request, message, AICandidateProposalFailureKind.PROVIDER_FAILURE
+                    )
                 structural_failure = message
             else:
                 output_dict = self._coerce_output(raw_output)
                 if output_dict is not None:
                     return self._build_result_from_output(request, output_dict)
                 structural_failure = "Groq did not return a structured response."
+                structural_kind = AICandidateProposalFailureKind.PARSE_FAILURE
 
             if attempts >= _MAX_STRUCTURAL_ATTEMPTS:
                 return self._rejected_result(
-                    request, f"{structural_failure} (after {attempts} attempt(s))"
+                    request, f"{structural_failure} (after {attempts} attempt(s))", structural_kind
                 )
             active_request = request.model_copy(
                 update={"max_candidates": max(_RETRY_MIN_CANDIDATES, request.max_candidates // 2)}
             )
 
-    def _build_client(self) -> Any:
+    def _build_client(self, max_tokens: int | None = None) -> Any:
         """Lazily imports and constructs the real Groq client, bound to the
         structured-output schema. Kept inside a method (never a module-level
         import) so the rest of the app imports cleanly whether or not the
@@ -387,7 +400,7 @@ class GroqAICandidateProposalProvider(AICandidateProposalProvider):
             model=self._model,
             api_key=self._api_key,
             temperature=self._temperature,
-            max_tokens=self._max_tokens,
+            max_tokens=max_tokens or self._max_tokens,
         )
         return chat.with_structured_output(
             _GroqProposalBatchSchema, method="json_schema", strict=True
@@ -416,21 +429,26 @@ class GroqAICandidateProposalProvider(AICandidateProposalProvider):
     ) -> AICandidateProposalResult:
         raw_proposals = output.get("proposals")
         if not isinstance(raw_proposals, list):
-            return self._rejected_result(request, "Groq output did not include a proposals list.")
+            return self._rejected_result(
+                request,
+                "Groq output did not include a proposals list.",
+                AICandidateProposalFailureKind.PARSE_FAILURE,
+            )
+        if not raw_proposals:
+            return self._rejected_result(
+                request, "Groq returned no candidate proposals.", AICandidateProposalFailureKind.EMPTY_RESPONSE
+            )
 
-        proposals: list[AICandidateProposal] = []
-        for raw_proposal in raw_proposals:
-            if not isinstance(raw_proposal, dict):
-                return self._rejected_result(request, "Groq output contained a malformed proposal entry.")
-            try:
-                proposals.append(AICandidateProposal(**raw_proposal))
-            except ValidationError as exc:
-                return self._rejected_result(
-                    request, f"Groq output failed AICandidateProposal validation: {exc}"
-                )
-
+        # Section 203C.2B: each proposal is validated on its own. An invalid
+        # one is dropped (and counted); it no longer discards the valid ones.
+        proposals, dropped_count, dropped_summary = validate_proposals(raw_proposals)
         if not proposals:
-            return self._rejected_result(request, "Groq returned no candidate proposals.")
+            return self._rejected_result(
+                request,
+                f"Every Groq proposal failed validation ({dropped_summary}).",
+                AICandidateProposalFailureKind.CANDIDATE_VALIDATION,
+                dropped_proposal_count=dropped_count,
+            )
 
         proposals = deduplicate_proposals(proposals)
 
@@ -456,9 +474,14 @@ class GroqAICandidateProposalProvider(AICandidateProposalProvider):
                 provider_name=self.provider_name,
                 model_name=self._model,
                 confidence=confidence,
+                dropped_proposal_count=dropped_count,
             )
-        except ValidationError as exc:
-            return self._rejected_result(request, f"Assembled proposal result failed validation: {exc}")
+        except ValidationError:
+            return self._rejected_result(
+                request,
+                "Assembled proposal result failed validation.",
+                AICandidateProposalFailureKind.CANDIDATE_VALIDATION,
+            )
 
     def _not_connected_result(
         self, request: AICandidateProposalRequest, reason: str
@@ -476,10 +499,15 @@ class GroqAICandidateProposalProvider(AICandidateProposalProvider):
             provider_name=self.provider_name,
             model_name=self._model,
             confidence=0.0,
+            failure_kind=AICandidateProposalFailureKind.NOT_CONNECTED,
         )
 
     def _rejected_result(
-        self, request: AICandidateProposalRequest, reason: str
+        self,
+        request: AICandidateProposalRequest,
+        reason: str,
+        failure_kind: AICandidateProposalFailureKind = AICandidateProposalFailureKind.PARSE_FAILURE,
+        dropped_proposal_count: int = 0,
     ) -> AICandidateProposalResult:
         return AICandidateProposalResult(
             task=request.task,
@@ -494,4 +522,6 @@ class GroqAICandidateProposalProvider(AICandidateProposalProvider):
             provider_name=self.provider_name,
             model_name=self._model,
             confidence=0.0,
+            failure_kind=failure_kind,
+            dropped_proposal_count=dropped_proposal_count,
         )

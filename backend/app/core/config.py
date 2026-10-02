@@ -448,6 +448,34 @@ class Settings(BaseSettings):
     inventory_sufficiency_gate_enabled: bool = Field(
         default=True, alias="INVENTORY_SUFFICIENCY_GATE_ENABLED"
     )
+    # Section 203C.2B (canary correction): when the reasoning model's own day
+    # grouping is geographically poor, the SAME places are regrouped into
+    # geographic day clusters (deterministic; see
+    # `services/day_order_heuristics.balanced_spatial_clusters`). The model
+    # still chooses which places; geography decides which share a day.
+    ai_day_spatial_regrouping_enabled: bool = Field(
+        default=True, alias="AI_DAY_SPATIAL_REGROUPING_ENABLED"
+    )
+    # Route-burden quality thresholds (walking, from the routing provider's
+    # own leg data; never an estimate). A day beyond its pace's total, or a
+    # single leg beyond the leg limit, gets a long-travel warning and the
+    # `LONG_TRAVEL_DAY` review code.
+    route_burden_max_leg_seconds: int = Field(default=2400, alias="ROUTE_BURDEN_MAX_LEG_SECONDS", ge=60)
+    route_burden_max_day_seconds_relaxed: int = Field(
+        default=3600, alias="ROUTE_BURDEN_MAX_DAY_SECONDS_RELAXED", ge=60
+    )
+    route_burden_max_day_seconds_balanced: int = Field(
+        default=5400, alias="ROUTE_BURDEN_MAX_DAY_SECONDS_BALANCED", ge=60
+    )
+    route_burden_max_day_seconds_packed: int = Field(
+        default=7200, alias="ROUTE_BURDEN_MAX_DAY_SECONDS_PACKED", ge=60
+    )
+    # Open-Meteo's forecast endpoint only covers the next ~16 days. A trip
+    # that starts beyond it is not requested at all (reported as
+    # `forecast_not_yet_available`); future weather is never invented.
+    open_meteo_forecast_horizon_days: int = Field(
+        default=16, alias="OPEN_METEO_FORECAST_HORIZON_DAYS", ge=1
+    )
     # Travel mode for Geoapify Routing legs (ROUTING_PROVIDER=geoapify).
     # In-city itinerary legs are walking routes; no transit schedule is
     # ever requested or invented.

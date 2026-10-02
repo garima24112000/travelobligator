@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import time
 from datetime import date as date_cls
+from datetime import timedelta
 from typing import Any
 
 import httpx
@@ -39,6 +40,32 @@ _DAILY_FIELDS = (
 # and deterministic.
 _MAX_ATTEMPTS = 2
 _RETRY_BACKOFF_SECONDS = 0.5
+
+# Section 203C.2B (canary correction): machine-readable reason for a trip
+# whose dates are beyond the forecast horizon. Non-blocking for generation.
+FORECAST_NOT_YET_AVAILABLE = "forecast_not_yet_available"
+_RETRYABLE_CLIENT_STATUS_CODES = frozenset({408, 429})
+
+
+def _today() -> date_cls:
+    """Today's date; a module function so tests can pin it."""
+    return date_cls.today()
+
+
+def _is_retryable(exc: Exception) -> bool:
+    """False for a deterministic client error (HTTP 4xx other than 408/429):
+    repeating the identical request cannot succeed."""
+    if isinstance(exc, httpx.HTTPStatusError):
+        status = exc.response.status_code
+        return not (400 <= status < 500) or status in _RETRYABLE_CLIENT_STATUS_CODES
+    return True
+
+
+def _failure_label(exc: Exception) -> str:
+    """A fixed, URL-free description of a failed request for log lines."""
+    if isinstance(exc, httpx.HTTPStatusError):
+        return f"HTTP {exc.response.status_code}"
+    return type(exc).__name__
 
 
 class OpenMeteoWeatherAdapter(WeatherProvider):
@@ -97,6 +124,7 @@ class OpenMeteoWeatherAdapter(WeatherProvider):
         self._base_url = settings.open_meteo_api_url
         self._cache_enabled = settings.provider_cache_enabled
         self._cache_ttl_seconds = settings.open_meteo_cache_ttl_seconds
+        self._forecast_horizon_days = settings.open_meteo_forecast_horizon_days
         self._cache_path = settings.resolved_provider_cache_path()
         self._cache_store = cache_store
 
@@ -139,6 +167,33 @@ class OpenMeteoWeatherAdapter(WeatherProvider):
                 message="Trip start/end dates are required to request Open-Meteo weather.",
             )
 
+        # Section 203C.2B (canary correction): the forecast endpoint only
+        # covers a short horizon. A trip that starts beyond it is a known,
+        # deterministic "not yet available" -- the endpoint is not called
+        # (it would answer HTTP 400), nothing is retried, and no weather is
+        # invented or substituted from history. A trip that only partly
+        # reaches past the horizon is requested up to the horizon.
+        horizon_end = _today() + timedelta(days=self._forecast_horizon_days)
+        try:
+            trip_start = date_cls.fromisoformat(str(start_date))
+            trip_end = date_cls.fromisoformat(str(end_date))
+        except ValueError:
+            trip_start = trip_end = None
+        if trip_start is not None and trip_start > horizon_end:
+            not_yet = unavailable_response(
+                self.provider_name,
+                self.provider_type,
+                unavailable_fields=[field_name],
+                message=(
+                    "A weather forecast is not available yet for these dates: forecasts only cover "
+                    f"about the next {self._forecast_horizon_days} days."
+                ),
+            )
+            not_yet.failure_reason = FORECAST_NOT_YET_AVAILABLE
+            return not_yet
+        if trip_end is not None and trip_end > horizon_end:
+            end_date = horizon_end.isoformat()
+
         query_hash = make_query_hash(
             {
                 "latitude": coordinates.lat,
@@ -168,6 +223,7 @@ class OpenMeteoWeatherAdapter(WeatherProvider):
 
         payload: Any = None
         request_error: Exception | None = None
+        attempts_made = 0
         with httpx.Client(
             timeout=_REQUEST_TIMEOUT_SECONDS, headers={"User-Agent": _USER_AGENT}
         ) as client:
@@ -190,30 +246,38 @@ class OpenMeteoWeatherAdapter(WeatherProvider):
                     break
                 except (httpx.HTTPError, ValueError) as exc:
                     request_error = exc
+                    # A client error (HTTP 4xx other than 408/429) is
+                    # deterministic: the same request fails the same way, so
+                    # it is never retried.
+                    if not _is_retryable(exc):
+                        attempts_made = attempt
+                        break
+                    attempts_made = attempt
                     if attempt < _MAX_ATTEMPTS:
+                        # Fixed identifiers only: never the URL or exception text.
                         logger.warning(
-                            "Open-Meteo request failed for %s (attempt %s/%s); "
-                            "retrying once: %s",
-                            destination,
+                            "Open-Meteo request failed (%s, attempt %s/%s); retrying once.",
+                            _failure_label(exc),
                             attempt,
                             _MAX_ATTEMPTS,
-                            exc,
                         )
                         time.sleep(_RETRY_BACKOFF_SECONDS)
 
         if request_error is not None:
             logger.warning(
-                "Open-Meteo request failed for %s after %s attempt(s): %s",
-                destination,
-                _MAX_ATTEMPTS,
-                request_error,
+                "Open-Meteo request failed (%s) after %s attempt(s).",
+                _failure_label(request_error),
+                attempts_made,
             )
+            retried = attempts_made > 1
             return failed_response(
                 self.provider_name,
                 self.provider_type,
                 unavailable_fields=[field_name],
                 message=(
                     f"Open-Meteo request failed for '{destination}' after retrying once."
+                    if retried
+                    else f"Open-Meteo could not provide a forecast for '{destination}' for these dates."
                 ),
             )
 

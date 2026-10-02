@@ -275,7 +275,9 @@ def test_parent_child_collapse_needs_structural_evidence_not_mere_proximity() ->
 def test_balanced_allocation_never_leaves_only_the_final_day_short() -> None:
     pois = [museum(i, i * 0.01) for i in range(5)]
     days = plan(state(pois, days=3))
-    assert [len(d) for d in days] == [2, 2, 1]
+    # Section 203C.2B: days are geographic clusters, so WHICH day is the
+    # one-stop day follows the geography; the sizes stay balanced.
+    assert sorted((len(d) for d in days), reverse=True) == [2, 2, 1]
 
 
 def test_empty_day_is_avoided_when_supply_covers_the_days() -> None:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from enum import Enum
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
@@ -46,10 +47,24 @@ _FORBIDDEN_TEXT_PATTERNS: tuple[str, ...] = (
 )
 
 
+# Section 203C.2B (Lisbon canary correction): each pattern is matched as a
+# WHOLE word/phrase (optionally plural), not as a raw substring. A raw
+# substring match treated ordinary words as factual claims -- "rating"
+# inside "illustrating"/"celebrating"/"operating", "price" inside
+# "priceless" -- and, because one flagged proposal used to reject the whole
+# batch, a single such word discarded every anchor. The claims themselves
+# ("rating", "ratings", "price", "highly rated", ...) are blocked exactly
+# as before.
+_FORBIDDEN_TEXT_REGEXES: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
+    (pattern, re.compile(rf"(?<![a-z0-9]){re.escape(pattern)}(?:s|es)?(?![a-z0-9])"))
+    for pattern in _FORBIDDEN_TEXT_PATTERNS
+)
+
+
 def _find_forbidden_pattern(text: str) -> str | None:
     lowered = text.lower()
-    for pattern in _FORBIDDEN_TEXT_PATTERNS:
-        if pattern in lowered:
+    for pattern, regex in _FORBIDDEN_TEXT_REGEXES:
+        if regex.search(lowered):
             return pattern
     return None
 
@@ -252,6 +267,17 @@ class AICandidateProposalRequest(BaseModel):
         return _require_non_blank(value, info.field_name)
 
 
+class AICandidateProposalFailureKind(str, Enum):
+    """Why a proposal call produced no usable anchors (Section 203C.2B)."""
+
+    NOT_CONNECTED = "not_connected"
+    PROVIDER_FAILURE = "provider_failure"  # rate limit / auth / timeout / provider error
+    SCHEMA_VALIDATION = "schema_validation"  # the provider rejected its own structured output
+    PARSE_FAILURE = "parse_failure"  # a response arrived but was not the expected structure
+    EMPTY_RESPONSE = "empty_response"  # a valid structure with zero proposals
+    CANDIDATE_VALIDATION = "candidate_validation"  # every returned proposal failed validation
+
+
 class AICandidateProposalGuardrailReport(BaseModel):
     """Outcome of running guardrail checks against a candidate AI proposal
     result. `passed` is the single source of truth for whether the result
@@ -295,6 +321,14 @@ class AICandidateProposalResult(BaseModel):
     provider_name: str | None = None
     model_name: str | None = None
     confidence: float = Field(ge=0.0, le=1.0)
+    # Section 203C.2B: a machine-readable reason for a non-completed result
+    # (see `AICandidateProposalFailureKind`). Diagnostic only -- never a
+    # prompt, model output, exception text, key or URL. `None` when
+    # completed, and on results stored before this field existed.
+    failure_kind: AICandidateProposalFailureKind | None = None
+    # Proposals the model returned that failed validation and were dropped
+    # individually (the valid ones are kept).
+    dropped_proposal_count: int = Field(default=0, ge=0)
 
     @model_validator(mode="after")
     def validate_status_consistency(self) -> "AICandidateProposalResult":
