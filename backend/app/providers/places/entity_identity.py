@@ -38,10 +38,19 @@ MERGED_BY_SOURCE_IDENTITY = "source_identity"
 MERGED_BY_NAME_PROXIMITY = "name_proximity"
 
 _OSM_TYPES = {"n": "node", "node": "node", "w": "way", "way": "way", "r": "relation", "relation": "relation"}
-# Name keys of the underlying source record that name the SAME place.
-_NAME_KEYS = ("name", "name:en", "int_name", "official_name")
-_MAX_ALT_NAMES = 4
+# Name keys of the underlying source record that name the SAME place; any
+# per-language `name:<code>` key counts too (see `alternate_names`).
+_NAME_KEYS = ("name", "name:en", "int_name", "official_name", "alt_name", "short_name", "loc_name", "old_name")
+_MAX_ALT_NAMES = 12
 _MAX_NAME_LENGTH = 120
+# Two records this close are "co-located": together with a compatible class
+# and no identity evidence either way, they are a SUSPECTED duplicate pair.
+# Co-location alone never merges anything.
+COLLOCATED_METERS = 50.0
+
+RESOLVED_MERGED = "merged"
+RESOLVED_DISTINCT = "distinct"
+UNRESOLVED = "unresolved"
 # Two records of one Wikidata entity are merged only when they are also
 # close together (parts of one large site keep separate records otherwise).
 _SAME_WIKIDATA_METERS = 1000.0
@@ -69,7 +78,8 @@ def alternate_names(raw: Any, primary_name: str) -> list[str] | None:
         return None
     seen = {comparable_name(primary_name)}
     names: list[str] = []
-    for key in _NAME_KEYS:
+    language_keys = sorted(key for key in raw if isinstance(key, str) and key.startswith("name:"))
+    for key in dict.fromkeys((*_NAME_KEYS, *language_keys)):
         value = raw.get(key)
         if not isinstance(value, str):
             continue
@@ -113,6 +123,59 @@ def merge_rule(a: NormalizedPlace, b: NormalizedPlace, name_meters: float) -> st
     if meters <= name_meters and _names(a) & _names(b):
         return MERGED_BY_NAME_PROXIMITY
     return None
+
+
+def separation_meters(a: NormalizedPlace, b: NormalizedPlace) -> float | None:
+    return _meters(a, b)
+
+
+def name_variants(place: NormalizedPlace) -> list[str]:
+    """The provider-supplied names of a place: its name, then its other names."""
+    return [place.name, *(place.alt_names or [])]
+
+
+def conclusively_distinct(a: NormalizedPlace, b: NormalizedPlace) -> bool:
+    """Provider evidence that two records are DIFFERENT real entities: each
+    names a Wikidata entity and they are not the same one."""
+    first, second = _wikidata(a), _wikidata(b)
+    return bool(first and second and first != second)
+
+
+def suspect_pair(a: NormalizedPlace, b: NormalizedPlace, compatible: bool) -> bool:
+    """True for a SUSPECTED duplicate: co-located records of a compatible
+    class that no identity rule merges and no evidence tells apart. This is
+    a suspicion to investigate or to keep off one itinerary -- never a
+    reason to merge."""
+    if not compatible or merge_rule(a, b, COLLOCATED_METERS) is not None or conclusively_distinct(a, b):
+        return False
+    meters = _meters(a, b)
+    return meters is not None and meters <= COLLOCATED_METERS
+
+
+def collision_record(
+    a: NormalizedPlace,
+    b: NormalizedPlace,
+    classes: tuple[str, str],
+    resolution: str,
+    merged_by: str | None = None,
+    enrichment_attempted: bool = False,
+) -> dict[str, Any]:
+    """Secret-safe diagnostics for one suspicious pair: canonical provider
+    ids, name variants, whether each record carries a source identity and a
+    Wikidata identity (yes/no only -- never the identity itself), the
+    coordinate separation and the coarse classes. No provider payload."""
+    meters = _meters(a, b)
+    return {
+        "place_ids": [a.place_id, b.place_id],
+        "name_variants": [name_variants(a), name_variants(b)],
+        "coarse_classes": list(classes),
+        "separation_meters": round(meters, 1) if meters is not None else None,
+        "source_identity_present": [bool(a.source_entity_id), bool(b.source_entity_id)],
+        "wikidata_identity_present": [bool(_wikidata(a)), bool(_wikidata(b))],
+        "enrichment_attempted": enrichment_attempted,
+        "resolution": resolution,
+        "merged_by": merged_by,
+    }
 
 
 def absorb(kept: NormalizedPlace, duplicate: NormalizedPlace) -> NormalizedPlace:

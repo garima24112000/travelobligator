@@ -213,6 +213,12 @@ class DestinationContext(BaseModel):
     resolved_destination: dict[str, str] | None = None
 
     destination_overview: str | None = None
+    # Section 203C.2B (entity collisions): suspected duplicate candidate
+    # pairs found by the places provider and how its evidence resolved each
+    # (`merged` / `distinct` / `unresolved`). Sanitised diagnostics only --
+    # provider ids, name variants, yes/no identity flags, separation, coarse
+    # classes; never a provider payload. Empty for plans stored before this.
+    suspect_entity_collisions: list[dict[str, Any]] = Field(default_factory=list)
     candidate_pois: list[dict[str, Any]] = Field(default_factory=list)
     candidate_restaurants: list[dict[str, Any]] = Field(default_factory=list)
     # Open-data location candidates only (e.g. OSM), never bookable inventory.
@@ -788,8 +794,12 @@ class DayDiversityReport(BaseModel):
     day_number: int
     # Stops per coarse attraction class, as scheduled by the planner.
     class_counts: dict[str, int] = Field(default_factory=dict)
-    # True when the day still breaks a concentration rule after the pass.
+    # True only for a HARD violation left after the pass (more marketplace
+    # stops than the per-day cap). Never set for a soft concentration.
     concentration_violation: bool = False
+    # `hard`, `soft` (a class the traveller did not ask for), `justified`
+    # (a class that serves a requested interest) or None (not concentrated).
+    concentration_kind: str | None = None
     # Whether an unused, quality-eligible candidate of another class existed.
     alternatives_available: bool = False
     repair_attempted: bool = False
@@ -800,6 +810,9 @@ class ExperiencePlan(BaseModel):
     experience_plan_id: str = Field(default_factory=lambda: _new_id("experience_plan"))
     # Optional with an empty default: a plan stored before this field loads unchanged.
     schedule_diversity: list[DayDiversityReport] = Field(default_factory=list)
+    # Stops removed because they were an unresolved suspected duplicate of
+    # another scheduled stop (`replacement_place` empty when nothing replaced it).
+    collision_separations: list[DiversityReplacement] = Field(default_factory=list)
 
     trip_overview: str | None = None
     daily_plans: list[DailyPlan] = Field(default_factory=list)

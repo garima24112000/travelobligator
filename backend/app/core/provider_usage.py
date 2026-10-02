@@ -144,6 +144,15 @@ class GenerationProviderContext:
     # How many duplicate candidates were merged, by the rule that matched
     # (`place_id` / `source_identity` / `name_proximity`). Counts only.
     entity_merges: dict = field(default_factory=dict)
+    # Suspected duplicate pairs found in this generation's pool and what the
+    # provider's evidence resolved them to (sanitised records only; see
+    # `providers/places/entity_identity.collision_record`).
+    suspect_collisions: list = field(default_factory=list)
+    # Identity-enrichment lookups still allowed for suspected pairs. Each is
+    # a Place Details lookup and also draws on `place_details_left`.
+    identity_lookups_left: int = 4
+    # Place ids already looked up for identity, so none is asked for twice.
+    identity_checked: set = field(default_factory=set)
 
     @classmethod
     def new(
@@ -159,6 +168,7 @@ class GenerationProviderContext:
             route_requests_left=route_request_allowance(trip_days),
             place_details_left=settings.geoapify_max_place_details_per_generation,
             alternate_mode_requests_left=settings.route_alternate_mode_max_requests_per_generation,
+            identity_lookups_left=settings.geoapify_max_identity_lookups_per_generation,
         )
         if generation_id is not None:
             context.generation_id = generation_id

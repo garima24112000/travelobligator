@@ -25,6 +25,7 @@ from app.models.planning_state import PlanningState
 from app.providers.gateway import ProviderGateway, provider_gateway
 from app.core.provider_usage import GenerationProviderContext
 from app.services.candidate_quality_service import CandidateQualityService
+from app.services.entity_collisions import apply_suspect_collisions
 from app.services.pace_targets import PaceTargets, pace_targets_for
 from app.services.usefulness_contract import count_viable_candidates, inventory_status
 
@@ -140,6 +141,8 @@ class InventorySufficiencyService:
             seen_ids.add(place_dict.get("place_id"))
             seen_names.add(_normalize_name(place_dict.get("name")))
             added += 1
+        # A further page can bring a suspected duplicate of a pool place.
+        apply_suspect_collisions(context, provider_context)
 
         if added:
             # Re-score the enlarged pool; scores for AI-grounded anchors

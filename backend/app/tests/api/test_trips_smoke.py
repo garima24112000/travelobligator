@@ -6690,9 +6690,12 @@ def test_injected_successful_routing_provider_creates_provider_backed_legs(
     ]
     assert len(feasibility_warnings) == 1
     assert "provider-backed" in feasibility_warnings[0]["message"]
-    # Never claims the plan is ready -- full route-aware scheduling
-    # (Section 166) is still not implemented.
-    assert validation_report["readiness_status"] != "ready"
+    # Section 203C.2B (mode-aware geography): every leg is provider-verified
+    # and within the walking limits, so straight-line separation alone is no
+    # longer a finding. Readiness still follows the review codes exactly --
+    # it is never "ready" while any review code remains.
+    assert not [w for w in validation_report["warnings"] if w["category"] == "geographic_spread"]
+    assert (validation_report["readiness_status"] == "ready") == (not validation_report["review_codes"])
 
 
 def test_scheduling_order_is_unchanged_by_route_feasibility_checks(

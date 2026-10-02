@@ -16,6 +16,7 @@ from app.providers.gateway import ProviderGateway, provider_gateway
 from app.providers.holidays.nager_date_adapter import infer_country_code
 from app.core.provider_usage import GenerationProviderContext
 from app.services.base import PlanningStageService
+from app.services.entity_collisions import apply_suspect_collisions
 from app.services.pace_targets import pace_targets_for
 from app.services.experience_planner_service import _matches_must_visit
 from app.services.provider_coverage_service import ProviderCoverageService, provider_coverage_service
@@ -236,6 +237,10 @@ class DestinationContextService(PlanningStageService):
             assumptions=assumptions,
             confidence=attractions_response.confidence if candidate_pois else 0.0,
         )
+        # Section 203C.2B: suspected duplicate candidates the provider could
+        # not resolve are recorded, and marked so they are never scheduled
+        # together.
+        apply_suspect_collisions(context, provider_context)
 
         planning_state.destination_context = context
         planning_state.touch()

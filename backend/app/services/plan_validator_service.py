@@ -20,6 +20,7 @@ from app.models.routing import (
 )
 from app.core.errors import DESTINATION_UNRESOLVED_MESSAGE
 from app.services.plan_quality_findings import build_plan_quality_findings
+from app.services.entity_collisions import scheduled_unresolved_collisions
 from app.services.must_visit_matching import resolve_must_visits
 from app.services.route_burden import day_route_burdens
 from app.services.usefulness_contract import evaluate_usefulness, usefulness_findings
@@ -310,12 +311,48 @@ class PlanValidatorService(PlanningStageService):
             provider_coverage_notes.append(note)
 
         if planning_state.experience_plan:
+            # Section 203C.2B (mode-aware geography): straight-line separation
+            # is only a proxy for a hard-to-travel day. When the routing
+            # provider has verified EVERY leg of the day in its final mode
+            # (walk or vehicle transfer) and the day's walking and transfer
+            # burdens are within their limits, the factual route answers the
+            # question and raw separation alone is not a finding. The warning
+            # still stands when a leg is unrouted, or the routed day is itself
+            # unreasonable (it then accompanies LONG_TRAVEL_DAY).
+            burdens_by_day = {burden.day_number: burden for burden in day_route_burdens(planning_state)}
             for day in planning_state.experience_plan.daily_plans:
                 spread_km = _day_geographic_spread_km(day)
                 if (
                     spread_km is not None
                     and spread_km > _GEOGRAPHIC_SPREAD_WARNING_THRESHOLD_KM
                 ):
+                    burden = burdens_by_day.get(day.day_number)
+                    fully_routed = (
+                        burden is not None
+                        and burden.required_legs > 0
+                        and burden.routed_legs == burden.required_legs
+                    )
+                    if fully_routed and not burden.long_route:
+                        continue
+                    if fully_routed:
+                        detail = (
+                            "The routing provider's own routes for this day exceed the configured "
+                            "walking or transfer limits, so this day needs review."
+                        )
+                        suggested_fix = "Reconsider which attractions are grouped into this day."
+                    else:
+                        # No verified route for the whole day: the existing
+                        # straight-line-only wording, unchanged.
+                        detail = (
+                            "This is straight-line distance "
+                            "only, not walking or route distance, and actual "
+                            "walking/transit/route feasibility is not implemented yet, "
+                            "so this day needs review."
+                        )
+                        suggested_fix = (
+                            "Implement walking/transit route feasibility validation, "
+                            "or reconsider which attractions are grouped into this day."
+                        )
                     warnings.append(
                         ValidationIssue(
                             severity=ValidationSeverity.WARNING,
@@ -324,18 +361,32 @@ class PlanValidatorService(PlanningStageService):
                                 f"Day {day.day_number}'s scheduled experiences are "
                                 f"geographically spread out: consecutive coordinate-backed "
                                 f"experiences sum to about {spread_km:.1f} km of "
-                                "straight-line distance. This is straight-line distance "
-                                "only, not walking or route distance, and actual "
-                                "walking/transit/route feasibility is not implemented yet, "
-                                "so this day needs review."
+                                f"straight-line distance. {detail}"
                             ),
                             affected_section=f"experience_plan.daily_plans[{day.day_number}]",
-                            suggested_fix=(
-                                "Implement walking/transit route feasibility validation, "
-                                "or reconsider which attractions are grouped into this day."
-                            ),
+                            suggested_fix=suggested_fix,
                         )
                     )
+
+        # Section 203C.2B (entity collisions): defense-in-depth. The planner
+        # never schedules both candidates of an unresolved suspected
+        # duplicate pair; if a later step ever does, the plan says so rather
+        # than presenting one place as two stops.
+        for record in scheduled_unresolved_collisions(planning_state):
+            names = " / ".join(variants[0] for variants in record.get("name_variants") or [] if variants)
+            warnings.append(
+                ValidationIssue(
+                    severity=ValidationSeverity.WARNING,
+                    category="suspected_duplicate_stop",
+                    message=(
+                        f"Two scheduled stops may be the same real place ({names}): they are at the "
+                        "same location and the place data could not confirm whether they are one "
+                        "place or two. Review before relying on both."
+                    ),
+                    affected_section="experience_plan",
+                    suggested_fix="Request changes to remove one of the two stops.",
+                )
+            )
 
         # Section 202B.1 (Task 11): defense-in-depth. Prevention belongs to
         # materialization/regeneration; this only REPORTS (never silently

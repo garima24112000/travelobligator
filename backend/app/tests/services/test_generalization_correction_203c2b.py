@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import dataclasses
+import importlib.util
 from datetime import date, timedelta
+from pathlib import Path
 from typing import Any
 
 from app.core.provider_usage import GenerationProviderContext
@@ -28,6 +30,7 @@ from app.services import experience_planner_service as planner_module
 from app.services import place_taxonomy as taxonomy
 from app.services import schedule_diversity as diversity
 from app.services.candidate_quality_service import CandidateQualityService
+from app.services.entity_collisions import SUSPECT_COLLISION_KEY, scheduled_unresolved_collisions
 from app.services.experience_planner_service import ExperiencePlannerService
 from app.services.plan_validator_service import PlanValidatorService
 from app.services.route_burden import LONG_TRAVEL_DAY, day_route_burdens
@@ -326,6 +329,7 @@ def _enforce(
     return planner_module._enforce_day_diversity(
         days, pool, profiles or _profiles(pool, interests), {id(poi) for poi in (must_visit or [])},
         markets_requested=diversity.markets_explicitly_requested(interests),
+        justified=diversity.justified_classes(interests),
     )
 
 
@@ -360,15 +364,12 @@ def test_a_marketplace_takes_at_most_one_attraction_slot_per_day() -> None:
         "Local Museum", "Market 0", "Old Castle",
     ]
     assert len(reports[0].replacements) == 1 and not reports[0].concentration_violation
-    # the pure rule: two markets is one too many, two museums is allowed, a whole day of one class is not
-    assert diversity.excess_by_class([diversity.MARKETPLACE] * 2 + [diversity.MUSEUM_CULTURE], False) == {
-        diversity.MARKETPLACE: 1
-    }
-    assert not diversity.concentration_violation(
-        [diversity.MUSEUM_CULTURE, diversity.MUSEUM_CULTURE, diversity.HISTORY_ARCHITECTURE], False
-    )
-    assert diversity.concentration_violation([diversity.MUSEUM_CULTURE, diversity.MUSEUM_CULTURE], False)
-    assert not diversity.concentration_violation([diversity.MUSEUM_CULTURE], False)
+    # the pure HARD rule: two markets is one too many -- unless markets were explicitly requested
+    two_markets = [diversity.MARKETPLACE] * 2 + [diversity.MUSEUM_CULTURE]
+    assert diversity.hard_excess(two_markets, False) == {diversity.MARKETPLACE: 1}
+    assert diversity.hard_excess(two_markets, True) == {}
+    assert diversity.concentration_kind(two_markets, False) == diversity.HARD
+    assert diversity.hard_excess([diversity.MARKETPLACE, diversity.MUSEUM_CULTURE], False) == {}
 
 
 def test_an_explicit_markets_or_shopping_interest_keeps_the_markets() -> None:
@@ -397,7 +398,7 @@ def test_a_generic_food_interest_does_not_permit_a_day_of_markets() -> None:
     ExperiencePlannerService().run(state)
     for day in state.experience_plan.daily_plans:
         classes = [diversity.coarse_class(stop.normalized_category) for stop in day.experiences]
-        assert classes.count(diversity.MARKETPLACE) <= 1 and not diversity.concentration_violation(classes, False)
+        assert classes.count(diversity.MARKETPLACE) <= 1 and not diversity.hard_excess(classes, False)
     assert len(state.experience_plan.schedule_diversity) == 3
 
 
@@ -530,3 +531,300 @@ def test_the_source_identity_is_sanitised_and_never_serialised() -> None:
     # and therefore never reaches a planning state's candidate pool
     state = _state([dumped], [])
     assert "4711" not in state.model_dump_json()
+
+
+# =====================================================================================
+# 4. Live cleanup: unresolved suspected duplicates are never scheduled together
+# =====================================================================================
+
+
+def _twins() -> tuple[dict[str, Any], dict[str, Any]]:
+    """An unresolved suspected pair: same spot, compatible class, identity unproven."""
+    english = _poi("hall-en", "Grand Hall Museum", _near(1), **{SUSPECT_COLLISION_KEY: "collision-1"})
+    local = _poi("hall-local", _LOCAL_NAME, _near(1), **{SUSPECT_COLLISION_KEY: "collision-1"})
+    return english, local
+
+
+def _scheduled_names(state: PlanningState) -> list[str]:
+    return [stop.name for day in state.experience_plan.daily_plans for stop in day.experiences]
+
+
+def test_an_unresolved_suspected_pair_is_never_scheduled_together_by_the_planner() -> None:
+    english, local = _twins()
+    others = [_poi(f"o{i}", f"Museum O{i}", _near(i + 2)) for i in range(2)] + [
+        _castle(f"c{i}", f"Castle C{i}", _near(i + 4)) for i in range(2)
+    ]
+    state = _state([english, local, *others], [], interests=["history"])
+    ExperiencePlannerService().run(state)  # one balanced day: three stops
+
+    names = _scheduled_names(state)
+    assert len(names) == 3 and len({"Grand Hall Museum", _LOCAL_NAME} & set(names)) <= 1
+    assert scheduled_unresolved_collisions(state) == []
+
+
+def test_a_day_holding_both_of_a_suspected_pair_has_one_replaced_and_no_place_is_invented() -> None:
+    english, local = _twins()
+    castle = _castle("c", "Old Castle", _near(3))
+    spare = _poi("spare", "Spare Museum", _near(4))
+    pool = [english, local, castle, spare]
+    profiles = _profiles(pool, ["history"])
+
+    days, separations = planner_module._separate_suspected_duplicates([[english, local, castle]], pool, profiles, set())
+    assert _names(days[0]) == ["Grand Hall Museum", "Spare Museum", "Old Castle"]
+    assert [(s.replaced_place, s.replacement_place) for s in separations] == [(_LOCAL_NAME, "Spare Museum")]
+
+    # nothing suitable to put in its place: the stop is removed and the day is simply lighter
+    days, separations = planner_module._separate_suspected_duplicates(
+        [[english, local, castle]], [english, local, castle], profiles, set()
+    )
+    assert _names(days[0]) == ["Grand Hall Museum", "Old Castle"] and separations[0].replacement_place == ""
+
+    # a must-visit is the one that is kept
+    days, _ = planner_module._separate_suspected_duplicates([[english, local, castle]], pool, profiles, {id(local)})
+    assert _LOCAL_NAME in _names(days[0]) and "Grand Hall Museum" not in _names(days[0])
+
+    # the diversity pass can never bring the twin back in as a replacement
+    markets = [_market(f"k{i}", f"Market K{i}", _near(i)) for i in range(2)]
+    pool = [english, local, *markets]
+    days, reports = _enforce([[english, markets[0], markets[1]]], pool, ["history"])
+    assert _LOCAL_NAME not in _names(days[0]) and reports[0].concentration_violation
+
+
+def test_a_scheduled_unresolved_pair_is_reported_by_the_validator_and_carries_no_provider_payload() -> None:
+    english, local = _twins()
+    state = _state([english, local], [[english, local]])
+    state.destination_context.suspect_entity_collisions = [
+        {
+            "place_ids": ["geoapify/hall-en", "geoapify/hall-local"],
+            "name_variants": [["Grand Hall Museum"], [_LOCAL_NAME]],
+            "coarse_classes": ["museum_culture", "museum_culture"], "separation_meters": 0.0,
+            "source_identity_present": [False, False], "wikidata_identity_present": [False, False],
+            "enrichment_attempted": True, "resolution": "unresolved", "merged_by": None,
+        }
+    ]
+    assert len(scheduled_unresolved_collisions(state)) == 1
+    report = PlanValidatorService().run(state).validation_report
+    assert "SUSPECTED_DUPLICATE_STOP" in report.review_codes
+    assert report.readiness_status.value != "ready"
+
+    # one of the two scheduled, or the pair resolved: nothing to report
+    state.experience_plan.daily_plans[0].experiences.pop()
+    assert scheduled_unresolved_collisions(state) == []
+    reloaded = PlanningState.model_validate_json(state.model_dump_json())
+    assert reloaded.destination_context.suspect_entity_collisions[0]["resolution"] == "unresolved"
+    assert "datasource" not in state.model_dump_json() and "osm/" not in state.model_dump_json()
+
+
+# =====================================================================================
+# 5. Live cleanup: diversity is hard for markets, a preference for everything else
+# =====================================================================================
+
+_CASTLES = [_castle(f"h{i}", f"Castle H{i}", _near(i)) for i in range(3)]
+_MUSEUMS = [_poi(f"u{i}", f"Museum U{i}", _near(i)) for i in range(3)]
+_PARK = _poi("park", "Riverside Garden", _near(4), category="park", provider_tags={"leisure": "park"})
+
+
+def test_three_history_stops_are_allowed_when_the_traveller_asked_for_history_and_architecture() -> None:
+    assert diversity.justified_classes(_INTERESTS) >= {diversity.HISTORY_ARCHITECTURE}
+    assert diversity.MARKETPLACE not in diversity.justified_classes(["food", "shopping"])  # markets: explicit rule only
+    pool = [*_CASTLES, _MUSEUM, _PARK]
+    days, reports = _enforce([list(_CASTLES)], pool, _INTERESTS)
+
+    assert _names(days[0]) == ["Castle H0", "Castle H1", "Castle H2"]  # untouched
+    report = reports[0]
+    assert not report.repair_attempted and report.replacements == []
+    assert report.concentration_kind == diversity.JUSTIFIED and not report.concentration_violation
+
+
+def test_three_museums_nobody_asked_for_may_be_relieved_by_an_equally_good_nearby_alternative() -> None:
+    interests = ["outdoors"]  # nothing that justifies a day of museums
+    assert diversity.MUSEUM_CULTURE not in diversity.justified_classes(interests)
+    pool = [*_MUSEUMS, _PARK]
+    profiles = _profiles(pool, interests)
+    museum = profiles[id(_MUSEUMS[0])]
+    # an alternative of equal quality, as near as the stop it replaces
+    profiles[id(_PARK)] = dataclasses.replace(profiles[id(_PARK)], tier_rank=museum.tier_rank, score=museum.score + 0.01)
+
+    days, reports = _enforce([list(_MUSEUMS)], pool, interests, profiles=profiles)
+    assert "Riverside Garden" in _names(days[0]) and len(days[0]) == 3
+    assert len(reports[0].replacements) == 1 and reports[0].concentration_kind is None
+
+    # left alone, the same day is only a SOFT concentration -- reported, never a violation
+    days, reports = _enforce([list(_MUSEUMS)], list(_MUSEUMS), interests)
+    assert reports[0].concentration_kind == diversity.SOFT and not reports[0].concentration_violation
+
+
+def test_diversity_never_replaces_a_stronger_anchor_merely_for_category_count() -> None:
+    interests = ["outdoors"]
+    pool = [*_MUSEUMS, _PARK]
+    profiles = _profiles(pool, interests)
+    museum = profiles[id(_MUSEUMS[0])]
+
+    # a lower-tier alternative: never used for a soft concentration
+    profiles[id(_PARK)] = dataclasses.replace(profiles[id(_PARK)], tier_rank=museum.tier_rank - 1)
+    days, reports = _enforce([list(_MUSEUMS)], pool, interests, profiles=profiles)
+    assert _names(days[0]) == ["Museum U0", "Museum U1", "Museum U2"] and reports[0].replacements == []
+
+    # primary-anchor stops: an alternative that is not clearly better does not displace one
+    primary = planner_module._QUALITY_TIER_RANK[planner_module.CandidateQualityTier.PRIMARY_ANCHOR]
+    for poi in _MUSEUMS:
+        profiles[id(poi)] = dataclasses.replace(profiles[id(poi)], tier_rank=primary, score=0.83)
+    profiles[id(_PARK)] = dataclasses.replace(profiles[id(_PARK)], tier_rank=primary, score=0.80)
+    days, reports = _enforce([list(_MUSEUMS)], pool, interests, profiles=profiles)
+    assert _names(days[0]) == ["Museum U0", "Museum U1", "Museum U2"]
+    assert reports[0].concentration_kind == diversity.SOFT
+
+    # an equally good alternative that is much farther away is not used either
+    far_park = _poi("far-park", "Distant Garden", _point(50.05, 10.05), category="park", provider_tags={"leisure": "park"})
+    pool = [*_MUSEUMS, far_park]
+    profiles = _profiles(pool, interests)
+    profiles[id(far_park)] = dataclasses.replace(
+        profiles[id(far_park)], tier_rank=profiles[id(_MUSEUMS[0])].tier_rank, score=0.99
+    )
+    days, _ = _enforce([list(_MUSEUMS)], pool, interests, profiles=profiles)
+    assert _names(days[0]) == ["Museum U0", "Museum U1", "Museum U2"]
+
+
+def test_must_visits_stay_protected_under_the_soft_rule_too() -> None:
+    interests = ["outdoors"]
+    pool = [*_MUSEUMS, _PARK]
+    profiles = _profiles(pool, interests)
+    profiles[id(_PARK)] = dataclasses.replace(profiles[id(_PARK)], tier_rank=9, score=0.99)
+    days, reports = _enforce([list(_MUSEUMS)], pool, interests, must_visit=list(_MUSEUMS), profiles=profiles)
+    assert _names(days[0]) == ["Museum U0", "Museum U1", "Museum U2"] and reports[0].replacements == []
+
+
+# =====================================================================================
+# 6. Live cleanup: geographic spread is judged on the final mode-aware route
+# =====================================================================================
+
+# ~10.7 km from the two near stops: a 9000 s walk, a 1350 s drive
+_DISTANT = _castle("distant", "Ridge Fort", _point(50.000, 10.150))
+
+
+def _categories(state: PlanningState) -> set[str]:
+    return {issue.category for issue in PlanValidatorService().run(state).validation_report.warnings}
+
+
+def test_a_long_separation_with_a_reasonable_factual_drive_is_not_geographic_spread() -> None:
+    gateway = _Gateway()
+    state = _routed(_state([_NEAR_A, _NEAR_B, _DISTANT], [[_NEAR_A, _NEAR_B, _DISTANT]]), gateway)
+
+    legs = state.route_feasibility_report.legs
+    assert [leg.mode for leg in legs] == ["walk", "drive"]  # a mixed walk/drive day within every limit
+    burden = day_route_burdens(state)[0]
+    assert burden.routed_legs == burden.required_legs and not burden.long_route
+    categories = _categories(state)
+    assert "geographic_spread" not in categories and "long_travel_day" not in categories
+
+
+def test_the_same_separation_without_a_usable_alternate_mode_is_still_flagged() -> None:
+    failed_drive = _Gateway(drive_status=ProviderStatus.FAILED)
+    state = _routed(_state([_NEAR_A, _NEAR_B, _DISTANT], [[_NEAR_A, _NEAR_B, _DISTANT]]), failed_drive)
+    assert state.route_feasibility_report.legs[1].mode == "walk"
+    assert {"geographic_spread", "long_travel_day"} <= _categories(state)
+
+    # no route report at all (routing not connected): the straight-line warning, worded as before
+    unrouted = _state([_NEAR_A, _NEAR_B, _DISTANT], [[_NEAR_A, _NEAR_B, _DISTANT]])
+    report = PlanValidatorService().run(unrouted).validation_report
+    warning = next(issue for issue in report.warnings if issue.category == "geographic_spread")
+    assert "straight-line" in warning.message and "GEOGRAPHIC_SPREAD" in report.review_codes
+
+
+def test_an_unreasonable_drive_burden_still_produces_the_geographic_warning() -> None:
+    long_drive = _Gateway(drive_rate=30000.0)  # a 4500 s drive, beyond the drive-leg limit
+    state = _routed(_state([_NEAR_A, _NEAR_B, _DISTANT], [[_NEAR_A, _NEAR_B, _DISTANT]]), long_drive)
+    assert state.route_feasibility_report.legs[1].mode == "drive" and day_route_burdens(state)[0].over_transfer_limit
+    report = PlanValidatorService().run(state).validation_report
+    warning = next(issue for issue in report.warnings if issue.category == "geographic_spread")
+    assert "exceed the configured walking or transfer limits" in warning.message
+    assert {"GEOGRAPHIC_SPREAD", LONG_TRAVEL_DAY} <= set(report.review_codes)
+
+
+def test_an_old_walking_only_route_report_is_judged_exactly_as_walking() -> None:
+    gateway = _Gateway()
+    state = _routed(_state([_NEAR_A, _NEAR_B, _DISTANT], [[_NEAR_A, _NEAR_B, _DISTANT]]), gateway)
+    old = state.model_dump(mode="json")
+    for leg in old["route_feasibility_report"]["legs"]:
+        for key in ("mode", "mode_adaptation_attempted", "walking_distance_meters", "walking_duration_seconds"):
+            leg.pop(key)
+    old["route_feasibility_report"]["legs"][1].update(duration_seconds=9000.0, distance_meters=10800.0)
+
+    loaded = PlanningState.model_validate(old)
+    assert day_route_burdens(loaded)[0].excessive_walking  # a 9000 s leg read as a walk
+    assert {"geographic_spread", "long_travel_day"} <= _categories(loaded)
+
+    # and an old walking-only day that is within the walking limits carries no geographic warning
+    old["route_feasibility_report"]["legs"][1].update(duration_seconds=1800.0, distance_meters=2000.0)
+    calm = PlanningState.model_validate(old)
+    assert "geographic_spread" not in _categories(calm)
+
+
+# =====================================================================================
+# 7. Live cleanup: canary acceptance
+# =====================================================================================
+
+
+def _canary() -> Any:
+    path = Path(__file__).resolve().parents[3] / "scripts" / "canary_city.py"
+    spec = importlib.util.spec_from_file_location("canary_city_cleanup_under_test", path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
+def _canary_report(**overrides: Any) -> dict[str, Any]:
+    report: dict[str, Any] = {
+        "destination": {"geocode_success": True},
+        "inventory": {"viable_meaningful_candidate_count": 32, "R": 8, "T": 9},
+        "anchors": {"proposal_status": "completed", "failure_kind": None, "proposed": 17, "grounded": 4},
+        "quality": {
+            "duplicates": [], "meaningful_scheduled_stops": 9, "empty_days": [], "blocking_codes": [],
+            "review_codes": [], "readiness": "ready",
+        },
+        "routing": {"coverage_percentage": 100.0},
+        "must_visits": {"grounded": [], "scheduled": []},
+        "daily_travel_burden": [
+            {"day": 1, "long_route": False, "excessive_walking": False, "unreasonable_transfers": False}
+        ],
+        "movement_modes": {"legs_with_unverified_movement_data": 0},
+        "diversity": {"days": [{"day": 1, "hard_violation": False, "soft_concentration": False,
+                                "explicit_interest_justified_concentration": False,
+                                "eligible_alternatives_existed": True}]},
+        "suspect_entity_collisions": {"scheduled_unresolved_collision_count": 0, "zero_distance_scheduled_pairs": []},
+        "food_locality": {"repeated_suggestion_count": 0, "suggestions_beyond_radius": 0},
+        "rationale_consistency": {"stale_rationale_detected": False},
+        "factual_safety": {"fabricated_or_unverified_scheduled_identities": [], "unsupported_factual_claims_in_stored_narrative": 0},
+        "persistence": {"save_succeeded": True, "reload_succeeded": True},
+        "provider_usage": {"geoapify_credit_budget": 100, "total_geoapify_credits": 42},
+    }
+    report.update(overrides)
+    return report
+
+
+def test_the_canary_fails_a_scheduled_suspected_duplicate_and_only_hard_diversity_violations() -> None:
+    canary = _canary()
+    assert canary._acceptance(_canary_report())["outcome"] == "PASS"
+
+    def day(**flags: bool) -> dict[str, Any]:
+        base = {"day": 1, "hard_violation": False, "soft_concentration": False,
+                "explicit_interest_justified_concentration": False, "eligible_alternatives_existed": True}
+        return {"days": [{**base, **flags}]}
+
+    # a soft or an interest-justified concentration is reported, never a failure
+    assert canary._acceptance(_canary_report(diversity=day(soft_concentration=True)))["outcome"] == "PASS"
+    assert canary._acceptance(
+        _canary_report(diversity=day(explicit_interest_justified_concentration=True))
+    )["outcome"] == "PASS"
+    hard = canary._acceptance(_canary_report(diversity=day(hard_violation=True)))
+    assert hard["outcome"] == "FAIL" and "schedule diversity" in hard["failed_stages"]
+
+    # "zero duplicates" is not claimed while a suspected collision is on the itinerary
+    for suspects in (
+        {"scheduled_unresolved_collision_count": 1, "zero_distance_scheduled_pairs": []},
+        {"scheduled_unresolved_collision_count": 0,
+         "zero_distance_scheduled_pairs": [{"day": 2, "stops": ["Grand Hall Museum", _LOCAL_NAME]}]},
+    ):
+        result = canary._acceptance(_canary_report(suspect_entity_collisions=suspects))
+        assert result["outcome"] == "FAIL" and "entity identity / experience planning" in result["failed_stages"]

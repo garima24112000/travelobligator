@@ -82,6 +82,7 @@ def _run(args: argparse.Namespace, cache_hits: dict[str, int]) -> dict[str, Any]
     from app.services.day_rationale import RATIONALE_WARNING_PREFIX, current_day_rationale
     from app.models.routing import TRANSFER_MODE_DRIVE, TRANSFER_MODE_WALK, leg_mode
     from app.services import schedule_diversity as diversity
+    from app.services.entity_collisions import scheduled_unresolved_collisions
     from app.services.must_visit_matching import resolve_must_visits
     from app.services.planning_orchestrator import planning_orchestrator
     from app.services.route_burden import day_route_burdens
@@ -363,6 +364,7 @@ def _run(args: argparse.Namespace, cache_hits: dict[str, int]) -> dict[str, Any]
 
     # -- diversity (coarse attraction classes of the FINAL schedule) ------------------------------
     markets_requested = diversity.markets_requested_for(state)
+    justified = diversity.justified_classes_for(state)
     planned_diversity = {entry.day_number: entry for entry in (plan.schedule_diversity if plan is not None else [])}
     diversity_days: list[dict[str, Any]] = []
     for day in days:
@@ -372,7 +374,12 @@ def _run(args: argparse.Namespace, cache_hits: dict[str, int]) -> dict[str, Any]
             {
                 "day": day.day_number,
                 "coarse_category_counts": {name: classes.count(name) for name in sorted(set(classes))},
-                "concentration_violation": diversity.concentration_violation(classes, markets_requested),
+                # hard = too many markets (a defect); soft = concentrated in a class the traveller did
+                # not ask for (reported only); justified = concentrated in a class they asked for
+                "concentration_kind": (kind := diversity.concentration_kind(classes, markets_requested, justified)),
+                "hard_violation": kind == diversity.HARD,
+                "soft_concentration": kind == diversity.SOFT,
+                "explicit_interest_justified_concentration": kind == diversity.JUSTIFIED,
                 "eligible_alternatives_existed": bool(planned and planned.alternatives_available),
                 "diversity_repair_attempted": bool(planned and planned.repair_attempted),
                 "replacements": [
@@ -381,7 +388,48 @@ def _run(args: argparse.Namespace, cache_hits: dict[str, int]) -> dict[str, Any]
                 ],
             }
         )
-    report["diversity"] = {"markets_explicitly_requested": markets_requested, "days": diversity_days}
+    report["diversity"] = {
+        "markets_explicitly_requested": markets_requested,
+        "interest_justified_classes": sorted(justified),
+        "days": diversity_days,
+    }
+
+    # -- suspect entity collisions ----------------------------------------------------------------
+    # Sanitised records only: provider ids, name variants, yes/no identity flags, separation, classes.
+    collisions = list(context.suspect_entity_collisions) if context is not None else []
+    scheduled_collisions = scheduled_unresolved_collisions(state)
+    # Independent of the provider's own records: two consecutive scheduled stops of a compatible
+    # class that the routing provider puts ZERO metres apart, unless evidence says they are distinct.
+    distinct_pairs = {
+        frozenset(record["place_ids"]) for record in collisions if record.get("resolution") == "distinct"
+    }
+    building_classes = {diversity.HISTORY_ARCHITECTURE, diversity.MUSEUM_CULTURE}
+    zero_distance_pairs: list[dict[str, Any]] = []
+    for day in days:
+        for a, b in zip(day.experiences, day.experiences[1:]):
+            leg = leg_by_pair.get((a.experience_id, b.experience_id))
+            classes = {diversity.coarse_class(a.normalized_category), diversity.coarse_class(b.normalized_category)}
+            if (
+                leg is not None
+                and leg.distance_meters is not None
+                and leg.distance_meters <= 1.0
+                and (len(classes) == 1 or classes <= building_classes)
+                and frozenset((a.provider_place_id, b.provider_place_id)) not in distinct_pairs
+            ):
+                zero_distance_pairs.append({"day": day.day_number, "stops": [a.name, b.name]})
+    report["suspect_entity_collisions"] = {
+        "suspicious_pairs_found": len(collisions),
+        "conclusively_merged": sum(1 for record in collisions if record.get("resolution") == "merged"),
+        "established_distinct": sum(1 for record in collisions if record.get("resolution") == "distinct"),
+        "unresolved": sum(1 for record in collisions if record.get("resolution") == "unresolved"),
+        "scheduled_unresolved_collision_count": len(scheduled_collisions),
+        "zero_distance_scheduled_pairs": zero_distance_pairs,
+        "separated_by_the_scheduler": [
+            {"removed": s.replaced_place, "replacement": s.replacement_place or None}
+            for s in (plan.collision_separations if plan is not None else [])
+        ],
+        "pairs": collisions,
+    }
 
     # -- route repair (one bounded attempt per long-route day) ------------------------------------
     repair = state.route_burden_repair_report
@@ -524,6 +572,15 @@ def _acceptance(report: dict[str, Any]) -> dict[str, Any]:
     check("no unsupported factual claim",
           report["factual_safety"]["unsupported_factual_claims_in_stored_narrative"] == 0, "narrator")
     check("zero duplicates", not quality["duplicates"], "experience planning")
+    # "Zero duplicates" is not claimed on provider ids alone: an unresolved suspected collision on
+    # the itinerary, or two same-class stops the routing provider puts zero metres apart, fails too.
+    suspects = report.get("suspect_entity_collisions") or {}
+    check(
+        "no unresolved suspected duplicate scheduled",
+        suspects.get("scheduled_unresolved_collision_count", 0) == 0
+        and not suspects.get("zero_distance_scheduled_pairs"),
+        "entity identity / experience planning",
+    )
     check("persistence and reload", report["persistence"]["save_succeeded"] and report["persistence"]["reload_succeeded"],
           "persistence")
     budget = report["provider_usage"]["geoapify_credit_budget"]
@@ -573,9 +630,10 @@ def _acceptance(report: dict[str, Any]) -> dict[str, Any]:
     )
     if inventory["viable_meaningful_candidate_count"] >= inventory.get("T", inventory["R"]):
         check(
-            "no category-concentrated day while eligible alternatives existed",
+            # only a HARD violation fails; a soft or interest-justified concentration never does
+            "no unresolved hard diversity violation (too many markets) while alternatives existed",
             not any(
-                day["concentration_violation"] and day["eligible_alternatives_existed"]
+                day.get("hard_violation") and day["eligible_alternatives_existed"]
                 for day in (report.get("diversity") or {}).get("days", [])
             ),
             "schedule diversity",
@@ -738,13 +796,44 @@ def _render(report: dict[str, Any]) -> str:
 
     section("DIVERSITY")
     row("markets explicitly requested", "yes" if report["diversity"]["markets_explicitly_requested"] else "no")
+    row("classes justified by requested interests", report["diversity"]["interest_justified_classes"] or "none")
     for day in report["diversity"]["days"]:
         swaps = "; ".join(f"{r['replaced_place']} -> {r['replacement_place']}" for r in day["replacements"])
         lines.append(
             f"- day {day['day']}: {day['coarse_category_counts']}"
-            f" | concentration violation: {'YES' if day['concentration_violation'] else 'no'}"
+            f" | hard violation: {'YES' if day['hard_violation'] else 'no'}"
+            f" | soft concentration: {'yes' if day['soft_concentration'] else 'no'}"
+            f" | explicit-interest justified concentration: "
+            f"{'yes' if day['explicit_interest_justified_concentration'] else 'no'}"
             f" | repair attempted: {'yes' if day['diversity_repair_attempted'] else 'no'}"
             f" | replaced -> replacement: {swaps or 'none'}"
+        )
+
+    suspects = report["suspect_entity_collisions"]
+    section("SUSPECT ENTITY COLLISIONS")
+    row("suspicious pairs found", suspects["suspicious_pairs_found"])
+    row("conclusively merged", suspects["conclusively_merged"])
+    row("established distinct", suspects["established_distinct"])
+    row("unresolved", suspects["unresolved"])
+    row("scheduled unresolved collision count", suspects["scheduled_unresolved_collision_count"])
+    row("zero-distance same-class scheduled pairs", suspects["zero_distance_scheduled_pairs"] or "none")
+    row("separated by the scheduler", suspects["separated_by_the_scheduler"] or "none")
+    for pair in suspects["pairs"]:
+        lines.append(f"  pair: {pair['place_ids'][0]} / {pair['place_ids'][1]}")
+        lines.append(f"    provider name variants: {pair['name_variants'][0]} / {pair['name_variants'][1]}")
+        lines.append(f"    coarse category: {pair['coarse_classes'][0]} / {pair['coarse_classes'][1]}")
+        lines.append(f"    coordinate separation (m): {pair['separation_meters']}")
+        lines.append(
+            "    source identity present: "
+            + " / ".join("yes" if flag else "no" for flag in pair["source_identity_present"])
+        )
+        lines.append(
+            "    Wikidata identity present: "
+            + " / ".join("yes" if flag else "no" for flag in pair["wikidata_identity_present"])
+        )
+        lines.append(
+            f"    identity enrichment attempted: {'yes' if pair['enrichment_attempted'] else 'no'}"
+            f" | resolution: {pair['resolution']}{' (' + pair['merged_by'] + ')' if pair['merged_by'] else ''}"
         )
 
     dedup = report["entity_dedup"]

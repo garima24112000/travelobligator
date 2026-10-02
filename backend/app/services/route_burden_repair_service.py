@@ -167,15 +167,15 @@ class RouteBurdenRepairService:
         rest_classes = [
             diversity.coarse_class(stop.normalized_category) for stop in stops if stop is not isolated
         ]
-        current_excess = sum(
-            diversity.excess_by_class(
-                [*rest_classes, diversity.coarse_class(isolated.normalized_category)], markets_requested
-            ).values()
-        )
+        justified = diversity.justified_classes_for(planning_state)
+
+        def excess(classes: list[str]) -> int:
+            return sum(diversity.relievable_excess(classes, markets_requested, justified).values())
+
+        current_excess = excess([*rest_classes, diversity.coarse_class(isolated.normalized_category)])
 
         def keeps_diversity(option: ReplacementOption) -> bool:
-            classes = [*rest_classes, diversity.coarse_class(option.profile.primary)]
-            return sum(diversity.excess_by_class(classes, markets_requested).values()) <= current_excess
+            return excess([*rest_classes, diversity.coarse_class(option.profile.primary)]) <= current_excess
 
         suitable = [
             option

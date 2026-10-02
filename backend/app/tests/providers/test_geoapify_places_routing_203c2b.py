@@ -18,6 +18,7 @@ from app.models.candidate_quality import CandidateQualityTier
 from app.models.common import DataStatus, GeoPoint, ProviderStatus
 from app.models.planning_state import (
     DailyPlan,
+    DestinationContext,
     ExperienceItem,
     ExperiencePlan,
     PlanningState,
@@ -47,6 +48,7 @@ from app.providers.routing import geoapify_adapter as routing_module
 from app.providers.routing.factory import get_routing_provider
 from app.providers.routing.geoapify_adapter import GeoapifyRoutingAdapter
 from app.services.candidate_quality_service import CandidateQualityService
+from app.services.entity_collisions import SUSPECT_COLLISION_KEY, apply_suspect_collisions
 from app.services.route_feasibility_service import RouteFeasibilityService
 from app.storage.provider_cache_store import ProviderCacheStore
 
@@ -902,3 +904,112 @@ def test_one_real_entity_under_an_english_and_a_local_script_name_is_one_candida
         "Observatory Gate", "Royal Observatory",
     ]
     assert other.entity_merges == {"source_identity": 1} and other.usage_tracker.credits_used("places") == 0
+
+
+# -- live cleanup: suspected duplicate candidates with no identity evidence -----------------------------
+
+_HALL_LOCAL_NAME = "बड़ा हॉल"
+_COLLISION_KEYS = {
+    "place_ids", "name_variants", "coarse_classes", "separation_meters", "source_identity_present",
+    "wikidata_identity_present", "enrichment_attempted", "resolution", "merged_by",
+}
+
+
+def _co_located_museums(request: httpx.Request) -> list[dict[str, Any]]:
+    """Two museum records at the same coordinates under an English and a
+    local-script name: different place ids, no source identity, no Wikidata,
+    no name in common -- nothing any identity rule can use."""
+    if "entertainment.museum" not in request.url.params["categories"]:
+        return []
+    museum = ["entertainment", "entertainment.museum"]
+    return [
+        _feature("hall-en", "Grand Hall Museum", museum, 50.02, 10.02),
+        _feature("hall-local", _HALL_LOCAL_NAME, museum, 50.02, 10.02),
+        _feature("other", "Tram Museum", museum, 50.05, 10.05),  # a different museum 4 km away
+    ]
+
+
+def _collision_run(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, details: Callable[[str], dict[str, Any]]):
+    network = _Network(places=_co_located_museums, details=details)
+    context = _context()
+    adapter = _adapter(monkeypatch, network, ProviderCacheStore(tmp_path / "c.sqlite3")).bound_to(context)
+    return adapter.search_attractions("Fixtureville, Fixtureland").data, context, network
+
+
+def test_a_co_located_pair_is_merged_when_details_corroborate_the_same_entity(
+    monkeypatch: pytest.MonkeyPatch, configured: None, tmp_path: Path
+) -> None:
+    museum = ["entertainment", "entertainment.museum"]
+    pool, context, network = _collision_run(
+        monkeypatch, tmp_path,
+        # Place Details shows both records are the same source object
+        lambda place_id: {"categories": museum, "datasource": _osm("w", 77, tourism="museum")},
+    )
+
+    assert sorted(place.name for place in pool) == ["Grand Hall Museum", "Tram Museum"]
+    assert context.entity_merges == {"source_identity": 1}
+    record = context.suspect_collisions[0]
+    assert (record["resolution"], record["merged_by"], record["enrichment_attempted"]) == (
+        "merged", "source_identity", True,
+    )
+    assert record["place_ids"] == ["geoapify/hall-en", "geoapify/hall-local"]
+    assert record["name_variants"] == [["Grand Hall Museum"], [_HALL_LOCAL_NAME]]
+    assert record["separation_meters"] == 0.0 and record["coarse_classes"] == ["museum_culture", "museum_culture"]
+    # bounded: one lookup per member, inside both allowances
+    assert len(network.requests["details"]) == 2 and context.identity_lookups_left == 2
+    assert context.place_details_left == 10 and context.usage_tracker.credits_used("place_details") == 2
+    # diagnostics are sanitised: fixed keys, yes/no identity flags, no provider payload
+    assert set(record) == _COLLISION_KEYS and record["source_identity_present"] == [True, True]
+    assert "osm" not in str(record) and "77" not in str(record) and "raw" not in str(record)
+
+
+def test_two_genuinely_different_co_located_places_stay_separate(
+    monkeypatch: pytest.MonkeyPatch, configured: None, tmp_path: Path
+) -> None:
+    museum = ["entertainment", "entertainment.museum"]
+    wikidata = {"hall-en": "Q100", "hall-local": "Q200"}
+    pool, context, _ = _collision_run(
+        monkeypatch, tmp_path,
+        lambda place_id: {"categories": museum, "wiki_and_media": {"wikidata": wikidata[place_id]},
+                          "datasource": _osm("n", 1 if place_id == "hall-en" else 2)},
+    )
+
+    assert sorted(place.name for place in pool) == sorted(["Grand Hall Museum", _HALL_LOCAL_NAME, "Tram Museum"])
+    assert context.entity_merges == {}  # being in the same spot is never a reason to merge
+    record = context.suspect_collisions[0]
+    assert record["resolution"] == "distinct" and record["wikidata_identity_present"] == [True, True]
+
+    # marked on nothing: two distinct places may both be scheduled
+    destination = DestinationContext(
+        destination_name="Fixtureville, Fixtureland", candidate_pois=[p.model_dump(mode="json") for p in pool]
+    )
+    apply_suspect_collisions(destination, context)
+    assert not any(SUSPECT_COLLISION_KEY in poi for poi in destination.candidate_pois)
+
+
+def test_an_unresolvable_co_located_pair_is_never_merged_but_is_marked_for_the_scheduler(
+    monkeypatch: pytest.MonkeyPatch, configured: None, tmp_path: Path
+) -> None:
+    # Place Details adds nothing usable; then the lookup allowance runs out entirely
+    for lookups in (4, 0):
+        network = _Network(places=_co_located_museums, details=lambda place_id: {})
+        context = _context()
+        context.identity_lookups_left = lookups
+        adapter = _adapter(monkeypatch, network, ProviderCacheStore(tmp_path / f"c{lookups}.sqlite3")).bound_to(context)
+        pool = adapter.search_attractions("Fixtureville, Fixtureland").data
+
+        assert len(pool) == 3 and context.entity_merges == {}  # not silently merged
+        record = context.suspect_collisions[0]
+        assert record["resolution"] == "unresolved" and record["enrichment_attempted"] == (lookups > 0)
+        assert record["source_identity_present"] == [False, False]
+        assert len(network.requests["details"]) == (2 if lookups else 0)
+
+        destination = DestinationContext(
+            destination_name="Fixtureville, Fixtureland", candidate_pois=[p.model_dump(mode="json") for p in pool]
+        )
+        apply_suspect_collisions(destination, context)
+        groups = {poi["name"]: poi.get(SUSPECT_COLLISION_KEY) for poi in destination.candidate_pois}
+        assert groups["Grand Hall Museum"] == groups[_HALL_LOCAL_NAME] is not None
+        assert groups["Tram Museum"] is None
+        assert destination.suspect_entity_collisions == context.suspect_collisions
+        assert "raw" not in destination.model_dump_json() and "datasource" not in destination.model_dump_json()

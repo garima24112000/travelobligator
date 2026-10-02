@@ -53,6 +53,7 @@ from app.services.day_order_heuristics import (
     grouping_length_km,
 )
 from app.services.day_rationale import RATIONALE_WARNING_PREFIX, deterministic_day_summary
+from app.services.entity_collisions import SUSPECT_COLLISION_KEY
 from app.utils.geo import haversine_distance_km
 
 logger = logging.getLogger(__name__)
@@ -762,11 +763,13 @@ class ExperiencePlannerService(PlanningStageService):
             # pressure, outlier control, then balanced geographic days.
             # Section 203C.2B: diversity is enforced at selection, before the
             # days are clustered -- a plan-level cap per coarse class.
+            # Markets are capped hard; a class the traveller asked for is
+            # not capped at all; any other class only as a preference.
             markets_requested = diversity.markets_explicitly_requested(interest_terms)
+            justified = diversity.justified_classes(interest_terms)
 
             def plan_class_cap(coarse: str) -> int | None:
-                per_day = diversity.class_cap(coarse, markets_requested)
-                return None if per_day is None else per_day * num_days
+                return diversity.plan_class_cap(coarse, markets_requested, justified, num_days)
 
             selected = _select_diverse_scheduling_set(
                 ordered_pois,
@@ -803,9 +806,17 @@ class ExperiencePlannerService(PlanningStageService):
         if planning_state.usefulness_fallback_applied:
             day_groups = _top_up_underfilled_days(day_groups, scheduling_candidate_pois, profiles, max_per_day)
 
-        # Section 203C.2B (generalization correction): schedule diversity.
-        # Once the days are grouped -- whoever grouped them -- no day may be
-        # dominated by one coarse attraction class while an eligible
+        # Section 203C.2B (entity collisions): two candidates the provider's
+        # evidence could neither merge nor tell apart (an unresolved suspected
+        # duplicate pair) are never scheduled together -- whoever chose them.
+        day_groups, collision_separations = _separate_suspected_duplicates(
+            day_groups, scheduling_candidate_pois, profiles, must_visit_ids
+        )
+
+        # Section 203C.2B: schedule diversity. Once the days are grouped --
+        # whoever grouped them -- a day may not hold more markets than the
+        # hard cap, and a day concentrated in a class the traveller did not
+        # ask for is relieved when an equally good, equally well placed
         # alternative exists. One bounded, deterministic pass per day; runs
         # before ordering and routing, so the route is computed once, for
         # the final stops.
@@ -815,6 +826,7 @@ class ExperiencePlannerService(PlanningStageService):
             profiles,
             must_visit_ids,
             markets_requested=diversity.markets_explicitly_requested(interest_terms),
+            justified=diversity.justified_classes(interest_terms),
             enabled=get_settings().schedule_diversity_enabled,
         )
 
@@ -998,6 +1010,7 @@ class ExperiencePlannerService(PlanningStageService):
 
         experience_plan = ExperiencePlan(
             schedule_diversity=schedule_diversity,
+            collision_separations=collision_separations,
             daily_plans=daily_plans,
             stay_area_guidance=stay_area_guidance,
             decision_summary=decision_summary,
@@ -1687,6 +1700,95 @@ def _top_up_underfilled_days(
 _DIVERSITY_MAX_TIER_DROP = 1
 _DIVERSITY_NEAR_KM = 3.0
 _DIVERSITY_DISTANCE_FACTOR = 1.5
+# A soft (preference-only) replacement must be as well placed as the stop it
+# replaces: no farther from the day's other stops, or within this distance.
+_DIVERSITY_SOFT_NEAR_KM = 1.0
+
+# Section 203C.2B (entity collisions): `SUSPECT_COLLISION_KEY` is set by the
+# destination-context stage on both candidates of an UNRESOLVED suspected
+# duplicate pair -- two co-located records of a compatible class that the
+# provider's evidence could neither merge nor tell apart. Two candidates
+# sharing a group are never scheduled together.
+
+
+def _suspected_duplicate_of_any(poi: dict[str, Any], others: list[dict[str, Any]]) -> bool:
+    group = poi.get(SUSPECT_COLLISION_KEY)
+    return bool(group) and any(
+        other is not poi and other.get(SUSPECT_COLLISION_KEY) == group for other in others
+    )
+
+
+def _separate_suspected_duplicates(
+    day_groups: list[list[dict[str, Any]]],
+    pool: list[dict[str, Any]],
+    profiles: dict[int, _CandidateProfile],
+    must_visit_ids: set[int],
+) -> tuple[list[list[dict[str, Any]]], list[DiversityReplacement]]:
+    """Guarantees that no two candidates of one unresolved suspected
+    duplicate pair are scheduled together. The first of a pair is kept (a
+    must-visit is always the one kept); the other is replaced by the best
+    unused candidate near its day -- quality-eligible, coordinate-backed,
+    not a low-value object, not itself a suspected duplicate of a scheduled
+    stop and not adding a market beyond the day's cap -- or, with none,
+    simply removed so the day is lighter. Nothing is invented. Returns the
+    days and what was replaced (`replacement_place` empty when removed)."""
+    days = [list(group) for group in day_groups]
+    scheduled = [poi for group in days for poi in group]
+    kept: dict[str, dict[str, Any]] = {}
+    for poi in sorted(scheduled, key=lambda p: id(p) not in must_visit_ids):  # must-visits claim first; stable
+        group = poi.get(SUSPECT_COLLISION_KEY)
+        if group and group not in kept:
+            kept[group] = poi
+
+    separations: list[DiversityReplacement] = []
+    for day in days:
+        for index, poi in enumerate(list(day)):
+            group = poi.get(SUSPECT_COLLISION_KEY)
+            if not group or kept.get(group) is poi or id(poi) in must_visit_ids:
+                continue
+            rest = [other for other in day if other is not poi]
+            others = [other for group_ in days for other in group_ if other is not poi]
+            used = {id(other) for other in others}
+            centre = centroid([_poi_coordinates(other) for other in rest])
+            rest_classes = [diversity.coarse_class(profiles[id(other)].primary) for other in rest]
+
+            def distance_km(candidate: dict[str, Any]) -> float:
+                if centre is None:
+                    return 0.0
+                return haversine_distance_km(centre, _poi_coordinates(candidate)) or 0.0
+
+            candidates = [
+                candidate
+                for candidate in pool
+                if id(candidate) not in used
+                and candidate is not poi
+                and not profiles[id(candidate)].low_value
+                and _poi_coordinates(candidate) is not None
+                and not _suspected_duplicate_of_any(candidate, others)
+                and distance_km(candidate) <= _DIVERSITY_NEAR_KM
+                and not diversity.hard_excess(
+                    [*rest_classes, diversity.coarse_class(profiles[id(candidate)].primary)], False
+                )
+            ]
+            replacement = min(
+                candidates,
+                key=lambda candidate: (
+                    -profiles[id(candidate)].tier_rank, -round(profiles[id(candidate)].score, 2), distance_km(candidate)
+                ),
+                default=None,
+            )
+            position = next(i for i, other in enumerate(day) if other is poi)
+            if replacement is not None:
+                day[position] = replacement
+            else:
+                del day[position]
+            separations.append(
+                DiversityReplacement(
+                    replaced_place=str(poi.get("name") or ""),
+                    replacement_place=str(replacement.get("name") or "") if replacement is not None else "",
+                )
+            )
+    return days, separations
 
 
 def _enforce_day_diversity(
@@ -1696,27 +1798,38 @@ def _enforce_day_diversity(
     must_visit_ids: set[int],
     *,
     markets_requested: bool,
+    justified: frozenset[str] = frozenset(),
     enabled: bool = True,
 ) -> tuple[list[list[dict[str, Any]]], list[DayDiversityReport]]:
     """One bounded diversity pass per day (see `services/schedule_diversity`).
 
-    While a day holds more stops of a coarse class than the rules allow,
-    the weakest replaceable stop of that class is swapped for the best
-    UNUSED candidate of a class the day can still take. A replacement is
-    always quality-eligible, coordinate-backed and not a low-value object;
-    never dramatically worse (at most one tier lower); near the day's other
-    stops; and it must still serve any requested interest that only the
-    replaced stop served. A must-visit is never replaced. When no unused
-    candidate fits, the stop may instead trade places with a stop of
-    another day (`_diversity_exchange_partner`) -- the plan then keeps
-    exactly the same places. With neither possible the day is left exactly
-    as it is and reported as it stands: nothing is dropped and nothing is
-    invented. Each stop of a day is considered at most once, so the pass is
-    bounded by the day's size.
+    HARD (marketplaces beyond the per-day cap): the weakest replaceable
+    market is swapped for the best UNUSED candidate of a class the day can
+    still take -- quality-eligible, coordinate-backed, not a low-value
+    object, at most one tier lower, near the day's other stops, and still
+    serving any requested interest only the replaced stop served. When no
+    unused candidate fits, the stop may trade places with a stop of another
+    day (`_diversity_exchange_partner`); the plan then keeps the same places.
+
+    SOFT (a day concentrated in a class the traveller did NOT ask for):
+    variety is only a preference. A stop is replaced only by an unused
+    candidate that is no worse (same tier or better; a primary anchor only
+    by a strictly higher-scoring candidate) and just as well placed (no
+    farther from the day's other stops, within `_DIVERSITY_SOFT_NEAR_KM`).
+    No cross-day exchange is made for a soft concentration.
+
+    A day concentrated in a class the traveller ASKED for (`justified`) is
+    never touched. A must-visit is never replaced. A candidate that is an
+    unresolved suspected duplicate of a scheduled stop is never used. With
+    nothing suitable the day is left exactly as it is and reported as it
+    stands: nothing is dropped and nothing is invented. Each stop of a day
+    is considered at most once, so the pass is bounded by the day's size.
     """
 
     def cls(poi: dict[str, Any]) -> str:
         return diversity.coarse_class(profiles[id(poi)].primary)
+
+    primary_rank = _QUALITY_TIER_RANK[CandidateQualityTier.PRIMARY_ANCHOR]
 
     days = [list(group) for group in day_groups]
     used = {id(poi) for group in days for poi in group}
@@ -1732,26 +1845,30 @@ def _enforce_day_diversity(
         tried: set[int] = set()
         while enabled:
             classes = [cls(poi) for poi in day]
-            excess = diversity.excess_by_class(classes, markets_requested)
+            hard = diversity.hard_excess(classes, markets_requested)
+            excess = diversity.relievable_excess(classes, markets_requested, justified)
             if not excess:
                 break
             report.alternatives_available = report.alternatives_available or any(
                 cls(poi) not in excess for poi in unused
             )
-            # Weakest replaceable stop of an over-represented class first.
+            # Weakest replaceable stop of an over-represented class first; a
+            # hard (marketplace) excess is dealt with before a soft one.
             replaceable = sorted(
                 (
                     poi
                     for poi in day
                     if cls(poi) in excess and id(poi) not in must_visit_ids and id(poi) not in tried
                 ),
-                key=lambda poi: (profiles[id(poi)].tier_rank, profiles[id(poi)].score),
+                key=lambda poi: (cls(poi) not in hard, profiles[id(poi)].tier_rank, profiles[id(poi)].score),
             )
             if not replaceable:
                 break
             report.repair_attempted = True
             weakest = replaceable[0]
             tried.add(id(weakest))
+            is_hard = cls(weakest) in hard
+            weakest_profile = profiles[id(weakest)]
 
             rest = [poi for poi in day if poi is not weakest]
             rest_classes = [cls(poi) for poi in rest]
@@ -1762,7 +1879,11 @@ def _enforce_day_diversity(
                 if centre is not None and weakest_point is not None
                 else None
             )
-            reach_km = max(_DIVERSITY_NEAR_KM, _DIVERSITY_DISTANCE_FACTOR * (weakest_km or 0.0))
+            reach_km = (
+                max(_DIVERSITY_NEAR_KM, _DIVERSITY_DISTANCE_FACTOR * (weakest_km or 0.0))
+                if is_hard
+                else max(_DIVERSITY_SOFT_NEAR_KM, weakest_km or 0.0)
+            )
             others = [poi for group in days for poi in group if poi is not weakest]
             still_covered = {interest for poi in others for interest in profiles[id(poi)].matched_interests}
             must_cover = set(profiles[id(weakest)].matched_interests) - still_covered
@@ -1773,15 +1894,30 @@ def _enforce_day_diversity(
                     return 0.0
                 return haversine_distance_km(centre, _poi_coordinates(poi)) or 0.0
 
+            def quality_ok(poi: dict[str, Any]) -> bool:
+                profile = profiles[id(poi)]
+                if is_hard:
+                    return profile.tier_rank >= weakest_profile.tier_rank - _DIVERSITY_MAX_TIER_DROP
+                # Soft: never a worse candidate, and a primary anchor only
+                # for one that is clearly better.
+                if profile.tier_rank < weakest_profile.tier_rank:
+                    return False
+                return weakest_profile.tier_rank < primary_rank or profile.score > weakest_profile.score
+
             eligible = [
                 poi
                 for poi in unused
                 if cls(poi) != cls(weakest)
-                and not diversity.excess_by_class([*rest_classes, cls(poi)], markets_requested).get(cls(poi))
-                and profiles[id(poi)].tier_rank >= profiles[id(weakest)].tier_rank - _DIVERSITY_MAX_TIER_DROP
+                and not diversity.relievable_excess(
+                    [*rest_classes, cls(poi)], markets_requested, justified
+                ).get(cls(poi))
+                and quality_ok(poi)
                 and must_cover <= set(profiles[id(poi)].matched_interests)
                 and distance_km(poi) <= reach_km
+                and not _suspected_duplicate_of_any(poi, others)
             ]
+            if not eligible and not is_hard:
+                continue  # a soft concentration is never worth an exchange
             if eligible:
                 # Best quality first; between equals, the class the whole
                 # plan has least of, then the nearer place.
@@ -1804,7 +1940,8 @@ def _enforce_day_diversity(
                 # concentrated and both stops near their new day. The plan
                 # keeps exactly the same places.
                 best = _diversity_exchange_partner(
-                    days, day_index, weakest, rest_classes, centre, reach_km, cls, must_visit_ids, markets_requested
+                    days, day_index, weakest, rest_classes, centre, reach_km, cls, must_visit_ids,
+                    markets_requested, justified,
                 )
                 if best is None:
                     continue
@@ -1824,9 +1961,11 @@ def _enforce_day_diversity(
     for day, report in zip(days, reports):
         final_classes = [cls(poi) for poi in day]
         report.class_counts = {name: final_classes.count(name) for name in sorted(set(final_classes))}
-        report.concentration_violation = enabled and diversity.concentration_violation(
-            final_classes, markets_requested
+        report.concentration_kind = (
+            diversity.concentration_kind(final_classes, markets_requested, justified) if enabled else None
         )
+        # Only a HARD violation is a defect.
+        report.concentration_violation = report.concentration_kind == diversity.HARD
     return days, reports
 
 
@@ -1840,6 +1979,7 @@ def _diversity_exchange_partner(
     cls: Any,
     must_visit_ids: set[int],
     markets_requested: bool,
+    justified: frozenset[str] = frozenset(),
 ) -> dict[str, Any] | None:
     """A stop of another day that can trade places with `weakest`: a
     different class this day can take, without making its own day more
@@ -1850,7 +1990,7 @@ def _diversity_exchange_partner(
         return None
 
     def excess_total(classes: list[str]) -> int:
-        return sum(diversity.excess_by_class(classes, markets_requested).values())
+        return sum(diversity.relievable_excess(classes, markets_requested, justified).values())
 
     best: tuple[float, dict[str, Any]] | None = None
     for other_index, other in enumerate(days):
@@ -1861,7 +2001,9 @@ def _diversity_exchange_partner(
             point = _poi_coordinates(candidate)
             if point is None or id(candidate) in must_visit_ids or cls(candidate) == cls(weakest):
                 continue
-            if diversity.excess_by_class([*rest_classes, cls(candidate)], markets_requested).get(cls(candidate)):
+            if diversity.relievable_excess(
+                [*rest_classes, cls(candidate)], markets_requested, justified
+            ).get(cls(candidate)):
                 continue
             other_rest = [poi for poi in other if poi is not candidate]
             if excess_total([*(cls(poi) for poi in other_rest), cls(weakest)]) > excess_total(other_classes):
@@ -2150,11 +2292,19 @@ def unused_replacement_options(planning_state: PlanningState) -> list[Replacemen
             if experience.provider_place_id:
                 scheduled.add(("place_id", str(experience.provider_place_id)))
             scheduled.add(("name", _normalize_candidate_name(experience.name)))
+    # An unresolved suspected duplicate of a scheduled stop is never offered.
+    scheduled_collision_groups = {
+        poi.get(SUSPECT_COLLISION_KEY)
+        for poi in pool
+        if poi.get(SUSPECT_COLLISION_KEY) and _candidate_identity_keys(poi) & scheduled
+    }
 
     options: list[ReplacementOption] = []
     for poi in pool:
         point = _poi_coordinates(poi)
         if point is None or _candidate_identity_keys(poi) & scheduled:
+            continue
+        if poi.get(SUSPECT_COLLISION_KEY) in scheduled_collision_groups:
             continue
         profile = _candidate_profile(poi, quality_lookup.get(id(poi)), canonical_interests)
         if profile.low_value:

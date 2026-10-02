@@ -441,6 +441,12 @@ class Settings(BaseSettings):
     geoapify_max_place_details_per_generation: int = Field(
         default=12, alias="GEOAPIFY_MAX_PLACE_DETAILS_PER_GENERATION", ge=0
     )
+    # Of those, how many may be spent corroborating the identity of
+    # suspected duplicate candidates (two co-located records of a compatible
+    # class). Each is one Place Details lookup, inside the cap above.
+    geoapify_max_identity_lookups_per_generation: int = Field(
+        default=4, alias="GEOAPIFY_MAX_IDENTITY_LOOKUPS_PER_GENERATION", ge=0
+    )
     # Section 203C.2B: the inventory sufficiency gate + usefulness contract
     # (T / R / H; `app.services.usefulness_contract`). On by default and
     # required in production. The hermetic test suite turns it off for its

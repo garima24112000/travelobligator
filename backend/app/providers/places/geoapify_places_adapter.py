@@ -49,10 +49,18 @@ from app.providers.places.destination_resolution import (
     _user_agent,
 )
 from app.providers.places.entity_identity import (
+    COLLOCATED_METERS,
+    RESOLVED_DISTINCT,
+    RESOLVED_MERGED,
+    UNRESOLVED,
+    absorb,
     alternate_names,
+    collision_record,
+    conclusively_distinct,
     dedupe_places,
     merge_rule,
     source_entity_id,
+    suspect_pair,
 )
 from app.providers.places.geoapify_categories import (
     ACCOMMODATION_GROUP,
@@ -64,7 +72,9 @@ from app.providers.places.geoapify_categories import (
     taxonomy_tags_from_categories,
 )
 from app.core.provider_usage import GenerationProviderContext, ProviderUsageTracker
-from app.services.place_taxonomy import filter_provider_tags
+from app.services.place_taxonomy import classify_place, filter_provider_tags
+from app.services.schedule_diversity import HISTORY_ARCHITECTURE, MUSEUM_CULTURE, coarse_class
+from app.utils.names import comparable_name
 from app.storage.provider_cache_store import (
     ProviderCacheStore,
     get_provider_cache_store,
@@ -90,6 +100,15 @@ _CONTAINMENT_RADIUS_METERS = 25000
 _SAME_PLACE_METERS = 100
 _POOL_MATCH_METERS = 150
 _CATEGORY_TAG_ORDER = ("tourism", "amenity", "historic", "leisure", "man_made")
+
+
+# A historic building and the museum inside it are commonly two records of
+# one place, so those two coarse classes are compatible with each other.
+_BUILDING_CLASSES = frozenset({HISTORY_ARCHITECTURE, MUSEUM_CULTURE})
+
+
+def _compatible_classes(first: str, second: str) -> bool:
+    return first == second or {first, second} <= _BUILDING_CLASSES
 
 
 def places_request_credits(limit: int, returned: int | None = None) -> int:
@@ -161,8 +180,67 @@ class GeoapifyPlacesAdapter(DestinationResolutionMixin, PlacesProvider):
         plan = [(group, max(_MIN_GROUP_LIMIT, round(group.share * pool))) for group in ATTRACTION_GROUPS]
         response = self._search(destination, plan, "attractions", page=int((filters or {}).get("page") or 0))
         if self._context is not None and response.data:
+            response.data = self._resolve_suspect_collisions(response.data)
             self._context.place_pool.extend(response.data)
         return response
+
+    # -- suspected duplicate candidates ---------------------------------------------
+
+    @staticmethod
+    def _coarse_class(place: NormalizedPlace) -> str:
+        return coarse_class(classify_place(place.provider_tags, place.category).primary_category)
+
+    def _identity_enriched(self, place: NormalizedPlace) -> tuple[NormalizedPlace, bool]:
+        """`place` with whatever identity evidence one Place Details lookup
+        adds, and whether a lookup was attempted. Bounded twice: by the
+        identity-lookup allowance and by the Place Details allowance."""
+        context = self._context
+        if context is None or context.identity_lookups_left <= 0 or place.place_id in context.identity_checked:
+            return place, False
+        context.identity_lookups_left -= 1
+        context.identity_checked.add(place.place_id)
+        return self._enrich_with_details(place, for_identity=True) or place, True
+
+    def _resolve_suspect_collisions(self, places: list[NormalizedPlace]) -> list[NormalizedPlace]:
+        """Finds SUSPECTED duplicates among `places` (and against the pool
+        this generation already holds): co-located records of a compatible
+        class that no identity rule merged. Each pair gets a bounded identity
+        enrichment; then it is merged ONLY on conclusive provider evidence,
+        cleared when the evidence says the two are different entities, and
+        otherwise left as two candidates and recorded as unresolved, so the
+        scheduler never puts both on one itinerary. Proximity never merges."""
+        context = self._context
+        assert context is not None
+        kept: list[NormalizedPlace] = []
+        for place in places:
+            merged = False
+            for others in (kept, context.place_pool):
+                for index, existing in enumerate(others):
+                    classes = (self._coarse_class(existing), self._coarse_class(place))
+                    if not suspect_pair(existing, place, _compatible_classes(*classes)):
+                        continue
+                    existing_enriched, tried_a = self._identity_enriched(existing)
+                    place, tried_b = self._identity_enriched(place)
+                    others[index] = existing = existing_enriched
+                    attempted = tried_a or tried_b
+                    rule = merge_rule(existing, place, COLLOCATED_METERS)
+                    if rule is not None:
+                        others[index] = absorb(existing, place)
+                        context.entity_merges[rule] = context.entity_merges.get(rule, 0) + 1
+                        context.suspect_collisions.append(
+                            collision_record(existing, place, classes, RESOLVED_MERGED, rule, attempted)
+                        )
+                        merged = True
+                        break
+                    resolution = RESOLVED_DISTINCT if conclusively_distinct(existing, place) else UNRESOLVED
+                    context.suspect_collisions.append(
+                        collision_record(existing, place, classes, resolution, None, attempted)
+                    )
+                if merged:
+                    break
+            if not merged:
+                kept.append(place)
+        return kept
 
     def search_restaurants(
         self, area: str, filters: dict[str, Any] | None = None
@@ -449,12 +527,14 @@ class GeoapifyPlacesAdapter(DestinationResolutionMixin, PlacesProvider):
                 return candidate
         return None
 
-    def _enrich_with_details(self, place: NormalizedPlace) -> NormalizedPlace | None:
+    def _enrich_with_details(self, place: NormalizedPlace, for_identity: bool = False) -> NormalizedPlace | None:
         existing_tags = dict(place.provider_tags or {})
         # Details add Wikipedia/Wikidata/heritage evidence. They are only
-        # worth a call for a place that has none yet.
-        if not place.place_id.startswith("geoapify/") or any(
-            existing_tags.get(key) for key in ("wikipedia", "wikidata", "heritage")
+        # worth a call for a place that has none yet -- or, `for_identity`,
+        # for a suspected duplicate whose source identity and other names
+        # are what is being asked for.
+        if not place.place_id.startswith("geoapify/") or (
+            not for_identity and any(existing_tags.get(key) for key in ("wikipedia", "wikidata", "heritage"))
         ):
             return None
         raw_id = place.place_id.split("/", 1)[1]
@@ -506,9 +586,13 @@ class GeoapifyPlacesAdapter(DestinationResolutionMixin, PlacesProvider):
         if isinstance(raw, dict):
             tags.update(filter_provider_tags(raw))
         tags.update(evidence_tags(properties))
+        known_names = [*(place.alt_names or [])]
+        for name in alternate_names(raw, place.name) or []:
+            if comparable_name(name) not in {comparable_name(known) for known in known_names}:
+                known_names.append(name)
         identity = {
             "source_entity_id": place.source_entity_id or source_entity_id(raw),
-            "alt_names": place.alt_names or alternate_names(raw, place.name),
+            "alt_names": known_names or None,
         }
         if not tags:
             return place.model_copy(update=identity) if any(identity.values()) else None
