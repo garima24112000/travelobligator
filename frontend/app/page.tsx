@@ -5884,6 +5884,20 @@ function ItineraryNarrativeSummarySection({
           </ul>
         </div>
       )}
+      {report.getting_around_advisory && (
+        <div className="mt-2" data-testid="getting-around-advisory">
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-cyan-200">
+            Getting around
+          </p>
+          <p className="mt-1 break-words text-sm leading-6 text-cyan-50/90">
+            {travelerText(report.getting_around_advisory)}
+          </p>
+          <p className="mt-1 text-[11px] text-cyan-100/70">
+            General AI guidance about the city, not based on this plan&apos;s
+            route data.
+          </p>
+        </div>
+      )}
       {fallback ? (
         // Fixed Traveler wording: the report's own message may name the
         // AI provider or an HTTP status, which is Developer-view detail.

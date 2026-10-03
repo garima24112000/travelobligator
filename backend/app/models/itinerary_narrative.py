@@ -99,6 +99,28 @@ class ItineraryNarrativeStatus(str, Enum):
     FAILED = "failed"
 
 
+class GettingAroundProfile(str, Enum):
+    """The broad visitor transport pattern the narrator picks for the
+    destination before writing `getting_around_advisory` (general
+    knowledge, internal only -- never displayed, never route data)."""
+
+    TRANSIT_WALK = "transit_walk"
+    RAIL_WALK = "rail_walk"
+    TAXI_DRIVER_WALK = "taxi_driver_walk"
+    CAR_RIDESHARE = "car_rideshare"
+    MIXED = "mixed"
+
+    @classmethod
+    def parse(cls, value: object) -> GettingAroundProfile | None:
+        """The enum member for `value`, or `None` for anything else
+        (including the empty string the model uses for an unrecognized
+        destination)."""
+        try:
+            return cls(value)
+        except ValueError:
+            return None
+
+
 class ItineraryNarrativeExperienceInput(BaseModel):
     """One scheduled experience, reduced to only the fields a narrator is
     allowed to see: its name, category, and the backend's own
@@ -295,6 +317,21 @@ class ItineraryNarrativeReport(BaseModel):
     # built purely from the final PlanningState (`status` then still
     # describes the AI attempt, never a success).
     narrative_source: str = "ai"
+    # One or two sentences of general "how visitors usually get around this
+    # city" guidance. Unlike every other text field here it is NOT derived
+    # from the request -- it is the model's general knowledge, so it is
+    # sanitized on its own (`sanitize_getting_around_advisory`) and dropped
+    # to `None` on any violation without affecting the narrative. Never a
+    # price, schedule, duration, availability/safety/legal claim, and never
+    # a statement about how this itinerary's legs are travelled (that stays
+    # provider-derived route data). Set only from a successful AI call; a
+    # sanitized advisory survives a narrative grounding rejection and is
+    # carried onto the deterministic fallback. Deliberately has no
+    # validator: a bad advisory must not fail report construction.
+    getting_around_advisory: str | None = None
+    # The profile the advisory was written for. Kept and dropped together
+    # with the advisory; `None` whenever the advisory is.
+    getting_around_profile: GettingAroundProfile | None = None
 
     @field_validator("summary")
     @classmethod

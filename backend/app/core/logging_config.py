@@ -143,6 +143,7 @@ ALLOWED_EXTRA_FIELDS = frozenset(
         "repair_attempt_count",
         "remaining_validation_issue_count",
         "narrative_reference_count",
+        "getting_around_advisory_included",
         # Section 196 (docs/14_backend_architecture.md, following section
         # 146): AI feedback-interpreter observability. Plain counts/
         # booleans only -- never the raw feedback text, an experience

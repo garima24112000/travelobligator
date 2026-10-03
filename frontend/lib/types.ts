@@ -1274,6 +1274,19 @@ export type ItineraryNarrativeReport = {
   // for the fact-only summary the backend builds from the final plan when
   // AI narration fails. `status` still describes the AI attempt.
   narrative_source?: "ai" | "deterministic_fallback";
+  // 1-2 sentences of general "how visitors get around" guidance -- the
+  // model's general knowledge, sanitized separately by the backend, never
+  // itinerary route data. null when absent or rejected. May be present on a
+  // deterministic_fallback report (it is checked independently of the prose).
+  getting_around_advisory?: string | null;
+  // Internal transport profile the advisory was written for (not displayed).
+  getting_around_profile?:
+    | "transit_walk"
+    | "rail_walk"
+    | "taxi_driver_walk"
+    | "car_rideshare"
+    | "mixed"
+    | null;
 };
 
 // Full PlanningState is much larger than this; only feedback_history,

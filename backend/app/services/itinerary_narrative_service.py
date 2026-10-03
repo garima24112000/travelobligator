@@ -19,6 +19,7 @@ from app.services.itinerary_narrative_grounding import (
     grounding_rejected_report,
     normalize_day_titles,
     safe_narrator_message,
+    sanitize_getting_around_advisory,
 )
 from app.services.itinerary_narrative_request_builder import (
     ItineraryNarrativeRequestBuilder,
@@ -163,6 +164,7 @@ def _narrator_log_fields(
         fields["narrative_reference_count"] = sum(
             len(day.referenced_experience_ids) for day in report.daily_narratives
         )
+        fields["getting_around_advisory_included"] = report.getting_around_advisory is not None
     return fields
 
 
@@ -193,10 +195,24 @@ class ItineraryNarrativeService:
         provider_name = getattr(provider, "provider_name", "itinerary_narrator_provider")
 
         started_at = time.monotonic()
+        # The getting-around advisory is checked on its own, in both
+        # directions: a bad advisory is dropped without touching the
+        # narrative, and a narrative grounding rejection does not drop a
+        # sanitized advisory (it is carried onto the fallback). Only ever
+        # set from a SUCCESS report, so an unsanitized advisory never
+        # reaches the state.
+        # The profile is kept and dropped together with the advisory.
+        advisory_fields: dict[str, object] = {"getting_around_advisory": None, "getting_around_profile": None}
         try:
             request = self.request_builder.build_request(planning_state)
             report = provider.narrate(request)
             if report.status == ItineraryNarrativeStatus.SUCCESS:
+                advisory = sanitize_getting_around_advisory(request, report.getting_around_advisory)
+                if advisory is not None:
+                    advisory_fields = {
+                        "getting_around_advisory": advisory,
+                        "getting_around_profile": report.getting_around_profile,
+                    }
                 # Section 202B.3: neutral deterministic titles, then a
                 # structural grounding check; a rejected narration falls
                 # back rather than surfacing unsupported wording.
@@ -208,6 +224,8 @@ class ItineraryNarrativeService:
                 # lives in the adapter and only covers malformed output).
                 if find_ungrounded_terms(request, report) or find_unsupported_factual_claims(request, report):
                     report = grounding_rejected_report(report)
+                else:
+                    report = report.model_copy(update=advisory_fields)
             report = _apply_final_validation_disclosure(report, request)
         except Exception:
             duration_ms = (time.monotonic() - started_at) * 1000
@@ -245,6 +263,8 @@ class ItineraryNarrativeService:
             # as if it were a success.
             logger.warning("ItineraryNarrativeService.generate did not succeed.", extra=fields)
             report = self._with_fallback(planning_state, report)
+            if advisory_fields["getting_around_advisory"] is not None:
+                report = report.model_copy(update=advisory_fields)
         planning_state.itinerary_narrative_report = report
         return planning_state
 

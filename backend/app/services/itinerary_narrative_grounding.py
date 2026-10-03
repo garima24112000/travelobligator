@@ -8,6 +8,7 @@ from app.models.itinerary_narrative import (
     ItineraryNarrativeReport,
     ItineraryNarrativeRequest,
     ItineraryNarrativeStatus,
+    _find_forbidden_pattern,
 )
 from app.models.planning_state import PlanningState
 from app.services import place_taxonomy as taxonomy
@@ -188,6 +189,87 @@ def find_unsupported_factual_claims(
         for category, patterns in _FACTUAL_CLAIM_DETECTORS.items()
         if any(pattern.search(text) for pattern in patterns for text in masked)
     ]
+
+
+# ---------------------------------------------------------------------------
+# `getting_around_advisory`: general "how visitors get around" guidance.
+#
+# This is the one narrator field that is general knowledge rather than
+# supplied data, so the vocabulary check above cannot apply. Instead it must
+# name at least one broad mode category and must not make any claim form the
+# narration is barred from, nor any schedule/legal/ownership claim, nor talk
+# about this itinerary's own legs (movement between scheduled places is
+# provider route data only). Any number or non-initial capitalised word other
+# than the destination's own is rejected, which keeps out fares, durations,
+# line numbers, operators, apps and brands. A violation drops the advisory
+# only; the narrative is unaffected.
+# ---------------------------------------------------------------------------
+
+_ADVISORY_MAX_CHARS = 320
+_ADVISORY_MAX_SENTENCES = 2
+_ADVISORY_MODE = re.compile(
+    r"\b(?:cars?|self-drive|drivers?|driving|taxis?|cabs?|ride-?share|ride-?hailing|buses|bus|"
+    r"metro|subway|underground|tram|trams|rail|trains?|walk|walking|on\s+foot|ferry|ferries|"
+    r"transit|auto-?rickshaws?|rickshaws?)\b",
+    _I,
+)
+_ADVISORY_EXTRA_CLAIMS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"\d"),
+    re.compile(
+        r"\b(?:schedules?|scheduled|timetables?|frequen\w*|every\s+(?:few|couple)|runs?\s+(?:until|till|from|every|late)|"
+        r"24/7|round[- ]the[- ]clock|late[- ]night|reliable|punctual|on\s+time)\b",
+        _I,
+    ),
+    re.compile(r"\b(?:permits?|licen[cs]es?|legal(?:ly)?|illegal|laws?|insurance|visas?|mandatory|required|regulat\w*)\b", _I),
+    re.compile(
+        r"\byour\s+(?:own\s+)?(?:car|vehicle)\b|\byou\s+(?:should|must|will\s+need\s+to|need\s+to|have\s+to)\s+"
+        r"(?:rent|hire|drive|buy|use)\b|\b(?:rent|hire)\s+(?:a|your)\s+(?:car|vehicle)\s+(?:now|ahead|early|in\s+advance)\b",
+        _I,
+    ),
+    re.compile(r"\b(?:itinerary|this\s+plan|your\s+plan|routes?|days?|stops?|scheduled\s+places)\b", _I),
+    re.compile(r"\b(?:fares?|tickets?|pass(?:es)?|cards?|tolls?|tips?|surge|meters?|metered)\b", _I),
+)
+
+
+def sanitize_getting_around_advisory(request: ItineraryNarrativeRequest, text: str | None) -> str | None:
+    """The advisory, unchanged, if it passes every check; otherwise `None`."""
+    if not text or not text.strip():
+        return None
+    advisory = " ".join(text.split())
+    if len(advisory) > _ADVISORY_MAX_CHARS:
+        return None
+    sentences = [s for s in re.split(r"(?<=[.!?])\s+", advisory) if s.strip()]
+    if len(sentences) > _ADVISORY_MAX_SENTENCES:
+        return None
+    if not _ADVISORY_MODE.search(advisory):
+        return None
+    lowered = advisory.lower()
+    if _find_forbidden_pattern(advisory) is not None:
+        return None
+
+    # Scheduled place / restaurant / stay-area names: talking about them means
+    # talking about this itinerary's own movement.
+    plan_names: set[str] = set(request.stay_area_names)
+    for day in request.days:
+        plan_names.update(day.restaurant_names)
+        plan_names.update(experience.name for experience in day.experiences)
+    if any(name and len(name.strip()) >= 3 and name.strip().lower() in lowered for name in plan_names):
+        return None
+
+    destination_text = re.sub(re.escape(request.destination.strip()), " <destination> ", advisory, flags=_I)
+    if any(pattern.search(destination_text) for patterns in _FACTUAL_CLAIM_DETECTORS.values() for pattern in patterns):
+        return None
+    if any(pattern.search(destination_text) for pattern in _ADVISORY_EXTRA_CLAIMS):
+        return None
+
+    destination_words = set(_words(request.destination))
+    for sentence in sentences:
+        for index, token in enumerate(_WORD.findall(sentence)):
+            if index == 0 or not token[0].isupper():
+                continue
+            if token.lower() not in destination_words:
+                return None
+    return advisory
 
 
 def normalize_day_titles(report: ItineraryNarrativeReport) -> ItineraryNarrativeReport:

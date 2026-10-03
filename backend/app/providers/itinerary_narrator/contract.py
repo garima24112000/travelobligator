@@ -25,6 +25,65 @@ from app.models.itinerary_narrative import ItineraryNarrativeRequest
 # Everything else -- popularity, atmosphere, scenery, quality judgments,
 # history, what can be seen or done, cuisine, hours, prices, ratings,
 # availability, safety, booking -- is not in the input and must not appear.
+#
+# The one deliberate exception is `getting_around_advisory`: a separate
+# output field (never part of summary/day prose) holding 1-2 sentences of
+# general guidance on how visitors usually get around the destination. It
+# is general knowledge, not input data, so the service sanitizes it on its
+# own and drops it (never the narrative) on any violation.
+#
+# Live canary (1/6 cities): the first wording ended with "Use an empty string
+# if you are not confident" after a prompt that forbids every new fact, so
+# the model resolved the conflict by leaving the field empty for well-known
+# cities. The instructions now state the exemption explicitly and allow an
+# empty string only for an ambiguous/unrecognized destination.
+#
+# Live canary (6/6, but templated): every city got "public transit and
+# walking ... taxis for longer trips". The model now first picks a
+# `getting_around_profile` (an enum, emitted before the advisory) and must
+# write the advisory for that profile, with an explicit anti-default rule.
+
+GETTING_AROUND_ADVISORY_INSTRUCTIONS = (
+    "\n\nGetting-around advisory -- the ONE exception to the summarizer rules above. The rules "
+    "above (no new facts, no describing places or areas) apply to summary, daily_narratives, "
+    "caveats, assumptions and warnings only. The getting_around_profile and "
+    "getting_around_advisory fields are different: they are expected general travel guidance "
+    "from your own knowledge about the destination city, not itinerary data. For any "
+    "recognized destination city, ALWAYS write both.\n"
+    "Step 1 -- getting_around_profile. Decide which broad visitor transport pattern fits THIS "
+    "destination, from your general knowledge of it:\n"
+    "  transit_walk: public transit plus walking is normally the main practical combination.\n"
+    "  rail_walk: metro/subway/local rail plus walking is especially dominant.\n"
+    "  taxi_driver_walk: taxis/cabs, auto-rickshaw-style hired transport or a car with driver are "
+    "often more practical for longer sightseeing movements, with walking in compact areas.\n"
+    "  car_rideshare: a rental/self-drive car or taxis/rideshare are often more practical for "
+    "dispersed trips; transit may still help in suitable areas.\n"
+    "  mixed: no single mode clearly dominates; different areas suit different modes.\n"
+    "Do NOT automatically choose transit_walk or public transit plus walking. Choose the profile "
+    "the destination actually fits; cities that genuinely share a pattern may share a profile, "
+    "but different cities often do not.\n"
+    "Step 2 -- getting_around_advisory, written FOR the chosen profile: name ONE primary transport "
+    "pattern, optionally one or two secondary modes, and say in a few words when each is useful. "
+    "One sentence (two only if needed), at most 320 characters, hedged wording such as "
+    "'generally practical', 'often convenient', 'can be useful' or 'commonly suitable'. Generic "
+    "modes only: walking, public transit, metro/subway, buses, local trains, "
+    "taxis/cabs/rideshare, auto-rickshaws, rental/self-drive car, car with driver. Do not open "
+    "with 'Public transit and walking' unless the profile is transit_walk. Style examples per "
+    "profile (not tied to any city): rail_walk: 'Metro or local trains and walking are usually "
+    "the easiest combination, with taxis useful when rail is less convenient.' / "
+    "taxi_driver_walk: 'Taxis or a car with a driver can be practical for longer sightseeing "
+    "transfers, while walking works well within compact areas.' / car_rideshare: 'A rental car "
+    "or taxis can be useful for dispersed trips, while public transit and walking work better "
+    "within some individual areas.' / mixed: 'Public transit works well for many trips, while "
+    "taxis or a car can be useful for destinations that are more spread out.'\n"
+    "In the advisory do not include: prices or fares; schedules or frequencies; durations, "
+    "distances or any numbers; safety claims; legal, licensing or permit claims; named "
+    "operators, apps, brands, transit systems or line names (say 'metro' or 'public transit', "
+    "never a system's own name); any reference to this itinerary, its days, routes or listed "
+    "places; or any statement that the traveler must rent, own or use a car. Return an empty "
+    "string for BOTH fields ONLY when the destination is ambiguous or not a place you "
+    "recognize. Never repeat this guidance in the summary or day narratives."
+)
 
 NARRATOR_SYSTEM_PROMPT = (
     "You summarize an already-finalized draft itinerary for a travel planning system. You "
@@ -49,6 +108,7 @@ NARRATOR_SYSTEM_PROMPT = (
     "value(s) of that day's listed places -- never an id from another day or an invented one. "
     "Use empty lists rather than omitting keys. Mention that the plan was adjusted after "
     "feasibility checks only when the input states it."
+    + GETTING_AROUND_ADVISORY_INSTRUCTIONS
 )
 
 

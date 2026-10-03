@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, ValidationError
 
 from app.providers.itinerary_narrator.contract import NARRATOR_SYSTEM_PROMPT, build_grounded_prompt_body
 from app.core.config import get_settings
 from app.models.itinerary_narrative import (
+    GettingAroundProfile,
     ItineraryNarrativeDayOutput,
     ItineraryNarrativeReport,
     ItineraryNarrativeRequest,
@@ -94,6 +95,20 @@ class _NarratorBatchSchema(BaseModel):
     )
     warnings: list[str] = Field(
         description="Always include this key. Use an empty list if there are none."
+    )
+    # Declared before the advisory so the model commits to a profile first.
+    getting_around_profile: Literal[
+        "transit_walk", "rail_walk", "taxi_driver_walk", "car_rideshare", "mixed", ""
+    ] = Field(
+        description="The broad visitor transport pattern that fits this destination (see the "
+        "profile definitions). Always include this key; an empty string only if the destination "
+        "is ambiguous or unrecognized."
+    )
+    getting_around_advisory: str = Field(
+        description="Expected for any recognized destination: one concise sentence of general "
+        "guidance on the transport pattern generally practical for a visitor there (generic "
+        "modes only). Always include this key; an empty string only if the destination is "
+        "ambiguous or unrecognized."
     )
 
 
@@ -288,6 +303,9 @@ class GroqItineraryNarratorProvider(ItineraryNarratorProvider):
                 assumptions=assumptions,
                 source_fields_used=_source_fields_used(request),
                 generated_at=datetime.now(timezone.utc),
+                # Raw here; sanitized by the service, never by this adapter.
+                getting_around_advisory=_raw_advisory(output),
+                getting_around_profile=GettingAroundProfile.parse(output.get("getting_around_profile")),
             )
         except ValidationError as exc:
             return self._failed_result(_VALIDATION_FAILED_MESSAGE)
@@ -320,6 +338,11 @@ class GroqItineraryNarratorProvider(ItineraryNarratorProvider):
             model=self._model,
             message=reason,
         )
+
+
+def _raw_advisory(output: dict[str, Any]) -> str | None:
+    advisory = output.get("getting_around_advisory")
+    return (advisory.strip() or None) if isinstance(advisory, str) else None
 
 
 def _source_fields_used(request: ItineraryNarrativeRequest) -> list[str]:

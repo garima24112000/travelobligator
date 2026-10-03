@@ -8,6 +8,7 @@ from pydantic import ValidationError
 from app.providers.itinerary_narrator.contract import NARRATOR_SYSTEM_PROMPT, build_grounded_prompt_body
 from app.core.config import get_settings
 from app.models.itinerary_narrative import (
+    GettingAroundProfile,
     ItineraryNarrativeDayOutput,
     ItineraryNarrativeReport,
     ItineraryNarrativeRequest,
@@ -89,8 +90,23 @@ _TOOL_DEFINITION: dict[str, Any] = {
             "daily_narratives": {"type": "array", "items": _DAY_OUTPUT_SCHEMA},
             "assumptions": {"type": "array", "items": {"type": "string"}},
             "warnings": {"type": "array", "items": {"type": "string"}},
+            # Declared before the advisory so the model commits to a profile first.
+            "getting_around_profile": {
+                "type": "string",
+                "enum": [*(profile.value for profile in GettingAroundProfile), ""],
+                "description": "The broad visitor transport pattern that fits this destination "
+                "(see the profile definitions). Empty string only if the destination is "
+                "ambiguous or unrecognized.",
+            },
+            "getting_around_advisory": {
+                "type": "string",
+                "description": "Expected for any recognized destination: one concise sentence "
+                "of general guidance on the transport pattern generally practical for a visitor "
+                "there (generic modes only). Empty string only if the destination is ambiguous "
+                "or unrecognized.",
+            },
         },
-        "required": ["summary", "daily_narratives"],
+        "required": ["summary", "daily_narratives", "getting_around_profile", "getting_around_advisory"],
         "additionalProperties": False,
     },
 }
@@ -278,6 +294,9 @@ class AnthropicItineraryNarratorProvider(ItineraryNarratorProvider):
                 assumptions=assumptions,
                 source_fields_used=_source_fields_used(request),
                 generated_at=datetime.now(timezone.utc),
+                # Raw here; sanitized by the service, never by this adapter.
+                getting_around_advisory=_raw_advisory(tool_input),
+                getting_around_profile=GettingAroundProfile.parse(tool_input.get("getting_around_profile")),
             )
         except ValidationError as exc:
             return self._failed_result(_VALIDATION_FAILED_MESSAGE)
@@ -306,6 +325,11 @@ class AnthropicItineraryNarratorProvider(ItineraryNarratorProvider):
             model=self._model,
             message=reason,
         )
+
+
+def _raw_advisory(tool_input: dict[str, Any]) -> str | None:
+    advisory = tool_input.get("getting_around_advisory")
+    return (advisory.strip() or None) if isinstance(advisory, str) else None
 
 
 def _source_fields_used(request: ItineraryNarrativeRequest) -> list[str]:
