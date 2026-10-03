@@ -6,6 +6,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, ValidationError
 
 from app.providers.itinerary_narrator.contract import NARRATOR_SYSTEM_PROMPT, build_grounded_prompt_body
+from app.core import performance
 from app.core.config import get_settings
 from app.models.itinerary_narrative import (
     GettingAroundProfile,
@@ -189,7 +190,8 @@ class GroqItineraryNarratorProvider(ItineraryNarratorProvider):
         for attempt in range(1, MAX_NARRATOR_ATTEMPTS + 1):
             attempt_prompt = prompt if attempt == 1 else f"{prompt}\n\n{RETRY_FORMAT_REMINDER}"
             try:
-                raw_output = client.invoke(attempt_prompt)
+                with performance.provider_call("groq_narrator"):
+                    raw_output = client.invoke(attempt_prompt)
             except Exception as exc:  # API/runtime/timeout failure -> failed, never fabricated
                 structural, failure_message = structural_failure_message("Groq", exc)
                 if not structural:

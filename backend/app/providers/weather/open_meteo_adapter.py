@@ -8,6 +8,7 @@ from typing import Any
 
 import httpx
 
+from app.core import performance
 from app.core.config import get_settings
 from app.models.common import DataStatus, GeoPoint, ProviderStatus
 from app.models.providers import NormalizedDailyWeather, ProviderResponse
@@ -229,17 +230,18 @@ class OpenMeteoWeatherAdapter(WeatherProvider):
         ) as client:
             for attempt in range(1, _MAX_ATTEMPTS + 1):
                 try:
-                    response = client.get(
-                        f"{self._base_url}/v1/forecast",
-                        params={
-                            "latitude": coordinates.lat,
-                            "longitude": coordinates.lng,
-                            "start_date": start_date,
-                            "end_date": end_date,
-                            "daily": ",".join(_DAILY_FIELDS),
-                            "timezone": "auto",
-                        },
-                    )
+                    with performance.provider_call("open_meteo"):
+                        response = client.get(
+                            f"{self._base_url}/v1/forecast",
+                            params={
+                                "latitude": coordinates.lat,
+                                "longitude": coordinates.lng,
+                                "start_date": start_date,
+                                "end_date": end_date,
+                                "daily": ",".join(_DAILY_FIELDS),
+                                "timezone": "auto",
+                            },
+                        )
                     response.raise_for_status()
                     payload = response.json()
                     request_error = None

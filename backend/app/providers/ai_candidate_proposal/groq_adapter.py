@@ -5,6 +5,7 @@ from typing import Any
 from pydantic import BaseModel, Field, ValidationError
 
 from app.providers.ai_failure import AIProviderFailureKind, classify_and_message
+from app.core import performance
 from app.core.config import get_settings
 from app.models.ai_candidate_proposal import (
     AICandidateProposal,
@@ -332,7 +333,8 @@ class GroqAICandidateProposalProvider(AICandidateProposalProvider):
             structural_failure: str | None = None
             structural_kind = AICandidateProposalFailureKind.SCHEMA_VALIDATION
             try:
-                raw_output = client.invoke(_build_prompt(active_request))
+                with performance.provider_call("groq_anchor"):
+                    raw_output = client.invoke(_build_prompt(active_request))
             except Exception as exc:  # API/runtime failure -> rejected, never fabricated
                 kind, message = classify_and_message("Groq", exc)
                 if kind != AIProviderFailureKind.MALFORMED_OUTPUT:

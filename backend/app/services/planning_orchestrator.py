@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from datetime import date, datetime, timezone
 
+from app.core import performance
 from app.core.config import get_settings
 from app.core.errors import trip_not_found_error
 from app.models.accommodation import AccommodationSearchResult, AccommodationSearchStatus
@@ -24,6 +25,7 @@ from app.models.routing import (
     RouteFeasibilityReport,
     TravelTimeBufferReport,
 )
+from app.models.generation_performance import GenerationPerformanceReport
 from app.models.inventory_sufficiency import ProviderUsageReport
 from app.providers.gateway import provider_gateway
 from app.core.provider_usage import GenerationProviderContext, context_kwargs
@@ -74,6 +76,11 @@ logger = logging.getLogger(__name__)
 # generation's `GenerationProviderContext` explicitly.
 _PROVIDER_CONTEXT_STAGE_KEYS = frozenset({"destination_context", "experience_plan"})
 _PROVIDER_CONTEXT_STAGES = frozenset({PlanningStage.DESTINATION_CONTEXT, PlanningStage.EXPERIENCE_PLAN})
+
+# Section 1A (measurement only): the stage a legacy-engine stage runner's
+# wall-clock is reported under, where that differs from its stage key (the
+# names the LangGraph engine's nodes report).
+_LEGACY_STAGE_NAMES = {"experience_plan": "experience_planning"}
 
 _READINESS_TO_PIPELINE_STATUS = {
     "ready": PipelineStatus.VALIDATED,
@@ -914,9 +921,10 @@ class PlanningOrchestrator:
 
         # Section 203C.2B (final correction): one bounded repair attempt per
         # long-route day, on the final routed order. Fails safe.
-        apply_route_burden_repair_safely(
-            planning_state, self.route_feasibility_service, provider_context
-        )
+        with performance.stage("route_repair"):
+            apply_route_burden_repair_safely(
+                planning_state, self.route_feasibility_service, provider_context
+            )
         # The days are final now: one authoritative explanation per day.
         finalize_day_explanations(planning_state)
 
@@ -970,14 +978,50 @@ class PlanningOrchestrator:
                 planning_state.trip_id,
             )
 
+    # -- Section 1A: latency profiling (measurement only) ----------------------------
+    # One recorder per generation, active for the whole call (a caller that
+    # is already profiling -- the canary -- keeps its own). Nothing below can
+    # fail or change a generation: every recorder call is a guarded no-op on
+    # error, and the report is simply left `None` if it cannot be built.
+    #
+    # The report is attached BEFORE the final commit and never touched
+    # afterwards: the committed state and its revision must stay identical,
+    # so the stored report cannot include the duration of the commit that
+    # writes it (`includes_final_commit=False`). A caller that owns the
+    # recorder reads the complete figures from it after the call returns.
+
+    @staticmethod
+    def _attach_performance_report(
+        planning_state: PlanningState,
+        recorder: performance.PerformanceRecorder | None,
+        provider_context: GenerationProviderContext,
+        engine: str,
+    ) -> None:
+        try:
+            report = performance.build_report(recorder, provider_context.usage_tracker.snapshot())
+            planning_state.generation_performance_report = (
+                GenerationPerformanceReport(**report, engine=engine) if report is not None else None
+            )
+        except Exception:  # noqa: BLE001 - timing never breaks a generation
+            planning_state.generation_performance_report = None
+
     def generate_full_plan(self, trip_id: str, force_regenerate: bool = False) -> PlanningState:
-        planning_state = self.planning_state_repository.get_by_trip_id(trip_id)
+        recorder = performance.current() or performance.started_recorder()
+        with performance.activate(recorder):
+            return self._generate_full_plan(trip_id, recorder)
+
+    def _generate_full_plan(
+        self, trip_id: str, recorder: performance.PerformanceRecorder | None
+    ) -> PlanningState:
+        with performance.stage("persistence"):
+            planning_state = self.planning_state_repository.get_by_trip_id(trip_id)
         if planning_state is None:
             raise trip_not_found_error(trip_id)
 
         planning_state.set_pipeline_status(PipelineStatus.GENERATING)
         planning_state = self._start_generation_progress(planning_state)
-        self.planning_state_repository.save(planning_state)
+        with performance.stage("persistence"):
+            self.planning_state_repository.save(planning_state)
         # Section 200C: `persisted` = the last object written; a stage that returns a different
         # object inherits its concurrency token. Progress saves between stages stay separate
         # writes (they are status updates, not product transitions); a concurrent writer that
@@ -998,32 +1042,38 @@ class PlanningOrchestrator:
             )
             for stage_key, run_stage in stage_runners:
                 planning_state = self._mark_stage_started(planning_state, stage_key)
-                planning_state = (
-                    run_stage(planning_state, provider_context)
-                    if stage_key in _PROVIDER_CONTEXT_STAGE_KEYS
-                    else run_stage(planning_state)
-                )
+                with performance.stage(_LEGACY_STAGE_NAMES.get(stage_key, stage_key)):
+                    planning_state = (
+                        run_stage(planning_state, provider_context)
+                        if stage_key in _PROVIDER_CONTEXT_STAGE_KEYS
+                        else run_stage(planning_state)
+                    )
                 planning_state = self._mark_stage_finished(planning_state, stage_key)
                 if stage_key == "destination_context":
                     planning_state = self._mark_stage_finished(planning_state, "candidate_quality")
                     planning_state = self._mark_stage_finished(planning_state, "ai_candidate_shadow")
                 self._carry_lock_token(persisted, planning_state)
-                self.planning_state_repository.save(planning_state)
+                with performance.stage("persistence"):
+                    self.planning_state_repository.save(planning_state)
                 persisted = planning_state
 
             planning_state = self._mark_stage_started(planning_state, "post_processing")
-            planning_state = self.versioning_service.create_initial_version(planning_state)
-            planning_state = self.plan_diff_preview_service.recompute(planning_state)
-            planning_state = self.regeneration_readiness_service.recompute(planning_state)
-            planning_state = self.itinerary_narrative_service.generate(planning_state)
+            with performance.stage("post_processing"):
+                planning_state = self.versioning_service.create_initial_version(planning_state)
+                planning_state = self.plan_diff_preview_service.recompute(planning_state)
+                planning_state = self.regeneration_readiness_service.recompute(planning_state)
+            with performance.stage("narrator"):
+                planning_state = self.itinerary_narrative_service.generate(planning_state)
             planning_state.provider_usage_report = ProviderUsageReport(**provider_context.usage_report())
             planning_state = self._mark_stage_finished(planning_state, "post_processing")
             planning_state = self._finish_generation_progress(planning_state)
             self._carry_lock_token(persisted, planning_state)
+            self._attach_performance_report(planning_state, recorder, provider_context, "legacy")
             # Section 200C: final state + its revision + the branch head commit atomically.
-            self.revision_lineage_service.commit_state_with_revision(
-                planning_state, state_repository=self._planning_state_repo_override
-            )
+            with performance.stage("persistence"):
+                self.revision_lineage_service.commit_state_with_revision(
+                    planning_state, state_repository=self._planning_state_repo_override
+                )
         except Exception:
             self._save_failed_progress(planning_state, persisted)
             raise
@@ -1031,13 +1081,22 @@ class PlanningOrchestrator:
         return planning_state
 
     def generate_full_plan_via_langgraph(self, trip_id: str) -> PlanningState:
-        planning_state = self.planning_state_repository.get_by_trip_id(trip_id)
+        recorder = performance.current() or performance.started_recorder()
+        with performance.activate(recorder):
+            return self._generate_full_plan_via_langgraph(trip_id, recorder)
+
+    def _generate_full_plan_via_langgraph(
+        self, trip_id: str, recorder: performance.PerformanceRecorder | None
+    ) -> PlanningState:
+        with performance.stage("persistence"):
+            planning_state = self.planning_state_repository.get_by_trip_id(trip_id)
         if planning_state is None:
             raise trip_not_found_error(trip_id)
 
         planning_state.set_pipeline_status(PipelineStatus.GENERATING)
         planning_state = self._start_generation_progress(planning_state)
-        self.planning_state_repository.save(planning_state)
+        with performance.stage("persistence"):
+            self.planning_state_repository.save(planning_state)
         persisted = planning_state
 
         try:
@@ -1089,21 +1148,25 @@ class PlanningOrchestrator:
             # regeneration_readiness are just as real and current as a
             # legacy-generated trip's.
             new_state = self._mark_stage_started(new_state, "post_processing")
-            new_state = self.versioning_service.create_initial_version(new_state)
-            new_state = self.plan_diff_preview_service.recompute(new_state)
-            new_state = self.regeneration_readiness_service.recompute(new_state)
+            with performance.stage("post_processing"):
+                new_state = self.versioning_service.create_initial_version(new_state)
+                new_state = self.plan_diff_preview_service.recompute(new_state)
+                new_state = self.regeneration_readiness_service.recompute(new_state)
             # Step 182F: same optional, read-only LLM narrator
             # generate_full_plan runs -- see that call site's comment.
-            new_state = self.itinerary_narrative_service.generate(new_state)
+            with performance.stage("narrator"):
+                new_state = self.itinerary_narrative_service.generate(new_state)
             new_state = self._mark_stage_finished(new_state, "post_processing")
             new_state = self._finish_generation_progress(new_state)
             self._carry_lock_token(persisted, new_state)
+            self._attach_performance_report(new_state, recorder, provider_context, "langgraph")
             # Section 199A (Task 12) + Section 200C: same first-forkable-revision capture
             # generate_full_plan performs, committed atomically with the final state (see
             # that call site's comment).
-            self.revision_lineage_service.commit_state_with_revision(
-                new_state, state_repository=self._planning_state_repo_override
-            )
+            with performance.stage("persistence"):
+                self.revision_lineage_service.commit_state_with_revision(
+                    new_state, state_repository=self._planning_state_repo_override
+                )
         except Exception:
             self._save_failed_progress(planning_state, persisted)
             raise

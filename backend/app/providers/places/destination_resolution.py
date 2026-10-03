@@ -19,6 +19,7 @@ from typing import Any, NamedTuple
 
 import httpx
 
+from app.core import performance
 from app.core.config import get_settings
 from app.models.common import DataStatus, GeoPoint, ProviderStatus
 from app.models.providers import NormalizedPlace, ProviderResponse
@@ -244,6 +245,8 @@ class DestinationResolutionMixin:
     ) -> ProviderResponse[Any]:
         field_name = "must_visit_place"
         query = f"{must_visit_term}, {primary_destination}"
+        # Section 1A (measurement only): counts repeated named lookups.
+        performance.note_request("named_lookup", query.strip().lower())
 
         try:
             with httpx.Client(
@@ -445,6 +448,16 @@ class DestinationResolutionMixin:
         return response
 
     def _resolve_destination(
+        self, client: httpx.Client, place_name: str
+    ) -> _ResolvedDestination | None:
+        """`_resolve_destination_untimed`, timed (Section 1A, measurement
+        only): its wall-clock is the `destination_resolution` stage, and each
+        call is counted so repeated resolutions of one destination show up."""
+        performance.note_request("destination_resolution", place_name)
+        with performance.stage("destination_resolution"):
+            return self._resolve_destination_untimed(client, place_name)
+
+    def _resolve_destination_untimed(
         self, client: httpx.Client, place_name: str
     ) -> _ResolvedDestination | None:
         """Conservatively geocodes `place_name` via the configured geocoder (Step 155C).

@@ -14,6 +14,7 @@ from app.models.planning_state import (
 )
 from app.providers.gateway import ProviderGateway, provider_gateway
 from app.providers.holidays.nager_date_adapter import infer_country_code
+from app.core import performance
 from app.core.provider_usage import GenerationProviderContext
 from app.services.base import PlanningStageService
 from app.services.entity_collisions import apply_suspect_collisions
@@ -129,49 +130,55 @@ class DestinationContextService(PlanningStageService):
             attraction_filters = {"pool_size": max(60, min(5 * targets.target_stops, 110))}
             food_filters = {"pool_size": max(20, min(8 * targets.trip_days, 40))}
 
-        attractions_response = (
-            places.search_attractions(destination_name, attraction_filters)
-            if attraction_filters is not None
-            else places.search_attractions(destination_name)
-        )
-        self.coverage_service.record_provider_result(planning_state, attractions_response, "places")
+        # Section 1A (measurement only): the `performance.stage` blocks in
+        # this method only time what they enclose.
+        with performance.stage("places_broad"):
+            attractions_response = (
+                places.search_attractions(destination_name, attraction_filters)
+                if attraction_filters is not None
+                else places.search_attractions(destination_name)
+            )
+            self.coverage_service.record_provider_result(planning_state, attractions_response, "places")
 
-        restaurants_response = (
-            places.search_restaurants(destination_name, food_filters)
-            if food_filters is not None
-            else places.search_restaurants(destination_name)
-        )
-        self.coverage_service.record_provider_result(
-            planning_state, restaurants_response, "restaurants"
-        )
+            restaurants_response = (
+                places.search_restaurants(destination_name, food_filters)
+                if food_filters is not None
+                else places.search_restaurants(destination_name)
+            )
+            self.coverage_service.record_provider_result(
+                planning_state, restaurants_response, "restaurants"
+            )
 
-        accommodation_response = places.search_accommodation_pois(destination_name)
-        self.coverage_service.record_provider_result(
-            planning_state, accommodation_response, "accommodations"
-        )
+            accommodation_response = places.search_accommodation_pois(destination_name)
+            self.coverage_service.record_provider_result(
+                planning_state, accommodation_response, "accommodations"
+            )
 
         transit_response = self.gateway.routes.estimate_transit_feasibility(
             origin={"name": destination_name}, destination={"name": destination_name}
         )
         self.coverage_service.record_provider_result(planning_state, transit_response, "routes")
 
-        weather_context = self._build_weather_context(planning_state, destination_name, places=places)
-        planning_state.weather_context = weather_context
+        with performance.stage("weather_holiday"):
+            weather_context = self._build_weather_context(planning_state, destination_name, places=places)
+            planning_state.weather_context = weather_context
 
-        holiday_context = self._build_holiday_context(planning_state, destination_name)
-        planning_state.holiday_context = holiday_context
+            holiday_context = self._build_holiday_context(planning_state, destination_name)
+            planning_state.holiday_context = holiday_context
 
-        currency_context = self._build_currency_context(planning_state, destination_name)
-        planning_state.currency_context = currency_context
+        with performance.stage("currency"):
+            currency_context = self._build_currency_context(planning_state, destination_name)
+            planning_state.currency_context = currency_context
 
         candidate_pois = (
             [poi.model_dump(mode="json") for poi in attractions_response.data]
             if attractions_response.data
             else []
         )
-        candidate_pois, ungrounded_must_visits = self._append_must_visit_candidates(
-            planning_state, destination_name, candidate_pois, places=places
-        )
+        with performance.stage("must_visit_grounding"):
+            candidate_pois, ungrounded_must_visits = self._append_must_visit_candidates(
+                planning_state, destination_name, candidate_pois, places=places
+            )
         candidate_restaurants = (
             [poi.model_dump(mode="json") for poi in restaurants_response.data]
             if restaurants_response.data

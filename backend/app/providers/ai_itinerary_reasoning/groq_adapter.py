@@ -5,6 +5,7 @@ from typing import Any
 from pydantic import BaseModel, Field, ValidationError
 
 from app.providers.ai_failure import classify_and_message
+from app.core import performance
 from app.core.config import get_settings
 from app.models.ai_itinerary_reasoning import (
     AIItineraryReasoningGuardrailReport,
@@ -372,7 +373,8 @@ class GroqAIItineraryReasoningProvider(AIItineraryReasoningProvider):
 
         ref_map = CandidateRefMap.for_candidates(request.allowed_candidates)
         try:
-            raw_output = client.invoke(_build_prompt(request, ref_map))
+            with performance.provider_call("groq_reasoning"):
+                raw_output = client.invoke(_build_prompt(request, ref_map))
         except Exception as exc:  # API/runtime failure -> rejected, never fabricated
             kind, message = classify_and_message("Groq", exc)
             return self._rejected_result(request, message, failure_kind=kind.value)
@@ -566,7 +568,8 @@ class GroqAIItineraryReasoningProvider(AIItineraryReasoningProvider):
 
         ref_map = CandidateRefMap.for_candidates(request.allowed_candidates)
         try:
-            raw_output = client.invoke(_build_repair_prompt(request, ref_map))
+            with performance.provider_call("groq_repair"):
+                raw_output = client.invoke(_build_repair_prompt(request, ref_map))
         except Exception as exc:  # API/runtime failure -> rejected, never fabricated
             return self._rejected_repair_result(request, classify_and_message("Groq", exc)[1])
 

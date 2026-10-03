@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Callable
 
+from app.core import performance
 from app.core.config import get_settings
 from app.graphs.planning_graph_state import PlanningGraphState
 from app.models.accommodation import AccommodationSearchResult, AccommodationSearchStatus
@@ -123,6 +124,27 @@ def _context(state: PlanningGraphState) -> dict[str, Any]:
     203C.2B) -- passed explicitly to every service that can spend provider
     credits; empty when the run has none."""
     return context_kwargs(state.get("provider_context"))
+
+
+# Section 1A (measurement only): the stage a node's wall-clock is reported
+# under, where that differs from the node's own name.
+_STAGE_NAME_BY_NODE = {
+    "ai_itinerary_reasoning": "itinerary_reasoning",
+    "ai_itinerary_repair": "itinerary_repair",
+}
+
+
+def timed_node(node_name: str, node: PlanningGraphNode) -> PlanningGraphNode:
+    """`node`, with its wall-clock recorded as one stage of the generation
+    being profiled. A no-op wrapper when no generation is being profiled;
+    never changes what the node returns or raises."""
+    stage_name = _STAGE_NAME_BY_NODE.get(node_name, node_name)
+
+    def timed(state: PlanningGraphState) -> dict[str, Any]:
+        with performance.stage(stage_name):
+            return node(state)
+
+    return timed
 
 
 def _safe_error(node_name: str) -> str:
@@ -668,9 +690,10 @@ def build_route_aware_sequencing_node(
                     )
             # Section 203C.2B (final correction): one bounded repair attempt
             # per long-route day, on the final routed order.
-            apply_route_burden_repair_safely(
-                planning_state, resolved_route_feasibility_service, state.get("provider_context")
-            )
+            with performance.stage("route_repair"):
+                apply_route_burden_repair_safely(
+                    planning_state, resolved_route_feasibility_service, state.get("provider_context")
+                )
             # The days are final now: one authoritative explanation per day.
             finalize_day_explanations(planning_state)
         except Exception:

@@ -30,6 +30,7 @@ from app.providers.holidays.nager_date_adapter import NagerDateHolidaysAdapter
 from app.providers.places.factory import get_places_provider
 from app.providers.routing.base import RoutingProvider
 from app.providers.routing.factory import get_routing_provider
+from app.core import performance
 from app.core.provider_usage import GenerationProviderContext
 from app.providers.weather.open_meteo_adapter import OpenMeteoWeatherAdapter
 
@@ -282,8 +283,12 @@ class ProviderGateway:
         provider supports several waypoints. Never an all-pairs lookup."""
         provider = self.routing_for(provider_context)
         provider_name = getattr(provider, "provider_name", None)
+        # Section 1A (measurement only): the stage's wall-clock, and how often
+        # the same day route was asked for in this generation.
+        performance.note_request("route_sequence_lookup", points)
         started_at = time.monotonic()
-        results = provider.get_route_sequence(points)
+        with performance.stage("walking_routing"):
+            results = provider.get_route_sequence(points)
         duration_ms = (time.monotonic() - started_at) * 1000
         statuses = {_provider_status(result) for result in results}
         _log_provider_call(
@@ -307,8 +312,10 @@ class ProviderGateway:
         provider = self.routing_for(provider_context)
         if not getattr(provider, "supports_alternate_mode", False):
             return None
+        performance.note_request("alternate_mode_lookup", origin, destination)
         started_at = time.monotonic()
-        results = provider.get_route_sequence([origin, destination], RoutingProfile.DRIVING)
+        with performance.stage("alternate_mode_routing"):
+            results = provider.get_route_sequence([origin, destination], RoutingProfile.DRIVING)
         duration_ms = (time.monotonic() - started_at) * 1000
         result = results[0] if results else None
         _log_provider_call(
@@ -341,8 +348,13 @@ class ProviderGateway:
         """
         routing = self.routing_for(provider_context)
         provider_name = getattr(routing, "provider_name", None)
+        performance.note_request(
+            "route_leg_lookup",
+            request.origin_lat, request.origin_lon, request.destination_lat, request.destination_lon,
+        )
         started_at = time.monotonic()
-        result = routing.get_route(request)
+        with performance.stage("walking_routing"):
+            result = routing.get_route(request)
         duration_ms = (time.monotonic() - started_at) * 1000
         _log_provider_call(
             provider=provider_name,

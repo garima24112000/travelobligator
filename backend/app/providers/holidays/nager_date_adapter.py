@@ -6,6 +6,7 @@ from typing import Any
 
 import httpx
 
+from app.core import performance
 from app.core.config import get_settings
 from app.models.common import DataStatus, ProviderStatus
 from app.models.providers import NormalizedHoliday, ProviderResponse
@@ -221,9 +222,10 @@ class NagerDateHolidaysAdapter(HolidayProvider):
                         continue
 
                     any_live_fetch = True
-                    response = client.get(
-                        f"{self._base_url}/api/v3/PublicHolidays/{year}/{country_code}"
-                    )
+                    with performance.provider_call("nager_date"):
+                        response = client.get(
+                            f"{self._base_url}/api/v3/PublicHolidays/{year}/{country_code}"
+                        )
                     response.raise_for_status()
                     payload = response.json()
                     year_holidays = self._normalize(payload, country_code)

@@ -4,6 +4,8 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
 from app.graphs.planning_graph_nodes import (
+    PlanningGraphNode,
+    timed_node,
     build_accommodation_inventory_node,
     build_ai_candidate_node,
     build_ai_itinerary_reasoning_node,
@@ -184,57 +186,63 @@ def build_planning_graph(
     resolved_ai_itinerary_repair_service = ai_itinerary_repair_service or AIItineraryRepairService()
 
     graph = StateGraph(PlanningGraphState)
-    graph.add_node(
+
+    def add_node(name: str, node: PlanningGraphNode) -> None:
+        # Section 1A (measurement only): every node's wall-clock is recorded
+        # as one stage of the generation being profiled, if any.
+        graph.add_node(name, timed_node(name, node))
+
+    add_node(
         "traveler_profile", build_traveler_profile_node(resolved_traveler_profile_service)
     )
-    graph.add_node(
+    add_node(
         "destination_context", build_destination_context_node(resolved_destination_context_service)
     )
-    graph.add_node(
+    add_node(
         "candidate_quality", build_candidate_quality_node(resolved_candidate_quality_service)
     )
-    graph.add_node(
+    add_node(
         "ai_candidate",
         build_ai_candidate_node(ai_candidate_promotion_service, ai_candidate_discovery_service),
     )
     # Section 203C.2B: the inventory sufficiency gate runs on the grounded
     # pool, before strategy and itinerary reasoning.
-    graph.add_node("inventory_sufficiency", build_inventory_sufficiency_node())
-    graph.add_node("underfill_fallback", build_underfill_fallback_node())
-    graph.add_node("trip_strategy", build_trip_strategy_node(resolved_trip_strategy_service))
-    graph.add_node("stay_transport", build_stay_transport_node(resolved_stay_transport_service))
-    graph.add_node(
+    add_node("inventory_sufficiency", build_inventory_sufficiency_node())
+    add_node("underfill_fallback", build_underfill_fallback_node())
+    add_node("trip_strategy", build_trip_strategy_node(resolved_trip_strategy_service))
+    add_node("stay_transport", build_stay_transport_node(resolved_stay_transport_service))
+    add_node(
         "accommodation_inventory",
         build_accommodation_inventory_node(resolved_accommodation_inventory_service),
     )
-    graph.add_node(
+    add_node(
         "flight_inventory", build_flight_inventory_node(resolved_flight_inventory_service)
     )
-    graph.add_node(
+    add_node(
         "ai_itinerary_reasoning",
         build_ai_itinerary_reasoning_node(resolved_ai_itinerary_reasoning_service),
     )
-    graph.add_node(
+    add_node(
         "experience_planning", build_experience_planning_node(resolved_experience_planner_service)
     )
-    graph.add_node(
+    add_node(
         "route_feasibility", build_route_feasibility_node(resolved_route_feasibility_service)
     )
-    graph.add_node(
+    add_node(
         "route_aware_sequencing",
         build_route_aware_sequencing_node(
             resolved_route_aware_sequencing_service, resolved_route_feasibility_service
         ),
     )
-    graph.add_node(
+    add_node(
         "travel_time_buffer", build_travel_time_buffer_node(resolved_travel_time_buffer_service)
     )
-    graph.add_node("validation", build_validation_node(resolved_plan_validator_service))
-    graph.add_node(
+    add_node("validation", build_validation_node(resolved_plan_validator_service))
+    add_node(
         "ai_itinerary_repair", build_ai_itinerary_repair_node(resolved_ai_itinerary_repair_service)
     )
-    graph.add_node("provider_coverage", build_provider_coverage_node())
-    graph.add_node("final_state", build_final_state_node())
+    add_node("provider_coverage", build_provider_coverage_node())
+    add_node("final_state", build_final_state_node())
 
     graph.add_edge(START, "traveler_profile")
     graph.add_edge("traveler_profile", "destination_context")

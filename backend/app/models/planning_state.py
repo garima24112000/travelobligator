@@ -16,6 +16,7 @@ from app.models.ai_provider_discovery import AIProviderDiscoveryResult
 from app.models.candidate_grounding import CandidateGroundingBatch
 from app.models.candidate_quality import CandidateQualityReport
 from app.models.flight import FlightSearchResult
+from app.models.generation_performance import GenerationPerformanceReport
 from app.models.inventory_sufficiency import InventorySufficiencyReport, ProviderUsageReport
 from app.models.itinerary_narrative import ItineraryNarrativeReport
 from app.models.route_burden_repair import RouteBurdenRepairReport
@@ -1454,6 +1455,10 @@ class PlanningState(BaseModel):
     inventory_sufficiency_report: InventorySufficiencyReport | None = None
     # Provider calls/credits the LAST generation spent (counts only).
     provider_usage_report: ProviderUsageReport | None = None
+    # Where the LAST full generation's wall-clock time went (Section 1A,
+    # measurement only; numbers under fixed keys). Optional: a state stored
+    # before it existed loads unchanged.
+    generation_performance_report: GenerationPerformanceReport | None = None
     # What the single bounded post-routing repair did for each long-route
     # day of the LAST generation (None when no day needed one).
     route_burden_repair_report: RouteBurdenRepairReport | None = None

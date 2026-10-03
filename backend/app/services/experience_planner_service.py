@@ -7,6 +7,7 @@ from datetime import timedelta
 from typing import Any
 
 from app.services.experience_identity import deterministic_experience_id
+from app.core import performance
 from app.core.config import get_settings
 from app.models.ai_candidate_promotion import PromotedAICandidate
 from app.models.ai_itinerary_reasoning import (
@@ -773,18 +774,22 @@ class ExperiencePlannerService(PlanningStageService):
             def plan_class_cap(coarse: str) -> int | None:
                 return diversity.plan_class_cap(coarse, markets_requested, justified, num_days)
 
-            selected = _select_diverse_scheduling_set(
-                ordered_pois,
-                profiles,
-                num_days * max_per_day,
-                canonical_interests,
-                must_visit_ids,
-                plan_class_cap=plan_class_cap if get_settings().schedule_diversity_enabled else None,
-            )
+            # Section 1A (measurement only): the `performance.stage` blocks in
+            # this method only time what they enclose.
+            with performance.stage("diversity"):
+                selected = _select_diverse_scheduling_set(
+                    ordered_pois,
+                    profiles,
+                    num_days * max_per_day,
+                    canonical_interests,
+                    must_visit_ids,
+                    plan_class_cap=plan_class_cap if get_settings().schedule_diversity_enabled else None,
+                )
             # Section 203C.2B (canary correction): the selected set is grouped
             # into days by geography (balanced spatial clustering), not by
             # walking down the ranking one anchor at a time.
-            day_groups = _cluster_selected_into_days(selected, num_days, max_per_day)
+            with performance.stage("spatial_grouping"):
+                day_groups = _cluster_selected_into_days(selected, num_days, max_per_day)
 
         # Section 203C.2B (canary correction): the reasoning model chooses
         # WHICH places to visit; deterministic geography is authoritative for
@@ -793,7 +798,8 @@ class ExperiencePlannerService(PlanningStageService):
         # grouping of the same places when that is clearly shorter.
         ai_order_kept = ai_day_groups is not None
         if ai_day_groups is not None and get_settings().ai_day_spatial_regrouping_enabled:
-            regrouped = _spatially_regroup_days(day_groups, profiles, must_visit_ids, num_days, max_per_day)
+            with performance.stage("spatial_grouping"):
+                regrouped = _spatially_regroup_days(day_groups, profiles, must_visit_ids, num_days, max_per_day)
             if regrouped is not None:
                 day_groups = regrouped
                 ai_order_kept = False
@@ -821,15 +827,16 @@ class ExperiencePlannerService(PlanningStageService):
         # alternative exists. One bounded, deterministic pass per day; runs
         # before ordering and routing, so the route is computed once, for
         # the final stops.
-        day_groups, schedule_diversity = _enforce_day_diversity(
-            day_groups,
-            scheduling_candidate_pois,
-            profiles,
-            must_visit_ids,
-            markets_requested=diversity.markets_explicitly_requested(interest_terms),
-            justified=diversity.justified_classes(interest_terms),
-            enabled=get_settings().schedule_diversity_enabled,
-        )
+        with performance.stage("diversity"):
+            day_groups, schedule_diversity = _enforce_day_diversity(
+                day_groups,
+                scheduling_candidate_pois,
+                profiles,
+                must_visit_ids,
+                markets_requested=diversity.markets_explicitly_requested(interest_terms),
+                justified=diversity.justified_classes(interest_terms),
+                enabled=get_settings().schedule_diversity_enabled,
+            )
 
         reasoning_result = planning_state.ai_itinerary_reasoning_result
         logger.info(
@@ -923,14 +930,15 @@ class ExperiencePlannerService(PlanningStageService):
             # the same hard radius and no-repeat rules as every other
             # candidate, measured against this day's final stops.
             ai_restaurants_for_day = ai_restaurants_by_day.get(day_number) if used_ai_reasoning else None
-            restaurant_suggestions = _suggest_nearby_restaurants(
-                experiences,
-                candidate_restaurants,
-                warnings,
-                restaurant_quality_lookup,
-                already_suggested=suggested_restaurant_keys,
-                preferred=ai_restaurants_for_day,
-            )
+            with performance.stage("food_suggestions"):
+                restaurant_suggestions = _suggest_nearby_restaurants(
+                    experiences,
+                    candidate_restaurants,
+                    warnings,
+                    restaurant_quality_lookup,
+                    already_suggested=suggested_restaurant_keys,
+                    preferred=ai_restaurants_for_day,
+                )
             accommodation_suggestions = _suggest_nearby_accommodations(
                 experiences, candidate_accommodation_pois, warnings, accommodation_quality_lookup
             )
@@ -2196,6 +2204,11 @@ def recompute_food_suggestions(planning_state: PlanningState) -> None:
     current suggestions are kept first where they still qualify, so an
     untouched day does not change.
     """
+    with performance.stage("food_suggestions"):
+        _recompute_food_suggestions(planning_state)
+
+
+def _recompute_food_suggestions(planning_state: PlanningState) -> None:
     plan = planning_state.experience_plan
     if plan is None:
         return

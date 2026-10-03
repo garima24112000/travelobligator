@@ -29,6 +29,7 @@ from typing import Any
 
 import httpx
 
+from app.core import performance
 from app.core.config import get_settings
 from app.models.common import DataStatus, GeoPoint, ProviderStatus
 from app.models.providers import NormalizedPlace, ProviderResponse
@@ -199,7 +200,8 @@ class GeoapifyPlacesAdapter(DestinationResolutionMixin, PlacesProvider):
             return place, False
         context.identity_lookups_left -= 1
         context.identity_checked.add(place.place_id)
-        return self._enrich_with_details(place, for_identity=True) or place, True
+        with performance.stage("identity_details"):
+            return self._enrich_with_details(place, for_identity=True) or place, True
 
     def _resolve_suspect_collisions(self, places: list[NormalizedPlace]) -> list[NormalizedPlace]:
         """Finds SUSPECTED duplicates among `places` (and against the pool
@@ -507,7 +509,8 @@ class GeoapifyPlacesAdapter(DestinationResolutionMixin, PlacesProvider):
             response.data = [match]
             return response
 
-        enriched = self._enrich_with_details(place)
+        with performance.stage("anchor_details"):
+            enriched = self._enrich_with_details(place)
         if enriched is not None:
             # Details can reveal the source identity or another name of the
             # place, which may show it IS a pool place after all (e.g. the

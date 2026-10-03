@@ -42,6 +42,7 @@ from threading import RLock
 from typing import Any, Callable, Mapping
 from urllib.parse import urlsplit
 
+from app.core import performance
 from app.storage.provider_cache_store import ProviderCacheEntry, ProviderCacheValueError
 
 logger = logging.getLogger("app.provider_cache")
@@ -122,6 +123,9 @@ def _record(source: str, operation: str, status: CacheStatus, *, reason: str | N
             started: float | None = None, ttl_seconds: int | None = None) -> None:
     with _stats_lock:
         _stats[(source, status.value)] += 1
+    if operation == "get":
+        # Section 1A (measurement only): hit/miss for the generation being profiled, if any.
+        performance.note_cache(source, status == CacheStatus.HIT)
     # Section 200D: measurable without any log parsing. `provider` is the fixed cache-source label
     # (openstreetmap_poi, open_meteo, ...), never a query.
     from app.core.metrics import registry

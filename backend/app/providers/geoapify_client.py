@@ -14,6 +14,7 @@ from typing import Any, Callable
 
 import httpx
 
+from app.core import performance
 from app.core.config import get_settings
 from app.providers.errors import CooldownBreaker, ProviderRequestError
 from app.core.provider_usage import BudgetExhausted, ProviderUsageTracker
@@ -68,10 +69,15 @@ def geoapify_get(
             reservation.release()
         return ProviderRequestError(kind)
 
+    # Section 1A (measurement only): the wall-clock of this request, and
+    # whether the same request was already made in this generation. The
+    # fingerprint is hashed and never includes the key.
+    performance.note_request(api, path, params)
     try:
-        response = client.get(
-            f"{base_url}{path}", params={**params, "apiKey": api_key}, timeout=timeout
-        )
+        with performance.provider_call(performance.GEOAPIFY_PROVIDER_KEYS.get(api, "geoapify_other")):
+            response = client.get(
+                f"{base_url}{path}", params={**params, "apiKey": api_key}, timeout=timeout
+            )
         status = response.status_code
     except httpx.TimeoutException:
         raise _fail("timeout") from None

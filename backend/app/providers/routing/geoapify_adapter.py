@@ -25,6 +25,7 @@ from typing import Any
 
 import httpx
 
+from app.core import performance
 from app.core.config import get_settings
 from app.models.common import ProviderStatus
 from app.models.routing import RouteRequest, RouteResult, RoutingProfile
@@ -230,6 +231,7 @@ class GeoapifyRoutingAdapter(RoutingProvider):
     def _known_leg(self, origin: Point, destination: Point, mode: str) -> RouteResult | None:
         key = self._leg_key(origin, destination, mode)
         if self._context is not None and key in self._context.route_memo:
+            performance.count("route_memo_hits")
             return self._context.route_memo[key]
         cache_store = self._resolve_cache_store()
         if cache_store is None:

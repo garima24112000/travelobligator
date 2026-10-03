@@ -54,6 +54,131 @@ _ACCEPTED_REVIEW_CODES = frozenset(
 )
 
 
+# Section 1A (measurement only): how the generation's performance report is
+# laid out. Each row sums the named stages' EXCLUSIVE time, so the rows plus
+# "other" add up to the total. Reported only -- never an acceptance check.
+_PERFORMANCE_STAGE_ROWS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("traveler profile", ("traveler_profile",)),
+    ("destination resolution", ("destination_resolution",)),
+    ("weather/holiday", ("weather_holiday",)),
+    ("broad places", ("places_broad",)),
+    ("must-visit grounding", ("must_visit_grounding",)),
+    ("destination context (rest)", ("destination_context", "currency")),
+    ("anchor proposal", ("anchor_proposal",)),
+    ("anchor grounding", ("anchor_grounding",)),
+    ("anchor/must-visit details", ("anchor_details",)),
+    ("identity details", ("identity_details",)),
+    ("candidate/inventory", ("candidate_quality", "ai_candidate", "inventory_sufficiency")),
+    ("strategy/stay/inventory reports", ("trip_strategy", "stay_transport", "accommodation_inventory", "flight_inventory")),
+    ("reasoning", ("itinerary_reasoning",)),
+    ("experience planning (rest)", ("experience_planning",)),
+    ("diversity", ("diversity",)),
+    ("spatial grouping", ("spatial_grouping",)),
+    ("routing walk", ("walking_routing",)),
+    ("routing drive", ("alternate_mode_routing",)),
+    ("route reports (rest)", ("route_feasibility", "route_aware_sequencing", "travel_time_buffer")),
+    ("repair (route burden)", ("route_repair",)),
+    ("repair (AI itinerary)", ("itinerary_repair",)),
+    ("food", ("food_suggestions",)),
+    ("validation", ("validation",)),
+    ("narrator", ("narrator",)),
+    ("persistence", ("persistence",)),
+    ("bookkeeping", ("post_processing", "underfill_fallback", "provider_coverage", "final_state")),
+)
+_PERFORMANCE_PROVIDER_ROWS: tuple[tuple[str, str], ...] = (
+    ("Geoapify geocode", "geoapify_geocoding"),
+    ("Geoapify places", "geoapify_places"),
+    ("Geoapify details", "geoapify_details"),
+    ("Geoapify walk routing", "geoapify_routing_walk"),
+    ("Geoapify drive routing", "geoapify_routing_drive"),
+    ("Open-Meteo", "open_meteo"),
+    ("Nager.Date", "nager_date"),
+    ("Groq anchor", "groq_anchor"),
+    ("Groq reasoning", "groq_reasoning"),
+    ("Groq repair", "groq_repair"),
+    ("Groq narrator", "groq_narrator"),
+)
+_PERFORMANCE_REDUNDANT_ROWS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("repeated geocode calls", ("geocoding",)),
+    ("repeated details calls", ("place_details",)),
+    ("repeated route calls", ("routing", "routing_drive")),
+    ("repeated places calls", ("places",)),
+    ("repeated named lookup calls", ("named_lookup",)),
+    ("repeated destination resolutions (cache-served or live)", ("destination_resolution",)),
+    ("repeated route lookups (memo-served or live)", ("route_sequence_lookup", "route_leg_lookup", "alternate_mode_lookup")),
+)
+
+
+def _performance_section(performance: Any) -> dict[str, Any]:
+    """The generation's own performance report (numbers under fixed keys),
+    arranged for display. `available: False` when the generation carried none."""
+    if performance is None:
+        return {"available": False}
+    stage_ms = dict(performance.stage_ms)
+    known = {name for _, names in _PERFORMANCE_STAGE_ROWS for name in names}
+    stages = [
+        {"label": label, "seconds": round(sum(stage_ms.get(name, 0.0) for name in names) / 1000.0, 2)}
+        for label, names in _PERFORMANCE_STAGE_ROWS
+    ]
+    stages.extend(
+        {"label": name, "seconds": round(value / 1000.0, 2)}
+        for name, value in sorted(stage_ms.items())
+        if name not in known
+    )
+    labelled = {key for _, key in _PERFORMANCE_PROVIDER_ROWS}
+    provider_rows = [*_PERFORMANCE_PROVIDER_ROWS, *((key, key) for key in sorted(performance.provider_ms) if key not in labelled)]
+    totals, repeats = performance.request_totals, performance.redundant_requests
+    return {
+        "available": True,
+        "engine": performance.engine,
+        "total_seconds": round(performance.total_ms / 1000.0, 2) if performance.total_ms is not None else None,
+        "other_seconds": round(performance.other_ms / 1000.0, 2) if performance.other_ms is not None else None,
+        "stages": stages,
+        "provider_wall_time": [
+            {
+                "label": label,
+                "seconds": round(performance.provider_ms.get(key, 0.0) / 1000.0, 2),
+                "attempts": performance.provider_attempts.get(key, 0),
+            }
+            for label, key in provider_rows
+        ],
+        "provider_wall_time_total_seconds": round(sum(performance.provider_ms.values()) / 1000.0, 2),
+        "counts": dict(performance.counts),
+        "cache_hits_by_source": dict(performance.cache_hits),
+        "cache_misses_by_source": dict(performance.cache_misses),
+        "redundant_work": [
+            {
+                "label": label,
+                "repeated": sum(repeats.get(kind, 0) for kind in kinds),
+                "total": sum(totals.get(kind, 0) for kind in kinds),
+            }
+            for label, kinds in _PERFORMANCE_REDUNDANT_ROWS
+        ],
+        # raw figures, for comparing runs
+        "stage_ms": stage_ms,
+        "stage_inclusive_ms": dict(performance.stage_inclusive_ms),
+        "provider_ms": dict(performance.provider_ms),
+    }
+
+
+def _complete_performance_report(recorder: Any, state: Any) -> Any:
+    """The canary recorder's own report (complete), falling back to the one
+    stored with the plan. Geoapify request counts are the usage tracker's."""
+    from app.core import performance
+    from app.models.generation_performance import GenerationPerformanceReport
+
+    stored = state.generation_performance_report
+    usage = state.provider_usage_report
+    figures = performance.build_report(
+        recorder, {"calls_by_api": dict(usage.calls_by_api)} if usage is not None else None
+    )
+    if figures is None:
+        return stored
+    return GenerationPerformanceReport(
+        **figures, engine=stored.engine if stored is not None else None, includes_final_commit=True
+    )
+
+
 def _slug(text: str) -> str:
     plain = "".join(c for c in unicodedata.normalize("NFKD", text) if not unicodedata.combining(c))
     return re.sub(r"[^a-z0-9]+", "_", plain.lower()).strip("_") or "city"
@@ -76,6 +201,7 @@ def _value(item: Any) -> Any:
 
 
 def _run(args: argparse.Namespace, cache_hits: dict[str, int]) -> dict[str, Any]:
+    from app.core import performance
     from app.models.planning_state import TravelGroupType, TripPace, TripRequest
     from app.repositories.factory import get_planning_state_repository
     from app.services import place_taxonomy as taxonomy
@@ -98,27 +224,34 @@ def _run(args: argparse.Namespace, cache_hits: dict[str, int]) -> dict[str, Any]
         }
     }
 
+    # Section 1A: the canary owns the recorder, so its figures cover the whole
+    # call, including the final commit (which the report stored with the plan
+    # cannot contain).
+    recorder = performance.started_recorder()
     started = time.monotonic()
     try:
-        created = planning_orchestrator.create_trip(
-            TripRequest(
-                primary_destination=args.city,
-                start_date=_START_DATE,
-                end_date=_START_DATE + timedelta(days=args.days - 1),
-                travelers_count=2,
-                travel_group_type=TravelGroupType.COUPLE,
-                pace=TripPace(args.pace),
-                interests=interests,
-                must_visit=must_visit,
+        with performance.activate(recorder):
+            created = planning_orchestrator.create_trip(
+                TripRequest(
+                    primary_destination=args.city,
+                    start_date=_START_DATE,
+                    end_date=_START_DATE + timedelta(days=args.days - 1),
+                    travelers_count=2,
+                    travel_group_type=TravelGroupType.COUPLE,
+                    pace=TripPace(args.pace),
+                    interests=interests,
+                    must_visit=must_visit,
+                )
             )
-        )
-        state = planning_orchestrator.generate_full_plan_via_langgraph(created.trip_id)
+            state = planning_orchestrator.generate_full_plan_via_langgraph(created.trip_id)
     except Exception as exc:  # reported by TYPE only -- never the exception text
         report["technical_failure"] = type(exc).__name__
         report["latency"] = {"total_generation_seconds": round(time.monotonic() - started, 1)}
         return report
     report["technical_failure"] = None
     report["latency"] = {"total_generation_seconds": round(time.monotonic() - started, 1)}
+    # Where that time went. Reported only; never an acceptance check.
+    report["performance"] = _performance_section(_complete_performance_report(recorder, state))
 
     context = state.destination_context
     pois = context.candidate_pois if context is not None else []
@@ -904,6 +1037,34 @@ def _render(report: dict[str, Any]) -> str:
 
     section("LATENCY")
     row("total generation time (s)", report["latency"]["total_generation_seconds"])
+
+    performance = report.get("performance") or {"available": False}
+    section("PERFORMANCE")
+    if not performance["available"]:
+        lines.append("- no performance report was recorded for this generation")
+    else:
+        lines.append(f"total: {performance['total_seconds']} s ({performance['engine']} engine)")
+        lines.append("")
+        lines.append("stages (exclusive wall time; the rows and 'other' add up to the total):")
+        for item in performance["stages"]:
+            row(item["label"], f"{item['seconds']} s")
+        row("other", f"{performance['other_seconds']} s")
+        lines.append("")
+        lines.append(
+            f"provider wall time (waiting on external requests; {performance['provider_wall_time_total_seconds']} s in all):"
+        )
+        for item in performance["provider_wall_time"]:
+            row(item["label"], f"{item['seconds']} s over {item['attempts']} request attempt(s)")
+        lines.append("")
+        lines.append("request counts:")
+        for name, value in sorted(performance["counts"].items()):
+            row(name, value)
+        row("cache hits by source", performance["cache_hits_by_source"] or 0)
+        row("cache misses by source", performance["cache_misses_by_source"] or 0)
+        lines.append("")
+        lines.append("REDUNDANT WORK (identical requests repeated within this generation; counts only):")
+        for item in performance["redundant_work"]:
+            row(item["label"], f"{item['repeated']} of {item['total']}")
 
     acceptance = report["acceptance"]
     section(f"ACCEPTANCE: {acceptance['outcome']}")

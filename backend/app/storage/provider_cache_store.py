@@ -9,6 +9,8 @@ from pathlib import Path
 from threading import RLock
 from typing import Any, Mapping
 
+from app.core import performance
+
 # Provider cache foundation (Step 164A, docs/12_provider_architecture.md
 # "Provider Cache Foundation" section, docs/14_backend_architecture.md
 # storage/repository layer). As of Step 164B+, this module IS imported and
@@ -152,14 +154,19 @@ class ProviderCacheStore:
                 (source, query_hash),
             ).fetchone()
 
+        # Section 1A (measurement only): hit/miss per cache source for the
+        # generation being profiled, if any.
         if row is None:
+            performance.note_cache(source, False)
             return None
 
         payload_json, fetched_at, expires_at, metadata_json, schema_version, status = row
 
         if expires_at is not None and current_time >= datetime.fromisoformat(expires_at):
+            performance.note_cache(source, False)
             return None
 
+        performance.note_cache(source, True)
         return ProviderCacheEntry(
             source=source,
             query_hash=query_hash,

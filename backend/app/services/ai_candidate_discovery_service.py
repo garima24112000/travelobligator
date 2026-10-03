@@ -27,6 +27,7 @@ from app.providers.ai_candidate_proposal import (
     AICandidateProposalProvider,
     get_ai_candidate_proposal_provider,
 )
+from app.core import performance
 from app.core.provider_usage import GenerationProviderContext, context_kwargs
 from app.services.ai_candidate_proposal_request_builder import AICandidateProposalRequestBuilder
 from app.services.pace_targets import pace_targets_for
@@ -266,24 +267,28 @@ class AICandidateDiscoveryService:
         proposal_request = self.proposal_request_builder.build_request(
             planning_state, task=task, max_candidates=max_candidates
         )
-        proposal_result = self.proposal_provider.propose(proposal_request)
+        # Section 1A (measurement only): the `performance.stage` blocks only
+        # time what they enclose.
+        with performance.stage("anchor_proposal"):
+            proposal_result = self.proposal_provider.propose(proposal_request)
 
-        grounding_request = self.grounding_request_builder.build_request(
-            planning_state, proposals=proposal_result.proposals
-        )
-
-        provider_discovery_result = self.provider_discovery_service.discover(
-            planning_state,
-            proposal_result.proposals,
-            grounding_request.provider_candidates,
-            **context_kwargs(provider_context),
-        )
-        if provider_discovery_result.matches_by_proposal_id():
-            grounding_request = grounding_request.model_copy(
-                update={"ai_directed_matches": provider_discovery_result.matches_by_proposal_id()}
+        with performance.stage("anchor_grounding"):
+            grounding_request = self.grounding_request_builder.build_request(
+                planning_state, proposals=proposal_result.proposals
             )
 
-        grounding_result = self.grounding_service.ground(grounding_request)
+            provider_discovery_result = self.provider_discovery_service.discover(
+                planning_state,
+                proposal_result.proposals,
+                grounding_request.provider_candidates,
+                **context_kwargs(provider_context),
+            )
+            if provider_discovery_result.matches_by_proposal_id():
+                grounding_request = grounding_request.model_copy(
+                    update={"ai_directed_matches": provider_discovery_result.matches_by_proposal_id()}
+                )
+
+            grounding_result = self.grounding_service.ground(grounding_request)
 
         proposals_by_id = {proposal.proposal_id: proposal for proposal in proposal_result.proposals}
         ai_directed_quality_scores = _score_ai_directed_grounded_candidates(
