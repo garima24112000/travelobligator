@@ -44,6 +44,8 @@ JOB_STALE_OWNER_REJECTED = "job.stale_owner_rejected"
 # providers
 PROVIDER_SUCCESS = "provider.success"
 PROVIDER_FAILURE = "provider.failure"
+# An OPTIONAL provider had nothing to offer (expected; INFO, never a failure).
+PROVIDER_NO_DATA = "provider.no_data"
 # process lifecycle
 APP_STARTUP = "app.startup"
 APP_SHUTDOWN = "app.shutdown"

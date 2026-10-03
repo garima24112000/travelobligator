@@ -56,6 +56,10 @@ class _FakeResponse:
     def __init__(self, json_data: Any = None, should_fail: bool = False) -> None:
         self._json_data = json_data
         self._should_fail = should_fail
+        # Section 1B: the adapter reads the status and body before parsing
+        # (a 204 / an empty body is "no holiday data", never a parse error).
+        self.status_code = 200
+        self.content = b"[]"
 
     def raise_for_status(self) -> None:
         if self._should_fail:

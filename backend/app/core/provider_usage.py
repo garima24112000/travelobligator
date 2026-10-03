@@ -17,8 +17,11 @@ from __future__ import annotations
 
 import threading
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass, field
+from typing import Iterator
 
+from app.core import performance
 from app.core.config import get_settings
 
 
@@ -54,12 +57,53 @@ class UsageReservation:
         self._tracker._close(self._api, self._reserved, 0, counted_call=False)
 
 
+class RequestLimiter:
+    """How many requests ONE generation may have in flight at once (Section
+    1B). Every Geoapify API of the generation shares the one limiter, so
+    overlapping batches (geocoding, Places, Place Details, routes) together
+    never exceed the limit. In-process and generation-scoped: never a lock
+    in Redis or PostgreSQL."""
+
+    def __init__(self, limit: int) -> None:
+        self.limit = max(1, int(limit))
+        self._slots = threading.BoundedSemaphore(self.limit)
+        self._lock = threading.Lock()
+        self._in_flight = 0
+        self._peak = 0
+
+    @property
+    def peak(self) -> int:
+        with self._lock:
+            return self._peak
+
+    @contextmanager
+    def slot(self) -> Iterator[None]:
+        self._slots.acquire()
+        try:
+            with self._lock:
+                self._in_flight += 1
+                self._peak = max(self._peak, self._in_flight)
+                in_flight = self._in_flight
+            performance.note_in_flight("geoapify", in_flight)
+            yield
+        finally:
+            with self._lock:
+                self._in_flight -= 1
+            self._slots.release()
+
+
 class ProviderUsageTracker:
     """Credits and calls for ONE generation. Thread-safe; holds counts
     only -- never a query, an id, a URL or a key."""
 
-    def __init__(self, budget: int | None) -> None:
+    def __init__(self, budget: int | None, max_concurrent_requests: int | None = None) -> None:
         self.budget = budget
+        # Section 1B: the generation's one limiter for requests in flight.
+        self.request_limiter = RequestLimiter(
+            max_concurrent_requests
+            if max_concurrent_requests is not None
+            else get_settings().geoapify_max_concurrent_requests
+        )
         self._lock = threading.Lock()
         self._credits: dict[str, int] = {}
         self._calls: dict[str, int] = {}

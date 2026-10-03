@@ -83,6 +83,9 @@ class PerformanceRecorder:
         self._cache_hits: dict[str, int] = {}
         self._cache_misses: dict[str, int] = {}
         self._counts: dict[str, int] = {}
+        self._stage_task_ms: dict[str, float] = {}
+        self._batch_sizes: dict[str, list[int]] = {}
+        self._peak_in_flight: dict[str, int] = {}
 
     def start(self) -> None:
         self._started_at = self._clock()
@@ -105,8 +108,15 @@ class PerformanceRecorder:
         if stack:
             stack[-1][2] += elapsed_ms
         nested_in_itself = any(frame[0] == name for frame in stack)
+        exclusive_ms = max(0.0, elapsed_ms - child_ms)
         with self._lock:
-            self._stage_ms[name] = self._stage_ms.get(name, 0.0) + max(0.0, elapsed_ms - child_ms)
+            if _IN_CONCURRENT_TASK.get():
+                # Inside a concurrent batch the wall-clock belongs to the
+                # stage that is waiting for the batch; what the tasks spent
+                # is summed separately and may exceed that wall-clock.
+                self._stage_task_ms[name] = self._stage_task_ms.get(name, 0.0) + exclusive_ms
+                return
+            self._stage_ms[name] = self._stage_ms.get(name, 0.0) + exclusive_ms
             if not nested_in_itself:
                 self._stage_inclusive_ms[name] = self._stage_inclusive_ms.get(name, 0.0) + elapsed_ms
 
@@ -134,6 +144,15 @@ class PerformanceRecorder:
     def count(self, name: str, amount: int = 1) -> None:
         with self._lock:
             self._counts[name] = self._counts.get(name, 0) + amount
+
+    def note_batch(self, operation: str, size: int) -> None:
+        with self._lock:
+            self._batch_sizes.setdefault(operation, []).append(size)
+
+    def note_in_flight(self, provider: str, in_flight: int) -> None:
+        with self._lock:
+            if in_flight > self._peak_in_flight.get(provider, 0):
+                self._peak_in_flight[provider] = in_flight
 
     # -- report ------------------------------------------------------------------
 
@@ -168,10 +187,42 @@ class PerformanceRecorder:
                 "redundant_requests": {
                     kind: sum(times - 1 for times in seen.values()) for kind, seen in self._requests.items()
                 },
+                # Section 1B: concurrency diagnostics.
+                "stage_task_ms": {name: round(value, 1) for name, value in self._stage_task_ms.items()},
+                "peak_geoapify_concurrency": self._peak_in_flight.get("geoapify", 0),
+                "concurrent_batches": sum(len(sizes) for sizes in self._batch_sizes.values()),
+                "batch_sizes": {operation: list(sizes) for operation, sizes in self._batch_sizes.items()},
             }
 
 
 _ACTIVE: ContextVar[PerformanceRecorder | None] = ContextVar("generation_performance_recorder", default=None)
+# True inside a task of a concurrent batch (`core/bounded_concurrency.py`).
+_IN_CONCURRENT_TASK: ContextVar[bool] = ContextVar("generation_performance_concurrent_task", default=False)
+
+
+def mark_concurrent_task() -> None:
+    """Called by a batch worker, in its own copy of the context."""
+    _IN_CONCURRENT_TASK.set(True)
+
+
+def note_batch(operation: str, size: int) -> None:
+    """One concurrent batch of `size` tasks was dispatched for `operation`."""
+    try:
+        recorder = _ACTIVE.get()
+        if recorder is not None and _safe_key(operation) is not None:
+            recorder.note_batch(operation, int(size))
+    except Exception:  # noqa: BLE001 - diagnostics never break a generation
+        pass
+
+
+def note_in_flight(provider: str, in_flight: int) -> None:
+    """`in_flight` requests to `provider` are on the wire right now."""
+    try:
+        recorder = _ACTIVE.get()
+        if recorder is not None and _safe_key(provider) is not None:
+            recorder.note_in_flight(provider, int(in_flight))
+    except Exception:  # noqa: BLE001 - diagnostics never break a generation
+        pass
 
 
 def current() -> PerformanceRecorder | None:

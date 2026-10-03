@@ -20,6 +20,11 @@ from app.utils.destination_inference import infer_us_country_code_from_state_seg
 
 logger = logging.getLogger(__name__)
 
+# Section 1B: machine-readable reason for "the provider answered, with no
+# holiday data" (HTTP 204 / an empty body). Neutral on purpose -- it is not
+# a failure, and not a statement that the country has no public holidays.
+HOLIDAY_DATA_NOT_PROVIDED = "holiday_data_not_provided"
+
 _USER_AGENT = "TravelObligator/0.1 (dev; legit-data-only)"
 _REQUEST_TIMEOUT_SECONDS = 15.0
 
@@ -145,6 +150,7 @@ class NagerDateHolidaysAdapter(HolidayProvider):
         self._base_url = settings.nager_date_api_url
         self._cache_enabled = settings.provider_cache_enabled
         self._cache_ttl_seconds = settings.nager_date_cache_ttl_seconds
+        self._no_data_cache_ttl_seconds = settings.nager_date_no_data_cache_ttl_seconds
         self._cache_path = settings.resolved_provider_cache_path()
         self._cache_store = cache_store
 
@@ -202,6 +208,9 @@ class NagerDateHolidaysAdapter(HolidayProvider):
         years = sorted({start_date.year, end_date.year})
         cache_store = self._resolve_cache_store()
 
+        # Years the provider answered successfully but with NO content (HTTP
+        # 204 / an empty body): it has no calendar for that country and year.
+        no_data_years: list[int] = []
         try:
             all_holidays: list[NormalizedHoliday] = []
             any_live_fetch = False
@@ -220,6 +229,12 @@ class NagerDateHolidaysAdapter(HolidayProvider):
                     if cached_holidays is not None:
                         all_holidays.extend(cached_holidays)
                         continue
+                    no_data_hash = make_query_hash(
+                        {"country_code": country_code, "year": year, "kind": "no_data"}
+                    )
+                    if cache_store is not None and self._no_data_remembered(cache_store, no_data_hash):
+                        no_data_years.append(year)
+                        continue
 
                     any_live_fetch = True
                     with performance.provider_call("nager_date"):
@@ -227,14 +242,29 @@ class NagerDateHolidaysAdapter(HolidayProvider):
                             f"{self._base_url}/api/v3/PublicHolidays/{year}/{country_code}"
                         )
                     response.raise_for_status()
+                    if response.status_code == 204 or not response.content.strip():
+                        # A successful, EMPTY answer is deterministic: there
+                        # is nothing to parse and nothing to retry. It is
+                        # remembered briefly so the next generation does not
+                        # ask again.
+                        no_data_years.append(year)
+                        if cache_store is not None:
+                            self._remember_no_data(cache_store, no_data_hash)
+                        continue
                     payload = response.json()
                     year_holidays = self._normalize(payload, country_code)
                     all_holidays.extend(year_holidays)
                     if cache_store is not None and year_holidays:
                         self._write_cache(cache_store, query_hash, year_holidays)
         except (httpx.HTTPError, ValueError) as exc:
+            # Fixed identifiers only: never the destination text, the URL or
+            # the exception text.
             logger.warning(
-                "Nager.Date request failed for %s (%s): %s", destination, country_code, exc
+                "Nager.Date request failed (country=%s, %s).",
+                country_code,
+                f"HTTP {exc.response.status_code}"
+                if isinstance(exc, httpx.HTTPStatusError)
+                else type(exc).__name__,
             )
             return failed_response(
                 self.provider_name,
@@ -242,6 +272,26 @@ class NagerDateHolidaysAdapter(HolidayProvider):
                 unavailable_fields=[field_name],
                 message=f"Nager.Date request failed for '{destination}' ({country_code}).",
             )
+
+        if not all_holidays and no_data_years:
+            # Not a failure, and not a claim that the country has no public
+            # holidays: the provider simply returned no holiday data.
+            logger.info(
+                "Nager.Date returned no holiday data (country=%s, status=%s).",
+                country_code,
+                HOLIDAY_DATA_NOT_PROVIDED,
+            )
+            no_data = unavailable_response(
+                self.provider_name,
+                self.provider_type,
+                unavailable_fields=[field_name],
+                message=(
+                    f"Nager.Date returned no public holiday data for {country_code} in "
+                    f"{no_data_years}, so public holidays are unavailable for this trip."
+                ),
+            )
+            no_data.failure_reason = HOLIDAY_DATA_NOT_PROVIDED
+            return no_data
 
         if not all_holidays:
             return unavailable_response(
@@ -302,6 +352,33 @@ class NagerDateHolidaysAdapter(HolidayProvider):
                 "Nager.Date provider cache entry was unusable; falling back to live request."
             )
             return None
+
+    def _no_data_remembered(self, cache_store: ProviderCacheStore, no_data_hash: str) -> bool:
+        """True when a recent successful-but-empty answer for this country
+        and year is still remembered. A broken cache read is a miss."""
+        if self._no_data_cache_ttl_seconds <= 0:
+            return False
+        try:
+            entry = cache_store.get(self.provider_name, no_data_hash)
+        except Exception:
+            logger.warning("Nager.Date provider cache read failed; falling back to live request.")
+            return False
+        return entry is not None and isinstance(entry.payload, dict) and entry.payload.get("no_data") is True
+
+    def _remember_no_data(self, cache_store: ProviderCacheStore, no_data_hash: str) -> None:
+        """Best-effort, short-lived: only ever a successful EMPTY answer,
+        never a failure."""
+        if self._no_data_cache_ttl_seconds <= 0:
+            return
+        try:
+            cache_store.set(
+                self.provider_name,
+                no_data_hash,
+                {"no_data": True},
+                ttl_seconds=self._no_data_cache_ttl_seconds,
+            )
+        except Exception:
+            logger.warning("Nager.Date provider cache write failed; returning live result anyway.")
 
     def _write_cache(
         self,

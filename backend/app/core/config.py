@@ -140,6 +140,16 @@ class Settings(BaseSettings):
     # an honest `not_connected` result instead of raising.
     groq_api_key: str | None = Field(default=None, alias="GROQ_API_KEY")
     groq_model: str = Field(default="openai/gpt-oss-20b", alias="GROQ_MODEL")
+    # Section 1B: explicit, finite bounds for the Groq anchor-proposal,
+    # itinerary-reasoning and itinerary-repair requests (the narrator has its
+    # own `ITINERARY_NARRATOR_TIMEOUT_SECONDS`). The timeout is per HTTP
+    # attempt. `GROQ_MAX_RETRIES` is the SDK's own transport-level retry
+    # count (connection errors, 408/429/5xx); 2 is what the SDK already did
+    # by default, now stated rather than implied -- it adds no retry.
+    groq_request_timeout_seconds: float = Field(
+        default=30.0, alias="GROQ_REQUEST_TIMEOUT_SECONDS", gt=0.0
+    )
+    groq_max_retries: int = Field(default=2, alias="GROQ_MAX_RETRIES", ge=0, le=5)
 
     # Config gate for get_ai_candidate_proposal_provider (Step 160E,
     # extended in Step 161A, corrected in Step 191A). "not_connected"
@@ -417,6 +427,19 @@ class Settings(BaseSettings):
     geoapify_api_key: str | None = Field(default=None, alias="GEOAPIFY_API_KEY", repr=False)
     geoapify_api_url: str = Field(default="https://api.geoapify.com", alias="GEOAPIFY_API_URL")
     geoapify_timeout_seconds: float = Field(default=10.0, alias="GEOAPIFY_TIMEOUT_SECONDS", gt=0.0)
+    # Section 1B: how many Geoapify network requests (geocoding, Places,
+    # Place Details, walking and driving routes together) ONE generation may
+    # have in flight at the same time. A generation-scoped limiter, never
+    # shared state in Redis; 1 makes every Geoapify request serial.
+    geoapify_max_concurrent_requests: int = Field(
+        default=4, alias="GEOAPIFY_MAX_CONCURRENT_REQUESTS", ge=1, le=16
+    )
+    # Section 1B: independent provider requests of one generation run as
+    # bounded concurrent batches. `false` runs every batch serially, in the
+    # same order -- the results are identical either way, only slower.
+    provider_io_concurrency_enabled: bool = Field(
+        default=True, alias="PROVIDER_IO_CONCURRENCY_ENABLED"
+    )
     # Section 203C.2B: places (POI discovery) provider. "openstreetmap"
     # (default; Overpass, development/experiments) or "geoapify" (the
     # production provider: Geoapify Places inside the destination boundary).
@@ -587,6 +610,14 @@ class Settings(BaseSettings):
         default=2592000,
         alias="NAGER_DATE_CACHE_TTL_SECONDS",
         ge=0,
+    )
+    # Section 1B: Nager.Date answers a country/year it has no calendar for
+    # with a successful, EMPTY response (HTTP 204). That deterministic answer
+    # is remembered for this short time so it is not requested again on every
+    # generation (the same policy as an empty Geoapify Places answer).
+    # Failures (network, 4xx/5xx, malformed) are never cached. 0 disables it.
+    nager_date_no_data_cache_ttl_seconds: int = Field(
+        default=21600, alias="NAGER_DATE_NO_DATA_CACHE_TTL_SECONDS", ge=0
     )
 
     # Frankfurter cache TTL (Step 164D, docs/12_provider_architecture.md

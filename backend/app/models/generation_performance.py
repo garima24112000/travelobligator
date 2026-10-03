@@ -35,6 +35,16 @@ class GenerationPerformanceReport(BaseModel):
     # repeated an identical earlier request in the same generation.
     request_totals: dict[str, int] = Field(default_factory=dict)
     redundant_requests: dict[str, int] = Field(default_factory=dict)
+    # Section 1B: concurrency diagnostics (reported, never judged).
+    # Time spent by stages INSIDE concurrent batch tasks, summed over the
+    # tasks. It overlaps the wall-clock of the stage that waited for the
+    # batch, so it is not part of `stage_ms` and can exceed `total_ms`.
+    stage_task_ms: dict[str, float] = Field(default_factory=dict)
+    # The most Geoapify requests this generation had in flight at once.
+    peak_geoapify_concurrency: int = 0
+    concurrent_batches: int = 0
+    # The size of every concurrent batch dispatched, per operation.
+    batch_sizes: dict[str, list[int]] = Field(default_factory=dict)
     # False on the report stored with the plan: it is written by the final
     # commit, so it cannot contain that commit's own duration. True only on
     # a report a profiling caller (the canary) builds from its own recorder

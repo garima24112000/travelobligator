@@ -196,13 +196,22 @@ class AIDirectedProviderDiscoveryService:
         searches_used = 0
         matched = 0
 
-        def run_search(index: int) -> None:
-            nonlocal searches_used, matched
-            proposal = proposals[index]
-            searches_used += 1
+        def run_searches(indices: list[int]) -> None:
+            """Section 1B: the lookups of `indices` are independent, so they
+            are FETCHED as one bounded concurrent batch; each result is then
+            applied here, in the ranked order of `indices`, exactly as a
+            one-at-a-time loop applies it."""
+            nonlocal searches_used
+            searches_used += len(indices)
             started_at = time.monotonic()
-            attempt = self._search_one(destination_name, proposal, places)
+            attempts = self._search_many(destination_name, [proposals[index] for index in indices], places)
             duration_ms = (time.monotonic() - started_at) * 1000
+            for index, attempt in zip(indices, attempts):
+                apply_attempt(index, attempt, duration_ms)
+
+        def apply_attempt(index: int, attempt: AIProviderDiscoveryAttempt, duration_ms: float) -> None:
+            nonlocal matched
+            proposal = proposals[index]
             logger.info(
                 "AI-directed provider discovery attempt completed.",
                 extra={
@@ -230,21 +239,27 @@ class AIDirectedProviderDiscoveryService:
                     matched += 1
             attempts_by_index[index] = attempt
 
-        for index in ranked[:bound]:
-            run_search(index)
+        run_searches(ranked[:bound])
 
+        # The reserve depends on what the base lookups found, so it is a
+        # later phase. A one-at-a-time loop stops as soon as `bound` lookups
+        # have matched or the reserve is used up; each lookup adds at most
+        # one match, so it always runs at least
+        # `min(reserve left, bound - matched)` more of them. Dispatching
+        # exactly that many at a time, and re-checking after each batch,
+        # runs the same lookups in the same order.
+        reserve = [
+            index
+            for index in ranked[bound:]
+            if proposals[index].proposal_type == AICandidateProposalType.NAMED_PLACE
+            and proposals[index].confidence >= _RESERVE_MIN_CONFIDENCE
+        ]
         extras_used = 0
-        for index in ranked[bound:]:
-            if extras_used >= extra_bound or matched >= bound:
-                break
-            proposal = proposals[index]
-            if (
-                proposal.proposal_type != AICandidateProposalType.NAMED_PLACE
-                or proposal.confidence < _RESERVE_MIN_CONFIDENCE
-            ):
-                continue
-            extras_used += 1
-            run_search(index)
+        while reserve and extras_used < extra_bound and matched < bound:
+            take = min(extra_bound - extras_used, bound - matched, len(reserve))
+            batch, reserve = reserve[:take], reserve[take:]
+            extras_used += take
+            run_searches(batch)
 
         attempts: list[AIProviderDiscoveryAttempt] = []
         for index in eligible_indices:
@@ -297,16 +312,44 @@ class AIDirectedProviderDiscoveryService:
         try:
             response = (places or self.gateway.places).search_must_visit_place(query, destination_name)
         except Exception as exc:  # provider/test-double failure -> honest, non-fatal
-            logger.warning(
-                "AI-directed provider discovery lookup raised unexpectedly: %s", exc
-            )
-            return AIProviderDiscoveryAttempt(
-                proposal_id=proposal.proposal_id,
-                search_query=query,
-                status=AIProviderDiscoveryAttemptStatus.PROVIDER_FAILED,
-                message="Provider lookup raised an unexpected error.",
-            )
+            return self._raised_attempt(proposal, exc)
+        return self._attempt_from_response(proposal, response)
 
+    def _search_many(
+        self, destination_name: str, batch: list[AICandidateProposal], places: Any = None
+    ) -> list[AIProviderDiscoveryAttempt]:
+        """One attempt per proposal of `batch`, in order. A places provider
+        that can look several named places up as one bounded concurrent
+        batch (`search_must_visit_places`) is asked to; any other provider
+        (and every test double) is called once per proposal, as before."""
+        provider = places or self.gateway.places
+        search_many = getattr(provider, "search_must_visit_places", None)
+        if len(batch) < 2 or not callable(search_many):
+            return [self._search_one(destination_name, proposal, provider) for proposal in batch]
+        try:
+            responses = search_many([proposal.search_query for proposal in batch], destination_name)
+        except Exception as exc:  # the batch itself failed -> every lookup honestly failed
+            return [self._raised_attempt(proposal, exc) for proposal in batch]
+        return [
+            self._raised_attempt(proposal, response)
+            if isinstance(response, Exception)
+            else self._attempt_from_response(proposal, response)
+            for proposal, response in zip(batch, responses)
+        ]
+
+    @staticmethod
+    def _raised_attempt(proposal: AICandidateProposal, exc: Exception) -> AIProviderDiscoveryAttempt:
+        logger.warning("AI-directed provider discovery lookup raised unexpectedly: %s", exc)
+        return AIProviderDiscoveryAttempt(
+            proposal_id=proposal.proposal_id,
+            search_query=proposal.search_query,
+            status=AIProviderDiscoveryAttemptStatus.PROVIDER_FAILED,
+            message="Provider lookup raised an unexpected error.",
+        )
+
+    @staticmethod
+    def _attempt_from_response(proposal: AICandidateProposal, response: Any) -> AIProviderDiscoveryAttempt:
+        query = proposal.search_query
         if response.status == ProviderStatus.NOT_CONNECTED:
             return AIProviderDiscoveryAttempt(
                 proposal_id=proposal.proposal_id,

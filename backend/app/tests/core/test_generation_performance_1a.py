@@ -381,9 +381,14 @@ def test_the_persisted_report_holds_only_numbers_under_fixed_keys(
     ):
         assert all(_FIXED_KEY.match(key) for key in dumped[field]), field
         assert all(isinstance(value, (int, float)) and not isinstance(value, bool) for value in dumped[field].values())
+    # Section 1B: concurrency diagnostics -- counts and batch sizes only
+    assert all(_FIXED_KEY.match(key) for key in (*dumped["stage_task_ms"], *dumped["batch_sizes"]))
+    assert all(isinstance(size, int) for sizes in dumped["batch_sizes"].values() for size in sizes)
+    assert isinstance(dumped["peak_geoapify_concurrency"], int) and isinstance(dumped["concurrent_batches"], int)
     assert set(dumped) == {
         "engine", "total_ms", "stage_ms", "stage_inclusive_ms", "other_ms", "provider_ms", "provider_attempts",
         "counts", "cache_hits", "cache_misses", "request_totals", "redundant_requests", "includes_final_commit",
+        "stage_task_ms", "peak_geoapify_concurrency", "concurrent_batches", "batch_sizes",
     }
 
 

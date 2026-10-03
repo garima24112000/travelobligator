@@ -10,6 +10,7 @@ no httpx exception (whose text contains the URL) ever leaves this module
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 from typing import Any, Callable
 
 import httpx
@@ -74,10 +75,14 @@ def geoapify_get(
     # fingerprint is hashed and never includes the key.
     performance.note_request(api, path, params)
     try:
-        with performance.provider_call(performance.GEOAPIFY_PROVIDER_KEYS.get(api, "geoapify_other")):
-            response = client.get(
-                f"{base_url}{path}", params={**params, "apiKey": api_key}, timeout=timeout
-            )
+        # Section 1B: at most `GEOAPIFY_MAX_CONCURRENT_REQUESTS` requests of
+        # this generation are on the wire at once, across every Geoapify API.
+        # Waiting for a slot is not part of the request's own wall-clock.
+        with usage.request_limiter.slot() if usage is not None else nullcontext():
+            with performance.provider_call(performance.GEOAPIFY_PROVIDER_KEYS.get(api, "geoapify_other")):
+                response = client.get(
+                    f"{base_url}{path}", params={**params, "apiKey": api_key}, timeout=timeout
+                )
         status = response.status_code
     except httpx.TimeoutException:
         raise _fail("timeout") from None

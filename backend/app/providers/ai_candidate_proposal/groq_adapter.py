@@ -403,6 +403,10 @@ class GroqAICandidateProposalProvider(AICandidateProposalProvider):
             api_key=self._api_key,
             temperature=self._temperature,
             max_tokens=max_tokens or self._max_tokens,
+            # Section 1B: explicit, finite request bounds (previously the
+            # SDK's implicit defaults). No retry is added by this.
+            timeout=get_settings().groq_request_timeout_seconds,
+            max_retries=get_settings().groq_max_retries,
         )
         return chat.with_structured_output(
             _GroqProposalBatchSchema, method="json_schema", strict=True

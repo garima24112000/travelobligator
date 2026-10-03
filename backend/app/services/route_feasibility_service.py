@@ -127,6 +127,21 @@ def _feasibility_from_result(
     return RouteFeasibilityStatus.FEASIBLE, _SUCCESS_MESSAGE
 
 
+# One leg, as `((origin lat, lon), (destination lat, lon))`.
+_LegKey = tuple[tuple[float, float], tuple[float, float]]
+
+
+def _needs_alternate_mode(walking: RouteResult) -> bool:
+    """True when the provider's WALKING route for a leg is real and longer
+    than the walking-leg limit -- the only case a driving route is asked for."""
+    return not (
+        walking.status != ProviderStatus.SUCCESS
+        or walking.duration_seconds is None
+        or leg_mode(walking.mode) != TRANSFER_MODE_WALK
+        or walking.duration_seconds <= get_settings().route_burden_max_leg_seconds
+    )
+
+
 class RouteFeasibilityService:
     """Builds a `RouteFeasibilityReport` for the current `experience_plan`
     (Step 165E). Run by `PlanningOrchestrator.run_experience_plan_stage`
@@ -161,11 +176,19 @@ class RouteFeasibilityService:
 
         experience_plan = planning_state.experience_plan
         if experience_plan is not None:
-            for day_plan in experience_plan.daily_plans:
-                # Section 203C.2B: ONE routing request for the day's ordered
-                # stops (a multi-waypoint route), never a request per pair;
-                # then at most one driving request per over-long walking leg.
-                legs.extend(self.route_day_legs(day_plan.experiences, provider_context))
+            # Section 203C.2B: ONE routing request for each day's ordered
+            # stops (a multi-waypoint route), never a request per pair; then
+            # at most one driving request per over-long walking leg.
+            # Section 1B: the days are independent, so their walking requests
+            # are fetched as one bounded concurrent batch, and -- once every
+            # walking leg is known -- so are the driving requests. Each result
+            # stays with its own day and leg, and the legs are built in day
+            # and leg order.
+            days = [day_plan.experiences for day_plan in experience_plan.daily_plans]
+            walked = self._route_days(days, provider_context)
+            drives = self._alternate_mode_routes(days, walked, provider_context)
+            for experiences, day_results in zip(days, walked):
+                legs.extend(self._day_legs(experiences, day_results, provider_context, drives))
 
         report_status = _aggregate_status([leg.status for leg in legs])
         route_data_source = (
@@ -208,18 +231,18 @@ class RouteFeasibilityService:
         from_point: GeoPoint,
         to_point: GeoPoint,
         provider_context: GenerationProviderContext | None,
+        prefetched: dict[_LegKey, RouteResult | Exception | None] | None = None,
     ) -> tuple[RouteResult | None, bool]:
         """`(driving result, attempted)` for one leg. A driving route is
         asked for only when the provider's WALKING route for this leg exceeds
         the walking-leg limit, at most once per leg per generation, and is
         used only when the provider returned a real, shorter-in-time route.
-        Otherwise the factual walking leg stands."""
-        if (
-            walking.status != ProviderStatus.SUCCESS
-            or walking.duration_seconds is None
-            or leg_mode(walking.mode) != TRANSFER_MODE_WALK
-            or walking.duration_seconds <= get_settings().route_burden_max_leg_seconds
-        ):
+        Otherwise the factual walking leg stands.
+
+        `prefetched` (Section 1B) holds the driving results already obtained
+        for this report's legs as one batch; a leg found there is not asked
+        for again."""
+        if not _needs_alternate_mode(walking):
             return None, False
         alternate = getattr(self.gateway, "get_alternate_mode_route", None)
         if not callable(alternate):
@@ -228,7 +251,12 @@ class RouteFeasibilityService:
         if provider_context is not None and (origin, destination) in provider_context.alternate_mode_failed_legs:
             return None, True
         try:
-            drive = alternate(origin, destination, **context_kwargs(provider_context))
+            if prefetched is not None and (origin, destination) in prefetched:
+                drive = prefetched[(origin, destination)]
+                if isinstance(drive, Exception):
+                    raise drive
+            else:
+                drive = alternate(origin, destination, **context_kwargs(provider_context))
         except Exception:
             logger.warning(
                 "The alternate-mode route request raised unexpectedly; keeping the walking leg.",
@@ -256,8 +284,16 @@ class RouteFeasibilityService:
     ) -> list[RouteLegFeasibility]:
         """The final legs of one day in its given order: one walking request
         for the day, then the bounded per-leg mode adaptation."""
+        return self._day_legs(experiences, self._route_day(experiences, provider_context), provider_context)
+
+    def _day_legs(
+        self,
+        experiences: list[ExperienceItem],
+        day_results: list[RouteResult] | None,
+        provider_context: GenerationProviderContext | None,
+        prefetched_drives: dict[_LegKey, RouteResult | Exception | None] | None = None,
+    ) -> list[RouteLegFeasibility]:
         provider_name = getattr(self.gateway.routing, "provider_name", "routing_provider")
-        day_results = self._route_day(experiences, provider_context)
         return [
             self._build_leg(
                 experiences[index],
@@ -265,9 +301,89 @@ class RouteFeasibilityService:
                 provider_name,
                 result=day_results[index] if day_results is not None else None,
                 provider_context=provider_context,
+                prefetched_drives=prefetched_drives,
             )
             for index in range(len(experiences) - 1)
         ]
+
+    def _route_days(
+        self,
+        days: list[list[ExperienceItem]],
+        provider_context: GenerationProviderContext | None,
+    ) -> list[list[RouteResult] | None]:
+        """`_route_day` for every day, in day order. When the gateway can
+        route several days as one bounded concurrent batch and more than one
+        day needs a route, they are fetched together; each day's results (or
+        its own failure) stay with that day."""
+        route_sequences = getattr(self.gateway, "get_route_sequences", None)
+        routable = [
+            index
+            for index, experiences in enumerate(days)
+            if len(experiences) >= 2 and all(experience.coordinates is not None for experience in experiences)
+        ]
+        if (
+            len(routable) < 2
+            or not callable(route_sequences)
+            or not callable(getattr(self.gateway, "get_route_sequence", None))
+        ):
+            return [self._route_day(experiences, provider_context) for experiences in days]
+
+        points = [[(e.coordinates.lat, e.coordinates.lng) for e in days[index]] for index in routable]
+        try:
+            batch = route_sequences(points, **context_kwargs(provider_context))
+        except Exception as exc:
+            batch = [exc] * len(routable)
+        results: list[list[RouteResult] | None] = [None] * len(days)
+        for index, outcome in zip(routable, batch):
+            leg_count = len(days[index]) - 1
+            if isinstance(outcome, Exception):
+                logger.warning(
+                    "ProviderGateway.get_route_sequence raised unexpectedly; treating this day's legs as failed.",
+                    exc_info=outcome,
+                )
+                results[index] = [_failed_route_result(self.gateway)] * leg_count
+            else:
+                results[index] = outcome if len(outcome) == leg_count else None
+        return results
+
+    def _alternate_mode_routes(
+        self,
+        days: list[list[ExperienceItem]],
+        walked: list[list[RouteResult] | None],
+        provider_context: GenerationProviderContext | None,
+    ) -> dict[_LegKey, RouteResult | Exception | None] | None:
+        """The driving results for every over-long walking leg of the
+        report, fetched as one bounded concurrent batch -- only after every
+        walking leg is known, and requested in day and leg order (so the
+        alternate-mode allowance is spent on the same legs as leg-by-leg
+        requests would spend it). None when there is nothing to batch; the
+        legs then ask one at a time, as before."""
+        alternates = getattr(self.gateway, "get_alternate_mode_routes", None)
+        if not callable(alternates) or not callable(getattr(self.gateway, "get_alternate_mode_route", None)):
+            return None
+        wanted: list[_LegKey] = []
+        for experiences, day_results in zip(days, walked):
+            if day_results is None:
+                continue
+            for index, walking in enumerate(day_results):
+                from_point, to_point = experiences[index].coordinates, experiences[index + 1].coordinates
+                if from_point is None or to_point is None or not _needs_alternate_mode(walking):
+                    continue
+                key = ((from_point.lat, from_point.lng), (to_point.lat, to_point.lng))
+                if provider_context is not None and key in provider_context.alternate_mode_failed_legs:
+                    continue
+                if key not in wanted:
+                    wanted.append(key)
+        if len(wanted) < 2:
+            return None
+        try:
+            return dict(zip(wanted, alternates(wanted, **context_kwargs(provider_context))))
+        except Exception:
+            logger.warning(
+                "The alternate-mode route request raised unexpectedly; keeping the walking leg.",
+                exc_info=True,
+            )
+            return {key: None for key in wanted}
 
     def _route_day(
         self,
@@ -301,6 +417,7 @@ class RouteFeasibilityService:
         provider_name: str,
         result: RouteResult | None = None,
         provider_context: GenerationProviderContext | None = None,
+        prefetched_drives: dict[_LegKey, RouteResult | Exception | None] | None = None,
     ) -> RouteLegFeasibility:
         from_point = from_experience.coordinates
         to_point = to_experience.coordinates
@@ -337,7 +454,9 @@ class RouteFeasibilityService:
         # long gets ONE driving-route request for this same leg. When that
         # succeeds the leg becomes a vehicle transfer and the stops stay.
         walking = result
-        drive, attempted = self._alternate_mode_route(result, from_point, to_point, provider_context)
+        drive, attempted = self._alternate_mode_route(
+            result, from_point, to_point, provider_context, prefetched_drives
+        )
         if drive is not None:
             result = drive
         feasibility_status, message = _feasibility_from_result(result, from_experience, to_experience)

@@ -21,11 +21,14 @@ from __future__ import annotations
 
 import copy
 import logging
+from dataclasses import dataclass
+from functools import partial
 from typing import Any
 
 import httpx
 
 from app.core import performance
+from app.core.bounded_concurrency import DRIVE_ROUTE_BATCH_LIMIT, WALK_ROUTE_BATCH_LIMIT, run_bounded
 from app.core.config import get_settings
 from app.models.common import ProviderStatus
 from app.models.routing import RouteRequest, RouteResult, RoutingProfile
@@ -57,6 +60,16 @@ _FAILED_MESSAGE = "The routing provider (Geoapify) request failed."
 _UNAVAILABLE_MESSAGE = "The routing provider (Geoapify) returned no usable route."
 
 Point = tuple[float, float]  # (lat, lon)
+
+
+@dataclass
+class _RouteRequestPlan:
+    """One routing request that still has to be made (allowance taken)."""
+
+    points: list[Point]
+    legs: list[tuple[Point, Point]]
+    alternate: bool
+    mode: str
 
 
 class GeoapifyRoutingAdapter(RoutingProvider):
@@ -100,16 +113,50 @@ class GeoapifyRoutingAdapter(RoutingProvider):
     def get_route_sequence(
         self, points: list[Point], profile: RoutingProfile | None = None
     ) -> list[RouteResult]:
+        return self.get_route_sequences([points], profile)[0]
+
+    def get_route_sequences(
+        self, sequences: list[list[Point]], profile: RoutingProfile | None = None
+    ) -> list[list[RouteResult]]:
+        """`get_route_sequence` for several INDEPENDENT sequences (the days
+        of a plan, or single legs), one result list per sequence in the
+        order given (Section 1B).
+
+        Three steps. PLAN, on the calling thread and in order: what is
+        already known (memo, cache), and one unit of the matching request
+        allowance for every sequence that needs a request -- taken before
+        anything is dispatched. FETCH: the requests, as one bounded
+        concurrent batch; a request that fails or times out affects only its
+        own sequence. FINISH, on the calling thread and in order: normalise,
+        memoise and cache. So which request finished first never matters."""
+        # Section 203C.2B (mixed-mode transfers): the configured mode (walk)
+        # unless the caller asks for a driving route for these legs.
+        alternate = profile == RoutingProfile.DRIVING and self._mode != _DRIVE_MODE
+        mode = _DRIVE_MODE if alternate else self._mode
+
+        planned = [self._plan_sequence(points, alternate, mode) for points in sequences]
+        requests = [plan for plan in planned if isinstance(plan, _RouteRequestPlan)]
+        outcomes = run_bounded(
+            "drive_routes" if alternate else "walk_routes",
+            [partial(self._fetch_sequence, plan) for plan in requests],
+            DRIVE_ROUTE_BATCH_LIMIT if alternate else WALK_ROUTE_BATCH_LIMIT,
+        )
+        fetched = {id(plan): outcome for plan, outcome in zip(requests, outcomes)}
+        return [
+            self._finish_sequence(plan, fetched[id(plan)].unwrap()) if isinstance(plan, _RouteRequestPlan) else plan
+            for plan in planned
+        ]
+
+    def _plan_sequence(
+        self, points: list[Point], alternate: bool, mode: str
+    ) -> "list[RouteResult] | _RouteRequestPlan":
+        """The final results for `points` when no request is needed (or
+        allowed); otherwise the request to make, its allowance already taken."""
         legs = list(zip(points, points[1:]))
         if not legs:
             return []
         if not self._api_key:
             return [self._result(ProviderStatus.NOT_CONNECTED, _FAILURE_MESSAGES["not_connected"])] * len(legs)
-
-        # Section 203C.2B (mixed-mode transfers): the configured mode (walk)
-        # unless the caller asks for a driving route for these legs.
-        alternate = profile == RoutingProfile.DRIVING and self._mode != _DRIVE_MODE
-        mode = _DRIVE_MODE if alternate else self._mode
 
         known = [self._known_leg(origin, destination, mode) for origin, destination in legs]
         if all(result is not None for result in known):
@@ -131,41 +178,54 @@ class GeoapifyRoutingAdapter(RoutingProvider):
                         self._result(ProviderStatus.UNAVAILABLE, _FAILURE_MESSAGES["budget_exhausted"])
                     ] * len(legs)
                 context.route_requests_left -= 1
+        return _RouteRequestPlan(points=list(points), legs=legs, alternate=alternate, mode=mode)
 
+    def _fetch_sequence(self, plan: "_RouteRequestPlan") -> "dict[str, Any] | ProviderRequestError":
+        """ONE routing request (its allowance was already taken by
+        `_plan_sequence`). Safe to run concurrently: it touches only the
+        usage tracker. A provider failure is returned, not raised, so it is
+        reported for its own sequence when the results are finished."""
+        context = self._context
         try:
             with httpx.Client(timeout=self._timeout) as client:
-                payload = geoapify_get(
+                return geoapify_get(
                     client,
                     base_url=self._base_url,
                     path="/v1/routing",
                     params={
-                        "waypoints": "|".join(f"{lat},{lon}" for lat, lon in points),
-                        "mode": mode,
+                        "waypoints": "|".join(f"{lat},{lon}" for lat, lon in plan.points),
+                        "mode": plan.mode,
                     },
                     api_key=self._api_key,
                     timeout=self._timeout,
                     # Usage is accounted per mode: `routing` is the configured
                     # (walking) mode, `routing_drive` the alternate one.
-                    api="routing_drive" if alternate else "routing",
+                    api="routing_drive" if plan.alternate else "routing",
                     usage=context.usage_tracker if context is not None else None,
                     # Geoapify Routing: 1 credit per waypoint pair.
-                    reserve_credits=len(legs),
+                    reserve_credits=len(plan.legs),
                 )
         except ProviderRequestError as exc:
-            logger.warning("Routing request failed (provider=%s, kind=%s).", self.provider_name, exc.kind)
+            return exc
+
+    def _finish_sequence(
+        self, plan: "_RouteRequestPlan", fetched: "dict[str, Any] | ProviderRequestError"
+    ) -> list[RouteResult]:
+        if isinstance(fetched, ProviderRequestError):
+            logger.warning("Routing request failed (provider=%s, kind=%s).", self.provider_name, fetched.kind)
             status = (
                 ProviderStatus.NOT_CONNECTED
-                if exc.kind == "not_connected"
+                if fetched.kind == "not_connected"
                 else ProviderStatus.UNAVAILABLE
-                if exc.kind in ("budget_exhausted", "no_generation_context")
+                if fetched.kind in ("budget_exhausted", "no_generation_context")
                 else ProviderStatus.FAILED
             )
-            return [self._result(status, _FAILURE_MESSAGES.get(exc.kind, _FAILED_MESSAGE))] * len(legs)
+            return [self._result(status, _FAILURE_MESSAGES.get(fetched.kind, _FAILED_MESSAGE))] * len(plan.legs)
 
-        results = self._normalize(payload, len(legs), mode)
-        for (origin, destination), result in zip(legs, results):
+        results = self._normalize(fetched, len(plan.legs), plan.mode)
+        for (origin, destination), result in zip(plan.legs, results):
             if result.status == ProviderStatus.SUCCESS:
-                self._remember_leg(origin, destination, result, mode)
+                self._remember_leg(origin, destination, result, plan.mode)
         return results
 
     # -- response ------------------------------------------------------------------

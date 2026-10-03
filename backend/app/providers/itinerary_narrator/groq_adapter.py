@@ -227,6 +227,9 @@ class GroqItineraryNarratorProvider(ItineraryNarratorProvider):
             temperature=self._temperature,
             max_tokens=self._max_tokens,
             timeout=self._timeout_seconds,
+            # Section 1B: the SDK's transport-level retry count, stated
+            # explicitly (the same policy as the other Groq requests).
+            max_retries=get_settings().groq_max_retries,
         )
         # Section 195 (Task 18): switched to Structured Outputs
         # (`method="json_schema", strict=True`) -- the Section 191A.1

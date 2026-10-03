@@ -154,6 +154,16 @@ def _performance_section(performance: Any) -> dict[str, Any]:
             }
             for label, kinds in _PERFORMANCE_REDUNDANT_ROWS
         ],
+        # Section 1B: concurrency diagnostics (reported, never judged)
+        "concurrency": {
+            "peak_geoapify_concurrency": performance.peak_geoapify_concurrency,
+            "concurrent_batches": performance.concurrent_batches,
+            "batch_sizes": {operation: list(sizes) for operation, sizes in performance.batch_sizes.items()},
+            # summed over the tasks of concurrent batches: overlaps the wall time above
+            "stage_task_seconds": {
+                name: round(value / 1000.0, 2) for name, value in sorted(performance.stage_task_ms.items())
+            },
+        },
         # raw figures, for comparing runs
         "stage_ms": stage_ms,
         "stage_inclusive_ms": dict(performance.stage_inclusive_ms),
@@ -1061,6 +1071,13 @@ def _render(report: dict[str, Any]) -> str:
             row(name, value)
         row("cache hits by source", performance["cache_hits_by_source"] or 0)
         row("cache misses by source", performance["cache_misses_by_source"] or 0)
+        concurrency = performance["concurrency"]
+        lines.append("")
+        lines.append("CONCURRENCY (bounded batches of independent provider requests):")
+        row("peak Geoapify concurrency", concurrency["peak_geoapify_concurrency"])
+        row("concurrent batches", concurrency["concurrent_batches"])
+        row("batch sizes by operation", concurrency["batch_sizes"] or "none")
+        row("time inside batch tasks, summed (s; overlaps the stage wall time)", concurrency["stage_task_seconds"] or "none")
         lines.append("")
         lines.append("REDUNDANT WORK (identical requests repeated within this generation; counts only):")
         for item in performance["redundant_work"]:

@@ -70,6 +70,10 @@ _SAFE_PROVIDER_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_:.-]+$")
 # this codebase's own "never quietly treat degraded data as success"
 # convention.
 _INFO_LEVEL_STATUSES = frozenset({"success", "returned"})
+# Section 1B: the gateway operations whose provider is OPTIONAL in V1, and
+# the statuses that only mean "nothing to offer" for them.
+_OPTIONAL_INVENTORY_STAGES = frozenset({"accommodations", "flights"})
+_EXPECTED_NO_DATA_STATUSES = frozenset({"unavailable", "not_connected"})
 
 # Maps a result's `status` value to one of this codebase's existing,
 # already-safe `schemas.errors.ErrorCode` values -- never a new code
@@ -148,10 +152,24 @@ def _log_provider_call(*, provider: object, stage: str, status: str, duration_ms
     provider_label = _safe_provider_name(provider)
     _record_provider_metrics(provider_label, stage, status, duration_ms)
     outcome = _outcome_label(status)
+    # Section 1B: an optional inventory provider that has nothing to offer
+    # (no bookable accommodation/flight inventory is connected in V1) is an
+    # expected outcome, not a failure. It is still logged, with its real
+    # status, but at INFO. Every other non-success -- failed, partial, a
+    # routing provider that is unavailable -- stays a WARNING. Logging only:
+    # the result the caller receives is never changed here.
+    expected_no_data = stage in _OPTIONAL_INVENTORY_STAGES and status in _EXPECTED_NO_DATA_STATUSES
     extra: dict[str, object] = {
-        "event": "provider.success" if status in _INFO_LEVEL_STATUSES else "provider.failure",
+        "event": (
+            "provider.success"
+            if status in _INFO_LEVEL_STATUSES
+            else "provider.no_data"
+            if expected_no_data
+            else "provider.failure"
+        ),
         "provider": provider_label,
         "stage": stage,
+        "operation": stage,
         "status": status,
         "outcome": outcome,
         "duration_ms": round(duration_ms, 3),
@@ -161,10 +179,17 @@ def _log_provider_call(*, provider: object, stage: str, status: str, duration_ms
         extra["error_code"] = error_code
         extra["error_kind"] = status
 
+    # The message itself names provider, operation and status (fixed, bounded
+    # identifiers only -- never a URL, a key, a query, a payload or a prompt).
+    arguments = (provider_label, stage, status)
     if status in _INFO_LEVEL_STATUSES:
-        logger.info("Provider call completed.", extra=extra)
+        logger.info("Provider call completed (provider=%s, operation=%s, status=%s).", *arguments, extra=extra)
+    elif expected_no_data:
+        logger.info(
+            "Optional provider returned no data (provider=%s, operation=%s, status=%s).", *arguments, extra=extra
+        )
     else:
-        logger.warning("Provider call did not return success.", extra=extra)
+        logger.warning("Provider call failed (provider=%s, operation=%s, status=%s).", *arguments, extra=extra)
 
 
 class ProviderGateway:
@@ -297,6 +322,96 @@ class ProviderGateway:
             status=statuses.pop() if len(statuses) == 1 else "partial",
             duration_ms=duration_ms,
         )
+        return results
+
+    def get_route_sequences(
+        self,
+        days: list[list[tuple[float, float]]],
+        provider_context: GenerationProviderContext | None = None,
+    ) -> list[list[RouteResult] | Exception]:
+        """`get_route_sequence` for several INDEPENDENT days (Section 1B):
+        one entry per day, in the order given -- that day's leg results, or
+        the exception its lookup raised (which never affects another day).
+        A routing provider that can fetch several sequences as one bounded
+        concurrent batch is asked to; any other is called day by day."""
+        provider = self.routing_for(provider_context)
+        provider_name = getattr(provider, "provider_name", None)
+        for points in days:
+            performance.note_request("route_sequence_lookup", points)
+        started_at = time.monotonic()
+        with performance.stage("walking_routing"):
+            results = self._route_sequences(provider, days, None)
+        duration_ms = (time.monotonic() - started_at) * 1000
+        for result in results:
+            statuses = {"failed"} if isinstance(result, Exception) else {_provider_status(leg) for leg in result}
+            _log_provider_call(
+                provider=provider_name,
+                stage="routing",
+                status=statuses.pop() if len(statuses) == 1 else "partial",
+                duration_ms=duration_ms,
+            )
+        return results
+
+    def get_alternate_mode_routes(
+        self,
+        legs: list[tuple[tuple[float, float], tuple[float, float]]],
+        provider_context: GenerationProviderContext | None = None,
+    ) -> list[RouteResult | Exception | None]:
+        """`get_alternate_mode_route` for several INDEPENDENT legs (Section
+        1B): one entry per `(origin, destination)` leg, in the order given
+        -- its driving result, None when the provider offers no second mode,
+        or the exception its lookup raised."""
+        provider = self.routing_for(provider_context)
+        if not getattr(provider, "supports_alternate_mode", False):
+            return [None] * len(legs)
+        for origin, destination in legs:
+            performance.note_request("alternate_mode_lookup", origin, destination)
+        started_at = time.monotonic()
+        with performance.stage("alternate_mode_routing"):
+            sequences = self._route_sequences(
+                provider, [[origin, destination] for origin, destination in legs], RoutingProfile.DRIVING
+            )
+        duration_ms = (time.monotonic() - started_at) * 1000
+        results: list[RouteResult | Exception | None] = []
+        for sequence in sequences:
+            result = sequence if isinstance(sequence, Exception) else (sequence[0] if sequence else None)
+            _log_provider_call(
+                provider=getattr(provider, "provider_name", None),
+                stage="routing",
+                status=(
+                    "failed"
+                    if isinstance(result, Exception)
+                    else _provider_status(result)
+                    if result is not None
+                    else "unavailable"
+                ),
+                duration_ms=duration_ms,
+            )
+            results.append(result)
+        return results
+
+    @staticmethod
+    def _route_sequences(
+        provider: RoutingProvider,
+        sequences: list[list[tuple[float, float]]],
+        profile: RoutingProfile | None,
+    ) -> list[list[RouteResult] | Exception]:
+        batch = getattr(provider, "get_route_sequences", None)
+        if callable(batch) and len(sequences) > 1:
+            try:
+                return list(batch(sequences, profile))
+            except Exception as exc:  # noqa: BLE001 - reported per sequence, as a per-call failure would be
+                return [exc] * len(sequences)
+        results: list[list[RouteResult] | Exception] = []
+        for points in sequences:
+            try:
+                results.append(
+                    provider.get_route_sequence(points)
+                    if profile is None
+                    else provider.get_route_sequence(points, profile)
+                )
+            except Exception as exc:  # noqa: BLE001 - reported for this sequence only
+                results.append(exc)
         return results
 
     def get_alternate_mode_route(

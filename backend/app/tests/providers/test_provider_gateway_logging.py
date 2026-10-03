@@ -250,9 +250,13 @@ def test_get_route_not_connected_logs_warning_with_error_code(capture: _CaptureH
     _assert_no_forbidden_fields(record)
 
 
-def test_search_flights_unavailable_logs_warning_with_error_code(
+def test_search_flights_unavailable_is_logged_as_expected_no_data_not_as_a_warning(
     capture: _CaptureHandler,
 ) -> None:
+    """Section 1B: flights (like accommodation inventory) are an OPTIONAL
+    provider in V1, so `unavailable` is an expected outcome -- still logged
+    with its real status and error code, but at INFO and as its own event,
+    never as warning noise and never disguised as a success."""
     gateway = ProviderGateway(flight_inventory=_FakeFlightInventoryProvider())
 
     result = gateway.search_flights(_flight_request())
@@ -261,8 +265,13 @@ def test_search_flights_unavailable_logs_warning_with_error_code(
     matching = _records_with(capture, stage="flights", status="unavailable")
     assert len(matching) == 1
     record = matching[0]
-    assert record.levelname == "WARNING"
+    assert record.levelname == "INFO"
+    assert record.event == "provider.no_data"
     assert record.error_code == "DATA_UNAVAILABLE"
+    assert record.getMessage() == (
+        "Optional provider returned no data "
+        "(provider=fake_flight_inventory_provider, operation=flights, status=unavailable)."
+    )
     _assert_no_forbidden_fields(record)
 
 

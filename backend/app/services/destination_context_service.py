@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from functools import partial
 from typing import Any
 
+from app.core.bounded_concurrency import CONTEXT_PROVIDER_BATCH_LIMIT, run_bounded
+from app.models.providers import ProviderResponse
 from app.models.planning_state import (
     CurrencyContext,
     DailyWeather,
@@ -133,23 +136,31 @@ class DestinationContextService(PlanningStageService):
         # Section 1A (measurement only): the `performance.stage` blocks in
         # this method only time what they enclose.
         with performance.stage("places_broad"):
-            attractions_response = (
-                places.search_attractions(destination_name, attraction_filters)
-                if attraction_filters is not None
-                else places.search_attractions(destination_name)
-            )
+            # Section 1B: a provider that can fetch the three broad searches'
+            # requests as one bounded concurrent batch is asked to; it still
+            # builds the three responses one after the other, in this order.
+            # Every other provider is called three times, exactly as before.
+            search_broad_inventory = getattr(places, "search_broad_inventory", None)
+            if callable(search_broad_inventory):
+                attractions_response, restaurants_response, accommodation_response = search_broad_inventory(
+                    destination_name, attraction_filters, food_filters
+                )
+            else:
+                attractions_response = (
+                    places.search_attractions(destination_name, attraction_filters)
+                    if attraction_filters is not None
+                    else places.search_attractions(destination_name)
+                )
+                restaurants_response = (
+                    places.search_restaurants(destination_name, food_filters)
+                    if food_filters is not None
+                    else places.search_restaurants(destination_name)
+                )
+                accommodation_response = places.search_accommodation_pois(destination_name)
             self.coverage_service.record_provider_result(planning_state, attractions_response, "places")
-
-            restaurants_response = (
-                places.search_restaurants(destination_name, food_filters)
-                if food_filters is not None
-                else places.search_restaurants(destination_name)
-            )
             self.coverage_service.record_provider_result(
                 planning_state, restaurants_response, "restaurants"
             )
-
-            accommodation_response = places.search_accommodation_pois(destination_name)
             self.coverage_service.record_provider_result(
                 planning_state, accommodation_response, "accommodations"
             )
@@ -159,15 +170,44 @@ class DestinationContextService(PlanningStageService):
         )
         self.coverage_service.record_provider_result(planning_state, transit_response, "routes")
 
+        # Section 1B: the weather, holiday and currency providers are
+        # independent of each other, so their three requests are fetched as
+        # one bounded concurrent batch. Each context is then built from its
+        # own response, in the original order; a provider that raises still
+        # raises here, at the point where it was called before.
+        trip_request = planning_state.trip_request
+        trip_dates = {
+            "start_date": trip_request.start_date.isoformat(),
+            "end_date": trip_request.end_date.isoformat(),
+        }
         with performance.stage("weather_holiday"):
-            weather_context = self._build_weather_context(planning_state, destination_name, places=places)
+            coordinates = places.resolve_coordinates(destination_name)
+            weather_outcome, holiday_outcome, currency_outcome = run_bounded(
+                "context_providers",
+                [
+                    partial(
+                        self.gateway.weather.get_weather_forecast,
+                        destination_name,
+                        dict(trip_dates),
+                        coordinates=coordinates,
+                    ),
+                    partial(self.gateway.holiday.get_public_holidays, destination_name, dict(trip_dates)),
+                    partial(
+                        self.gateway.currency.get_exchange_rate, trip_request.budget_currency, destination_name
+                    ),
+                ],
+                CONTEXT_PROVIDER_BATCH_LIMIT,
+            )
+            weather_context = self._build_weather_context(planning_state, destination_name, weather_outcome.unwrap())
             planning_state.weather_context = weather_context
 
-            holiday_context = self._build_holiday_context(planning_state, destination_name)
+            holiday_context = self._build_holiday_context(planning_state, destination_name, holiday_outcome.unwrap())
             planning_state.holiday_context = holiday_context
 
         with performance.stage("currency"):
-            currency_context = self._build_currency_context(planning_state, destination_name)
+            currency_context = self._build_currency_context(
+                planning_state, destination_name, currency_outcome.unwrap()
+            )
             planning_state.currency_context = currency_context
 
         candidate_pois = (
@@ -254,7 +294,7 @@ class DestinationContextService(PlanningStageService):
         return planning_state
 
     def _build_weather_context(
-        self, planning_state: PlanningState, destination_name: str, places: Any = None
+        self, planning_state: PlanningState, destination_name: str, weather_response: ProviderResponse[Any]
     ) -> WeatherContext:
         """Plan-level provider-backed weather forecast for the trip's date
         range (docs/12_provider_architecture.md section 15).
@@ -270,16 +310,6 @@ class DestinationContextService(PlanningStageService):
         severe-weather value is ever invented.
         """
         trip_request = planning_state.trip_request
-        coordinates = (places or self.gateway.places).resolve_coordinates(destination_name)
-
-        weather_response = self.gateway.weather.get_weather_forecast(
-            destination_name,
-            {
-                "start_date": trip_request.start_date.isoformat(),
-                "end_date": trip_request.end_date.isoformat(),
-            },
-            coordinates=coordinates,
-        )
         self.coverage_service.record_provider_result(planning_state, weather_response, "weather")
 
         daily_weather = (
@@ -326,7 +356,7 @@ class DestinationContextService(PlanningStageService):
         )
 
     def _build_holiday_context(
-        self, planning_state: PlanningState, destination_name: str
+        self, planning_state: PlanningState, destination_name: str, holiday_response: ProviderResponse[Any]
     ) -> HolidayContext:
         """Plan-level provider-backed public holiday context for the trip's
         date range (docs/12_provider_architecture.md section 16).
@@ -347,13 +377,6 @@ class DestinationContextService(PlanningStageService):
         assessment is ever invented.
         """
         trip_request = planning_state.trip_request
-        holiday_response = self.gateway.holiday.get_public_holidays(
-            destination_name,
-            {
-                "start_date": trip_request.start_date.isoformat(),
-                "end_date": trip_request.end_date.isoformat(),
-            },
-        )
         self.coverage_service.record_provider_result(planning_state, holiday_response, "holidays")
 
         provider_succeeded = holiday_response.data is not None
@@ -407,7 +430,10 @@ class DestinationContextService(PlanningStageService):
         )
 
     def _build_currency_context(
-        self, planning_state: PlanningState, destination_name: str
+        self,
+        planning_state: PlanningState,
+        destination_name: str,
+        exchange_rate_response: ProviderResponse[Any],
     ) -> CurrencyContext:
         """Plan-level provider-backed currency exchange-rate context for
         the trip (docs/12_provider_architecture.md section 17).
@@ -425,9 +451,6 @@ class DestinationContextService(PlanningStageService):
         is ever invented.
         """
         base_currency = planning_state.trip_request.budget_currency
-        exchange_rate_response = self.gateway.currency.get_exchange_rate(
-            base_currency, destination_name
-        )
         self.coverage_service.record_provider_result(
             planning_state, exchange_rate_response, "currency"
         )
@@ -509,6 +532,24 @@ class DestinationContextService(PlanningStageService):
             _normalize_name(poi.get("name")) for poi in candidate_pois if poi.get("name")
         }
 
+        # Section 1B: the lookups of the terms the broad pool does not already
+        # match are independent, so a provider that can fetch several named
+        # places as one bounded concurrent batch is asked to. The responses
+        # are then applied below in the user's own must-visit order.
+        search_many = getattr(places, "search_must_visit_places", None)
+        prefetched: dict[str, ProviderResponse[Any]] = {}
+        if callable(search_many):
+            unmatched = [
+                term
+                for term in dict.fromkeys(term for term in must_visit_terms if term)
+                if not any(_matches_must_visit(poi, [term.lower()]) for poi in candidate_pois)
+            ]
+            if len(unmatched) > 1:
+                for term, response in zip(unmatched, search_many(unmatched, destination_name)):
+                    if isinstance(response, Exception):
+                        raise response
+                    prefetched[term] = response
+
         for term in must_visit_terms:
             if not term:
                 continue
@@ -519,7 +560,7 @@ class DestinationContextService(PlanningStageService):
             if already_matched:
                 continue
 
-            response = places.search_must_visit_place(term, destination_name)
+            response = prefetched.pop(term, None) or places.search_must_visit_place(term, destination_name)
             if not response.data:
                 ungrounded_terms.append(term)
                 continue

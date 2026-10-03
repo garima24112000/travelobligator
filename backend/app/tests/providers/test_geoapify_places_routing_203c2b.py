@@ -219,7 +219,11 @@ def test_attractions_use_one_request_per_group_inside_the_destination_boundary(
 
     assert response.status == ProviderStatus.SUCCESS
     assert len(network.requests["places"]) == len(ATTRACTION_GROUPS)
-    sent = [request.url.params for request in network.requests["places"]]
+    # Section 1B: the group requests are one concurrent batch, so they may
+    # ARRIVE in any order; one request per group is what is asserted (the
+    # order the results are APPLIED in is covered by the concurrency tests).
+    arrived = {request.url.params["categories"]: request.url.params for request in network.requests["places"]}
+    sent = [arrived[",".join(group.categories)] for group in ATTRACTION_GROUPS]
     assert [params["categories"] for params in sent] == [",".join(group.categories) for group in ATTRACTION_GROUPS]
     for params in sent:
         assert params["filter"] == "place:dest01"  # the destination's real boundary
@@ -288,7 +292,9 @@ def test_expansion_requests_the_next_page(monkeypatch: pytest.MonkeyPatch, confi
     network = _Network(places=_by_category)
     adapter = _adapter(monkeypatch, network, ProviderCacheStore(tmp_path / "c.sqlite3"))
     adapter.search_attractions("Fixtureville, Fixtureland", {"pool_size": 60, "page": 1})
-    assert [request.url.params["offset"] for request in network.requests["places"]] == ["21", "9", "18", "12"]
+    # one concurrent batch: arrival order is not fixed, the offset per group is
+    arrived = {request.url.params["categories"]: request.url.params["offset"] for request in network.requests["places"]}
+    assert [arrived[",".join(group.categories)] for group in ATTRACTION_GROUPS] == ["21", "9", "18", "12"]
 
 
 # -- quality: provider order, private access, low-value objects -------------------------------------

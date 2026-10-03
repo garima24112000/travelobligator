@@ -25,11 +25,20 @@ from __future__ import annotations
 import copy
 import logging
 import math
+from dataclasses import dataclass
+from functools import partial
 from typing import Any
 
 import httpx
 
 from app.core import performance
+from app.core.bounded_concurrency import (
+    NAMED_LOOKUP_BATCH_LIMIT,
+    PLACE_DETAILS_BATCH_LIMIT,
+    PLACES_BATCH_LIMIT,
+    Outcome,
+    run_bounded,
+)
 from app.core.config import get_settings
 from app.models.common import DataStatus, GeoPoint, ProviderStatus
 from app.models.providers import NormalizedPlace, ProviderResponse
@@ -112,6 +121,23 @@ def _compatible_classes(first: str, second: str) -> bool:
     return first == second or {first, second} <= _BUILDING_CLASSES
 
 
+@dataclass
+class _DetailsLookup:
+    """One planned Place Details lookup: answered from the cache
+    (`cached`), or still to be fetched with its allowance already taken."""
+
+    raw_id: str
+    query_hash: str
+    cached: dict[str, Any] | None
+
+
+def _value_or_error(task: Any) -> tuple[Any, Exception | None]:
+    try:
+        return task(), None
+    except Exception as exc:  # noqa: BLE001 - handed back to the caller, per term
+        return None, exc
+
+
 def places_request_credits(limit: int, returned: int | None = None) -> int:
     """Geoapify Places pricing: 1 credit up to 20 places; above that, 1 plus
     one per 20 places returned. With `returned=None` this is the
@@ -173,17 +199,90 @@ class GeoapifyPlacesAdapter(DestinationResolutionMixin, PlacesProvider):
 
     # -- broad inventory ------------------------------------------------------------
 
-    def search_attractions(
-        self, destination: str, filters: dict[str, Any] | None = None
-    ) -> ProviderResponse[Any]:
+    @staticmethod
+    def _attraction_plan(filters: dict[str, Any] | None) -> list[tuple[CategoryGroup, int]]:
         pool = int((filters or {}).get("pool_size") or _DEFAULT_ATTRACTION_POOL)
         pool = max(_MIN_GROUP_LIMIT, min(pool, _MAX_ATTRACTION_POOL))
-        plan = [(group, max(_MIN_GROUP_LIMIT, round(group.share * pool))) for group in ATTRACTION_GROUPS]
-        response = self._search(destination, plan, "attractions", page=int((filters or {}).get("page") or 0))
+        return [(group, max(_MIN_GROUP_LIMIT, round(group.share * pool))) for group in ATTRACTION_GROUPS]
+
+    @staticmethod
+    def _food_plan(filters: dict[str, Any] | None) -> list[tuple[CategoryGroup, int]]:
+        pool = int((filters or {}).get("pool_size") or _DEFAULT_FOOD_POOL)
+        pool = max(_MIN_GROUP_LIMIT, min(pool, _MAX_FOOD_POOL))
+        return [(FOOD_GROUP, pool)]
+
+    def search_attractions(
+        self,
+        destination: str,
+        filters: dict[str, Any] | None = None,
+        _prefetched: list[Outcome[list[NormalizedPlace]]] | None = None,
+    ) -> ProviderResponse[Any]:
+        response = self._search(
+            destination,
+            self._attraction_plan(filters),
+            "attractions",
+            page=int((filters or {}).get("page") or 0),
+            prefetched=_prefetched,
+        )
         if self._context is not None and response.data:
             response.data = self._resolve_suspect_collisions(response.data)
             self._context.place_pool.extend(response.data)
         return response
+
+    def search_broad_inventory(
+        self,
+        destination: str,
+        attraction_filters: dict[str, Any] | None = None,
+        food_filters: dict[str, Any] | None = None,
+    ) -> tuple[ProviderResponse[Any], ProviderResponse[Any], ProviderResponse[Any]]:
+        """`search_attractions`, `search_restaurants` and
+        `search_accommodation_pois` for one destination, with their Places
+        requests fetched as ONE bounded concurrent batch (Section 1B).
+
+        Only the fetching is concurrent. The three responses are then built
+        one after the other, in that order and from the requests in their
+        original category order -- exactly what three separate calls do -- so
+        de-duplication, containment, collision resolution and the place pool
+        never depend on which request finished first."""
+        page = int((attraction_filters or {}).get("page") or 0)
+        attraction_plan = self._attraction_plan(attraction_filters)
+        food_plan = self._food_plan(food_filters)
+        accommodation_plan = [(ACCOMMODATION_GROUP, _ACCOMMODATION_POOL)]
+        try:
+            with self._client() as client:
+                resolved = self._resolve_destination(client, destination)
+                self._resolve_cache_store()  # resolved once, before any task runs
+                outcomes = (
+                    run_bounded(
+                        "places",
+                        [
+                            partial(self._query_group, client, resolved, group, limit, offset)
+                            for group, limit, offset in (
+                                *((group, limit, page * limit) for group, limit in attraction_plan),
+                                *((group, limit, 0) for group, limit in (*food_plan, *accommodation_plan)),
+                            )
+                        ],
+                        PLACES_BATCH_LIMIT,
+                    )
+                    if resolved is not None
+                    else None
+                )
+        except GeocoderError:
+            outcomes = None
+        if outcomes is None:
+            # Unresolved destination or geocoder failure: the three searches
+            # report it themselves, exactly as they always have.
+            return (
+                self.search_attractions(destination, attraction_filters),
+                self.search_restaurants(destination, food_filters),
+                self.search_accommodation_pois(destination),
+            )
+        split = len(attraction_plan)
+        return (
+            self.search_attractions(destination, attraction_filters, _prefetched=outcomes[:split]),
+            self._search(destination, food_plan, "restaurants", prefetched=outcomes[split : split + 1]),
+            self._search(destination, accommodation_plan, "accommodation_pois", prefetched=outcomes[split + 1 :]),
+        )
 
     # -- suspected duplicate candidates ---------------------------------------------
 
@@ -191,17 +290,34 @@ class GeoapifyPlacesAdapter(DestinationResolutionMixin, PlacesProvider):
     def _coarse_class(place: NormalizedPlace) -> str:
         return coarse_class(classify_place(place.provider_tags, place.category).primary_category)
 
-    def _identity_enriched(self, place: NormalizedPlace) -> tuple[NormalizedPlace, bool]:
-        """`place` with whatever identity evidence one Place Details lookup
-        adds, and whether a lookup was attempted. Bounded twice: by the
-        identity-lookup allowance and by the Place Details allowance."""
+    def _identity_enriched_pair(
+        self, first: NormalizedPlace, second: NormalizedPlace
+    ) -> tuple[tuple[NormalizedPlace, bool], tuple[NormalizedPlace, bool]]:
+        """Each place of a suspected pair with whatever identity evidence
+        one Place Details lookup adds, and whether a lookup was attempted.
+        Bounded twice: by the identity-lookup allowance and by the Place
+        Details allowance.
+
+        Section 1B: both allowances are taken here, for `first` then for
+        `second`, before anything is fetched; only then are the pair's (at
+        most two) lookups fetched concurrently. The decisions are therefore
+        exactly those of looking `first` up and then `second`."""
         context = self._context
-        if context is None or context.identity_lookups_left <= 0 or place.place_id in context.identity_checked:
-            return place, False
-        context.identity_lookups_left -= 1
-        context.identity_checked.add(place.place_id)
+        planned: list[tuple[NormalizedPlace, bool, _DetailsLookup | None]] = []
+        for place in (first, second):
+            if context is None or context.identity_lookups_left <= 0 or place.place_id in context.identity_checked:
+                planned.append((place, False, None))
+                continue
+            context.identity_lookups_left -= 1
+            context.identity_checked.add(place.place_id)
+            planned.append((place, True, self._plan_details(place, for_identity=True)))
         with performance.stage("identity_details"):
-            return self._enrich_with_details(place, for_identity=True) or place, True
+            properties = self._resolve_details([lookup for _, _, lookup in planned])
+        enriched = [
+            ((self._apply_details(place, found) if found is not None else None) or place, tried)
+            for (place, tried, _), found in zip(planned, properties)
+        ]
+        return enriched[0], enriched[1]
 
     def _resolve_suspect_collisions(self, places: list[NormalizedPlace]) -> list[NormalizedPlace]:
         """Finds SUSPECTED duplicates among `places` (and against the pool
@@ -221,8 +337,7 @@ class GeoapifyPlacesAdapter(DestinationResolutionMixin, PlacesProvider):
                     classes = (self._coarse_class(existing), self._coarse_class(place))
                     if not suspect_pair(existing, place, _compatible_classes(*classes)):
                         continue
-                    existing_enriched, tried_a = self._identity_enriched(existing)
-                    place, tried_b = self._identity_enriched(place)
+                    (existing_enriched, tried_a), (place, tried_b) = self._identity_enriched_pair(existing, place)
                     others[index] = existing = existing_enriched
                     attempted = tried_a or tried_b
                     rule = merge_rule(existing, place, COLLOCATED_METERS)
@@ -247,9 +362,7 @@ class GeoapifyPlacesAdapter(DestinationResolutionMixin, PlacesProvider):
     def search_restaurants(
         self, area: str, filters: dict[str, Any] | None = None
     ) -> ProviderResponse[Any]:
-        pool = int((filters or {}).get("pool_size") or _DEFAULT_FOOD_POOL)
-        pool = max(_MIN_GROUP_LIMIT, min(pool, _MAX_FOOD_POOL))
-        return self._search(area, [(FOOD_GROUP, pool)], "restaurants")
+        return self._search(area, self._food_plan(filters), "restaurants")
 
     def search_accommodation_pois(
         self, destination: str, filters: dict[str, Any] | None = None
@@ -262,7 +375,12 @@ class GeoapifyPlacesAdapter(DestinationResolutionMixin, PlacesProvider):
         plan: list[tuple[CategoryGroup, int]],
         field_name: str,
         page: int = 0,
+        prefetched: list[Outcome[list[NormalizedPlace]]] | None = None,
     ) -> ProviderResponse[Any]:
+        """`prefetched` (Section 1B): one already-fetched outcome per entry
+        of `plan`, in plan order, from `search_broad_inventory`. Without it
+        the plan's requests are fetched here, as one bounded concurrent
+        batch. Either way the outcomes are applied in plan order."""
         failures: list[str] = []
         places: list[NormalizedPlace] = []
         try:
@@ -280,9 +398,22 @@ class GeoapifyPlacesAdapter(DestinationResolutionMixin, PlacesProvider):
                     )
                     unresolved.failure_reason = "destination_unresolved"
                     return unresolved
-                for group, limit in plan:
+                self._resolve_cache_store()  # resolved once, before any task runs
+                outcomes = (
+                    prefetched
+                    if prefetched is not None
+                    else run_bounded(
+                        "places",
+                        [
+                            partial(self._query_group, client, resolved, group, limit, page * limit)
+                            for group, limit in plan
+                        ],
+                        PLACES_BATCH_LIMIT,
+                    )
+                )
+                for outcome in outcomes:
                     try:
-                        places.extend(self._query_group(client, resolved, group, limit, page * limit))
+                        places.extend(outcome.unwrap())
                     except ProviderRequestError as exc:
                         failures.append(exc.kind)
         except GeocoderError as exc:
@@ -299,15 +430,15 @@ class GeoapifyPlacesAdapter(DestinationResolutionMixin, PlacesProvider):
         ]
         field_label = field_name.replace("_", " ")
         if contained:
-            partial = bool(failures) or len(contained) < _PARTIAL_RESULT_THRESHOLD
+            is_partial = bool(failures) or len(contained) < _PARTIAL_RESULT_THRESHOLD
             return ProviderResponse[list[NormalizedPlace]](
                 provider_name=self.provider_name,
                 provider_type=self.provider_type,
-                status=ProviderStatus.PARTIAL if partial else ProviderStatus.SUCCESS,
+                status=ProviderStatus.PARTIAL if is_partial else ProviderStatus.SUCCESS,
                 data_status=DataStatus.LIVE,
                 data=contained,
                 unavailable_fields=[],
-                confidence=0.4 if partial else 0.65,
+                confidence=0.4 if is_partial else 0.65,
                 message=f"{len(contained)} {field_label} found via {self.display_name}.",
             )
         if failures:
@@ -500,23 +631,93 @@ class GeoapifyPlacesAdapter(DestinationResolutionMixin, PlacesProvider):
             within the generation's bounded allowance.
         """
         response = super().search_must_visit_place(must_visit_term, primary_destination, filters)
-        if not response.data:
-            return response
-        place = response.data[0]
+        return self._with_pool_identity_and_details([response])[0]
 
-        match = self._pool_match(place)
-        if match is not None:
-            response.data = [match]
-            return response
+    def search_must_visit_places(
+        self, must_visit_terms: list[str], primary_destination: str
+    ) -> list[ProviderResponse[Any] | Exception]:
+        """`search_must_visit_place` for several INDEPENDENT terms (Section
+        1B): one response per term, in the order given -- or the exception
+        that term's lookup raised, which never affects the other terms.
 
-        with performance.stage("anchor_details"):
-            enriched = self._enrich_with_details(place)
-        if enriched is not None:
-            # Details can reveal the source identity or another name of the
-            # place, which may show it IS a pool place after all (e.g. the
-            # pool holds it under its local-script name).
-            response.data = [self._pool_match(enriched) or enriched]
-        return response
+        Only the network requests are concurrent: first the geocoder
+        lookups, then the Place Details lookups they lead to. Pool matching,
+        the Place Details allowance and the merge counters are handled on
+        the calling thread, term by term in the given order, so the result
+        is the one a term-by-term loop produces."""
+        try:
+            with self._client() as client:
+                # Resolved (and cached) once, so no task has to geocode it.
+                resolved = self._resolve_destination(client, primary_destination)
+        except GeocoderError:
+            resolved = None
+        if resolved is None or len(must_visit_terms) < 2:
+            # Nothing to run concurrently, or a destination problem that
+            # every lookup reports for itself exactly as before.
+            results: list[ProviderResponse[Any] | Exception] = []
+            for term in must_visit_terms:
+                value, error = _value_or_error(partial(self.search_must_visit_place, term, primary_destination))
+                results.append(error if error is not None else value)
+            return results
+
+        self._resolve_cache_store()  # resolved once, before any task runs
+        # The same query twice is one lookup, shared (a term-by-term loop
+        # answers the repeat from the cache the first lookup filled).
+        unique_terms = list(dict.fromkeys(must_visit_terms))
+        geocode = super().search_must_visit_place
+        outcomes = dict(
+            zip(
+                unique_terms,
+                run_bounded(
+                    "named_place_geocoding",
+                    [partial(geocode, term, primary_destination) for term in unique_terms],
+                    NAMED_LOOKUP_BATCH_LIMIT,
+                ),
+            )
+        )
+        located = [outcomes[term] for term in must_visit_terms]
+        finished = iter(
+            self._with_pool_identity_and_details(
+                [outcome.value.model_copy(deep=True) for outcome in located if outcome.error is None]
+            )
+        )
+        return [outcome.error if outcome.error is not None else next(finished) for outcome in located]
+
+    def _with_pool_identity_and_details(self, responses: list[ProviderResponse[Any]]) -> list[ProviderResponse[Any]]:
+        """Each geocoded named place replaced by its pool identity, or
+        enriched from Place Details -- `responses` in, the same responses
+        out, handled strictly in order; only the Details requests themselves
+        run concurrently."""
+        places: list[NormalizedPlace | None] = []
+        lookups: list[_DetailsLookup | None] = []
+        claimed: dict[str, _DetailsLookup] = {}
+        for response in responses:
+            place = response.data[0] if response.data else None
+            lookup: _DetailsLookup | None = None
+            if place is not None:
+                match = self._pool_match(place)
+                if match is not None:
+                    response.data = [match]
+                    place = None
+                else:
+                    lookup = self._plan_details(place, claimed=claimed)
+            places.append(place)
+            lookups.append(lookup)
+
+        if any(lookup is not None for lookup in lookups):
+            with performance.stage("anchor_details"):
+                details = self._resolve_details(lookups)
+        else:
+            details = [None] * len(lookups)
+
+        for response, place, properties in zip(responses, places, details):
+            enriched = self._apply_details(place, properties) if place is not None and properties is not None else None
+            if enriched is not None:
+                # Details can reveal the source identity or another name of the
+                # place, which may show it IS a pool place after all (e.g. the
+                # pool holds it under its local-script name).
+                response.data = [self._pool_match(enriched) or enriched]
+        return responses
 
     def _pool_match(self, place: NormalizedPlace) -> NormalizedPlace | None:
         """The pool place that is the same real entity as `place`, if any."""
@@ -530,7 +731,23 @@ class GeoapifyPlacesAdapter(DestinationResolutionMixin, PlacesProvider):
                 return candidate
         return None
 
-    def _enrich_with_details(self, place: NormalizedPlace, for_identity: bool = False) -> NormalizedPlace | None:
+    # -- Place Details: plan (calling thread) -> fetch (concurrent) -> apply (calling thread) ---
+
+    def _plan_details(
+        self,
+        place: NormalizedPlace,
+        for_identity: bool = False,
+        claimed: dict[str, "_DetailsLookup"] | None = None,
+    ) -> "_DetailsLookup | None":
+        """Decides, on the calling thread, whether `place` gets a Place
+        Details lookup: eligibility, then the cache, then -- only for a
+        lookup that needs a request -- one unit of the generation's Place
+        Details allowance, taken HERE, before anything is dispatched. None
+        when there is nothing to look up or no allowance left.
+
+        `claimed` holds the lookups already planned in the same batch: a
+        second lookup of the same place shares the first one's request (a
+        one-at-a-time loop answers it from the cache the first one filled)."""
         existing_tags = dict(place.provider_tags or {})
         # Details add Wikipedia/Wikidata/heritage evidence. They are only
         # worth a call for a place that has none yet -- or, `for_identity`,
@@ -541,47 +758,84 @@ class GeoapifyPlacesAdapter(DestinationResolutionMixin, PlacesProvider):
         ):
             return None
         raw_id = place.place_id.split("/", 1)[1]
+        if claimed is not None and raw_id in claimed:
+            return claimed[raw_id]
         query_hash = make_query_hash({"id": raw_id, "lang": _LANGUAGE, "schema": _CACHE_SCHEMA})
         cache_store = self._resolve_cache_store()
-        properties: dict[str, Any] | None = None
         if cache_store is not None:
             cached = self._read_cache(cache_store, _DETAILS_CACHE_SOURCE, query_hash)
             if isinstance(cached, dict):
-                properties = cached
+                return _DetailsLookup(raw_id, query_hash, cached)
 
-        if properties is None:
-            if self._context is None or self._context.place_details_left <= 0:
-                return None
-            self._context.place_details_left -= 1
-            try:
-                with self._client() as client:
-                    payload = geoapify_get(
-                        client,
-                        base_url=self._base_url,
-                        path="/v2/place-details",
-                        params={"id": raw_id, "features": "details", "lang": _LANGUAGE},
-                        api_key=self._api_key,
-                        timeout=self._timeout,
-                        api="place_details",
-                        usage=self._usage,
-                    )
-            except ProviderRequestError as exc:
-                logger.warning("Place details request failed (provider=%s, kind=%s).", self.provider_name, exc.kind)
-                return None
-            features = payload.get("features")
-            first = features[0] if isinstance(features, list) and features else None
-            properties = first.get("properties") if isinstance(first, dict) else None
-            if not isinstance(properties, dict):
-                return None
-            # Only the classification/evidence fields are kept.
-            properties = {
-                key: properties[key] for key in ("categories", "wiki_and_media", "datasource") if key in properties
-            }
-            if cache_store is not None:
-                self._write_cache(
-                    cache_store, _DETAILS_CACHE_SOURCE, query_hash, properties, self._poi_cache_ttl_seconds
+        if self._context is None or self._context.place_details_left <= 0:
+            return None
+        self._context.place_details_left -= 1
+        lookup = _DetailsLookup(raw_id, query_hash, None)
+        if claimed is not None:
+            claimed[raw_id] = lookup
+        return lookup
+
+    def _fetch_details(self, lookup: "_DetailsLookup") -> dict[str, Any] | None:
+        """ONE Place Details request (its allowance was already taken by
+        `_plan_details`). Safe to run concurrently: it touches only the
+        provider cache and the usage tracker."""
+        try:
+            with self._client() as client:
+                payload = geoapify_get(
+                    client,
+                    base_url=self._base_url,
+                    path="/v2/place-details",
+                    params={"id": lookup.raw_id, "features": "details", "lang": _LANGUAGE},
+                    api_key=self._api_key,
+                    timeout=self._timeout,
+                    api="place_details",
+                    usage=self._usage,
                 )
+        except ProviderRequestError as exc:
+            logger.warning("Place details request failed (provider=%s, kind=%s).", self.provider_name, exc.kind)
+            return None
+        features = payload.get("features")
+        first = features[0] if isinstance(features, list) and features else None
+        properties = first.get("properties") if isinstance(first, dict) else None
+        if not isinstance(properties, dict):
+            return None
+        # Only the classification/evidence fields are kept.
+        properties = {
+            key: properties[key] for key in ("categories", "wiki_and_media", "datasource") if key in properties
+        }
+        cache_store = self._resolve_cache_store()
+        if cache_store is not None:
+            self._write_cache(
+                cache_store, _DETAILS_CACHE_SOURCE, lookup.query_hash, properties, self._poi_cache_ttl_seconds
+            )
+        return properties
 
+    def _resolve_details(self, lookups: list["_DetailsLookup | None"]) -> list[dict[str, Any] | None]:
+        """The Details properties for each planned lookup, in the order
+        given (None where there is no lookup or the request did not
+        succeed). The requests still needed are fetched as one bounded
+        concurrent batch; a lookup shared by several entries is fetched once."""
+        pending = list({id(lookup): lookup for lookup in lookups if lookup is not None and lookup.cached is None}.values())
+        outcomes = run_bounded(
+            "place_details", [partial(self._fetch_details, lookup) for lookup in pending], PLACE_DETAILS_BATCH_LIMIT
+        )
+        fetched = {id(lookup): outcome for lookup, outcome in zip(pending, outcomes)}
+        return [
+            None if lookup is None else lookup.cached if lookup.cached is not None else fetched[id(lookup)].unwrap()
+            for lookup in lookups
+        ]
+
+    def _enrich_with_details(self, place: NormalizedPlace, for_identity: bool = False) -> NormalizedPlace | None:
+        lookup = self._plan_details(place, for_identity)
+        if lookup is None:
+            return None
+        properties = self._resolve_details([lookup])[0]
+        return self._apply_details(place, properties) if properties is not None else None
+
+    def _apply_details(self, place: NormalizedPlace, properties: dict[str, Any]) -> NormalizedPlace | None:
+        """`place` with the classification, evidence and identity that
+        `properties` (a Place Details answer) adds; None when it adds none."""
+        existing_tags = dict(place.provider_tags or {})
         categories = [c for c in (properties.get("categories") or []) if isinstance(c, str)]
         tags = taxonomy_tags_from_categories(categories)
         datasource = properties.get("datasource")
