@@ -55,7 +55,65 @@ const TEXT_REPLACEMENTS: [RegExp, string][] = [
   [/\bhaversine\b/gi, "straight-line"],
   [/\bopenstreetmap_places\b/gi, "OpenStreetMap"],
   [/\bprovider-grounded\b/gi, "matched in place data"],
+  // Section 2: planner vocabulary. Multi-word phrases match in any case;
+  // single common words match lower case only, so a place name such as
+  // "Bike Repair Café" inside a sentence is never rewritten.
+  [/\bAI itinerary reasoning rationale for this day:\s*/gi, ""],
+  [/\bAI itinerary reasoning\b/gi, "AI trip planning"],
+  [/\broute[- ]burden repair\b/gi, "travel-time adjustment"],
+  [/\broute[- ]burden\b/gi, "travel time"],
+  [/\bfallback pass\b/gi, "second pass"],
+  [/\bprovider identity\b/gi, "place record"],
+  [/\bquality-approved\b/gi, "suitable"],
+  [/\bdeterministic(?:ally)? /g, ""],
+  [/\bgrounded\b/g, "matched in place data"],
+  [/\bgrounding\b/g, "place matching"],
+  [/\b(attraction|restaurant|place) candidates?\b/g, "$1 options"],
+  [/\bcandidate (attractions|restaurants|places)\b/g, "$1"],
+  [/\bcandidate\(s\)/g, "option(s)"],
+  [/\bcandidates\b/g, "options"],
+  [/\bcandidate\b/g, "option"],
+  [/^Candidates\b/, "Options"],
+  [/\breplacements\b/g, "alternatives"],
+  [/\breplacement\b/g, "alternative"],
+  [/\brepaired\b/g, "adjusted"],
+  [/\brepairs?\b/g, "adjustment"],
 ];
+
+// Planner / pipeline vocabulary that must never reach a traveler. Used to
+// decide whether AI-written prose (a narrator summary, a day rationale) is
+// shown at all: prose describing planner operations is dropped in favour of
+// the factual itinerary rather than reworded.
+const PLANNER_WORDING: RegExp[] = [
+  /AI itinerary reasoning/i,
+  /\brepair(?:ed|s|ing)?\b/i,
+  /\bfallback\b/i,
+  /\bcandidates?\b/i,
+  /\bprovider identity\b/i,
+  /\bground(?:ed|ing)\b/i,
+  /\bmoved\b.{0,80}\bfrom day\b/i,
+  /\breplacements?\b/i,
+  /\broute[- ]burden\b/i,
+  /\bdeterministic/i,
+  /\b[a-z]+(?:_[a-z0-9]+)+\b/,
+  /\b[A-Z]{2,}(?:_[A-Z0-9]+)+\b/,
+];
+
+/** True when text carries planner-operation wording or a raw identifier. */
+export function hasPlannerWording(text: string): boolean {
+  return PLANNER_WORDING.some((pattern) => pattern.test(text));
+}
+
+/**
+ * AI-written prose for Traveler view: the text in plain wording, or null
+ * when it describes planner operations (the caller then shows the factual
+ * itinerary instead).
+ */
+export function travelerProse(text: string | null | undefined): string | null {
+  if (!text || text.trim().length === 0) return null;
+  if (hasPlannerWording(text)) return null;
+  return travelerText(text);
+}
 
 /** "tourist_attraction" -> "tourist attraction". */
 export function humanizeIdentifier(value: string): string {
@@ -99,6 +157,18 @@ export function travelerText(text: string): string {
   out = out.replace(/\b([a-z]+(?:_[a-z0-9]+)+)\b/g, (token) => {
     return SOURCE_LABELS[token] ?? humanizeIdentifier(token);
   });
+  // "Provider-backed" is developer vocabulary for "came from a data source";
+  // dropping the qualifier never adds a claim.
+  out = out.replace(/\b([Pp])rovider-backed\s+(\w)/g, (_whole, first: string, next: string) =>
+    first === "P" ? next.toUpperCase() : next,
+  );
+  // Machine-readable outcome codes (INSUFFICIENT_VERIFIED_INVENTORY, ...).
+  out = out.replace(/\b[A-Z]{2,}(?:_[A-Z0-9]+)+\b/g, (code) =>
+    humanizeIdentifier(code.toLowerCase()),
+  );
+  // A humanized identifier can itself be planner vocabulary
+  // ("deterministic_fallback" -> "deterministic fallback").
+  out = out.replace(/\bdeterministic fallback\b/gi, "standard");
   return out.replace(/\s{2,}/g, " ").replace(/\s+([.,;])/g, "$1").trim();
 }
 

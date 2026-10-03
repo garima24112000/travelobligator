@@ -458,6 +458,9 @@ export type DailyPlan = {
   restaurant_suggestions: RestaurantSuggestion[];
   accommodation_suggestions: AccommodationSuggestion[];
   warnings: string[];
+  // The backend's factual one-line summary of the day's final stops
+  // (services/day_rationale.deterministic_day_summary). Absent on older plans.
+  goal?: string | null;
 };
 
 export type StayAreaGuidance = {
@@ -572,6 +575,16 @@ export type RouteAwareSequencingReport = {
 // `RouteLegFeasibility`, not declared here since nothing renders them).
 export type RouteFeasibilityReport = {
   status: string;
+  // Section 2: one entry per routed leg (backend: RouteLegFeasibility). Only
+  // the fields Traveler view reads are declared. `mode` is the factual mode
+  // the provider routed the leg in ("walk" / "drive"); a leg stored before
+  // modes existed has none. Absent on reports stored before legs existed.
+  legs?: {
+    from_experience_id: string;
+    to_experience_id: string;
+    status: string;
+    mode?: string | null;
+  }[];
 };
 
 // One ordered point along a provider-backed route's real path geometry

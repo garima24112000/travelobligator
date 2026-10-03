@@ -11,6 +11,7 @@ import {
 import type * as Leaflet from "leaflet";
 import {
   ApiRequestError,
+  BACKEND_UNREACHABLE_CODE,
   createTrip,
   createTripLock,
   deleteTripLock,
@@ -38,6 +39,7 @@ import {
 } from "@/lib/api";
 import BranchWorkspacePanel from "./BranchWorkspacePanel";
 import { readSelectedTripId, writeSelectedTripId } from "@/lib/trip-selection";
+import { defaultTripDates } from "@/lib/default-trip-dates";
 import { DisclosureSection, TravelerLimitationsSection } from "./TravelerSections";
 import {
   InventorySufficiencyPanel,
@@ -48,10 +50,27 @@ import {
   aggregateCaveats,
   humanizeIdentifier,
   placeDataLabel,
-  routingDataLabel,
   sourceLabel,
+  travelerProse,
   travelerText,
 } from "@/lib/display-labels";
+import {
+  GETTING_AROUND_DISCLAIMER,
+  GETTING_AROUND_HEADING,
+  LOADING_DEFAULT_MESSAGE,
+  PLAN_NOT_GENERATED,
+  SESSION_ENDED_MESSAGE,
+  genericLoadingStep,
+  gettingAroundAdvisory,
+  loadingPatienceNote,
+  loadingStageLabel,
+  travelerErrorMessage,
+  travelerLegLine,
+  travelerReadiness,
+  travelerReviewNotices,
+  travelerRouteCoverageNote,
+  tripSummarySourceNote,
+} from "@/lib/traveler-view";
 import { buildTrustDashboardModel } from "@/lib/trust-dashboard";
 import type {
   TrustDashboardCategoryView,
@@ -118,16 +137,21 @@ import type {
   WeatherContext,
 } from "@/lib/types";
 
-const DEFAULT_TRIP_REQUEST: TripRequestInput = {
-  destination_scope: "single_city",
-  primary_destination: "Lisbon, Portugal",
-  origin_city: "New York",
-  start_date: "2026-08-10",
-  end_date: "2026-08-12",
-  travelers_count: 2,
-  travel_group_type: "couple",
-  pace: "balanced",
-};
+// The form's starting values. Dates are computed from the user's local
+// current date each time this is called (never hardcoded, so they cannot go
+// stale). It is only called to initialise or reset the form -- never while
+// the form is being edited, so dates the user entered are kept.
+function defaultTripRequest(): TripRequestInput {
+  return {
+    destination_scope: "single_city",
+    primary_destination: "Lisbon, Portugal",
+    origin_city: "New York",
+    ...defaultTripDates(),
+    travelers_count: 2,
+    travel_group_type: "couple",
+    pace: "balanced",
+  };
+}
 
 // Shared keyboard-focus ring for interactive elements (Step 179D) -- a
 // visible focus style purely for keyboard/screen-reader navigation. Appending
@@ -461,25 +485,17 @@ function formatDistanceMeters(meters: number): string {
  * - `not_connected`/`unavailable`/anything else: "Movement data
  *   unavailable" -- the safe default when no usable route data exists.
  */
-function formatMovementSummary(
-  buffer: TravelTimeBuffer,
-  mode: "user" | "developer" = "developer",
-): string {
+function formatMovementSummary(buffer: TravelTimeBuffer): string {
   if (buffer.status === "success" && buffer.route_duration_seconds !== null) {
     const parts = [formatDurationSeconds(buffer.route_duration_seconds)];
     if (buffer.route_distance_meters !== null) {
       parts.push(formatDistanceMeters(buffer.route_distance_meters));
     }
     const figures = parts.join(" · ");
-    if (mode === "user") {
-      const label = sourceLabel(buffer.provider);
-      return label ? `Travel: ${figures} (${label})` : `Travel: ${figures}`;
-    }
     return buffer.provider
       ? `Provider-backed movement data: ${figures} (via ${buffer.provider})`
       : `Provider-backed movement data: ${figures}`;
   }
-  if (mode === "user") return routingDataLabel(false);
   if (buffer.status === "not_computable") {
     return "No movement details returned";
   }
@@ -499,13 +515,28 @@ function formatMovementSummary(
 function MovementRow({
   buffer,
   mode = "developer",
+  travelerLine = null,
 }: {
   buffer: TravelTimeBuffer;
   mode?: "user" | "developer";
+  // Section 2: Traveler view's own line ("Walk · 12 min · 0.9 km"), built
+  // by `travelerLegLine` from the leg's stored mode and route figures.
+  travelerLine?: string | null;
 }) {
+  if (mode === "user") {
+    if (!travelerLine) return null;
+    return (
+      <li
+        data-testid="movement-row"
+        className="ml-3 break-words border-l border-white/10 pl-3 text-xs text-slate-300"
+      >
+        {travelerLine}
+      </li>
+    );
+  }
   return (
     <li className="ml-3 break-words border-l border-white/10 pl-3 text-[11px] text-slate-500">
-      {formatMovementSummary(buffer, mode)}
+      {formatMovementSummary(buffer)}
     </li>
   );
 }
@@ -1404,7 +1435,7 @@ function CurrencyContextSection({ currency }: { currency: CurrencyContext | null
  */
 function summarizeWeatherForTravelerView(weather: WeatherContext | null): string {
   if (!weather || weather.daily_weather.length === 0) {
-    return "Weather forecast is not available for these dates.";
+    return travelerReviewNotices(null, { weather: null })[0];
   }
   const temperatures = weather.daily_weather
     .flatMap((day) => [day.temperature_max_c, day.temperature_min_c])
@@ -1415,7 +1446,8 @@ function summarizeWeatherForTravelerView(weather: WeatherContext | null): string
   const low = Math.round(Math.min(...temperatures));
   const high = Math.round(Math.max(...temperatures));
   const dayCount = weather.daily_weather.length;
-  return `Around ${low}–${high}°C over ${dayCount} day${dayCount === 1 ? "" : "s"}${weather.source ? ` (via ${weather.source})` : ""}.`;
+  const source = sourceLabel(weather.source);
+  return `Around ${low}–${high}°C over ${dayCount} day${dayCount === 1 ? "" : "s"}${source ? ` (via ${source})` : ""}.`;
 }
 
 /**
@@ -1455,6 +1487,9 @@ function TravelerContextSummarySection({
   currency: CurrencyContext | null;
 }) {
   const relevantHolidays = holiday?.holidays ?? [];
+  // Section 2: holiday data that was not returned is said so once, in plain
+  // words -- an empty list alone would read as "no holidays".
+  const holidayNotice = travelerReviewNotices(null, { holiday })[0] ?? null;
 
   return (
     <div className="rounded-2xl border border-white/10 bg-white/5 p-4 sm:p-5">
@@ -1480,6 +1515,14 @@ function TravelerContextSummarySection({
             </dd>
           </div>
         )}
+        {relevantHolidays.length === 0 && holidayNotice && (
+          <div>
+            <dt className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+              Holidays
+            </dt>
+            <dd className="mt-1 text-slate-300">{holidayNotice}</dd>
+          </div>
+        )}
         <div>
           <dt className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
             Currency
@@ -1487,10 +1530,6 @@ function TravelerContextSummarySection({
           <dd className="mt-1 text-slate-300">{summarizeCurrencyForTravelerView(currency)}</dd>
         </div>
       </dl>
-      <p className="mt-3 text-[11px] text-slate-500">
-        Switch to Developer view for the full weather, holiday, and
-        currency reports.
-      </p>
     </div>
   );
 }
@@ -1716,7 +1755,9 @@ function DayMapPreview({
   if (coordinateBackedCount === 0) {
     return (
       <p className="mt-3 text-sm text-slate-400">
-        No coordinate-backed scheduled places are available for this day map.
+        {mode === "user"
+          ? "No map is available for this day."
+          : "No coordinate-backed scheduled places are available for this day map."}
       </p>
     );
   }
@@ -1741,12 +1782,16 @@ function DayMapPreview({
             hasDrawablePath ? "text-emerald-400" : "text-slate-500"
           }`}
         >
-          {legendLabel}
+          {mode === "user"
+            ? hasDrawablePath
+              ? "Route shown on the map"
+              : "Route line not available for this day"
+            : legendLabel}
         </p>
       )}
       <p className="mt-1 text-xs text-slate-500">
         {mode === "user"
-          ? "Numbers show the visit order. A green line appears only for legs where routing data exists."
+          ? "Numbers show the visit order. A green line appears only between stops where a route is available."
           : "Numbered markers show this day's scheduled stop order only -- they are not route geometry. Solid green segments are a provider-backed route path, shown only for a leg where the backend has one; no line of any kind is drawn for any other leg."}
       </p>
     </div>
@@ -1770,8 +1815,7 @@ function ExperienceMapLinks({
   if (!coordinates) {
     return (
       <p className="mt-1 text-xs text-slate-500">
-        Map links unavailable because this scheduled place has no
-        provider-backed coordinates.
+        Map links are not available: this place has no map location.
       </p>
     );
   }
@@ -1967,8 +2011,10 @@ function ScheduledExperienceCard({
           {orderNumber}
         </span>
         <div className="min-w-0 flex-1">
-          <p className="break-words font-medium text-slate-100">
-            {experience.name}{" "}
+          <p className="break-words font-medium text-slate-100 [overflow-wrap:anywhere]">
+            {/* <bdi>: a name in a right-to-left or mixed script keeps its
+                own direction without reordering the text around it. */}
+            <bdi>{experience.name}</bdi>{" "}
             <span className="font-normal text-slate-400">
               ({mode === "user" ? humanizeIdentifier(experience.category) : experience.category})
             </span>
@@ -1984,7 +2030,7 @@ function ScheduledExperienceCard({
                   : experience.why_included}
               </p>
             )}
-          {(mode === "developer" || !hasCoordinates) && (
+          {mode === "developer" && (
             <p className="mt-2 text-[11px] uppercase tracking-wide text-slate-500">
               {hasCoordinates ? "Coordinates available" : "Coordinates unavailable"}
             </p>
@@ -2051,12 +2097,12 @@ function RestaurantSuggestionCard({
 }) {
   return (
     <li className="rounded-lg border border-white/10 bg-slate-900/60 p-3 text-sm">
-      <p className="break-words font-medium text-slate-100">
-        {restaurant.name}
+      <p className="break-words font-medium text-slate-100 [overflow-wrap:anywhere]">
+        <bdi>{restaurant.name}</bdi>
         {restaurant.category && (
           <span className="font-normal text-slate-400">
             {" "}
-            ({restaurant.category})
+            ({mode === "user" ? humanizeIdentifier(restaurant.category) : restaurant.category})
           </span>
         )}
       </p>
@@ -5158,8 +5204,14 @@ function RegenerationReadinessSection({
                     {(targetedSummary.diff.validation_status_before ||
                       targetedSummary.diff.validation_status_after) && (
                       <p className="mt-2 text-xs text-emerald-200">
-                        Validation: {targetedSummary.diff.validation_status_before ?? "unknown"}{" "}
-                        → {targetedSummary.diff.validation_status_after ?? "unknown"}
+                        {mode === "user" ? "Plan check" : "Validation"}:{" "}
+                        {mode === "user"
+                          ? travelerReadiness(targetedSummary.diff.validation_status_before).label
+                          : (targetedSummary.diff.validation_status_before ?? "unknown")}{" "}
+                        →{" "}
+                        {mode === "user"
+                          ? travelerReadiness(targetedSummary.diff.validation_status_after).label
+                          : (targetedSummary.diff.validation_status_after ?? "unknown")}
                         {" · "}
                         Warnings: {targetedSummary.diff.warning_count_before} →{" "}
                         {targetedSummary.diff.warning_count_after}
@@ -5225,10 +5277,20 @@ function RegenerationReadinessSection({
               className={`mt-3 rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-sm ${FOCUS_RING_CLASSNAME}`}
             >
               <p className="break-words font-semibold text-red-300">
-                {regenerationReasonCodeLabel(regenerateError.code)}
+                {mode === "user"
+                  ? (REGENERATION_REASON_CODE_LABELS[regenerateError.code] ??
+                    "Your changes could not be applied")
+                  : regenerationReasonCodeLabel(regenerateError.code)}
               </p>
               <p className="mt-1 break-words text-xs text-red-200">
-                {regenerateError.message}
+                {mode === "user"
+                  ? travelerErrorMessage({
+                      code: regenerateError.code,
+                      status: null,
+                      message: regenerateError.message,
+                      operation: "regenerate",
+                    }).message
+                  : regenerateError.message}
               </p>
               {regenerateError.code === "REGENERATION_PROVIDER_UNAVAILABLE" && (
                 <p className="mt-1 break-words text-xs text-red-200">
@@ -5745,31 +5807,40 @@ function ApiDiagnosticsPanel({ entries }: { entries: ApiErrorLogEntry[] }) {
 // and points to Developer Mode for detail -- it never claims the plan is
 // booking-ready, final, complete, guaranteed, verified, or "ready for
 // real-world use without further review."
+// Section 2: the status and the "worth checking" notices are plain-language
+// restatements (`travelerReadiness` / `travelerReviewNotices`) -- the raw
+// readiness value and outcome codes are never printed here.
 function UserModeReadinessBanner({
   validationStatus,
+  notices,
 }: {
   validationStatus: string | null;
+  notices: string[];
 }) {
-  const status = validationStatus ?? "unknown";
+  const readiness = travelerReadiness(validationStatus);
   const toneClassName =
-    status === "ready"
+    readiness.tone === "ok"
       ? "border-emerald-300/30 bg-emerald-400/10 text-emerald-100"
-      : status === "blocked"
+      : readiness.tone === "blocked"
         ? "border-red-400/30 bg-red-400/10 text-red-100"
         : "border-amber-300/30 bg-amber-400/10 text-amber-100";
-  const message =
-    status === "ready"
-      ? "This draft passed automated validation checks — still review it yourself before relying on it."
-      : status === "blocked"
-        ? "This draft is blocked on required checks and needs review before it's usable."
-        : "Use as a planning draft — some checks still need review.";
 
   return (
-    <div className={`rounded-2xl border p-4 text-sm ${toneClassName}`}>
-      <p className="leading-6">{message}</p>
-      <p className="mt-1 text-[11px] opacity-80">
-        Switch to Developer view above for the full validation report and
-        provider details.
+    <div
+      className={`rounded-2xl border p-4 text-sm ${toneClassName}`}
+      data-testid="traveler-readiness"
+    >
+      <p className="font-semibold">{readiness.label}</p>
+      <p className="mt-1 leading-6">{readiness.message}</p>
+      {notices.length > 0 && (
+        <ul className="mt-2 list-disc break-words pl-5 text-xs leading-5">
+          {notices.map((notice) => (
+            <li key={notice}>{notice}</li>
+          ))}
+        </ul>
+      )}
+      <p className="mt-2 text-[11px] opacity-80">
+        Details are under Important limitations below.
       </p>
     </div>
   );
@@ -5850,13 +5921,19 @@ function commonDailyCaveats(report: ItineraryNarrativeReport | null): string[] {
 
 function ItineraryNarrativeSummarySection({
   report,
+  mode = "developer",
 }: {
   report: ItineraryNarrativeReport | null;
+  mode?: "user" | "developer";
 }) {
   if (!report || !narrativeIsRenderable(report) || !report.summary) {
     return null;
   }
   const fallback = isFallbackNarrative(report);
+  // Section 2: Traveler view never shows a summary that describes planner
+  // operations; the itinerary below already states the plan factually.
+  const summary = mode === "user" ? travelerProse(report.summary) : travelerText(report.summary);
+  if (!summary) return null;
 
   return (
     <div
@@ -5868,7 +5945,7 @@ function ItineraryNarrativeSummarySection({
         Trip summary
       </h2>
       <p className="mt-2 break-words text-sm leading-6 text-cyan-50">
-        {travelerText(report.summary)}
+        {summary}
       </p>
       {commonDailyCaveats(report).length > 0 && (
         <div className="mt-2">
@@ -5884,34 +5961,42 @@ function ItineraryNarrativeSummarySection({
           </ul>
         </div>
       )}
-      {report.getting_around_advisory && (
-        <div className="mt-2" data-testid="getting-around-advisory">
-          <p className="text-[11px] font-semibold uppercase tracking-wide text-cyan-200">
-            Getting around
-          </p>
-          <p className="mt-1 break-words text-sm leading-6 text-cyan-50/90">
-            {travelerText(report.getting_around_advisory)}
-          </p>
-          <p className="mt-1 text-[11px] text-cyan-100/70">
-            General AI guidance about the city, not based on this plan&apos;s
-            route data.
-          </p>
-        </div>
-      )}
-      {fallback ? (
-        // Fixed Traveler wording: the report's own message may name the
-        // AI provider or an HTTP status, which is Developer-view detail.
-        <p className="mt-2 text-[11px] text-cyan-100/70">
-          AI narration was unavailable, so a factual summary built from the
-          itinerary data is shown.
-        </p>
-      ) : (
-        <p className="mt-2 text-[11px] text-cyan-100/70">
-          AI-written summary of the plan below -- not a new fact, and not a
-          claim that anything is booked or finalized.
-        </p>
-      )}
+      {/* Fixed wording: the report's own message may name the AI provider
+          or an HTTP status, which is Developer-view detail. A summary built
+          from the itinerary is a normal outcome, not an error. */}
+      <p className="mt-2 text-[11px] text-cyan-100/70">
+        {mode === "developer" && fallback
+          ? "AI narration was unavailable, so a factual summary built from the itinerary data is shown."
+          : tripSummarySourceNote(report)}
+      </p>
     </div>
+  );
+}
+
+/**
+ * Section 2: the narrator's general "how visitors get around this city"
+ * advisory, shown once next to the trip summary. Read independently of the
+ * narrator's status and summary, so it still renders when the summary fell
+ * back or is absent. Renders nothing without an advisory -- no placeholder
+ * guidance -- and never shows the profile the advisory was written for.
+ */
+function GettingAroundSection({ report }: { report: ItineraryNarrativeReport | null }) {
+  const advisory = gettingAroundAdvisory(report);
+  if (!advisory) return null;
+
+  return (
+    <section
+      id="getting-around"
+      aria-labelledby="getting-around-heading"
+      data-testid="getting-around-advisory"
+      className="scroll-mt-6 rounded-2xl border border-white/10 bg-white/5 p-4 sm:p-5"
+    >
+      <h2 id="getting-around-heading" className="text-lg font-semibold">
+        {GETTING_AROUND_HEADING}
+      </h2>
+      <p className="mt-2 break-words text-sm leading-6 text-slate-200">{advisory}</p>
+      <p className="mt-2 text-xs text-slate-400">{GETTING_AROUND_DISCLAIMER}</p>
+    </section>
   );
 }
 
@@ -5931,27 +6016,45 @@ function _findDailyNarrative(
 function DailyNarrativeNote({
   report,
   dayNumber,
+  mode = "developer",
+  factualSummary = null,
 }: {
   report: ItineraryNarrativeReport | null;
   dayNumber: number;
+  mode?: "user" | "developer";
+  // The backend's own factual one-line summary of this day's final stops.
+  factualSummary?: string | null;
 }) {
   const daily = _findDailyNarrative(report, dayNumber);
   if (!daily) return null;
   // The fact-only fallback sentence just restates the stop list rendered
   // right below the day heading; only its caveats add information.
-  const showProse = !isFallbackNarrative(report);
+  const isAiProse = !isFallbackNarrative(report);
+  // Section 2: in Traveler view, AI prose that describes planner operations
+  // is replaced by the day's factual summary instead of being shown.
+  const prose = !isAiProse
+    ? null
+    : mode === "user"
+      ? (travelerProse(daily.narrative) ?? (factualSummary ? travelerText(factualSummary) : null))
+      : travelerText(daily.narrative);
+  const title =
+    daily.title.trim() === `Day ${dayNumber}`
+      ? null
+      : mode === "user"
+        ? travelerProse(daily.title)
+        : daily.title;
   const common = new Set(commonDailyCaveats(report));
   const dayCaveats = aggregateCaveats(daily.caveats).filter((caveat) => !common.has(caveat.text));
-  if (!showProse && dayCaveats.length === 0) return null;
+  if (!prose && dayCaveats.length === 0) return null;
 
   return (
     <div className="mt-2 rounded-lg border border-cyan-300/20 bg-cyan-300/5 p-3">
-      {daily.title.trim() !== `Day ${dayNumber}` && (
-        <p className="text-xs font-semibold text-cyan-100">{daily.title}</p>
+      {title && (prose || mode === "developer") && (
+        <p className="break-words text-xs font-semibold text-cyan-100">{title}</p>
       )}
-      {showProse && (
+      {prose && (
         <p className="mt-1 break-words text-sm leading-6 text-cyan-50/90">
-          {travelerText(daily.narrative)}
+          {prose}
         </p>
       )}
       {dayCaveats.length > 0 && (
@@ -6089,6 +6192,7 @@ async function loadPlanResult(tripId: string): Promise<PlanResult> {
       `Trip '${tripId}' exists, but its plan has not been generated yet. ` +
         "Generate the plan first, then load this trip again.",
       409,
+      PLAN_NOT_GENERATED,
     );
   }
 
@@ -6226,6 +6330,7 @@ function LockedItemsSummarySection({
   userLocks,
   dailyPlans,
   onLockChange,
+  mode = "developer",
 }: {
   tripId: string;
   userLocks: UserLock[];
@@ -6235,12 +6340,16 @@ function LockedItemsSummarySection({
     planDiffPreview: PlanDiffPreview,
     regenerationReadiness: RegenerationReadiness,
   ) => void;
+  // Section 2: Traveler view lists only the kept places (nothing at all
+  // when there are none) and hides the lock's type / id / reason fields.
+  mode?: "user" | "developer";
 }) {
   const [actionState, setActionState] = useState<
     Record<string, LockActionState>
   >({});
 
   const locks = activeUserLocks(userLocks);
+  const isTraveler = mode === "user";
 
   async function handleRemoveKeep(lockId: string) {
     setActionState((previous) => ({
@@ -6282,12 +6391,17 @@ function LockedItemsSummarySection({
     }
   }
 
+  if (isTraveler && locks.length === 0) return null;
+
   return (
     <div className="rounded-2xl border border-white/10 bg-white/5 p-4 sm:p-5">
-      <h2 className="text-lg font-semibold">Kept for future regeneration</h2>
+      <h2 className="text-lg font-semibold">
+        {isTraveler ? "Places you asked to keep" : "Kept for future regeneration"}
+      </h2>
       <p className="mt-1 text-xs text-amber-300/90">
-        These keep markers are stored for future regeneration. They do not
-        change the current plan yet.
+        {isTraveler
+          ? "These places stay as they are. While any place is kept, requested changes cannot be applied; remove the keep first."
+          : "These keep markers are stored for future regeneration. They do not change the current plan yet."}
       </p>
 
       {locks.length === 0 ? (
@@ -6308,23 +6422,31 @@ function LockedItemsSummarySection({
                 key={lock.lock_id}
                 className="rounded-lg border border-white/10 bg-slate-900/60 p-3 text-sm"
               >
-                <p className="break-words font-medium text-slate-100">
-                  {matchedExperience
-                    ? matchedExperience.name
-                    : "Matching scheduled experience not found in the current plan."}
+                <p className="break-words font-medium text-slate-100 [overflow-wrap:anywhere]">
+                  {matchedExperience ? (
+                    <bdi>{matchedExperience.name}</bdi>
+                  ) : isTraveler ? (
+                    "A place that is no longer in this itinerary."
+                  ) : (
+                    "Matching scheduled experience not found in the current plan."
+                  )}
                 </p>
-                <p className="mt-1 break-all text-xs text-slate-400">
-                  Type: {lock.locked_item_type} · ID: {lock.locked_item_id}
-                </p>
-                <p className="mt-1 break-words text-xs text-slate-400">
-                  Reason: {lock.reason}
-                </p>
-                <p className="mt-1 text-[11px] uppercase tracking-wide text-emerald-300/90">
-                  Status: active
-                </p>
-                <p className="mt-1 text-xs text-slate-400">
-                  Created: {new Date(lock.created_at).toLocaleString()}
-                </p>
+                {!isTraveler && (
+                  <>
+                    <p className="mt-1 break-all text-xs text-slate-400">
+                      Type: {lock.locked_item_type} · ID: {lock.locked_item_id}
+                    </p>
+                    <p className="mt-1 break-words text-xs text-slate-400">
+                      Reason: {lock.reason}
+                    </p>
+                    <p className="mt-1 text-[11px] uppercase tracking-wide text-emerald-300/90">
+                      Status: active
+                    </p>
+                    <p className="mt-1 text-xs text-slate-400">
+                      Created: {new Date(lock.created_at).toLocaleString()}
+                    </p>
+                  </>
+                )}
 
                 <button
                   type="button"
@@ -6359,25 +6481,12 @@ function LockedItemsSummarySection({
   );
 }
 
-// Step 182C: friendlier, traveler-facing copy for the loading animation,
-// keyed strictly off the real backend stage keys the orchestrator reports
-// (see `_GENERATION_STAGE_LABELS` in
-// backend/app/services/planning_orchestrator.py). This is purely a nicer
-// re-wording of a real, already-reported stage -- it never invents a
-// stage the backend didn't actually report, and several backend stages
-// intentionally share one friendly phrase rather than being split into
-// unbacked sub-steps.
-const FRIENDLY_STAGE_LABEL_BY_BACKEND_KEY: Record<string, string> = {
-  traveler_profile: "Preparing your trip",
-  destination_context: "Finding places",
-  candidate_quality: "Checking providers",
-  ai_candidate_shadow: "Checking providers",
-  trip_strategy: "Building daily plan",
-  stay_transport: "Checking movement",
-  experience_plan: "Building daily plan",
-  validation: "Validating draft",
-  post_processing: "Finalizing itinerary view",
-};
+// Step 182C / Section 2: the traveler-facing wording for the real backend
+// stage keys the orchestrator reports (`_GENERATION_STAGE_LABELS` in
+// backend/app/services/planning_orchestrator.py) lives in
+// `loadingStageLabel` (lib/traveler-view.ts). It only re-words a stage the
+// backend actually reported; several stages share one phrase rather than
+// being split into unbacked sub-steps.
 
 /**
  * Decorative loading animation shown while a new trip is being created and
@@ -6405,7 +6514,9 @@ function TravelGenerationLoading({
   progressMessage,
   isRealBackendStageProgress,
   isCompleted,
+  mode = "developer",
 }: {
+  mode?: "user" | "developer";
   originCity?: string;
   destination?: string;
   isLoading: boolean;
@@ -6443,18 +6554,21 @@ function TravelGenerationLoading({
   const origin = originCity?.trim() || "Origin";
   const dest = destination?.trim() || "Destination";
   const displayProgress = isCompleted ? 100 : hasBackendProgress ? progressPercent : null;
-  const friendlyStageLabel = stageKey
-    ? FRIENDLY_STAGE_LABEL_BY_BACKEND_KEY[stageKey]
-    : undefined;
+  // Section 2: the status line is a stage the backend itself reported, in
+  // traveler words. Traveler view never falls back to the backend's raw
+  // stage label / message; without a known stage it says only that work is
+  // under way.
+  const reportedStageLabel = loadingStageLabel(stageKey);
   const displayMessage = isCompleted
-    ? "Trip generated — preparing your itinerary view"
-    : friendlyStageLabel ||
-      stageLabel ||
-      progressMessage ||
-      "Working on your plan";
+    ? "Itinerary ready. Opening it now."
+    : reportedStageLabel ||
+      (mode === "developer" ? stageLabel || progressMessage : undefined) ||
+      LOADING_DEFAULT_MESSAGE;
 
   return (
     <div
+      aria-busy={!isCompleted}
+      data-testid="generation-loading"
       className={`mt-8 rounded-2xl border p-6 transition-colors duration-500 ${
         isCompleted
           ? "border-emerald-300/30 bg-emerald-400/5"
@@ -6499,18 +6613,23 @@ function TravelGenerationLoading({
       >
         {displayMessage}
       </p>
+      {!isCompleted && !reportedStageLabel && (
+        // Clearly generic: what building an itinerary involves, not a claim
+        // about which step is running. Hidden from assistive tech so the
+        // rotation is not announced; the status line above is the live one.
+        <p className="mt-2 text-xs text-slate-400" aria-hidden="true">
+          What goes into your plan: {genericLoadingStep(elapsedSeconds).toLowerCase()}
+        </p>
+      )}
       {!isCompleted && (
         <p className="mt-2 text-[11px] text-slate-400">
-          Working for {elapsedSeconds}s
-          {elapsedSeconds >= 10
-            ? ". Real provider lookups can take a minute or two; the request is still running."
-            : "."}
+          {loadingPatienceNote(elapsedSeconds)} Working for {elapsedSeconds}s.
         </p>
       )}
       <p className="mt-2 text-[11px] text-slate-500">
         Loading animation only — not live flight tracking.
       </p>
-      {showBackendNote && !isCompleted && (
+      {mode === "developer" && showBackendNote && !isCompleted && (
         <p className="mt-1 text-[11px] text-emerald-300/80">
           Using backend stage progress
         </p>
@@ -6560,13 +6679,12 @@ type GenerationPhase =
 function generateButtonLabel(phase: GenerationPhase): string {
   switch (phase) {
     case "creating_trip":
-      return "Creating trip...";
+      return "Creating trip…";
     case "starting_generation":
-      return "Starting generation...";
     case "generating":
-      return "Generating itinerary...";
+      return "Building your itinerary…";
     case "loading_itinerary":
-      return "Loading completed itinerary...";
+      return "Opening your itinerary…";
     default:
       return "Create trip and generate plan";
   }
@@ -6784,12 +6902,16 @@ function useJobPolling() {
 
 // Human-readable labels for a job's real `progress_stage` -- reuses the
 // exact same friendly copy the decorative loading animation already uses
-// for `GenerationProgress.current_stage` (`FRIENDLY_STAGE_LABEL_BY_BACKEND_KEY`
-// above), since both are drawn from the same real backend pipeline stage
+// for `GenerationProgress.current_stage` (`loadingStageLabel`), since both
+// are drawn from the same real backend pipeline stage
 // vocabulary. Never invents a stage the backend didn't actually report.
-function friendlyJobStageLabel(stage: string | null): string | null {
+function friendlyJobStageLabel(
+  stage: string | null,
+  mode: "user" | "developer",
+): string | null {
   if (stage === null) return null;
-  return FRIENDLY_STAGE_LABEL_BY_BACKEND_KEY[stage] ?? stage;
+  // Traveler view never shows a raw stage key it has no wording for.
+  return loadingStageLabel(stage) ?? (mode === "developer" ? stage : null);
 }
 
 const JOB_STATUS_LABELS: Record<JobResponseData["status"], string> = {
@@ -6830,13 +6952,40 @@ function JobStatusCard({
           ? "border-amber-400/30 bg-amber-400/10 text-amber-100"
           : "border-cyan-300/30 bg-cyan-300/10 text-cyan-50";
 
-  const stageLabel = friendlyJobStageLabel(job.progress_stage);
+  const stageLabel = friendlyJobStageLabel(job.progress_stage, mode);
+  const isTraveler = mode === "user";
+  // Section 2: Traveler view states the outcome in plain words and maps a
+  // failure through `travelerErrorMessage` -- never the job's raw status,
+  // error code, endpoint hint or section names.
+  const travelerHeadline =
+    job.status === "succeeded"
+      ? job.job_type === "generate"
+        ? "Your itinerary is ready"
+        : "Your changes were applied"
+      : job.status === "failed"
+        ? job.job_type === "generate"
+          ? "We couldn't build this itinerary"
+          : "We couldn't apply your changes"
+        : job.status === "cancelled"
+          ? "This request was cancelled"
+          : job.job_type === "generate"
+            ? "Building your itinerary"
+            : "Updating your itinerary";
 
   return (
-    <div className={`mt-4 rounded-2xl border p-4 text-sm ${toneClassName}`}>
+    <div
+      role={job.status === "failed" ? "alert" : "status"}
+      className={`mt-4 rounded-2xl border p-4 text-sm ${toneClassName}`}
+    >
       <p className="font-semibold">
-        {job.job_type === "generate" ? "Generation" : "Regeneration"}:{" "}
-        {JOB_STATUS_LABELS[job.status]}
+        {isTraveler ? (
+          travelerHeadline
+        ) : (
+          <>
+            {job.job_type === "generate" ? "Generation" : "Regeneration"}:{" "}
+            {JOB_STATUS_LABELS[job.status]}
+          </>
+        )}
       </p>
       {stageLabel && !isTerminalJobStatus(job.status) && (
         <p className="mt-1 text-xs opacity-90">{stageLabel}</p>
@@ -6844,7 +6993,14 @@ function JobStatusCard({
       {job.status === "failed" && (
         <>
           <p className="mt-1 break-words text-xs opacity-90">
-            {job.error_message ?? "The job failed unexpectedly."}
+            {isTraveler
+              ? travelerErrorMessage({
+                  code: job.error_code,
+                  status: null,
+                  message: job.error_message,
+                  operation: job.job_type === "generate" ? "generate" : "regenerate",
+                }).message
+              : (job.error_message ?? "The job failed unexpectedly.")}
           </p>
           {/* Step 186E: a simple retry affordance -- reuses the
               existing create/generate form and button below rather than
@@ -6861,10 +7017,12 @@ function JobStatusCard({
       )}
       {job.status === "cancelled" && (
         <p className="mt-1 text-xs opacity-90">
-          {job.message ?? "The job was cancelled."}
+          {isTraveler
+            ? "Nothing was changed."
+            : (job.message ?? "The job was cancelled.")}
         </p>
       )}
-      {job.status === "succeeded" && job.changed_sections.length > 0 && (
+      {!isTraveler && job.status === "succeeded" && job.changed_sections.length > 0 && (
         <p className="mt-1 break-words text-xs opacity-90">
           Changed: {job.changed_sections.join(", ")}
         </p>
@@ -6916,7 +7074,11 @@ function JobStatusCard({
 const VIEW_MODE_STORAGE_KEY = "travelobligator.viewMode";
 
 export default function Home() {
-  const [form, setForm] = useState<TripRequestInput>(DEFAULT_TRIP_REQUEST);
+  // Lazy initialiser: runs once per mount, so later renders never replace
+  // what the user typed. The form is not part of the server-rendered /
+  // first client render (the sign-in check is), so a server/browser clock
+  // or timezone difference cannot cause a hydration mismatch here.
+  const [form, setForm] = useState<TripRequestInput>(defaultTripRequest);
   const [interestsText, setInterestsText] = useState("");
   const [mustVisitText, setMustVisitText] = useState("");
   const [constraintsText, setConstraintsText] = useState("");
@@ -6941,6 +7103,15 @@ export default function Home() {
   const restoreAttemptedRef = useRef(false);
   const [isLoadingExisting, setIsLoadingExisting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Section 2: what "Try again" repeats for the error shown above, or null
+  // when repeating is not safe / not useful. Cleared with the error.
+  const [retryAction, setRetryAction] = useState<
+    { kind: "generate" } | { kind: "load"; tripId: string } | null
+  >(null);
+  // Section 2: set synchronously when a generation starts, so a second
+  // submit (double click, Enter held down) before React re-renders the
+  // disabled button can never start a second generation.
+  const generationInFlightRef = useRef(false);
   const [result, setResult] = useState<PlanResult | null>(null);
   // Section 199C: bumped after a branch activation so the two
   // RegenerationReadinessSection instances (whose success/summary state
@@ -7026,6 +7197,18 @@ export default function Home() {
       if (err instanceof ApiRequestError && err.code === "AUTH_NOT_CONFIGURED") {
         setAuthNotConfigured(true);
       }
+      // Section 2: a server that is still waking up is said so on the login
+      // screen, rather than looking like a plain signed-out state.
+      if (err instanceof ApiRequestError && err.code === BACKEND_UNREACHABLE_CODE) {
+        setAuthError(
+          travelerErrorMessage({
+            code: err.code,
+            status: err.status,
+            message: err.message,
+            operation: "login",
+          }).message,
+        );
+      }
       setCurrentUser(null);
     } finally {
       setAuthLoading(false);
@@ -7066,10 +7249,44 @@ export default function Home() {
     setWorkspaceEpoch(0);
     setIsRegenerationRunning(false);
     clearJob();
+    // Section 2: the login screen that now replaces the app says why.
+    setAuthError(SESSION_ENDED_MESSAGE);
+    setError(null);
+    setRetryAction(null);
     // Step 187G: a session ending means whoever logs in next on this tab
     // could be a different person -- never leave a previous user's caught
     // API errors visible to them.
     clearApiErrorLog();
+  }
+
+  // Section 2: Traveler view gets `travelerErrorMessage`'s wording (no raw
+  // backend message, code, stage or provider detail); Developer view keeps
+  // the backend's own message. `retryable` says whether offering "Try
+  // again" for the same action is safe.
+  function tripApiErrorView(
+    err: unknown,
+    fallback: string,
+    operation: string,
+  ): { message: string; retryable: boolean } {
+    recordApiError(operation, err);
+    if (!(err instanceof ApiRequestError)) {
+      return { message: fallback, retryable: true };
+    }
+    if (err.code === "AUTHENTICATION_REQUIRED") {
+      handleAuthenticationRequired();
+      return { message: SESSION_ENDED_MESSAGE, retryable: false };
+    }
+    const view = travelerErrorMessage({
+      code: err.code,
+      status: err.status,
+      message: err.message,
+      operation,
+    });
+    const hasFixedWording =
+      err.code === "FORBIDDEN" || err.code === "JOB_ALREADY_RUNNING";
+    return mode === "developer" && !hasFixedWording
+      ? { message: err.message, retryable: view.retryable }
+      : view;
   }
 
   function describeTripApiError(
@@ -7077,21 +7294,7 @@ export default function Home() {
     fallback: string,
     operation: string,
   ): string {
-    recordApiError(operation, err);
-    if (err instanceof ApiRequestError) {
-      if (err.code === "AUTHENTICATION_REQUIRED") {
-        handleAuthenticationRequired();
-        return "Your session has ended. Please log in again.";
-      }
-      if (err.code === "FORBIDDEN") {
-        return "You do not have access to this trip.";
-      }
-      if (err.code === "JOB_ALREADY_RUNNING") {
-        return "A generation or regeneration job is already running for this trip. Please wait for it to finish.";
-      }
-      return err.message;
-    }
-    return fallback;
+    return tripApiErrorView(err, fallback, operation).message;
   }
 
   async function handleAuthSubmit() {
@@ -7160,7 +7363,7 @@ export default function Home() {
     setIsLoading(false);
     setIsLoadingExisting(false);
     setBackendProgress(null);
-    setForm(DEFAULT_TRIP_REQUEST);
+    setForm(defaultTripRequest());
     setInterestsText("");
     setMustVisitText("");
     setConstraintsText("");
@@ -7205,6 +7408,7 @@ export default function Home() {
     setIsLoadingExisting(true);
     setLoadingTripId(tripId);
     setError(null);
+    setRetryAction(null);
     setResult(null);
     resetFeedbackPanelState();
     // Always drop whatever job state belonged to a previously loaded
@@ -7225,16 +7429,18 @@ export default function Home() {
         // Abandoned (unmount/logout) -- nothing to show.
         return;
       }
-      // A trip that cannot be opened (deleted, someone else's, never
-      // generated) must not keep being "selected" across reloads.
-      writeSelectedTripId(null);
-      setError(
-        describeTripApiError(
-          err,
-          "Something went wrong while talking to the backend.",
-          "load",
-        ),
+      const view = tripApiErrorView(
+        err,
+        "Something went wrong while opening this trip. Please try again.",
+        "load",
       );
+      // A trip that cannot be opened (deleted, someone else's, never
+      // generated) must not keep being "selected" across reloads. A
+      // temporary failure (server waking up, network) keeps the selection,
+      // so a reload or "Try again" reopens the same trip.
+      if (!view.retryable) writeSelectedTripId(null);
+      setError(view.message);
+      setRetryAction(view.retryable ? { kind: "load", tripId } : null);
     } finally {
       setIsLoadingExisting(false);
       setLoadingTripId(null);
@@ -7371,8 +7577,13 @@ export default function Home() {
   }
 
   async function handlePlanTrip() {
+    // One generation at a time: a submit that arrives while one is already
+    // running (or while a saved trip is loading) is ignored.
+    if (generationInFlightRef.current || isLoading || isLoadingExisting) return;
+    generationInFlightRef.current = true;
     setIsLoading(true);
     setError(null);
+    setRetryAction(null);
     setResult(null);
     setBackendProgress(null);
     setGenerationPhase("creating_trip");
@@ -7482,9 +7693,9 @@ export default function Home() {
       // the trip itself still exists and is listed under My trips.
       writeSelectedTripId(null);
       void refreshMyTrips();
-      const failureMessage = describeTripApiError(
+      const failure = tripApiErrorView(
           err,
-          "Something went wrong while talking to the backend.",
+          "Something went wrong while building this itinerary. Please try again.",
           // Step 187G: `generationPhase` still holds its last-set value
           // here (the `finally` block below resets it to "idle" only
           // after this catch runs), so a failure while `createTrip` was
@@ -7492,9 +7703,13 @@ export default function Home() {
           // `generatePlan`/job polling -- an accurate label, not a guess.
           generationPhase === "creating_trip" ? "create" : "generate",
       );
-      if (!failureShownByJobCard) setError(failureMessage);
+      if (!failureShownByJobCard) {
+        setError(failure.message);
+        setRetryAction(failure.retryable ? { kind: "generate" } : null);
+      }
     } finally {
       stopPolling();
+      generationInFlightRef.current = false;
       setIsLoading(false);
       setBackendProgress(null);
       setGenerationPhase("idle");
@@ -7510,6 +7725,7 @@ export default function Home() {
 
     setIsLoadingExisting(true);
     setError(null);
+    setRetryAction(null);
     setResult(null);
     resetFeedbackPanelState();
     // See handleSelectMyTrip's identical comments -- same resume
@@ -7546,7 +7762,9 @@ export default function Home() {
   // only ever changes what's shown, never the underlying data read.
   const dayWiseItinerarySection = result ? (
     <div className="rounded-2xl border border-white/10 bg-white/5 p-4 sm:p-5">
-      <h2 className="text-lg font-semibold">Day-wise experiences</h2>
+      <h2 className="text-lg font-semibold">
+        {mode === "developer" ? "Day-wise experiences" : "Your itinerary, day by day"}
+      </h2>
       <p className="mt-1 text-xs text-slate-500">
         Map links open the scheduled place coordinates only. They are
         not route, travel-time, or booking links.
@@ -7559,8 +7777,8 @@ export default function Home() {
       )}
       {mode === "user" && (
         <p className="mt-1 text-xs text-slate-500">
-          Places come from provider data (OpenStreetMap-based). Ratings, prices
-          and opening hours are not included.
+          Places come from map data. Ratings, prices and opening hours are
+          not included.
         </p>
       )}
       {mode === "developer" && (
@@ -7570,13 +7788,20 @@ export default function Home() {
           fallback order.
         </p>
       )}
-      {movementDataIsUnavailable(result.routeFeasibilityReport) && (
-        <p className="mt-1 text-xs text-amber-300/90">
-          Movement data unavailable for this trip -- no connected
-          routing provider could supply real distances or travel
-          times between stops.
-        </p>
-      )}
+      {mode === "developer" &&
+        movementDataIsUnavailable(result.routeFeasibilityReport) && (
+          <p className="mt-1 text-xs text-amber-300/90">
+            Movement data unavailable for this trip -- no connected
+            routing provider could supply real distances or travel
+            times between stops.
+          </p>
+        )}
+      {mode === "user" &&
+        travelerRouteCoverageNote(result.routeFeasibilityReport) && (
+          <p className="mt-1 text-xs text-amber-300/90" data-testid="route-coverage-note">
+            {travelerRouteCoverageNote(result.routeFeasibilityReport)}
+          </p>
+        )}
       {result.dailyPlans.length === 0 && (
         <p className="mt-2 text-sm text-slate-400">
           No daily plans returned yet.
@@ -7588,12 +7813,14 @@ export default function Home() {
             key={day.day_plan_id}
             className="rounded-xl border border-white/10 bg-slate-900/60 p-4"
           >
-            <h3 className="font-semibold">
+            <h3 className="break-words font-semibold">
               Day {day.day_number} · {day.date}
             </h3>
             <DailyNarrativeNote
               report={result.itineraryNarrativeReport}
               dayNumber={day.day_number}
+              mode={mode}
+              factualSummary={day.goal ?? null}
             />
             {day.experiences.length === 0 ? (
               mode === "developer" ? (
@@ -7603,17 +7830,18 @@ export default function Home() {
               ) : (
                 <>
                   <p className="mt-1 text-sm text-slate-400">
-                    No strong provider-backed places were scheduled for
-                    this day.
+                    Nothing is scheduled for this day.
                   </p>
-                  {day.warnings.map((warning) => (
-                    <p
-                      key={warning}
-                      className="mt-2 break-words text-xs text-amber-300/90"
-                    >
-                      {travelerText(warning)}
-                    </p>
-                  ))}
+                  {Array.from(new Set(day.warnings.map((warning) => travelerText(warning)))).map(
+                    (warning) => (
+                      <p
+                        key={warning}
+                        className="mt-2 break-words text-xs text-amber-300/90"
+                      >
+                        {warning}
+                      </p>
+                    ),
+                  )}
                 </>
               )
             ) : (
@@ -7649,10 +7877,14 @@ export default function Home() {
                     // review" rows Developer view still shows per leg.
                     // The trip-level note above already covers the
                     // "unavailable for this trip" case once, concisely.
+                    const travelerLine =
+                      mode === "user"
+                        ? travelerLegLine(movement, result.routeFeasibilityReport)
+                        : null;
                     const showMovementRow =
                       mode === "developer"
                         ? shouldRenderMovementRow(movement)
-                        : movement !== null && movement.status === "success";
+                        : travelerLine !== null;
                     return (
                       <Fragment key={experience.experience_id}>
                         <ScheduledExperienceCard
@@ -7682,7 +7914,11 @@ export default function Home() {
                           }
                         />
                         {showMovementRow && movement && (
-                          <MovementRow buffer={movement} mode={mode} />
+                          <MovementRow
+                            buffer={movement}
+                            mode={mode}
+                            travelerLine={travelerLine}
+                          />
                         )}
                       </Fragment>
                     );
@@ -8063,9 +8299,9 @@ PY`}
 
         <div className="mt-6 rounded-2xl border border-cyan-300/15 bg-cyan-400/[0.03] p-4 sm:p-5">
           <div className="flex items-center justify-between">
-            <p className="text-xs font-semibold uppercase tracking-wide text-cyan-300/80">
+            <h2 className="text-xs font-semibold uppercase tracking-wide text-cyan-300/80">
               My trips
-            </p>
+            </h2>
             <button
               type="button"
               onClick={() => void refreshMyTrips()}
@@ -8112,8 +8348,8 @@ PY`}
                       </p>
                       <p className="mt-0.5 break-words text-xs text-slate-400">
                         {trip.origin_city ? `From ${trip.origin_city} · ` : ""}
-                        {trip.start_date ?? "?"} → {trip.end_date ?? "?"} ·{" "}
-                        {trip.status}
+                        {trip.start_date ?? "?"} → {trip.end_date ?? "?"}
+                        {mode === "developer" ? ` · ${trip.status}` : ""}
                       </p>
                       {isThisTripLoading && (
                         <p className="mt-1 text-xs font-semibold text-cyan-300">
@@ -8129,16 +8365,22 @@ PY`}
         </div>
 
         <div className="mt-8">
-          <p className="text-xs font-semibold uppercase tracking-wide text-cyan-300/80">
+          <h2
+            id="create-trip-heading"
+            className="text-xs font-semibold uppercase tracking-wide text-cyan-300/80"
+          >
             Create a new trip
-          </p>
+          </h2>
           <p className="mt-1 text-xs text-slate-400">
-            The main action on this page — fill in the details below and the
-            backend pipeline will generate a draft plan.
+            {mode === "developer"
+              ? "The main action on this page — fill in the details below and the backend pipeline will generate a draft plan."
+              : "Fill in the details below and we'll build a day-by-day itinerary. This usually takes 30 to 60 seconds."}
           </p>
         </div>
 
         <form
+          aria-labelledby="create-trip-heading"
+          aria-busy={isLoading}
           className="mt-3 grid grid-cols-1 gap-4 rounded-2xl border border-cyan-300/20 bg-white/5 p-4 sm:grid-cols-2 sm:p-6"
           onSubmit={(event) => {
             event.preventDefault();
@@ -8148,6 +8390,8 @@ PY`}
           <label className="flex flex-col gap-1 text-sm text-slate-300">
             Destination
             <input
+              required
+              autoComplete="off"
               className="rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-slate-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/50"
               value={form.primary_destination}
               onChange={(event) =>
@@ -8171,6 +8415,7 @@ PY`}
             Start date
             <input
               type="date"
+              required
               className="rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-slate-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/50"
               value={form.start_date}
               onChange={(event) =>
@@ -8183,6 +8428,8 @@ PY`}
             End date
             <input
               type="date"
+              required
+              min={form.start_date || undefined}
               className="rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-slate-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/50"
               value={form.end_date}
               onChange={(event) =>
@@ -8379,6 +8626,7 @@ PY`}
 
         <TravelGenerationLoading
           key={isLoading ? "loading" : "idle"}
+          mode={mode}
           originCity={form.origin_city}
           destination={form.primary_destination}
           isLoading={isLoading}
@@ -8403,9 +8651,38 @@ PY`}
 
         <JobStatusCard job={activeJob} pollingError={jobPollingError} mode={mode} />
 
+        {/* Section 2: a reload (or a click in My trips) fetches the saved
+            itinerary; say so instead of leaving the area blank meanwhile. */}
+        {isLoadingExisting && !result && (
+          <p
+            role="status"
+            data-testid="saved-trip-loading"
+            className="mt-6 rounded-2xl border border-white/10 bg-white/5 p-4 text-sm text-slate-200 sm:p-5"
+          >
+            Loading your saved itinerary…
+          </p>
+        )}
+
         {error && (
-          <div className="mt-6 break-words rounded-2xl border border-red-400/30 bg-red-400/10 p-4 sm:p-5 text-sm text-red-100">
-            {error}
+          <div
+            role="alert"
+            className="mt-6 break-words rounded-2xl border border-red-400/30 bg-red-400/10 p-4 sm:p-5 text-sm text-red-100"
+          >
+            <p>{error}</p>
+            {retryAction && (
+              <button
+                type="button"
+                disabled={isLoading || isLoadingExisting}
+                onClick={() =>
+                  retryAction.kind === "load"
+                    ? void handleSelectMyTrip(retryAction.tripId)
+                    : void handlePlanTrip()
+                }
+                className={`mt-3 min-h-11 rounded-lg border border-red-200/40 bg-slate-950/40 px-4 py-2 text-sm font-semibold text-red-50 transition hover:bg-slate-950/70 disabled:cursor-not-allowed disabled:opacity-50 ${FOCUS_RING_CLASSNAME}`}
+              >
+                Try again
+              </button>
+            )}
           </div>
         )}
 
@@ -8462,9 +8739,11 @@ PY`}
                       {" · "}
                     </>
                   )}
-                  Validation:{" "}
+                  {mode === "developer" ? "Validation" : "Plan check"}:{" "}
                   <span className="font-semibold">
-                    {readinessLabel(result.summary.validation_status)}
+                    {mode === "developer"
+                      ? readinessLabel(result.summary.validation_status)
+                      : travelerReadiness(result.summary.validation_status).label}
                   </span>
                 </p>
                 {(result.summary.main_blocking_reason ||
@@ -8475,7 +8754,7 @@ PY`}
                         result.summary.main_review_reason)
                       : result.summary.main_blocking_reason
                         ? travelerText(result.summary.main_blocking_reason)
-                        : "Some checks still need review. See Important limitations below."}
+                        : "A few things are worth double-checking. See Important limitations below."}
                   </p>
                 )}
                 {mode === "developer" ? (
@@ -8527,6 +8806,10 @@ PY`}
               {mode === "user" && (
                 <UserModeReadinessBanner
                   validationStatus={result.summary.validation_status}
+                  notices={travelerReviewNotices(result.validationReport, {
+                    weather: result.weatherContext,
+                    holiday: result.holidayContext,
+                  })}
                 />
               )}
             </div>
@@ -8659,6 +8942,8 @@ PY`}
 
                 <ItineraryNarrativeSummarySection report={result.itineraryNarrativeReport} />
 
+                <GettingAroundSection report={result.itineraryNarrativeReport} />
+
                 {dayWiseItinerarySection}
 
                 <div id="where-to-stay">
@@ -8772,6 +9057,7 @@ PY`}
 
                 <div id="draft-itinerary" className="flex flex-col gap-6">
                   <LockedItemsSummarySection
+                    mode="user"
                     tripId={result.summary.trip_id}
                     userLocks={result.userLocks}
                     dailyPlans={result.dailyPlans}
@@ -8784,7 +9070,12 @@ PY`}
                     }
                   />
 
-                  <ItineraryNarrativeSummarySection report={result.itineraryNarrativeReport} />
+                  <ItineraryNarrativeSummarySection
+                    report={result.itineraryNarrativeReport}
+                    mode="user"
+                  />
+
+                  <GettingAroundSection report={result.itineraryNarrativeReport} />
 
                   {dayWiseItinerarySection}
                 </div>
