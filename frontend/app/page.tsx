@@ -49,10 +49,9 @@ import {
 import {
   aggregateCaveats,
   humanizeIdentifier,
-  placeDataLabel,
-  sourceLabel,
   travelerProse,
   travelerText,
+  travelerWhyIncluded,
 } from "@/lib/display-labels";
 import {
   GETTING_AROUND_DISCLAIMER,
@@ -64,6 +63,7 @@ import {
   gettingAroundAdvisory,
   loadingPatienceNote,
   loadingStageLabel,
+  travelerChangeRefusal,
   travelerErrorMessage,
   travelerLegLine,
   travelerReadiness,
@@ -1446,8 +1446,7 @@ function summarizeWeatherForTravelerView(weather: WeatherContext | null): string
   const low = Math.round(Math.min(...temperatures));
   const high = Math.round(Math.max(...temperatures));
   const dayCount = weather.daily_weather.length;
-  const source = sourceLabel(weather.source);
-  return `Around ${low}–${high}°C over ${dayCount} day${dayCount === 1 ? "" : "s"}${source ? ` (via ${source})` : ""}.`;
+  return `Around ${low}–${high}°C over ${dayCount} day${dayCount === 1 ? "" : "s"}.`;
 }
 
 /**
@@ -1861,26 +1860,15 @@ function ExperienceMapLinks({
  * opening hours, route, or booking status, none of which exist on this
  * model.
  */
-function AIPromotedBadge({
-  experience,
-  mode = "developer",
-}: {
-  experience: ExperienceItem;
-  mode?: "user" | "developer";
-}) {
+function AIPromotedBadge({ experience }: { experience: ExperienceItem }) {
+  // Developer view only (Section 2B): Traveler view never shows how a place
+  // was proposed or matched.
   return (
     <div className="mt-1 flex flex-wrap items-center gap-2">
       <span className="inline-flex items-center rounded-full border border-violet-300/40 bg-violet-950/30 px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-violet-200">
-        {mode === "user"
-          ? "Suggested by AI · matched in place data"
-          : "AI-suggested · Provider-grounded"}
+        AI-suggested · Provider-grounded
       </span>
-      {mode === "user" && placeDataLabel(experience.provider_source) && (
-        <span className="break-words text-[11px] text-slate-500">
-          {placeDataLabel(experience.provider_source)}
-        </span>
-      )}
-      {mode === "developer" && (experience.provider_source || experience.original_ai_candidate_id) && (
+      {(experience.provider_source || experience.original_ai_candidate_id) && (
         <span className="break-all text-[11px] text-slate-500">
           {experience.provider_source ? `Source: ${experience.provider_source}` : ""}
           {experience.provider_source && experience.original_ai_candidate_id
@@ -1894,10 +1882,6 @@ function AIPromotedBadge({
     </div>
   );
 }
-
-// The default "why included" sentence is identical on every stop; Traveler
-// view says it once in the itinerary header instead of on every card.
-const GENERIC_WHY_INCLUDED = /^selected from provider-backed attraction candidates\.?$/i;
 
 /**
  * Compact card for a single scheduled experience. `orderNumber` (Step
@@ -1963,9 +1947,11 @@ function ScheduledExperienceCard({
         tripData.planning_state.regeneration_readiness,
       );
       setLockSuccessMessage(
-        tripData.planning_state.regeneration_readiness.can_regenerate
-          ? "Place marked to keep. Regeneration is available in the Regeneration readiness section below."
-          : "Place marked to keep. See the Regeneration readiness section below for whether regeneration can run yet.",
+        mode === "user"
+          ? "Place marked to keep. Requested changes cannot be applied while a place is kept."
+          : tripData.planning_state.regeneration_readiness.can_regenerate
+            ? "Place marked to keep. Regeneration is available in the Regeneration readiness section below."
+            : "Place marked to keep. See the Regeneration readiness section below for whether regeneration can run yet.",
       );
     } catch (err) {
       recordApiError("lock", err);
@@ -2019,17 +2005,20 @@ function ScheduledExperienceCard({
               ({mode === "user" ? humanizeIdentifier(experience.category) : experience.category})
             </span>
           </p>
-          {experience.promoted_from_ai && (
-            <AIPromotedBadge experience={experience} mode={mode} />
+          {/* Section 2B: how a place was found (AI proposal, matching) is
+              Developer-view detail. Traveler view shows only a plain reason
+              the traveler can use, or nothing. */}
+          {mode === "developer" && experience.promoted_from_ai && (
+            <AIPromotedBadge experience={experience} />
           )}
-          {experience.why_included &&
-            !(mode === "user" && GENERIC_WHY_INCLUDED.test(experience.why_included)) && (
-              <p className="mt-1 text-xs text-slate-400">
-                {mode === "user"
-                  ? travelerText(experience.why_included)
-                  : experience.why_included}
-              </p>
-            )}
+          {mode === "developer" && experience.why_included && (
+            <p className="mt-1 text-xs text-slate-400">{experience.why_included}</p>
+          )}
+          {mode === "user" && travelerWhyIncluded(experience.why_included) && (
+            <p className="mt-1 text-xs text-slate-400" data-testid="why-included">
+              {travelerWhyIncluded(experience.why_included)}
+            </p>
+          )}
           {mode === "developer" && (
             <p className="mt-2 text-[11px] uppercase tracking-wide text-slate-500">
               {hasCoordinates ? "Coordinates available" : "Coordinates unavailable"}
@@ -2049,7 +2038,7 @@ function ScheduledExperienceCard({
             {activeLock ? (
               <>
                 <span className="rounded-full border border-emerald-300/40 bg-slate-950 px-3 py-1 text-xs font-semibold text-emerald-200">
-                  Kept for future regeneration
+                  {mode === "user" ? "Kept" : "Kept for future regeneration"}
                 </span>
                 <button
                   type="button"
@@ -2109,16 +2098,17 @@ function RestaurantSuggestionCard({
       {restaurant.address && (
         <p className="mt-1 break-words text-xs text-slate-400">{restaurant.address}</p>
       )}
-      <p className="mt-1 text-[11px] uppercase tracking-wide text-slate-500">
-        {mode === "user"
-          ? (placeDataLabel(restaurant.source) ?? "Place data")
-          : `${restaurant.source} · ${restaurant.data_status}`}
-      </p>
-      <p className="mt-1 text-xs text-slate-400">
-        {mode === "user"
-          ? "Near this day's stops, by straight-line distance. Not a reservation, rating, price, or recommendation."
-          : restaurant.why_suggested}
-      </p>
+      {/* Section 2B: the source key, data status and selection explanation
+          are Developer-view detail; the Traveler note for these cards is
+          stated once above the list. */}
+      {mode === "developer" && (
+        <>
+          <p className="mt-1 text-[11px] uppercase tracking-wide text-slate-500">
+            {restaurant.source} · {restaurant.data_status}
+          </p>
+          <p className="mt-1 text-xs text-slate-400">{restaurant.why_suggested}</p>
+        </>
+      )}
     </li>
   );
 }
@@ -2969,10 +2959,13 @@ function AccommodationOfferCard({
       <p className="break-words font-medium text-slate-100">
         {offer.property_name}
       </p>
-      <p className="mt-0.5 break-all font-mono text-[11px] text-slate-500">
-        {offer.provider}
-        {offer.source_name ? ` · ${offer.source_name}` : ""}
-      </p>
+      {/* `concise` is the Traveler card: no provider key (Section 2B). */}
+      {!concise && (
+        <p className="mt-0.5 break-all font-mono text-[11px] text-slate-500">
+          {offer.provider}
+          {offer.source_name ? ` · ${offer.source_name}` : ""}
+        </p>
+      )}
       {offer.nightly_price_amount !== null && offer.currency && (
         <p className="mt-1 text-xs text-slate-300">
           {offer.nightly_price_amount} {offer.currency} / night
@@ -2987,7 +2980,8 @@ function AccommodationOfferCard({
         <AccommodationRatingDetailsCard ratingDetails={offer.rating_details} />
       )}
       <p className="mt-1 text-xs text-slate-400">
-        Availability: {offer.availability_status}
+        Availability:{" "}
+        {concise ? humanizeIdentifier(offer.availability_status) : offer.availability_status}
       </p>
       {offer.booking_url && (
         <p className="mt-1 break-all text-xs text-cyan-200">
@@ -3173,11 +3167,11 @@ function TravelerWhereToStaySection({
       {hasBookableOffers ? (
         <>
           <DisclaimerNote tone="amber" spacingClassName="mt-2">
-            Bookable lodging inventory from a connected provider,
-            source-limited to the fields it actually returned -- not a
-            confirmed booking or a &ldquo;best&rdquo; ranking.
+            Stay offers found for your dates. Nothing is booked, and this is
+            not a ranking: check the price and availability yourself before
+            you book.
             {hasManualLocalOffers &&
-              " Some or all of this comes from a manual/local HTML source, not official-provider data."}
+              " Some of these were added from a saved page rather than a live booking source."}
           </DisclaimerNote>
           <ul className="mt-3 flex flex-col gap-2">
             {offers
@@ -3193,20 +3187,43 @@ function TravelerWhereToStaySection({
         </>
       ) : hasStayAreaCandidates ? (
         <>
+          {/* Section 2B: name, category and address only. The source key,
+              data status and the backend's selection explanation
+              (`why_suggested`, `stayAreaGuidance.summary`) are Developer
+              view detail. */}
           <DisclaimerNote tone="amber" spacingClassName="mt-2">
-            Stay-area ideas from open map data (OpenStreetMap), not
-            bookable hotels -- no price, availability, rating, or booking
-            claim.
+            Areas and nearby stays based on mapped locations. These are not
+            live hotel offers, and prices or availability have not been
+            checked.
           </DisclaimerNote>
-          <p className="mt-2 text-sm text-slate-300">{stayAreaGuidance.summary}</p>
+          <p className="mt-2 text-xs text-slate-400">
+            Shown because they are relatively close to places in your
+            itinerary.
+          </p>
           <ul className="mt-3 flex flex-col gap-2">
             {stayAreaCandidates
               .slice(0, TRAVELER_WHERE_TO_STAY_MAX_CARDS)
               .map((accommodation, index) => (
-                <AccommodationSuggestionCard
+                <li
                   key={`${accommodation.name}-${index}`}
-                  accommodation={accommodation}
-                />
+                  data-testid="traveler-stay-card"
+                  className="rounded-lg border border-white/10 bg-slate-900/60 p-3 text-sm"
+                >
+                  <p className="break-words font-medium text-slate-100 [overflow-wrap:anywhere]">
+                    <bdi>{accommodation.name}</bdi>
+                    {accommodation.category && (
+                      <span className="font-normal text-slate-400">
+                        {" "}
+                        ({humanizeIdentifier(accommodation.category)})
+                      </span>
+                    )}
+                  </p>
+                  {accommodation.address && (
+                    <p className="mt-1 break-words text-xs text-slate-400">
+                      {accommodation.address}
+                    </p>
+                  )}
+                </li>
               ))}
           </ul>
         </>
@@ -4906,13 +4923,22 @@ function RegenerationReadinessSection({
   }
 
   return (
-    <div id="regeneration-readiness" className="rounded-2xl border border-white/10 bg-white/5 p-4 sm:p-5">
-      <h2 className="text-lg font-semibold">Regeneration readiness</h2>
+    // Section 2B: Developer view renders the "Regeneration readiness"
+    // diagnostic. Traveler view renders the same button and handler as a
+    // plain "Apply your changes" control -- without it a saved request could
+    // never be applied from Traveler view -- with no readiness status,
+    // version, section or lock vocabulary.
+    <div
+      id={mode === "user" ? "apply-changes" : "regeneration-readiness"}
+      className="rounded-2xl border border-white/10 bg-white/5 p-4 sm:p-5"
+    >
+      <h2 className="text-lg font-semibold">
+        {mode === "user" ? "Apply your changes" : "Regeneration readiness"}
+      </h2>
       {mode === "user" ? (
         <DisclaimerNote tone="amber">
-          Regenerating applies your saved feedback to the plan only when the
-          request can be applied safely. Otherwise nothing changes and your
-          feedback stays saved.
+          Your saved requests are applied one at a time, oldest first. If a
+          request cannot be applied, nothing changes and it stays saved.
         </DisclaimerNote>
       ) : (
         <DisclaimerNote tone="amber">
@@ -4922,20 +4948,25 @@ function RegenerationReadinessSection({
         </DisclaimerNote>
       )}
 
-      {compact ? (
+      {mode === "user" ? (
         <p className="mt-3 text-sm text-slate-300">
-          {mode === "user" ? "Regeneration" : "Status"}:{" "}
-          <span className="font-semibold">
-            {mode === "user"
-              ? readiness.can_regenerate
-                ? "available"
-                : "not available yet"
-              : readiness.status}
-          </span>
+          {readiness.pending_feedback_count === 0
+            ? "No saved requests yet."
+            : `${readiness.pending_feedback_count} saved request${
+                readiness.pending_feedback_count === 1 ? "" : "s"
+              } waiting.`}
+          {readiness.active_lock_count > 0 &&
+            ` ${readiness.active_lock_count} place${
+              readiness.active_lock_count === 1 ? " is" : "s are"
+            } marked to keep.`}
+        </p>
+      ) : compact ? (
+        <p className="mt-3 text-sm text-slate-300">
+          Status: <span className="font-semibold">{readiness.status}</span>
           {" · "}
           Pending feedback: {readiness.pending_feedback_count}
           {" · "}
-          {mode === "user" ? "Kept places" : "Active locks"}: {readiness.active_lock_count}
+          Active locks: {readiness.active_lock_count}
         </p>
       ) : (
         <>
@@ -5050,23 +5081,29 @@ function RegenerationReadinessSection({
           onClick={() => void handleRegenerate()}
           disabled={!readiness.can_regenerate || isRegenerating}
           title={
-            readiness.can_regenerate
+            readiness.can_regenerate || mode === "user"
               ? undefined
               : "Regeneration is available only when feedback is pending and no active locks exist."
           }
           className={`rounded-lg border border-white/10 bg-emerald-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-emerald-500 disabled:cursor-not-allowed disabled:border-white/10 disabled:bg-slate-900 disabled:text-slate-500 disabled:opacity-50 ${FOCUS_RING_CLASSNAME}`}
         >
-          {isRegenerating
-            ? "Regenerating..."
-            : compact
-              ? "Regenerate when allowed"
-              : "Regenerate from feedback"}
+          {mode === "user"
+            ? isRegenerating
+              ? "Applying…"
+              : "Apply next change"
+            : isRegenerating
+              ? "Regenerating..."
+              : compact
+                ? "Regenerate when allowed"
+                : "Regenerate from feedback"}
         </button>
         <p className="mt-2 text-xs text-slate-500">
-          {compact
+          {mode === "user"
             ? readiness.can_regenerate
-              ? "Feedback is waiting. Regenerate applies your oldest saved request first, one at a time; the plan changes only if that request can be applied, otherwise nothing changes."
-              : "Regeneration is blocked until feedback exists and no places are marked to keep."
+              ? "Applies your oldest saved request. The itinerary changes only if that request can be applied."
+              : readiness.active_lock_count > 0
+                ? "Remove the keep from every kept place before applying changes."
+                : "Save a request under Request changes first."
             : "Regeneration is available only when feedback is pending and no active locks exist."}
         </p>
 
@@ -5079,30 +5116,26 @@ function RegenerationReadinessSection({
             className="mt-3 rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-3 text-sm"
           >
             <p className="font-semibold text-emerald-300">
-              Regeneration applied
+              {mode === "user" ? "Your change was applied" : "Regeneration applied"}
             </p>
-            <p className="mt-1 text-xs text-emerald-200">
-              {formatNullableVersionLabel(regenerateSuccess.previousVersion)}
-              {" → "}
-              {regenerateSuccess.currentVersion}
-            </p>
-            {regenerateSuccess.changedSections.length > 0 && (
+            {/* Version labels and plan-section names are Developer detail. */}
+            {mode === "developer" && (
               <p className="mt-1 text-xs text-emerald-200">
-                Changed:{" "}
-                {(mode === "user"
-                  ? regenerateSuccess.changedSections.map(humanizeIdentifier)
-                  : regenerateSuccess.changedSections
-                ).join(", ")}
+                {formatNullableVersionLabel(regenerateSuccess.previousVersion)}
+                {" → "}
+                {regenerateSuccess.currentVersion}
               </p>
             )}
-            {regenerateSuccess.preservedSections &&
+            {mode === "developer" && regenerateSuccess.changedSections.length > 0 && (
+              <p className="mt-1 text-xs text-emerald-200">
+                Changed: {regenerateSuccess.changedSections.join(", ")}
+              </p>
+            )}
+            {mode === "developer" &&
+              regenerateSuccess.preservedSections &&
               regenerateSuccess.preservedSections.length > 0 && (
                 <p className="mt-1 text-xs text-emerald-200">
-                  Preserved:{" "}
-                  {(mode === "user"
-                    ? regenerateSuccess.preservedSections.map(humanizeIdentifier)
-                    : regenerateSuccess.preservedSections
-                  ).join(", ")}
+                  Preserved: {regenerateSuccess.preservedSections.join(", ")}
                 </p>
               )}
             {mode === "developer" &&
@@ -5117,7 +5150,7 @@ function RegenerationReadinessSection({
             {regenerateSuccess.targeted && (
               <div className="mt-3 border-t border-emerald-500/20 pt-3">
                 <p className="text-[11px] font-semibold uppercase tracking-wide text-emerald-400">
-                  Targeted regeneration summary
+                  {mode === "user" ? "What changed" : "Targeted regeneration summary"}
                 </p>
                 {regenerateSuccess.affectedDayIndices.length > 0 && (
                   <p className="mt-1 text-xs text-emerald-200">
@@ -5128,7 +5161,7 @@ function RegenerationReadinessSection({
                 )}
                 {regenerateSuccess.preservedDayIndices.length > 0 && (
                   <p className="mt-1 text-xs text-emerald-200">
-                    Unchanged in this revision: Day
+                    {mode === "user" ? "Unchanged" : "Unchanged in this revision"}: Day
                     {regenerateSuccess.preservedDayIndices.length > 1 ? "s" : ""}{" "}
                     {regenerateSuccess.preservedDayIndices.join(", ")}
                   </p>
@@ -5223,10 +5256,13 @@ function RegenerationReadinessSection({
                     )}
                     {targetedSummary.remainingPendingCount > 0 && (
                       <p className="mt-2 text-xs text-amber-200">
-                        1 feedback item applied. {targetedSummary.remainingPendingCount}{" "}
-                        more feedback item
-                        {targetedSummary.remainingPendingCount > 1 ? "s" : ""} still
-                        pending -- regenerate again to apply the next one.
+                        {mode === "user"
+                          ? `One request applied. ${targetedSummary.remainingPendingCount} more saved request${
+                              targetedSummary.remainingPendingCount > 1 ? "s are" : " is"
+                            } waiting. Apply again for the next one.`
+                          : `1 feedback item applied. ${targetedSummary.remainingPendingCount} more feedback item${
+                              targetedSummary.remainingPendingCount > 1 ? "s" : ""
+                            } still pending -- regenerate again to apply the next one.`}
                       </p>
                     )}
                   </>
@@ -5246,11 +5282,16 @@ function RegenerationReadinessSection({
               className={`mt-3 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm ${FOCUS_RING_CLASSNAME}`}
             >
               <p className="font-semibold text-amber-200">
-                This feedback needs clarification
+                {mode === "user"
+                  ? "We need a bit more detail"
+                  : "This feedback needs clarification"}
               </p>
-              <p className="mt-1 text-xs text-amber-100">
-                {clarificationDetail?.reason ??
-                  "The feedback could not be resolved to a single, unambiguous change. No plan section was changed."}
+              <p className="mt-1 break-words text-xs text-amber-100">
+                {mode === "user"
+                  ? (travelerProse(clarificationDetail?.reason) ??
+                    "We couldn't tell exactly what to change. Nothing was changed.")
+                  : (clarificationDetail?.reason ??
+                    "The feedback could not be resolved to a single, unambiguous change. No plan section was changed.")}
               </p>
               {clarificationDetail &&
                 clarificationDetail.possible_experience_ids.length > 0 && (
@@ -5263,9 +5304,9 @@ function RegenerationReadinessSection({
                   </ul>
                 )}
               <p className="mt-2 text-xs text-amber-200">
-                Your feedback is still saved as pending. Try submitting
-                clearer feedback below (e.g. naming the specific place)
-                and regenerate again.
+                {mode === "user"
+                  ? "Your request is still saved. Add a clearer request, for example by naming the place, then apply again."
+                  : "Your feedback is still saved as pending. Try submitting clearer feedback below (e.g. naming the specific place) and regenerate again."}
               </p>
             </div>
           ) : (
@@ -5276,23 +5317,21 @@ function RegenerationReadinessSection({
               tabIndex={-1}
               className={`mt-3 rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-sm ${FOCUS_RING_CLASSNAME}`}
             >
+              {/* Section 2B: Traveler view shows fixed plain wording for the
+                  refusal; the code, the backend message and the per-code
+                  developer notes below are Developer view only. */}
               <p className="break-words font-semibold text-red-300">
                 {mode === "user"
-                  ? (REGENERATION_REASON_CODE_LABELS[regenerateError.code] ??
-                    "Your changes could not be applied")
+                  ? travelerChangeRefusal(regenerateError.code).title
                   : regenerationReasonCodeLabel(regenerateError.code)}
               </p>
               <p className="mt-1 break-words text-xs text-red-200">
                 {mode === "user"
-                  ? travelerErrorMessage({
-                      code: regenerateError.code,
-                      status: null,
-                      message: regenerateError.message,
-                      operation: "regenerate",
-                    }).message
+                  ? travelerChangeRefusal(regenerateError.code).detail
                   : regenerateError.message}
               </p>
-              {regenerateError.code === "REGENERATION_PROVIDER_UNAVAILABLE" && (
+              {mode === "developer" &&
+                regenerateError.code === "REGENERATION_PROVIDER_UNAVAILABLE" && (
                 <p className="mt-1 break-words text-xs text-red-200">
                   The requested place could not be looked up with the
                   available provider data right now. This does not mean
@@ -5300,7 +5339,8 @@ function RegenerationReadinessSection({
                   saved as pending; you can try regenerating again later.
                 </p>
               )}
-              {(regenerateError.code === "REGENERATION_FEEDBACK_NOT_INTERPRETABLE" ||
+              {mode === "developer" &&
+                (regenerateError.code === "REGENERATION_FEEDBACK_NOT_INTERPRETABLE" ||
                 regenerateError.code === "REGENERATION_NO_EFFECT" ||
                 regenerateError.code === "REGENERATION_PROVIDER_RATE_LIMITED" ||
                 regenerateError.code === "REGENERATION_AI_UNAVAILABLE") && (
@@ -5309,14 +5349,14 @@ function RegenerationReadinessSection({
                   feedback is still saved as pending.
                 </p>
               )}
-              {regenerateError.code === "REGENERATION_CONFLICT" && (
+              {mode === "developer" && regenerateError.code === "REGENERATION_CONFLICT" && (
                 <p className="mt-1 break-words text-xs text-red-200">
                   The itinerary changed while this request was being
                   processed. The latest version has been reloaded below --
                   nothing was overwritten.
                 </p>
               )}
-              {regenerateError.code === "REGENERATION_BLOCKED_BY_LOCKS" && (
+              {mode === "developer" && regenerateError.code === "REGENERATION_BLOCKED_BY_LOCKS" && (
                 <p className="mt-1 break-words text-xs text-red-200">
                   At least one item is locked, so regeneration was refused
                   outright rather than worked around. Unlock every locked
@@ -5427,7 +5467,7 @@ function FeedbackPanel({
       <h2 className="text-lg font-semibold">Request changes</h2>
       <p className="mt-1 text-xs text-slate-500">
         {isTraveler
-          ? "Tell us what to change. Your request is saved, and the plan changes only when you regenerate and the request can be applied."
+          ? "Tell us what to change. Your request is saved, and the itinerary changes only when you apply it below."
           : "Feedback is captured and classified automatically. See Regeneration readiness below to check whether regeneration can run on it yet."}
       </p>
 
@@ -5450,7 +5490,13 @@ function FeedbackPanel({
         disabled={isSubmitting}
         className={`mt-3 rounded-lg border border-cyan-300/40 bg-slate-900 px-4 py-2 text-sm font-semibold text-cyan-200 transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50 ${FOCUS_RING_CLASSNAME}`}
       >
-        {isSubmitting ? "Saving feedback..." : "Submit feedback"}
+        {isTraveler
+          ? isSubmitting
+            ? "Saving…"
+            : "Save request"
+          : isSubmitting
+            ? "Saving feedback..."
+            : "Submit feedback"}
       </button>
 
       {errorMessage && (
@@ -5465,11 +5511,11 @@ function FeedbackPanel({
       )}
 
       <p className="mt-4 text-xs font-semibold uppercase tracking-wide text-slate-500">
-        Feedback history ({feedbackHistory.length})
+        {isTraveler ? "Your requests" : "Feedback history"} ({feedbackHistory.length})
       </p>
       <p className="mt-1 text-xs text-amber-300/90">
         {isTraveler
-          ? "Saved requests do not change the plan until you regenerate."
+          ? "Saved requests do not change the itinerary until you apply them."
           : "Interpretation is preliminary and rule-based. These requests are stored but not applied to the plan yet."}
       </p>
       {queue.size > 0 && (
@@ -5477,7 +5523,7 @@ function FeedbackPanel({
           className="mt-2 text-xs text-cyan-200/90"
           data-testid="feedback-queue-explainer"
         >
-          Regenerate handles one saved request at a time, oldest first
+          {isTraveler ? "Requests are applied" : "Regenerate handles"} one saved request at a time, oldest first
           {queue.size > 1
             ? `: ${queue.size} are saved, and the one marked “Next to apply” goes first. The others wait and stay saved; nothing is skipped, reordered or deleted.`
             : ": the one marked “Next to apply” goes first."}
@@ -5513,13 +5559,19 @@ function FeedbackPanel({
                 </p>
               ) : (
                 <p className="mt-1 text-[11px] uppercase tracking-wide text-slate-500">
-                  {feedbackEventStatusLabel(event)} ·{" "}
-                  {new Date(event.created_at).toLocaleString()}
+                  {isTraveler
+                    ? event.applied_at !== null
+                      ? "Applied"
+                      : "Saved"
+                    : feedbackEventStatusLabel(event)}{" "}
+                  · {new Date(event.created_at).toLocaleString()}
                 </p>
               )}
               {queue.get(event.feedback_event_id)?.blockedNote && (
                 <p className="mt-1 break-words text-xs text-amber-300/90">
-                  {queue.get(event.feedback_event_id)!.blockedNote}
+                  {isTraveler
+                    ? "The last attempt to apply this could not be completed. Nothing was changed; this request is still saved."
+                    : queue.get(event.feedback_event_id)!.blockedNote}
                 </p>
               )}
               {!isTraveler && event.feedback_type && (
@@ -5639,8 +5691,7 @@ const USER_MODE_JUMP_LINKS: { id: string; label: string }[] = [
   { id: "summary", label: "Summary" },
   { id: "draft-itinerary", label: "Itinerary" },
   { id: "limitations", label: "Limitations" },
-  { id: "feedback", label: "Feedback" },
-  { id: "branches", label: "Branches" },
+  { id: "feedback", label: "Request changes" },
   { id: "travel-context", label: "Context" },
   { id: "where-to-stay", label: "Where to stay" },
   { id: "flights", label: "Flights" },
@@ -5690,7 +5741,7 @@ function ResultJumpLinks({ mode }: { mode: "user" | "developer" }) {
       <p className="mt-2 text-[11px] text-slate-500">
         {mode === "developer"
           ? "This view exposes backend PlanningState diagnostics, provider coverage, validation, regeneration, and source details."
-          : "Switch to Developer view above for full validation, provider-coverage, and regeneration diagnostics."}
+          : "Developer view (above) has the full technical detail and the itinerary's version history."}
       </p>
     </nav>
   );
@@ -5813,9 +5864,13 @@ function ApiDiagnosticsPanel({ entries }: { entries: ApiErrorLogEntry[] }) {
 function UserModeReadinessBanner({
   validationStatus,
   notices,
+  blockingReason,
 }: {
   validationStatus: string | null;
   notices: string[];
+  // The first critical finding, when the plan is not usable (Section 2B:
+  // shown here, in the one readiness treatment, instead of in the header).
+  blockingReason: string | null;
 }) {
   const readiness = travelerReadiness(validationStatus);
   const toneClassName =
@@ -5832,6 +5887,9 @@ function UserModeReadinessBanner({
     >
       <p className="font-semibold">{readiness.label}</p>
       <p className="mt-1 leading-6">{readiness.message}</p>
+      {blockingReason && (
+        <p className="mt-1 break-words leading-6">{travelerText(blockingReason)}</p>
+      )}
       {notices.length > 0 && (
         <ul className="mt-2 list-disc break-words pl-5 text-xs leading-5">
           {notices.map((notice) => (
@@ -7559,9 +7617,13 @@ export default function Home() {
       );
       setFeedbackText("");
       setFeedbackSuccessMessage(
-        tripData.planning_state.regeneration_readiness.can_regenerate
-          ? "Feedback saved. Regeneration is available below."
-          : "Feedback saved. See Regeneration readiness below for whether regeneration can run yet.",
+        mode === "user"
+          ? tripData.planning_state.regeneration_readiness.can_regenerate
+            ? "Request saved. Use Apply next change below to update the itinerary."
+            : "Request saved. See Apply your changes below for what is needed before it can be applied."
+          : tripData.planning_state.regeneration_readiness.can_regenerate
+            ? "Feedback saved. Regeneration is available below."
+            : "Feedback saved. See Regeneration readiness below for whether regeneration can run yet.",
       );
     } catch (err) {
       setFeedbackErrorMessage(
@@ -7960,8 +8022,8 @@ export default function Home() {
                   </p>
                 ) : (
                   <p className="mt-1 text-xs text-amber-300/90">
-                    Nearby food ideas only -- not reservations, ratings,
-                    or recommendations.
+                    Places to eat near this day&apos;s stops. These are not
+                    reservations, ratings or recommendations.
                   </p>
                 )}
                 <ul className="mt-2 flex flex-col gap-2">
@@ -8729,34 +8791,29 @@ PY`}
                     </span>
                   </p>
                 )}
-                <p className="mt-3 leading-6">
-                  {mode === "developer" && (
-                    <>
-                      Pipeline status:{" "}
-                      <span className="font-semibold">
-                        {result.summary.pipeline_status}
-                      </span>
-                      {" · "}
-                    </>
-                  )}
-                  {mode === "developer" ? "Validation" : "Plan check"}:{" "}
-                  <span className="font-semibold">
-                    {mode === "developer"
-                      ? readinessLabel(result.summary.validation_status)
-                      : travelerReadiness(result.summary.validation_status).label}
-                  </span>
-                </p>
-                {(result.summary.main_blocking_reason ||
-                  result.summary.main_review_reason) && (
-                  <p className="mt-2 break-words leading-6 text-cyan-100/90">
-                    {mode === "developer"
-                      ? (result.summary.main_blocking_reason ??
-                        result.summary.main_review_reason)
-                      : result.summary.main_blocking_reason
-                        ? travelerText(result.summary.main_blocking_reason)
-                        : "A few things are worth double-checking. See Important limitations below."}
+                {/* Section 2B: Traveler view states readiness once, in the
+                    banner below the header -- not here as well. */}
+                {mode === "developer" && (
+                  <p className="mt-3 leading-6">
+                    Pipeline status:{" "}
+                    <span className="font-semibold">
+                      {result.summary.pipeline_status}
+                    </span>
+                    {" · "}
+                    Validation:{" "}
+                    <span className="font-semibold">
+                      {readinessLabel(result.summary.validation_status)}
+                    </span>
                   </p>
                 )}
+                {mode === "developer" &&
+                  (result.summary.main_blocking_reason ||
+                    result.summary.main_review_reason) && (
+                    <p className="mt-2 break-words leading-6 text-cyan-100/90">
+                      {result.summary.main_blocking_reason ??
+                        result.summary.main_review_reason}
+                    </p>
+                  )}
                 {mode === "developer" ? (
                   <p className="mt-3 break-all text-xs text-cyan-100/70">
                     Trip {result.summary.trip_id}
@@ -8806,6 +8863,7 @@ PY`}
               {mode === "user" && (
                 <UserModeReadinessBanner
                   validationStatus={result.summary.validation_status}
+                  blockingReason={result.summary.main_blocking_reason}
                   notices={travelerReviewNotices(result.validationReport, {
                     weather: result.weatherContext,
                     holiday: result.holidayContext,
@@ -9118,17 +9176,8 @@ PY`}
                   />
                 </div>
 
-                {/* The panel's own <section> already carries id="branches". */}
-                <BranchWorkspacePanel
-                  key={result.summary.trip_id}
-                  tripId={result.summary.trip_id}
-                  refreshKey={`${result.regenerationReadiness.current_version ?? ""}:${workspaceEpoch}`}
-                  pendingFeedbackCount={result.regenerationReadiness.pending_feedback_count}
-                  activeLockCount={result.regenerationReadiness.active_lock_count}
-                  isRegenerationRunning={isRegenerationRunning}
-                  onWorkspaceChanged={handleBranchWorkspaceChanged}
-                  onAuthenticationRequired={handleAuthenticationRequired}
-                />
+                {/* Section 2B: itinerary branches / revision history are
+                    Developer view only (BranchWorkspacePanel above). */}
 
                 <div className="flex flex-col gap-3" id="supporting-detail">
                   <h2 className="text-xs font-semibold uppercase tracking-[0.2em] text-cyan-300/80">
@@ -9137,7 +9186,7 @@ PY`}
                   <DisclosureSection
                     id="travel-context"
                     title="Weather, holidays and currency"
-                    hint="Provider-backed context; does not change the itinerary."
+                    hint="Background for your dates. It does not change the itinerary."
                   >
                     <TravelerContextSummarySection
                       weather={result.weatherContext}

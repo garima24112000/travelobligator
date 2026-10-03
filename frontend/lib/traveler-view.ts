@@ -205,15 +205,23 @@ export function travelerReadiness(status: string | null | undefined): TravelerRe
 // Outcome codes with their own dedicated notice above the itinerary.
 const CODES_WITH_OWN_NOTICE = new Set(["INSUFFICIENT_VERIFIED_INVENTORY", "UNDERFILLED_PLAN"]);
 
+// Weather / holiday data was not returned at all.
 export const WEATHER_NOTICE = "Weather information may be unavailable for these dates.";
 export const HOLIDAY_NOTICE = "Holiday information could not be fully verified.";
+// Section 2B: the backend raises a WEATHER / HOLIDAYS review finding only
+// when that data IS available -- the finding says the itinerary has not been
+// adjusted around it. It must never be worded as "unavailable".
+export const WEATHER_NOT_APPLIED_NOTICE =
+  "Weather information is available, but the itinerary has not been adjusted around it yet.";
+export const HOLIDAY_NOT_APPLIED_NOTICE =
+  "Holiday information is available, but the itinerary has not been checked against closures or opening hours on those dates.";
 
 // A review code is the upper-cased category of a validation warning. Only
 // categories whose meaning is fixed get a sentence; any other code is left to
 // its own warning text under "Important limitations".
 const REVIEW_CODE_NOTICES: Record<string, string> = {
-  WEATHER: WEATHER_NOTICE,
-  HOLIDAYS: HOLIDAY_NOTICE,
+  WEATHER: WEATHER_NOT_APPLIED_NOTICE,
+  HOLIDAYS: HOLIDAY_NOT_APPLIED_NOTICE,
   LONG_TRAVEL_DAY: "At least one day involves a lot of travel between stops.",
   FEASIBILITY: "Travel between some stops could not be fully checked.",
 };
@@ -238,28 +246,91 @@ export function travelerReviewNotices(
     if (notice && !notices.includes(notice)) notices.push(notice);
   };
 
+  // What the page itself holds decides "unavailable": the data either came
+  // back or it did not. A missing argument means "not known here".
+  const weather = context?.weather;
+  const weatherAbsent =
+    weather === null ||
+    (weather !== undefined &&
+      (weather.daily_weather.length === 0 || UNAVAILABLE_DATA_STATUSES.has(weather.data_status)));
+  const holiday = context?.holiday;
+  const holidayAbsent =
+    holiday === null ||
+    (holiday !== undefined && UNAVAILABLE_DATA_STATUSES.has(holiday.data_status));
+
   for (const code of [...(validation?.blocking_codes ?? []), ...(validation?.review_codes ?? [])]) {
     if (CODES_WITH_OWN_NOTICE.has(code)) continue;
+    // Never say "available" about data the page can see is absent.
+    if (code === "WEATHER" && weatherAbsent) continue;
+    if (code === "HOLIDAYS" && holidayAbsent) continue;
     add(REVIEW_CODE_NOTICES[code]);
   }
-  if (context) {
-    const weather = context.weather;
-    if (
-      weather === null ||
-      (weather !== undefined &&
-        (weather.daily_weather.length === 0 || UNAVAILABLE_DATA_STATUSES.has(weather.data_status)))
-    ) {
-      add(WEATHER_NOTICE);
-    }
-    const holiday = context.holiday;
-    if (
-      holiday === null ||
-      (holiday !== undefined && UNAVAILABLE_DATA_STATUSES.has(holiday.data_status))
-    ) {
-      add(HOLIDAY_NOTICE);
-    }
-  }
+  if (weatherAbsent) add(WEATHER_NOTICE);
+  if (holidayAbsent) add(HOLIDAY_NOTICE);
   return notices;
+}
+
+// -- applying requested changes ---------------------------------------------------------
+
+export type ChangeRefusal = { title: string; detail: string };
+
+const STILL_SAVED = "Nothing was changed, and your request is still saved.";
+
+// Section 2B: Traveler wording for why saved requests could not be applied.
+// Keyed by the backend's refusal code; the code and the backend's own
+// message (which may name versions, locks or an AI service) are not shown.
+const CHANGE_REFUSALS: Record<string, ChangeRefusal> = {
+  REGENERATION_BLOCKED_BY_LOCKS: {
+    title: "Remove kept places first",
+    detail:
+      "At least one place is marked to keep, so no changes were applied. Remove the keep, then try again. Your request is still saved.",
+  },
+  REGENERATION_NO_PENDING_FEEDBACK: {
+    title: "No saved requests",
+    detail: "Add a request under Request changes first.",
+  },
+  REGENERATION_CONFLICT: {
+    title: "The itinerary changed while applying",
+    detail: "The latest itinerary has been reloaded below. Nothing was overwritten.",
+  },
+  REGENERATION_PROVIDER_UNAVAILABLE: {
+    title: "We couldn't look up that place",
+    detail:
+      "This does not mean the place doesn't exist. Your request is still saved, so you can try again later.",
+  },
+  REGENERATION_FEEDBACK_NOT_INTERPRETABLE: {
+    title: "We couldn't work out what to change",
+    detail: `Try rewording your request, for example by naming the place or the day. ${STILL_SAVED}`,
+  },
+  REGENERATION_NO_EFFECT: {
+    title: "Nothing to change",
+    detail: "Your request did not lead to any change in the itinerary. It is still saved.",
+  },
+  REGENERATION_PROVIDER_RATE_LIMITED: {
+    title: "Temporarily unavailable",
+    detail: `We couldn't process your request right now. ${STILL_SAVED} Please try again in a few minutes.`,
+  },
+  REGENERATION_AI_UNAVAILABLE: {
+    title: "Temporarily unavailable",
+    detail: `We couldn't process your request right now. ${STILL_SAVED} Please try again in a few minutes.`,
+  },
+  JOB_ALREADY_RUNNING: {
+    title: "Already in progress",
+    detail: "This itinerary is already being updated. Please wait for it to finish.",
+  },
+  CONCURRENT_UPDATE: {
+    title: "The itinerary changed somewhere else",
+    detail: "Reload the trip to see the latest itinerary, then try again. Nothing was overwritten.",
+  },
+};
+
+const DEFAULT_CHANGE_REFUSAL: ChangeRefusal = {
+  title: "Your changes could not be applied",
+  detail: STILL_SAVED,
+};
+
+export function travelerChangeRefusal(code: string | null | undefined): ChangeRefusal {
+  return (code && CHANGE_REFUSALS[code]) || DEFAULT_CHANGE_REFUSAL;
 }
 
 // -- loading ------------------------------------------------------------------------

@@ -347,14 +347,12 @@ test("raw readiness values and outcome codes are never shown", () => {
 test("weather and holiday notices are traveler-friendly", () => {
   assert.equal(WEATHER_NOTICE, "Weather information may be unavailable for these dates.");
   assert.equal(HOLIDAY_NOTICE, "Holiday information could not be fully verified.");
-  assert.deepEqual(travelerReviewNotices({ review_codes: ["WEATHER", "HOLIDAYS"] }), [
-    WEATHER_NOTICE,
-    HOLIDAY_NOTICE,
-  ]);
-  // derived from missing data as well, once each
+  // "unavailable" is only ever said about data that was not returned
+  // (the WEATHER / HOLIDAYS review codes mean something else: see
+  // traveler-cleanup.test.mjs)
   assert.deepEqual(
     travelerReviewNotices(
-      { review_codes: ["WEATHER"] },
+      { review_codes: [] },
       { weather: null, holiday: { data_status: "unavailable" } },
     ),
     [WEATHER_NOTICE, HOLIDAY_NOTICE],

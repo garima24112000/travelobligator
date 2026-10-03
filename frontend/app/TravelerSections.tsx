@@ -9,7 +9,7 @@ import {
   SEVERITY_ORDER,
   SEVERITY_PRESENTATION,
   aggregateIssues,
-  travelerText,
+  unavailableDataLabels,
   type IssueSeverity,
 } from "@/lib/display-labels";
 import type { ValidationReport } from "@/lib/types";
@@ -97,9 +97,7 @@ export function TravelerLimitationsSection({ report }: { report: ValidationRepor
   const findings = aggregateIssues([...report.critical_issues, ...report.warnings]);
   const bySeverity = (severity: IssueSeverity) =>
     findings.filter((finding) => finding.severity === severity);
-  const dataNotes = Array.from(
-    new Set(report.unavailable_data_notes.map((note) => travelerText(note))),
-  );
+  const dataNotes = unavailableDataLabels(report.unavailable_data_notes);
 
   const critical = bySeverity("critical");
   const warnings = bySeverity("warning");
@@ -168,7 +166,7 @@ export function TravelerLimitationsSection({ report }: { report: ValidationRepor
 
       {dataNotes.length > 0 && (
         <div className="mt-3">
-          <h3 className="text-sm font-semibold text-slate-200">Data not available</h3>
+          <h3 className="text-sm font-semibold text-slate-200">Not included in this plan</h3>
           <ul className="mt-2 list-disc break-words pl-5 text-xs text-slate-300">
             {dataNotes.map((note) => (
               <li key={note}>{note}</li>

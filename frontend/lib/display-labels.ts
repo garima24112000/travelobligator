@@ -41,6 +41,53 @@ const SOURCE_LABELS: Record<string, string> = {
   trip_request: "Your request",
 };
 
+// Section 2B: what a data source is called INSIDE a Traveler sentence -- the
+// kind of data, never the provider's name or key.
+const TRAVELER_SOURCE_WORDS: Record<string, string> = {
+  openstreetmap_places: "map data",
+  openstreetmap: "map data",
+  overpass: "map data",
+  nominatim: "map data",
+  geoapify: "map data",
+  geoapify_places: "map data",
+  geoapify_geocoding: "map data",
+  geoapify_routing: "routing data",
+  osrm: "routing data",
+  open_meteo: "weather data",
+  nager_date: "holiday data",
+  frankfurter: "exchange-rate data",
+  kiwi_mcp: "flight data",
+  kiwi_mcp_flight_provider: "flight data",
+  kiwi_manual: "flight data",
+  scraped_local: "a saved file",
+  scraped_accommodation_provider: "a saved file",
+  scraped_flight_provider: "a saved file",
+  routing_provider: "routing data",
+  routes_provider: "routing data",
+  transit_provider: "public transport data",
+  places_provider: "place data",
+  weather_provider: "weather data",
+  holiday_provider: "holiday data",
+  flight_provider: "flight data",
+  hotel_ratings_provider: "hotel rating data",
+  ai_candidate_promotion: "place data",
+  user_requested_new_place: "your request",
+  trip_request: "your request",
+  groq: "the AI service",
+  anthropic: "the AI service",
+};
+
+// Provider names as backend sentences spell them.
+const PROVIDER_NAME_REPLACEMENTS: [RegExp, string][] = [
+  [/\b(?:Geoapify Routing|OSRM)(?: routing)?\b/gi, "routing data"],
+  [/\b(?:OpenStreetMap|Overpass|Nominatim|Geoapify)(?: (?:Places|Geocoding))?\b/g, "map data"],
+  [/\bOpen-Meteo\b/gi, "weather data"],
+  [/\bNager\.Date\b/gi, "holiday data"],
+  [/\bFrankfurter\b/g, "exchange-rate data"],
+  [/\bKiwi(?:\.com| MCP)?\b/g, "flight data"],
+  [/\b(?:Groq|Anthropic)\b/g, "the AI service"],
+];
+
 // Identifier fragments that are pure internals: when they appear inside a
 // longer backend sentence they are replaced with a plain phrase (or
 // removed) instead of shown verbatim.
@@ -53,8 +100,9 @@ const TEXT_REPLACEMENTS: [RegExp, string][] = [
   [/straight-line \(haversine\)/gi, "straight-line"],
   [/\(haversine\)/gi, ""],
   [/\bhaversine\b/gi, "straight-line"],
-  [/\bopenstreetmap_places\b/gi, "OpenStreetMap"],
-  [/\bprovider-grounded\b/gi, "matched in place data"],
+  [/\bprovider-grounded\b/gi, "verified"],
+  [/\bPOIs\b/g, "places"],
+  [/\bPOI\b/g, "place"],
   // Section 2: planner vocabulary. Multi-word phrases match in any case;
   // single common words match lower case only, so a place name such as
   // "Bike Repair Café" inside a sentence is never rewritten.
@@ -66,8 +114,8 @@ const TEXT_REPLACEMENTS: [RegExp, string][] = [
   [/\bprovider identity\b/gi, "place record"],
   [/\bquality-approved\b/gi, "suitable"],
   [/\bdeterministic(?:ally)? /g, ""],
-  [/\bgrounded\b/g, "matched in place data"],
-  [/\bgrounding\b/g, "place matching"],
+  [/\bgrounded\b/g, "verified"],
+  [/\bgrounding\b/g, "verification"],
   [/\b(attraction|restaurant|place) candidates?\b/g, "$1 options"],
   [/\bcandidate (attractions|restaurants|places)\b/g, "$1"],
   [/\bcandidate\(s\)/g, "option(s)"],
@@ -148,15 +196,22 @@ export function travelerText(text: string): string {
   for (const [pattern, replacement] of TEXT_REPLACEMENTS) {
     out = out.replace(pattern, replacement);
   }
-  // "(via osrm)" style attributions: a known lowercase source key becomes
-  // its friendly label.
+  // "(via osrm)" style attributions name a provider and add nothing for a
+  // traveler: a parenthesised one is removed, an inline one keeps only the
+  // kind of data.
+  out = out.replace(/\s*\((?:via|from|by) ([a-z][a-z0-9_]*)\)/g, (whole, key: string) =>
+    TRAVELER_SOURCE_WORDS[key] ? "" : whole,
+  );
   out = out.replace(/\b(via|from|by) ([a-z][a-z0-9_]*)\b/g, (whole, word: string, key: string) => {
-    const label = SOURCE_LABELS[key];
+    const label = TRAVELER_SOURCE_WORDS[key];
     return label ? `${word} ${label}` : whole;
   });
   out = out.replace(/\b([a-z]+(?:_[a-z0-9]+)+)\b/g, (token) => {
-    return SOURCE_LABELS[token] ?? humanizeIdentifier(token);
+    return TRAVELER_SOURCE_WORDS[token] ?? humanizeIdentifier(token);
   });
+  for (const [pattern, replacement] of PROVIDER_NAME_REPLACEMENTS) {
+    out = out.replace(pattern, replacement);
+  }
   // "Provider-backed" is developer vocabulary for "came from a data source";
   // dropping the qualifier never adds a claim.
   out = out.replace(/\b([Pp])rovider-backed\s+(\w)/g, (_whole, first: string, next: string) =>
@@ -170,6 +225,86 @@ export function travelerText(text: string): string {
   // ("deterministic_fallback" -> "deterministic fallback").
   out = out.replace(/\bdeterministic fallback\b/gi, "standard");
   return out.replace(/\s{2,}/g, " ").replace(/\s+([.,;])/g, "$1").trim();
+}
+
+// ---------------------------------------------------------------------------
+// Section 2B: per-place and per-field Traveler wording
+// ---------------------------------------------------------------------------
+
+/**
+ * Why a scheduled place is in the itinerary, in traveler words, or null to
+ * show nothing. The backend sentence is recognised by what it says (a
+ * must-visit, an interest match, an explicit request); how the place was
+ * found -- AI proposals, matching, candidate pools -- is never restated.
+ */
+export function travelerWhyIncluded(whyIncluded: string | null | undefined): string | null {
+  const text = (whyIncluded ?? "").trim();
+  if (!text) return null;
+  if (/must-visit/i.test(text)) return "One of your must-visit places.";
+  if (/explicitly asked|you asked/i.test(text)) return "Added because you asked for it.";
+  if (/matches your interests/i.test(text)) return "Matches your interests.";
+  // The default sentence and the AI-promotion sentence say nothing a
+  // traveler can use; every place in the plan comes from verified place data.
+  return null;
+}
+
+// Fields the validation report lists as "data not available". The keys are
+// backend field names; a traveler sees what is actually missing. Internal
+// reasoning-stage fields are not travel data and are not listed at all.
+const UNAVAILABLE_DATA_LABELS: Record<string, string | null> = {
+  // What is missing is live, bookable inventory -- not all lodging
+  // information (nearby stays from mapped locations are still shown).
+  accommodation_options: "Live accommodation prices and availability",
+  accommodation_details: "Live accommodation prices and availability",
+  accommodations: "Live accommodation prices and availability",
+  availability: "Live availability",
+  price: "Live prices",
+  flight_options: "Live flight offers",
+  flight_details: "Live flight offers",
+  transit_options: "Public transport routes",
+  transit_feasibility: "Public transport routes",
+  nearby_transit_stops: "Public transport stops",
+  city_events: "Local events",
+  weather_forecast: "Weather forecast",
+  weather_alerts: "Weather alerts",
+  public_holidays: "Public holidays",
+  exchange_rate: "Currency exchange rate",
+  converted_amount: "Currency exchange rate",
+  distance_km: "Travel times between some stops",
+  travel_time_minutes: "Travel times between some stops",
+  walking_distance_km: "Travel times between some stops",
+  route_matrix: "Travel times between some stops",
+  places: "Some place details",
+  attractions: "Some place details",
+  place_details: "Some place details",
+  restaurants: "Nearby restaurants",
+  accommodation_pois: "Nearby places to stay",
+  must_visit_place: "A must-visit place you asked for",
+  decision_card: null,
+  change_summary: null,
+  feedback_interpretation: null,
+  validation_reasoning: null,
+  traveler_profile: null,
+  trip_strategy: null,
+  experience_explanation: null,
+};
+
+/** Traveler label for one "data not available" field, or null to omit it. */
+export function unavailableDataLabel(field: string): string | null {
+  const key = field.trim().toLowerCase();
+  if (key in UNAVAILABLE_DATA_LABELS) return UNAVAILABLE_DATA_LABELS[key];
+  const text = travelerText(field);
+  return text ? text.charAt(0).toUpperCase() + text.slice(1) : null;
+}
+
+/** The deduplicated Traveler list for the validation report's unavailable-data notes. */
+export function unavailableDataLabels(fields: string[]): string[] {
+  const labels: string[] = [];
+  for (const field of fields) {
+    const label = unavailableDataLabel(field);
+    if (label && !labels.includes(label)) labels.push(label);
+  }
+  return labels;
 }
 
 // ---------------------------------------------------------------------------
