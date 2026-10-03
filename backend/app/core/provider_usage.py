@@ -57,12 +57,8 @@ class UsageReservation:
         self._tracker._close(self._api, self._reserved, 0, counted_call=False)
 
 
-class RequestLimiter:
-    """How many requests ONE generation may have in flight at once (Section
-    1B). Every Geoapify API of the generation shares the one limiter, so
-    overlapping batches (geocoding, Places, Place Details, routes) together
-    never exceed the limit. In-process and generation-scoped: never a lock
-    in Redis or PostgreSQL."""
+class _Slots:
+    """A counting limiter that also knows how many slots are in use."""
 
     def __init__(self, limit: int) -> None:
         self.limit = max(1, int(limit))
@@ -76,20 +72,76 @@ class RequestLimiter:
         with self._lock:
             return self._peak
 
+    def acquire(self) -> int:
+        """Blocks until a slot is free; returns how many are then in use."""
+        self._slots.acquire()
+        with self._lock:
+            self._in_flight += 1
+            self._peak = max(self._peak, self._in_flight)
+            return self._in_flight
+
+    def release(self) -> None:
+        with self._lock:
+            self._in_flight -= 1
+        self._slots.release()
+
+
+# Section 1C: ONE limiter for every Geoapify request this PROCESS makes,
+# whichever generation makes it. In-process only: the backend runs exactly
+# one Uvicorn worker per container, so this bounds one container, NOT a
+# deployment of several (each container has its own). Never Redis or
+# PostgreSQL -- request concurrency is not correctness state.
+_process_slots_lock = threading.Lock()
+_process_slots: _Slots | None = None
+
+
+def process_request_slots() -> _Slots:
+    """The process-wide limiter (`GEOAPIFY_PROCESS_MAX_CONCURRENT_REQUESTS`).
+    Built on first use; rebuilt only if the configured limit changes."""
+    global _process_slots
+    limit = get_settings().geoapify_process_max_concurrent_requests
+    with _process_slots_lock:
+        if _process_slots is None or _process_slots.limit != limit:
+            _process_slots = _Slots(limit)
+        return _process_slots
+
+
+class RequestLimiter:
+    """How many requests ONE generation may have in flight at once (Section
+    1B). Every Geoapify API of the generation shares the one limiter, so
+    overlapping batches (geocoding, Places, Place Details, routes) together
+    never exceed the limit. In-process and generation-scoped: never a lock
+    in Redis or PostgreSQL.
+
+    Section 1C: a request also needs a slot of the PROCESS-wide limiter, so
+    several simultaneous generations together stay under
+    `GEOAPIFY_PROCESS_MAX_CONCURRENT_REQUESTS`. The two are always taken in
+    the same order -- generation first, then process -- and released in the
+    reverse order in `finally`, so overlapping generations cannot deadlock
+    and a request that fails or times out always gives both back."""
+
+    def __init__(self, limit: int) -> None:
+        self._generation = _Slots(limit)
+        self.limit = self._generation.limit
+
+    @property
+    def peak(self) -> int:
+        return self._generation.peak
+
     @contextmanager
     def slot(self) -> Iterator[None]:
-        self._slots.acquire()
+        in_flight = self._generation.acquire()
         try:
-            with self._lock:
-                self._in_flight += 1
-                self._peak = max(self._peak, self._in_flight)
-                in_flight = self._in_flight
-            performance.note_in_flight("geoapify", in_flight)
-            yield
+            process = process_request_slots()
+            process_in_flight = process.acquire()
+            try:
+                performance.note_in_flight("geoapify", in_flight)
+                performance.note_in_flight("geoapify_process", process_in_flight)
+                yield
+            finally:
+                process.release()
         finally:
-            with self._lock:
-                self._in_flight -= 1
-            self._slots.release()
+            self._generation.release()
 
 
 class ProviderUsageTracker:

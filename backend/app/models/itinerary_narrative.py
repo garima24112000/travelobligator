@@ -317,6 +317,10 @@ class ItineraryNarrativeReport(BaseModel):
     # built purely from the final PlanningState (`status` then still
     # describes the AI attempt, never a success).
     narrative_source: str = "ai"
+    # Section 1C: machine-readable reason the AI attempt produced no answer
+    # (an `AIProviderFailureKind` value, e.g. `deadline_exceeded`). Optional:
+    # None for every report stored before it existed and for a success.
+    failure_kind: str | None = None
     # One or two sentences of general "how visitors usually get around this
     # city" guidance. Unlike every other text field here it is NOT derived
     # from the request -- it is the model's general knowledge, so it is

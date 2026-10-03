@@ -429,6 +429,13 @@ def _reset_geocoder_guards(monkeypatch: pytest.MonkeyPatch) -> None:
     nominatim_adapter.request_guard.reset()
     geoapify_adapter.request_breaker.reset()
 
+    # Section 1C: the single model-stage transport retry pauses first. Tests
+    # drive the adapters with fake clients, so that pause is switched off
+    # (no real sleeping); tests of the backoff itself inject their own.
+    from app.providers import ai_stage_budget
+
+    monkeypatch.setattr(ai_stage_budget, "TRANSPORT_RETRY_BACKOFF_SECONDS", 0.0)
+
 
 @pytest.fixture()
 def async_generation_enabled(monkeypatch: pytest.MonkeyPatch):

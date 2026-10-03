@@ -26,6 +26,10 @@ class AIProviderFailureKind(str, Enum):
     TIMEOUT_OR_NETWORK = "timeout_or_network"
     MALFORMED_OUTPUT = "malformed_output"
     PROVIDER_ERROR = "provider_error"
+    # Section 1C: the stage's own total wall-clock budget ran out before a
+    # usable answer arrived (`app/providers/ai_stage_budget.py`). A latency
+    # outcome, never a statement about any travel fact.
+    DEADLINE_EXCEEDED = "deadline_exceeded"
 
 
 _TIMEOUT_STATUS_CODES = frozenset({408, 504})
@@ -83,7 +87,20 @@ _KIND_SENTENCES: dict[AIProviderFailureKind, str] = {
         "returned an output that did not match the required structure"
     ),
     AIProviderFailureKind.PROVIDER_ERROR: "returned an error",
+    AIProviderFailureKind.DEADLINE_EXCEEDED: "did not answer within the time allowed for this step",
 }
+
+
+def is_transient_failure(exc: BaseException) -> bool:
+    """True for a failure that one more attempt might get past: a rate
+    limit, a timeout / connection problem, or a server-side (5xx) error.
+    Never true for rejected credentials, a malformed model answer, or any
+    other client-side (4xx) rejection -- repeating those cannot help."""
+    kind = classify_ai_provider_exception(exc)
+    if kind in (AIProviderFailureKind.RATE_LIMITED, AIProviderFailureKind.TIMEOUT_OR_NETWORK):
+        return True
+    status = _status_code(exc)
+    return kind == AIProviderFailureKind.PROVIDER_ERROR and status is not None and status >= 500
 
 
 def safe_ai_failure_message(provider_label: str, kind: AIProviderFailureKind) -> str:

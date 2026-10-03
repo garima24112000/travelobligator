@@ -276,6 +276,9 @@ class AICandidateProposalFailureKind(str, Enum):
     PARSE_FAILURE = "parse_failure"  # a response arrived but was not the expected structure
     EMPTY_RESPONSE = "empty_response"  # a valid structure with zero proposals
     CANDIDATE_VALIDATION = "candidate_validation"  # every returned proposal failed validation
+    # Section 1C: the stage's total wall-clock budget ran out. A latency
+    # outcome -- never a statement about any place.
+    DEADLINE_EXCEEDED = "deadline_exceeded"
 
 
 class AICandidateProposalGuardrailReport(BaseModel):

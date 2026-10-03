@@ -4,7 +4,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field, ValidationError
 
-from app.providers.ai_failure import classify_and_message
+from app.providers.ai_failure import AIProviderFailureKind, classify_and_message
+from app.providers.ai_stage_budget import StageRun
 from app.core import performance
 from app.core.config import get_settings
 from app.models.ai_itinerary_reasoning import (
@@ -361,23 +362,68 @@ class GroqAIItineraryReasoningProvider(AIItineraryReasoningProvider):
                 request, "Groq API key is not configured (GROQ_API_KEY unset)."
             )
 
-        if self._client is not None:
-            client = self._client
-        else:
-            try:
-                client = self._build_client()
-            except Exception as exc:  # missing package / bad config -> not_connected
-                return self._not_connected_result(
-                    request, f"Groq client could not be initialized: {exc}"
-                )
+        # Section 1C: one total wall-clock budget for the stage and at most
+        # one (transport) recovery attempt. Any non-completed result leaves
+        # the deterministic planner to schedule the days, as before.
+        settings = get_settings()
+        run = StageRun(
+            "groq_reasoning",
+            total_budget_seconds=settings.groq_reasoning_total_budget_seconds,
+            request_timeout_seconds=settings.groq_request_timeout_seconds,
+            transport_retries=settings.groq_max_retries,
+        )
+        result = self._reason_within(request, run)
+        run.close(completed=result.status == AIItineraryReasoningStatus.COMPLETED)
+        return result
 
+    def _invoke_within(
+        self, run: StageRun, build_client: Any, prompt: str, timing_key: str
+    ) -> tuple[Any, tuple[str, str] | None, str | None]:
+        """One model answer within the stage budget:
+        `(raw output, None, None)`, or `(None, (failure kind, safe message), None)`
+        for a failed / out-of-time call, or `(None, None, reason)` when no
+        client could be built (not connected). The request is retried at
+        most once, only for a transient transport failure, and only while
+        the budget allows it."""
+        while True:
+            timeout = run.next_attempt_timeout()
+            if timeout is None:
+                return None, (AIProviderFailureKind.DEADLINE_EXCEEDED.value, run.deadline_message("Groq")), None
+            if self._client is not None:
+                client = self._client
+            else:
+                try:
+                    client = build_client(timeout=timeout)
+                except Exception as exc:  # missing package / bad config -> not_connected
+                    run.attempts = 0  # no request was made
+                    return None, None, f"Groq client could not be initialized: {exc}"
+            try:
+                with performance.provider_call(timing_key):
+                    raw_output = client.invoke(prompt)
+            except Exception as exc:  # API/runtime failure -> rejected, never fabricated
+                if run.allow_transport_retry(exc):
+                    continue
+                if run.deadline_exceeded:
+                    return (
+                        None,
+                        (AIProviderFailureKind.DEADLINE_EXCEEDED.value, run.deadline_message("Groq")),
+                        None,
+                    )
+                kind, message = classify_and_message("Groq", exc)
+                run.answered = kind == AIProviderFailureKind.MALFORMED_OUTPUT
+                return None, (kind.value, message), None
+            run.answered = True
+            return raw_output, None, None
+
+    def _reason_within(self, request: AIItineraryReasoningRequest, run: StageRun) -> AIItineraryReasoningResult:
         ref_map = CandidateRefMap.for_candidates(request.allowed_candidates)
-        try:
-            with performance.provider_call("groq_reasoning"):
-                raw_output = client.invoke(_build_prompt(request, ref_map))
-        except Exception as exc:  # API/runtime failure -> rejected, never fabricated
-            kind, message = classify_and_message("Groq", exc)
-            return self._rejected_result(request, message, failure_kind=kind.value)
+        raw_output, failure, not_connected = self._invoke_within(
+            run, self._build_client, _build_prompt(request, ref_map), "groq_reasoning"
+        )
+        if not_connected is not None:
+            return self._not_connected_result(request, not_connected)
+        if failure is not None:
+            return self._rejected_result(request, failure[1], failure_kind=failure[0])
 
         output_dict = self._coerce_output(raw_output)
         if output_dict is None:
@@ -397,7 +443,7 @@ class GroqAIItineraryReasoningProvider(AIItineraryReasoningProvider):
 
         return self._build_result_from_output(request, output_dict)
 
-    def _build_client(self) -> Any:
+    def _build_client(self, timeout: float | None = None) -> Any:
         """Lazily imports and constructs the real Groq client, bound to the
         structured-output schema -- same `method="json_schema", strict=True`
         selection Section 191A.1 established for
@@ -415,10 +461,11 @@ class GroqAIItineraryReasoningProvider(AIItineraryReasoningProvider):
             api_key=self._api_key,
             temperature=self._temperature,
             max_tokens=self._max_tokens,
-            # Section 1B: explicit, finite request bounds (previously the
-            # SDK's implicit defaults). No retry is added by this.
-            timeout=get_settings().groq_request_timeout_seconds,
-            max_retries=get_settings().groq_max_retries,
+            # Section 1C: the timeout of THIS attempt (never more than the
+            # stage budget has left), and no hidden SDK retries -- the one
+            # recovery attempt is made by the adapter, under the stage budget.
+            timeout=timeout if timeout is not None else get_settings().groq_request_timeout_seconds,
+            max_retries=0,
         )
         return chat.with_structured_output(
             _GroqItineraryReasoningSchema, method="json_schema", strict=True
@@ -560,22 +607,29 @@ class GroqAIItineraryReasoningProvider(AIItineraryReasoningProvider):
                 request, "Groq API key is not configured (GROQ_API_KEY unset)."
             )
 
-        if self._client is not None:
-            client = self._client
-        else:
-            try:
-                client = self._build_repair_client()
-            except Exception as exc:
-                return self._not_connected_repair_result(
-                    request, f"Groq client could not be initialized: {exc}"
-                )
+        # Section 1C: same total-budget / single-recovery policy as `reason`.
+        # A repair that does not complete leaves the plan to the existing
+        # deterministic top-up / needs-review path.
+        settings = get_settings()
+        run = StageRun(
+            "groq_repair",
+            total_budget_seconds=settings.groq_repair_total_budget_seconds,
+            request_timeout_seconds=settings.groq_request_timeout_seconds,
+            transport_retries=settings.groq_max_retries,
+        )
+        result = self._repair_within(request, run)
+        run.close(completed=result.status == AIItineraryRepairStatus.COMPLETED)
+        return result
 
+    def _repair_within(self, request: AIItineraryRepairRequest, run: StageRun) -> AIItineraryRepairResult:
         ref_map = CandidateRefMap.for_candidates(request.allowed_candidates)
-        try:
-            with performance.provider_call("groq_repair"):
-                raw_output = client.invoke(_build_repair_prompt(request, ref_map))
-        except Exception as exc:  # API/runtime failure -> rejected, never fabricated
-            return self._rejected_repair_result(request, classify_and_message("Groq", exc)[1])
+        raw_output, failure, not_connected = self._invoke_within(
+            run, self._build_repair_client, _build_repair_prompt(request, ref_map), "groq_repair"
+        )
+        if not_connected is not None:
+            return self._not_connected_repair_result(request, not_connected)
+        if failure is not None:
+            return self._rejected_repair_result(request, failure[1], failure_kind=failure[0])
 
         output_dict = self._coerce_output(raw_output)
         if output_dict is None:
@@ -594,7 +648,7 @@ class GroqAIItineraryReasoningProvider(AIItineraryReasoningProvider):
 
         return self._build_repair_result_from_output(request, output_dict)
 
-    def _build_repair_client(self) -> Any:
+    def _build_repair_client(self, timeout: float | None = None) -> Any:
         try:
             from langchain_groq import ChatGroq
         except ImportError as exc:
@@ -605,10 +659,11 @@ class GroqAIItineraryReasoningProvider(AIItineraryReasoningProvider):
             api_key=self._api_key,
             temperature=self._temperature,
             max_tokens=self._max_tokens,
-            # Section 1B: explicit, finite request bounds (previously the
-            # SDK's implicit defaults). No retry is added by this.
-            timeout=get_settings().groq_request_timeout_seconds,
-            max_retries=get_settings().groq_max_retries,
+            # Section 1C: the timeout of THIS attempt (never more than the
+            # stage budget has left), and no hidden SDK retries -- the one
+            # recovery attempt is made by the adapter, under the stage budget.
+            timeout=timeout if timeout is not None else get_settings().groq_request_timeout_seconds,
+            max_retries=0,
         )
         return chat.with_structured_output(_GroqRepairSchema, method="json_schema", strict=True)
 
@@ -704,7 +759,7 @@ class GroqAIItineraryReasoningProvider(AIItineraryReasoningProvider):
         )
 
     def _rejected_repair_result(
-        self, request: AIItineraryRepairRequest, reason: str
+        self, request: AIItineraryRepairRequest, reason: str, failure_kind: str | None = None
     ) -> AIItineraryRepairResult:
         return AIItineraryRepairResult(
             status=AIItineraryRepairStatus.REJECTED,
@@ -718,4 +773,5 @@ class GroqAIItineraryReasoningProvider(AIItineraryReasoningProvider):
             model_name=self._model,
             confidence=0.0,
             attempt_number=request.attempt_number,
+            failure_kind=failure_kind,
         )

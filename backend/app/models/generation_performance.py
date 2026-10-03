@@ -11,6 +11,22 @@ from __future__ import annotations
 from pydantic import BaseModel, Field
 
 
+class LLMStagePerformance(BaseModel):
+    """One model stage of a generation (Section 1C). Counts and fixed
+    labels only -- never a prompt or any model output."""
+
+    # HTTP/model request attempts made (the first one included).
+    attempts: int = 0
+    structural_retries: int = 0
+    transport_retries: int = 0
+    # The stage's total wall-clock budget ran out.
+    deadline_exceeded: bool = False
+    # `success` | `fallback` (an answer arrived but was rejected) | `failed`
+    # (no usable answer). For both of the latter the pipeline's
+    # deterministic fallback was used.
+    result: str | None = None
+
+
 class GenerationPerformanceReport(BaseModel):
     # Which engine produced the plan (`langgraph` / `legacy`).
     engine: str | None = None
@@ -45,6 +61,14 @@ class GenerationPerformanceReport(BaseModel):
     concurrent_batches: int = 0
     # The size of every concurrent batch dispatched, per operation.
     batch_sizes: dict[str, list[int]] = Field(default_factory=dict)
+    # Section 1C. The most Geoapify requests the whole PROCESS (every
+    # generation in it) had in flight while this generation was making one.
+    process_peak_geoapify_concurrency: int = 0
+    # What each generation-time model stage did, keyed by stage
+    # (`groq_anchor`, `groq_reasoning`, `groq_repair`, `groq_narrator`):
+    # request attempts, the structural / transport retries among them,
+    # whether the stage's total budget ran out, and how it ended.
+    llm_stages: dict[str, LLMStagePerformance] = Field(default_factory=dict)
     # False on the report stored with the plan: it is written by the final
     # commit, so it cannot contain that commit's own duration. True only on
     # a report a profiling caller (the canary) builds from its own recorder

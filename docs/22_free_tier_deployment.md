@@ -387,3 +387,48 @@ unknown `PROVIDER_CACHE_BACKEND` / `PERSISTENCE_BACKEND` is rejected when settin
 Tests (no remote service needed): `backend/app/tests/core/test_production_config_203b.py`,
 `backend/app/tests/api/test_public_exposure_203b.py`,
 `backend/app/tests/core/test_deployment_artifacts_203b.py`.
+
+## 13. Generation latency: concurrency limits and model-stage budgets (Sections 1A–1C)
+
+Latency-only controls. None of them changes which plan is produced: concurrent batches apply their results
+in the original order, and a model stage that runs out of time uses the same deterministic fallback as any
+other model failure. All have safe defaults; none is a secret.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `PROVIDER_IO_CONCURRENCY_ENABLED` | `true` | Independent provider requests of one generation run as bounded concurrent batches. `false` runs them serially, in the same order, with the same result. |
+| `GEOAPIFY_MAX_CONCURRENT_REQUESTS` | `4` | Geoapify requests ONE generation may have in flight (geocoding, Places, Place Details, routing together). 1–4; the configuration rejects more than 4. |
+| `GEOAPIFY_PROCESS_MAX_CONCURRENT_REQUESTS` | `6` | Geoapify requests the whole PROCESS may have in flight, across all generations in it. A request needs a slot of both limits (generation first, then process). |
+| `GROQ_REQUEST_TIMEOUT_SECONDS` | `30` | Timeout of one request attempt of the anchor, reasoning and repair stages (narrator: `ITINERARY_NARRATOR_TIMEOUT_SECONDS`, 20). An attempt gets `min(this, stage budget left)`. |
+| `GROQ_MAX_RETRIES` | `1` | Transport retries per stage (rate limit, timeout/network, 5xx), made by the application under the stage budget. The SDK's own retries are off. |
+| `GROQ_ANCHOR_TOTAL_BUDGET_SECONDS` | `25` | Total wall-clock budget of the anchor-proposal stage. |
+| `GROQ_REASONING_TOTAL_BUDGET_SECONDS` | `20` | Total wall-clock budget of the itinerary-reasoning stage. |
+| `GROQ_REPAIR_TOTAL_BUDGET_SECONDS` | `20` | Total wall-clock budget of one itinerary-repair attempt. |
+| `GROQ_NARRATOR_TOTAL_BUDGET_SECONDS` | `25` | Total wall-clock budget of the narrator stage. |
+| `NAGER_DATE_NO_DATA_CACHE_TTL_SECONDS` | `21600` | How long a successful EMPTY Nager.Date answer (HTTP 204) is remembered. `0` disables it. |
+
+**The process limit is per process, not per deployment.** The backend runs exactly one Uvicorn worker per
+container, so `GEOAPIFY_PROCESS_MAX_CONCURRENT_REQUESTS` bounds one container. Two containers can together
+have twice as many requests in flight. It is deliberately not a Redis or PostgreSQL lock: request
+concurrency is not correctness state, and Redis must stay optional. On the single free Render instance the
+process limit is the deployment limit.
+
+**Model-stage request ceiling.** A stage's budget covers every attempt, the structural retry and the retry
+backoff. A stage makes at most one recovery attempt, of one kind, so the most requests it can make is:
+
+| Stage | Structural retry | Transport retry | Max requests | Budget | On `deadline_exceeded` |
+|---|---|---|---|---|---|
+| Anchor proposal | 1 (smaller batch) | 1 | 2 | 25 s | No anchors proposed; the broad provider pool is used alone. |
+| Itinerary reasoning | 0 | 1 | 2 | 20 s | Deterministic planning. |
+| Itinerary repair | 0 | 1 | 2 per repair attempt | 20 s | No repair; deterministic top-up / needs-review. |
+| Narrator | 1 (format reminder) | 1 | 2 | 25 s | Deterministic narrative. |
+
+A retry is not started with less than 3 s of budget left (after a 1 s pause for a transport retry). A
+request already in flight is bounded by its own timeout, which is never longer than the budget that was
+left when it started. That timeout is the HTTP client's per-operation (connect / read / write) timeout,
+not a hard kill: for these non-streaming requests it bounds the wait for the answer, but a response that
+trickles in slowly could still run somewhat past the budget.
+
+The canary (`backend/scripts/canary_city.py`) prints, per run, the stage and provider wall time, the
+concurrent batches and both Geoapify concurrency peaks, and for each model stage its attempts, retries,
+whether its deadline was exceeded and how it ended. These are reported, never acceptance checks.

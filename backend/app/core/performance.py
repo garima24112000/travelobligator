@@ -86,6 +86,7 @@ class PerformanceRecorder:
         self._stage_task_ms: dict[str, float] = {}
         self._batch_sizes: dict[str, list[int]] = {}
         self._peak_in_flight: dict[str, int] = {}
+        self._llm_stages: dict[str, dict[str, Any]] = {}
 
     def start(self) -> None:
         self._started_at = self._clock()
@@ -154,6 +155,37 @@ class PerformanceRecorder:
             if in_flight > self._peak_in_flight.get(provider, 0):
                 self._peak_in_flight[provider] = in_flight
 
+    def note_llm_stage(
+        self,
+        stage: str,
+        attempts: int,
+        structural_retries: int,
+        transport_retries: int,
+        deadline_exceeded: bool,
+        result: str,
+    ) -> None:
+        with self._lock:
+            entry = self._llm_stages.setdefault(
+                stage,
+                {
+                    "attempts": 0,
+                    "structural_retries": 0,
+                    "transport_retries": 0,
+                    "deadline_exceeded": False,
+                    "result": result,
+                },
+            )
+            entry["attempts"] += attempts
+            entry["structural_retries"] += structural_retries
+            entry["transport_retries"] += transport_retries
+            entry["deadline_exceeded"] = bool(entry["deadline_exceeded"] or deadline_exceeded)
+            entry["result"] = result
+
+    def set_llm_result(self, stage: str, result: str) -> None:
+        with self._lock:
+            if stage in self._llm_stages:
+                self._llm_stages[stage]["result"] = result
+
     # -- report ------------------------------------------------------------------
 
     def snapshot(self, usage: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -190,6 +222,11 @@ class PerformanceRecorder:
                 # Section 1B: concurrency diagnostics.
                 "stage_task_ms": {name: round(value, 1) for name, value in self._stage_task_ms.items()},
                 "peak_geoapify_concurrency": self._peak_in_flight.get("geoapify", 0),
+                # Section 1C: the most Geoapify requests the whole PROCESS had
+                # in flight while this generation was making one, and what
+                # each model stage did (counts and fixed labels only).
+                "process_peak_geoapify_concurrency": self._peak_in_flight.get("geoapify_process", 0),
+                "llm_stages": {stage: dict(entry) for stage, entry in self._llm_stages.items()},
                 "concurrent_batches": sum(len(sizes) for sizes in self._batch_sizes.values()),
                 "batch_sizes": {operation: list(sizes) for operation, sizes in self._batch_sizes.items()},
             }
@@ -211,6 +248,41 @@ def note_batch(operation: str, size: int) -> None:
         recorder = _ACTIVE.get()
         if recorder is not None and _safe_key(operation) is not None:
             recorder.note_batch(operation, int(size))
+    except Exception:  # noqa: BLE001 - diagnostics never break a generation
+        pass
+
+
+_LLM_RESULTS = frozenset({"success", "fallback", "failed"})
+
+
+def note_llm_stage(
+    stage: str,
+    *,
+    attempts: int,
+    structural_retries: int,
+    transport_retries: int,
+    deadline_exceeded: bool,
+    result: str,
+) -> None:
+    """What one model stage did: request attempts, the retries among them,
+    whether its total budget ran out, and how it ended."""
+    try:
+        recorder = _ACTIVE.get()
+        if recorder is not None and _safe_key(stage) is not None and result in _LLM_RESULTS:
+            recorder.note_llm_stage(
+                stage, int(attempts), int(structural_retries), int(transport_retries), bool(deadline_exceeded), result
+            )
+    except Exception:  # noqa: BLE001 - diagnostics never break a generation
+        pass
+
+
+def set_llm_result(stage: str, result: str) -> None:
+    """Corrects a recorded stage's final result (e.g. the narrator's text
+    was rejected after the model answered, so the fallback was used)."""
+    try:
+        recorder = _ACTIVE.get()
+        if recorder is not None and _safe_key(stage) is not None and result in _LLM_RESULTS:
+            recorder.set_llm_result(stage, result)
     except Exception:  # noqa: BLE001 - diagnostics never break a generation
         pass
 

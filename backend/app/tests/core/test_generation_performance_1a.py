@@ -389,7 +389,10 @@ def test_the_persisted_report_holds_only_numbers_under_fixed_keys(
         "engine", "total_ms", "stage_ms", "stage_inclusive_ms", "other_ms", "provider_ms", "provider_attempts",
         "counts", "cache_hits", "cache_misses", "request_totals", "redundant_requests", "includes_final_commit",
         "stage_task_ms", "peak_geoapify_concurrency", "concurrent_batches", "batch_sizes",
+        "process_peak_geoapify_concurrency", "llm_stages",  # Section 1C
     }
+    assert isinstance(dumped["process_peak_geoapify_concurrency"], int)
+    assert all(_FIXED_KEY.match(key) for key in dumped["llm_stages"])
 
 
 @pytest.mark.parametrize("engine", ["langgraph", "legacy"])

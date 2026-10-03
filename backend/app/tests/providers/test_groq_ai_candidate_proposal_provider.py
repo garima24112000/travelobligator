@@ -891,17 +891,46 @@ def test_two_structural_failures_are_rejected_after_exactly_two_attempts() -> No
     assert "must never be echoed" not in joined
 
 
-def test_a_rate_limit_is_never_retried() -> None:
-    client = _ScriptedClient([_StructuralError(status_code=429, code="rate_limit_exceeded"), _valid_output()])
+# Section 1C: the SDK's hidden transport retries are off; the stage itself
+# makes at most ONE recovery attempt, under its total budget, and only for a
+# failure that repeating can fix. It is never stacked on the structural retry.
+
+
+@pytest.mark.parametrize("status_code", [429, 500, 503])
+def test_a_transient_transport_failure_gets_exactly_one_retry_with_the_same_batch(status_code: int) -> None:
+    client = _ScriptedClient([_StructuralError(status_code=status_code, code=None), _valid_output()])
+
+    result = _provider(client).propose(_request())
+
+    assert result.status == AICandidateProposalStatus.COMPLETED
+    assert len(client.prompts) == 2
+    assert client.prompts[0] == client.prompts[1]  # a transport retry never shrinks the batch
+
+
+def test_a_repeated_transient_failure_is_rejected_after_two_requests_never_a_third() -> None:
+    rate_limited = _StructuralError(status_code=429, code="rate_limit_exceeded")
+    client = _ScriptedClient([rate_limited, rate_limited, _valid_output()])
 
     result = _provider(client).propose(_request())
 
     assert result.status == AICandidateProposalStatus.REJECTED
-    assert len(client.prompts) == 1
+    assert len(client.prompts) == 2
 
 
-def test_a_non_structural_provider_error_is_never_retried() -> None:
-    client = _ScriptedClient([_StructuralError(status_code=500, code=None), _valid_output()])
+def test_a_transport_retry_and_a_structural_retry_never_stack() -> None:
+    client = _ScriptedClient(
+        [_StructuralError(status_code=429, code="rate_limit_exceeded"), _StructuralError(), _valid_output()]
+    )
+
+    result = _provider(client).propose(_request())
+
+    assert result.status == AICandidateProposalStatus.REJECTED
+    assert len(client.prompts) == 2  # one recovery attempt in total, whatever its kind
+
+
+@pytest.mark.parametrize("status_code", [400, 401, 403])
+def test_a_failure_that_repeating_cannot_fix_is_never_retried(status_code: int) -> None:
+    client = _ScriptedClient([_StructuralError(status_code=status_code, code=None), _valid_output()])
 
     assert _provider(client).propose(_request()).status == AICandidateProposalStatus.REJECTED
     assert len(client.prompts) == 1
@@ -990,17 +1019,27 @@ def test_groq_proposal_schema_still_requires_every_proposal_field_including_conf
     [
         _StructuralError(status_code=401, code="invalid_api_key"),
         _StructuralError(status_code=403, code=None),
-        _StructuralError(status_code=408, code=None),
-        _StructuralError(status_code=504, code=None),
     ],
 )
-def test_auth_and_timeout_failures_are_never_retried(error: Exception) -> None:
+def test_auth_failures_are_never_retried(error: Exception) -> None:
     client = _ScriptedClient([error, _valid_output()])
 
     result = _provider(client).propose(_request())
 
     assert result.status == AICandidateProposalStatus.REJECTED
     assert len(client.prompts) == 1
+
+
+@pytest.mark.parametrize("status_code", [408, 504])
+def test_a_timeout_status_gets_the_single_transport_retry(status_code: int) -> None:
+    # Section 1C: the request-timeout statuses the SDK used to retry on its
+    # own (up to twice, invisibly) now get the stage's one recovery attempt.
+    client = _ScriptedClient([_StructuralError(status_code=status_code, code=None), _valid_output()])
+
+    result = _provider(client).propose(_request())
+
+    assert result.status == AICandidateProposalStatus.COMPLETED
+    assert len(client.prompts) == 2
 
 
 def test_the_bounded_retry_policy_is_exactly_one_extra_structural_attempt() -> None:

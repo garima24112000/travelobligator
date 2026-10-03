@@ -157,6 +157,7 @@ def _performance_section(performance: Any) -> dict[str, Any]:
         # Section 1B: concurrency diagnostics (reported, never judged)
         "concurrency": {
             "peak_geoapify_concurrency": performance.peak_geoapify_concurrency,
+            "process_peak_geoapify_concurrency": performance.process_peak_geoapify_concurrency,
             "concurrent_batches": performance.concurrent_batches,
             "batch_sizes": {operation: list(sizes) for operation, sizes in performance.batch_sizes.items()},
             # summed over the tasks of concurrent batches: overlaps the wall time above
@@ -164,6 +165,20 @@ def _performance_section(performance: Any) -> dict[str, Any]:
                 name: round(value / 1000.0, 2) for name, value in sorted(performance.stage_task_ms.items())
             },
         },
+        # Section 1C: what each model stage did (counts and fixed labels only)
+        "llm_stages": [
+            {
+                "label": label,
+                "attempts": stage.attempts,
+                "structural_retries": stage.structural_retries,
+                "transport_retries": stage.transport_retries,
+                "deadline_exceeded": stage.deadline_exceeded,
+                "result": stage.result,
+                "seconds": round(performance.provider_ms.get(key, 0.0) / 1000.0, 2),
+            }
+            for label, key in _PERFORMANCE_PROVIDER_ROWS
+            if (stage := performance.llm_stages.get(key)) is not None
+        ],
         # raw figures, for comparing runs
         "stage_ms": stage_ms,
         "stage_inclusive_ms": dict(performance.stage_inclusive_ms),
@@ -1071,10 +1086,24 @@ def _render(report: dict[str, Any]) -> str:
             row(name, value)
         row("cache hits by source", performance["cache_hits_by_source"] or 0)
         row("cache misses by source", performance["cache_misses_by_source"] or 0)
+        lines.append("")
+        lines.append("LLM STAGES (request attempts under one total budget per stage):")
+        if not performance["llm_stages"]:
+            lines.append("- no model stage made a request")
+        for item in performance["llm_stages"]:
+            row(
+                item["label"],
+                f"{item['attempts']} attempt(s) in {item['seconds']} s"
+                f" | structural retries: {item['structural_retries']}"
+                f" | transport retries: {item['transport_retries']}"
+                f" | deadline exceeded: {'YES' if item['deadline_exceeded'] else 'no'}"
+                f" | result: {item['result']}",
+            )
         concurrency = performance["concurrency"]
         lines.append("")
         lines.append("CONCURRENCY (bounded batches of independent provider requests):")
-        row("peak Geoapify concurrency", concurrency["peak_geoapify_concurrency"])
+        row("peak Geoapify concurrency (this generation)", concurrency["peak_geoapify_concurrency"])
+        row("peak Geoapify concurrency (whole process)", concurrency["process_peak_geoapify_concurrency"])
         row("concurrent batches", concurrency["concurrent_batches"])
         row("batch sizes by operation", concurrency["batch_sizes"] or "none")
         row("time inside batch tasks, summed (s; overlaps the stage wall time)", concurrency["stage_task_seconds"] or "none")

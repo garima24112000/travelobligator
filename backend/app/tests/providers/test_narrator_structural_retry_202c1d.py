@@ -143,23 +143,53 @@ def test_retry_that_also_fails_structurally_returns_failed_after_two_calls() -> 
 @pytest.mark.parametrize(
     "failure",
     [
-        RateLimitError(429),  # rate limit / quota
-        _ProviderError(429, "rate_limit_exceeded"),
         _ProviderError(401),  # authentication
         _ProviderError(403),
-        _ProviderError(500),  # provider outage
-        _ProviderError(503),
         _ProviderError(400, "invalid_request_error"),  # a 400 that is NOT a structural failure
-        TimeoutError("timed out"),
-        ConnectionError("network"),
         RuntimeError("anything else"),
     ],
 )
-def test_non_structural_failures_are_never_retried(failure: Exception) -> None:
+def test_failures_that_repeating_cannot_fix_are_never_retried(failure: Exception) -> None:
     provider, client = _groq(failure, _VALID)
     result = provider.narrate(_request())
     assert result.status == ItineraryNarrativeStatus.FAILED
     assert len(client.prompts) == 1
+
+
+# Section 1C: the SDK's hidden transport retries are switched off; the stage
+# itself makes at most ONE recovery attempt for a transient failure, with the
+# SAME prompt (no format reminder), under its total budget.
+_TRANSIENT = [
+    RateLimitError(429),  # rate limit / quota
+    _ProviderError(429, "rate_limit_exceeded"),
+    _ProviderError(500),  # provider outage
+    _ProviderError(503),
+    TimeoutError("timed out"),
+    ConnectionError("network"),
+]
+
+
+@pytest.mark.parametrize("failure", _TRANSIENT)
+def test_a_transient_failure_gets_exactly_one_retry_with_the_same_prompt(failure: Exception) -> None:
+    provider, client = _groq(failure, _VALID)
+    result = provider.narrate(_request())
+    assert result.status == ItineraryNarrativeStatus.SUCCESS
+    assert len(client.prompts) == 2 and client.prompts[0] == client.prompts[1]
+
+
+@pytest.mark.parametrize("failure", _TRANSIENT)
+def test_a_repeated_transient_failure_fails_after_two_requests_never_a_third(failure: Exception) -> None:
+    provider, client = _groq(failure, failure, _VALID)
+    result = provider.narrate(_request())
+    assert result.status == ItineraryNarrativeStatus.FAILED
+    assert len(client.prompts) == 2
+
+
+def test_a_transport_retry_and_a_structural_retry_never_stack() -> None:
+    provider, client = _groq(_ProviderError(503), _structural(), _VALID)
+    result = provider.narrate(_request())
+    assert result.status == ItineraryNarrativeStatus.FAILED
+    assert len(client.prompts) == MAX_NARRATOR_ATTEMPTS == 2  # one recovery attempt in total
 
 
 def test_a_parsed_but_ungrounded_first_answer_is_rejected_without_a_retry() -> None:

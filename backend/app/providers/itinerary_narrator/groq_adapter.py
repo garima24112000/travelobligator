@@ -16,6 +16,8 @@ from app.models.itinerary_narrative import (
     ItineraryNarrativeStatus,
     validate_narrative_against_request,
 )
+from app.providers.ai_failure import AIProviderFailureKind, classify_ai_provider_exception
+from app.providers.ai_stage_budget import StageRun
 from app.providers.itinerary_narrator.base import ItineraryNarratorProvider
 from app.providers.itinerary_narrator.structural_retry import (
     MAX_NARRATOR_ATTEMPTS,
@@ -173,43 +175,87 @@ class GroqItineraryNarratorProvider(ItineraryNarratorProvider):
                 "Groq API key is not configured (GROQ_API_KEY unset)."
             )
 
-        if self._client is not None:
-            client = self._client
-        else:
-            try:
-                client = self._build_client()
-            except Exception as exc:  # missing package / bad config -> not_connected
-                return self._not_connected_result(f"Groq client could not be initialized: {exc}")
+        # Section 1C: every attempt of this stage answers to ONE total
+        # wall-clock budget, and the stage makes at most one recovery attempt
+        # (structural OR transport, never both stacked). Whatever does not
+        # succeed is narrated by the deterministic fallback, as before.
+        settings = get_settings()
+        run = StageRun(
+            "groq_narrator",
+            total_budget_seconds=settings.groq_narrator_total_budget_seconds,
+            request_timeout_seconds=self._timeout_seconds,
+            structural_retries=MAX_NARRATOR_ATTEMPTS - 1,
+            transport_retries=settings.groq_max_retries,
+        )
+        report = self._narrate_within(request, run)
+        run.close(completed=report.status == ItineraryNarrativeStatus.SUCCESS)
+        return report
 
-        # Section 202C.1D: one initial attempt + at most one retry, and only for
-        # a STRUCTURAL output failure (see `structural_retry.py`). Everything
-        # else -- rate limit, auth, timeout, provider error, and any parsed
-        # result that `_build_result` rejects -- returns immediately.
+    def _narrate_within(self, request: ItineraryNarrativeRequest, run: StageRun) -> ItineraryNarrativeReport:
+        def deadline_result() -> ItineraryNarrativeReport:
+            return self._failed_result(
+                run.deadline_message("Groq"), failure_kind=AIProviderFailureKind.DEADLINE_EXCEEDED.value
+            )
+
+        # Section 202C.1D: one initial attempt + at most one retry for a
+        # STRUCTURAL output failure (see `structural_retry.py`), with the same
+        # factual input plus a format reminder. Section 1C: that retry (like
+        # the single transport retry) only starts while a meaningful part of
+        # the stage budget is left -- a malformed first answer late in the
+        # budget goes straight to the deterministic fallback. Never retried:
+        # auth, a non-transient provider error, and any parsed result that
+        # `_build_result` rejects.
         prompt = _build_prompt(request)
-        failure_message = "Groq did not return a structured response."
-        for attempt in range(1, MAX_NARRATOR_ATTEMPTS + 1):
-            attempt_prompt = prompt if attempt == 1 else f"{prompt}\n\n{RETRY_FORMAT_REMINDER}"
+        structural_retry = False
+        while True:
+            timeout = run.next_attempt_timeout()
+            if timeout is None:
+                return deadline_result()
+            if self._client is not None:
+                client = self._client
+            else:
+                try:
+                    client = self._build_client(timeout=timeout)
+                except Exception as exc:  # missing package / bad config -> not_connected
+                    run.attempts = 0  # no request was made
+                    return self._not_connected_result(f"Groq client could not be initialized: {exc}")
+
+            attempt_prompt = f"{prompt}\n\n{RETRY_FORMAT_REMINDER}" if structural_retry else prompt
             try:
                 with performance.provider_call("groq_narrator"):
                     raw_output = client.invoke(attempt_prompt)
             except Exception as exc:  # API/runtime/timeout failure -> failed, never fabricated
                 structural, failure_message = structural_failure_message("Groq", exc)
                 if not structural:
-                    return self._failed_result(failure_message)
+                    if run.allow_transport_retry(exc):
+                        continue
+                    if run.deadline_exceeded:
+                        return deadline_result()
+                    return self._failed_result(
+                        failure_message, failure_kind=classify_ai_provider_exception(exc).value
+                    )
+                run.answered = True
             else:
+                run.answered = True
                 output_dict = self._coerce_output(raw_output)
                 if output_dict is not None:
-                    if attempt > 1:
+                    if structural_retry:
                         log_retry_outcome(self.provider_name, recovered=True)
                     return self._build_result(request, output_dict)
                 failure_message = "Groq did not return a structured response."
-            if attempt == 1:
-                log_retrying(self.provider_name)
 
-        log_retry_outcome(self.provider_name, recovered=False)
-        return self._failed_result(failure_message)
+            if not run.allow_structural_retry():
+                if structural_retry:
+                    log_retry_outcome(self.provider_name, recovered=False)
+                if run.deadline_exceeded:
+                    return deadline_result()
+                return self._failed_result(
+                    failure_message, failure_kind=AIProviderFailureKind.MALFORMED_OUTPUT.value
+                )
+            structural_retry = True
+            log_retrying(self.provider_name)
 
-    def _build_client(self) -> Any:
+    def _build_client(self, timeout: float | None = None) -> Any:
         """Lazily imports and constructs the real Groq client, bound to
         the structured-output schema. Kept inside a method (never a
         module-level import) so the rest of the app imports cleanly
@@ -226,10 +272,11 @@ class GroqItineraryNarratorProvider(ItineraryNarratorProvider):
             api_key=self._api_key,
             temperature=self._temperature,
             max_tokens=self._max_tokens,
-            timeout=self._timeout_seconds,
-            # Section 1B: the SDK's transport-level retry count, stated
-            # explicitly (the same policy as the other Groq requests).
-            max_retries=get_settings().groq_max_retries,
+            # Section 1C: the timeout of THIS attempt (never more than the
+            # stage budget has left), and no hidden SDK retries -- the one
+            # recovery attempt is made by `narrate`, under the stage budget.
+            timeout=timeout if timeout is not None else self._timeout_seconds,
+            max_retries=0,
         )
         # Section 195 (Task 18): switched to Structured Outputs
         # (`method="json_schema", strict=True`) -- the Section 191A.1
@@ -336,12 +383,13 @@ class GroqItineraryNarratorProvider(ItineraryNarratorProvider):
             message=reason,
         )
 
-    def _failed_result(self, reason: str) -> ItineraryNarrativeReport:
+    def _failed_result(self, reason: str, failure_kind: str | None = None) -> ItineraryNarrativeReport:
         return ItineraryNarrativeReport(
             status=ItineraryNarrativeStatus.FAILED,
             provider=self.provider_name,
             model=self._model,
             message=reason,
+            failure_kind=failure_kind,
         )
 
 

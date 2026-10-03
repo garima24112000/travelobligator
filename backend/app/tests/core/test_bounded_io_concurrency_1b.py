@@ -746,7 +746,10 @@ def test_the_canary_reports_concurrency_diagnostics_without_judging_them(
     assert section["concurrency"]["concurrent_batches"] >= 2
     assert section["concurrency"]["batch_sizes"]["places"] == [6]
     text = canary._render(report)
-    for label in ("CONCURRENCY", "- peak Geoapify concurrency:", "- concurrent batches:", "- batch sizes by operation:"):
+    for label in (
+        "CONCURRENCY", "- peak Geoapify concurrency (this generation):", "- peak Geoapify concurrency (whole process):",
+        "- concurrent batches:", "- batch sizes by operation:",
+    ):
         assert label in text, label
     assert report["acceptance"]["outcome"] == "PASS"
     assert not any("concurren" in check["check"].lower() for check in report["acceptance"]["checks"])
@@ -927,15 +930,19 @@ def test_groq_anchor_reasoning_repair_and_narrator_clients_have_explicit_finite_
 
     monkeypatch.setattr(langchain_groq, "ChatGroq", _ChatGroq)
     settings = get_settings()
-    assert (settings.groq_request_timeout_seconds, settings.groq_max_retries) == (30.0, 2)
+    assert (settings.groq_request_timeout_seconds, settings.groq_max_retries) == (30.0, 1)
 
     GroqAICandidateProposalProvider(api_key="k")._build_client()
     reasoning = GroqAIItineraryReasoningProvider(api_key="k")
     reasoning._build_client()
     reasoning._build_repair_client()
     GroqItineraryNarratorProvider(api_key="k")._build_client()
+    # an attempt that only has part of the stage budget left gets exactly that
+    GroqItineraryNarratorProvider(api_key="k")._build_client(timeout=4.5)
 
+    # Section 1C: the SDK's own hidden retries are OFF for every stage -- the
+    # single recovery attempt is the application's, under the stage budget.
     assert [(kwargs["timeout"], kwargs["max_retries"]) for kwargs in built] == [
-        (30.0, 2), (30.0, 2), (30.0, 2), (settings.itinerary_narrator_timeout_seconds, 2),
+        (30.0, 0), (30.0, 0), (30.0, 0), (settings.itinerary_narrator_timeout_seconds, 0), (4.5, 0),
     ]
     assert all(kwargs["timeout"] > 0 for kwargs in built)

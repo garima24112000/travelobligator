@@ -5,6 +5,7 @@ from typing import Any
 from pydantic import BaseModel, Field, ValidationError
 
 from app.providers.ai_failure import AIProviderFailureKind, classify_and_message
+from app.providers.ai_stage_budget import StageRun
 from app.core import performance
 from app.core.config import get_settings
 from app.models.ai_candidate_proposal import (
@@ -300,20 +301,28 @@ class GroqAICandidateProposalProvider(AICandidateProposalProvider):
                 request, "Groq API key is not configured (GROQ_API_KEY unset)."
             )
 
-        if self._client is not None:
-            client = self._client
-        else:
-            try:
-                # Section 203C.2B: the completion budget grows with the batch
-                # (anchor discovery asks for up to 20 proposals; 4000 tokens
-                # was sized for 15 and a truncated document is a structural
-                # failure).
-                budget = max(self._max_tokens, _BASE_TOKENS + _TOKENS_PER_PROPOSAL * request.max_candidates)
-                client = self._build_client() if budget == self._max_tokens else self._build_client(budget)
-            except Exception as exc:  # missing package / bad config -> not_connected
-                return self._not_connected_result(
-                    request, f"Groq client could not be initialized: {exc}"
-                )
+        # Section 1C: every attempt of this stage answers to ONE total
+        # wall-clock budget, and the stage makes at most one recovery attempt
+        # (structural OR transport, never both stacked).
+        settings = get_settings()
+        run = StageRun(
+            "groq_anchor",
+            total_budget_seconds=settings.groq_anchor_total_budget_seconds,
+            request_timeout_seconds=settings.groq_request_timeout_seconds,
+            structural_retries=_MAX_STRUCTURAL_ATTEMPTS - 1,
+            transport_retries=settings.groq_max_retries,
+        )
+        result = self._propose_within(request, run)
+        run.close(completed=result.status == AICandidateProposalStatus.COMPLETED)
+        return result
+
+    def _propose_within(self, request: AICandidateProposalRequest, run: StageRun) -> AICandidateProposalResult:
+        def deadline_result() -> AICandidateProposalResult:
+            # A latency outcome, not a statement about any place: no anchor
+            # is proposed and the broad provider pool stands on its own.
+            return self._rejected_result(
+                request, run.deadline_message("Groq"), AICandidateProposalFailureKind.DEADLINE_EXCEEDED
+            )
 
         # Section 202B.2 (Tasks 14-16). 202A evidence (18 baseline runs + pilot):
         # the proposal call failed in 5-6 cases -- 3x `max completion tokens
@@ -326,10 +335,27 @@ class GroqAICandidateProposalProvider(AICandidateProposalProvider):
         # rate limits, auth, timeouts, provider errors, and any semantic /
         # grounding / factual rejection (those come from
         # `_build_result_from_output`, after this loop).
-        attempts = 0
         active_request = request
         while True:
-            attempts += 1
+            timeout = run.next_attempt_timeout()
+            if timeout is None:
+                return deadline_result()
+            if self._client is not None:
+                client = self._client
+            else:
+                try:
+                    # Section 203C.2B: the completion budget grows with the batch
+                    # (anchor discovery asks for up to 20 proposals; 4000 tokens
+                    # was sized for 15 and a truncated document is a structural
+                    # failure).
+                    budget = max(self._max_tokens, _BASE_TOKENS + _TOKENS_PER_PROPOSAL * request.max_candidates)
+                    client = self._build_client(None if budget == self._max_tokens else budget, timeout=timeout)
+                except Exception as exc:  # missing package / bad config -> not_connected
+                    run.attempts = 0  # no request was made
+                    return self._not_connected_result(
+                        request, f"Groq client could not be initialized: {exc}"
+                    )
+
             structural_failure: str | None = None
             structural_kind = AICandidateProposalFailureKind.SCHEMA_VALIDATION
             try:
@@ -338,26 +364,34 @@ class GroqAICandidateProposalProvider(AICandidateProposalProvider):
             except Exception as exc:  # API/runtime failure -> rejected, never fabricated
                 kind, message = classify_and_message("Groq", exc)
                 if kind != AIProviderFailureKind.MALFORMED_OUTPUT:
+                    if run.allow_transport_retry(exc):
+                        continue
+                    if run.deadline_exceeded:
+                        return deadline_result()
                     return self._rejected_result(
                         request, message, AICandidateProposalFailureKind.PROVIDER_FAILURE
                     )
+                run.answered = True
                 structural_failure = message
             else:
+                run.answered = True
                 output_dict = self._coerce_output(raw_output)
                 if output_dict is not None:
                     return self._build_result_from_output(request, output_dict)
                 structural_failure = "Groq did not return a structured response."
                 structural_kind = AICandidateProposalFailureKind.PARSE_FAILURE
 
-            if attempts >= _MAX_STRUCTURAL_ATTEMPTS:
+            if not run.allow_structural_retry():
+                if run.deadline_exceeded:
+                    return deadline_result()
                 return self._rejected_result(
-                    request, f"{structural_failure} (after {attempts} attempt(s))", structural_kind
+                    request, f"{structural_failure} (after {run.attempts} attempt(s))", structural_kind
                 )
             active_request = request.model_copy(
                 update={"max_candidates": max(_RETRY_MIN_CANDIDATES, request.max_candidates // 2)}
             )
 
-    def _build_client(self, max_tokens: int | None = None) -> Any:
+    def _build_client(self, max_tokens: int | None = None, timeout: float | None = None) -> Any:
         """Lazily imports and constructs the real Groq client, bound to the
         structured-output schema. Kept inside a method (never a module-level
         import) so the rest of the app imports cleanly whether or not the
@@ -403,10 +437,11 @@ class GroqAICandidateProposalProvider(AICandidateProposalProvider):
             api_key=self._api_key,
             temperature=self._temperature,
             max_tokens=max_tokens or self._max_tokens,
-            # Section 1B: explicit, finite request bounds (previously the
-            # SDK's implicit defaults). No retry is added by this.
-            timeout=get_settings().groq_request_timeout_seconds,
-            max_retries=get_settings().groq_max_retries,
+            # Section 1C: the timeout of THIS attempt (never more than the
+            # stage budget has left), and no hidden SDK retries -- the one
+            # recovery attempt is made by `propose`, under the stage budget.
+            timeout=timeout if timeout is not None else get_settings().groq_request_timeout_seconds,
+            max_retries=0,
         )
         return chat.with_structured_output(
             _GroqProposalBatchSchema, method="json_schema", strict=True

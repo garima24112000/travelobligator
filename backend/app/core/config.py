@@ -140,16 +140,41 @@ class Settings(BaseSettings):
     # an honest `not_connected` result instead of raising.
     groq_api_key: str | None = Field(default=None, alias="GROQ_API_KEY")
     groq_model: str = Field(default="openai/gpt-oss-20b", alias="GROQ_MODEL")
-    # Section 1B: explicit, finite bounds for the Groq anchor-proposal,
-    # itinerary-reasoning and itinerary-repair requests (the narrator has its
-    # own `ITINERARY_NARRATOR_TIMEOUT_SECONDS`). The timeout is per HTTP
-    # attempt. `GROQ_MAX_RETRIES` is the SDK's own transport-level retry
-    # count (connection errors, 408/429/5xx); 2 is what the SDK already did
-    # by default, now stated rather than implied -- it adds no retry.
+    # Section 1B/1C: explicit, finite bounds for the generation-time Groq
+    # stages (`app/providers/ai_stage_budget.py`).
+    #
+    # `GROQ_REQUEST_TIMEOUT_SECONDS` is the timeout of ONE request attempt
+    # of the anchor-proposal, itinerary-reasoning and itinerary-repair
+    # stages (the narrator has its own `ITINERARY_NARRATOR_TIMEOUT_SECONDS`);
+    # an attempt actually gets `min(that, stage budget remaining)`.
+    #
+    # `GROQ_MAX_RETRIES` is how many TRANSPORT retries (rate limit, timeout /
+    # network, 5xx) a stage may make. They are made by the application, under
+    # the stage's total budget; the SDK's own hidden retries are switched off,
+    # so retries never stack. A stage makes at most
+    # `1 + max(structural retries, GROQ_MAX_RETRIES)` requests -- 2 by default.
     groq_request_timeout_seconds: float = Field(
         default=30.0, alias="GROQ_REQUEST_TIMEOUT_SECONDS", gt=0.0
     )
-    groq_max_retries: int = Field(default=2, alias="GROQ_MAX_RETRIES", ge=0, le=5)
+    groq_max_retries: int = Field(default=1, alias="GROQ_MAX_RETRIES", ge=0, le=2)
+    # Section 1C: TOTAL wall-clock budget of each generation-time Groq stage:
+    # every request attempt, the structural retry and the retry backoff
+    # together. When it runs out the stage ends as `deadline_exceeded` and the
+    # existing deterministic fallback is used (broad provider pool /
+    # deterministic planning / deterministic top-up / deterministic
+    # narrative). Monotonic clock. 0 disables the deadline for that stage.
+    groq_anchor_total_budget_seconds: float = Field(
+        default=25.0, alias="GROQ_ANCHOR_TOTAL_BUDGET_SECONDS", ge=0.0
+    )
+    groq_reasoning_total_budget_seconds: float = Field(
+        default=20.0, alias="GROQ_REASONING_TOTAL_BUDGET_SECONDS", ge=0.0
+    )
+    groq_repair_total_budget_seconds: float = Field(
+        default=20.0, alias="GROQ_REPAIR_TOTAL_BUDGET_SECONDS", ge=0.0
+    )
+    groq_narrator_total_budget_seconds: float = Field(
+        default=25.0, alias="GROQ_NARRATOR_TOTAL_BUDGET_SECONDS", ge=0.0
+    )
 
     # Config gate for get_ai_candidate_proposal_provider (Step 160E,
     # extended in Step 161A, corrected in Step 191A). "not_connected"
@@ -432,7 +457,16 @@ class Settings(BaseSettings):
     # have in flight at the same time. A generation-scoped limiter, never
     # shared state in Redis; 1 makes every Geoapify request serial.
     geoapify_max_concurrent_requests: int = Field(
-        default=4, alias="GEOAPIFY_MAX_CONCURRENT_REQUESTS", ge=1, le=16
+        default=4, alias="GEOAPIFY_MAX_CONCURRENT_REQUESTS", ge=1, le=4
+    )
+    # Section 1C: how many Geoapify requests the whole PROCESS may have in
+    # flight at once, across every generation running in it. A request needs
+    # a slot of BOTH limiters (generation first, then process). In-process
+    # only: with one Uvicorn worker per container this bounds ONE container;
+    # N containers can together make N times as many. Never a distributed
+    # lock.
+    geoapify_process_max_concurrent_requests: int = Field(
+        default=6, alias="GEOAPIFY_PROCESS_MAX_CONCURRENT_REQUESTS", ge=1, le=32
     )
     # Section 1B: independent provider requests of one generation run as
     # bounded concurrent batches. `false` runs every batch serially, in the

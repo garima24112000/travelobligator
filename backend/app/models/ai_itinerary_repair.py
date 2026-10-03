@@ -342,6 +342,10 @@ class AIItineraryRepairResult(BaseModel):
     model_name: str | None = None
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
     attempt_number: int = Field(default=1, ge=1)
+    # Section 1C: machine-readable reason a repair call produced no answer
+    # (an `AIProviderFailureKind` value, e.g. `deadline_exceeded`). Optional:
+    # None for every result stored before it existed and for a completed one.
+    failure_kind: str | None = None
 
     @field_validator("repair_summary")
     @classmethod

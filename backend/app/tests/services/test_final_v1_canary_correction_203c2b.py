@@ -177,8 +177,10 @@ class _ProviderError(Exception):
         ((_batch(_raw_proposal(1, why_consider="Best price guaranteed")),), AICandidateProposalFailureKind.CANDIDATE_VALIDATION, 1),
         ((None, None), AICandidateProposalFailureKind.PARSE_FAILURE, 2),  # one bounded structural retry
         ((_ProviderError(code="json_validate_failed"),) * 2, AICandidateProposalFailureKind.SCHEMA_VALIDATION, 2),
-        ((_ProviderError(status_code=429),), AICandidateProposalFailureKind.PROVIDER_FAILURE, 1),  # never retried
-        ((_ProviderError(status_code=401),), AICandidateProposalFailureKind.PROVIDER_FAILURE, 1),
+        # Section 1C: a transient transport failure gets the stage's ONE recovery
+        # attempt (made here, not hidden in the SDK) -- never a third request
+        ((_ProviderError(status_code=429),) * 3, AICandidateProposalFailureKind.PROVIDER_FAILURE, 2),
+        ((_ProviderError(status_code=401),), AICandidateProposalFailureKind.PROVIDER_FAILURE, 1),  # never retried
     ],
 )
 def test_a_failed_proposal_carries_a_safe_machine_readable_failure_kind(
@@ -204,7 +206,7 @@ def test_a_structural_failure_is_retried_once_with_a_smaller_batch_and_can_recov
 def test_the_completion_budget_grows_with_the_anchor_batch(monkeypatch: pytest.MonkeyPatch) -> None:
     budgets: list[int | None] = []
 
-    def _build(self: Any, max_tokens: int | None = None) -> Any:
+    def _build(self: Any, max_tokens: int | None = None, timeout: float | None = None) -> Any:
         budgets.append(max_tokens)
         return _Client(_batch(_raw_proposal(1)))
 

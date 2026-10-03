@@ -385,6 +385,8 @@ def build_deterministic_narrative(
         source_fields_used=["experience_plan", "traveler_profile", "validation_report"],
         generated_at=datetime.now(timezone.utc),
         narrative_source="deterministic_fallback",
+        # Why the AI attempt gave no answer, when it said (Section 1C).
+        failure_kind=getattr(attempt, "failure_kind", None),
     )
 
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import time
 
+from app.core import performance
 from app.core.config import get_settings
 from app.models.itinerary_narrative import (
     ItineraryNarrativeReport,
@@ -224,6 +225,9 @@ class ItineraryNarrativeService:
                 # lives in the adapter and only covers malformed output).
                 if find_ungrounded_terms(request, report) or find_unsupported_factual_claims(request, report):
                     report = grounding_rejected_report(report)
+                    # Section 1C (diagnostics only): the model answered, but
+                    # the deterministic fallback is what the traveller gets.
+                    performance.set_llm_result("groq_narrator", "fallback")
                 else:
                     report = report.model_copy(update=advisory_fields)
             report = _apply_final_validation_disclosure(report, request)

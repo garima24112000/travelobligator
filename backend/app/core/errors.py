@@ -199,6 +199,14 @@ REGENERATION_PROVIDER_FAILURE_MESSAGES: dict[str, str] = {
         "The AI model provider returned an error, so the request could not be "
         "interpreted. No plan section was changed and your feedback is still pending."
     ),
+    # Section 1C: the model stage's total time budget ran out -- to the
+    # traveller the same situation as a provider that could not be reached
+    # in time.
+    "deadline_exceeded": (
+        "The AI model provider could not be reached in time, so the request could "
+        "not be interpreted. No plan section was changed and your feedback is still "
+        "pending."
+    ),
 }
 
 
