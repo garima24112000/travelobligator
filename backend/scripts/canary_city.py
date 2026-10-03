@@ -243,9 +243,15 @@ def _run(args: argparse.Namespace, cache_hits: dict[str, int]) -> dict[str, Any]
 
     interests = _split_list(args.interests)
     must_visit = list(args.must_visit or [])
+    # Optional scenario fields a caller (the tuning benchmark) may fix; the
+    # single-city canary leaves them out and keeps its own defaults.
+    start_date = getattr(args, "start_date", None) or _START_DATE
+    origin = getattr(args, "origin", None)
+    travelers = getattr(args, "travelers", None) or 2
     report: dict[str, Any] = {
         "request": {
             "city": args.city, "days": args.days, "pace": args.pace, "interests": interests, "must_visit": must_visit,
+            "start_date": start_date.isoformat(), "origin": origin, "travelers": travelers,
         }
     }
 
@@ -259,9 +265,10 @@ def _run(args: argparse.Namespace, cache_hits: dict[str, int]) -> dict[str, Any]
             created = planning_orchestrator.create_trip(
                 TripRequest(
                     primary_destination=args.city,
-                    start_date=_START_DATE,
-                    end_date=_START_DATE + timedelta(days=args.days - 1),
-                    travelers_count=2,
+                    origin_city=origin,
+                    start_date=start_date,
+                    end_date=start_date + timedelta(days=args.days - 1),
+                    travelers_count=travelers,
                     travel_group_type=TravelGroupType.COUPLE,
                     pace=TripPace(args.pace),
                     interests=interests,
@@ -698,6 +705,9 @@ def _run(args: argparse.Namespace, cache_hits: dict[str, int]) -> dict[str, Any]
         # Stage-level count: a stage's own internal retries are not visible here.
         "groq_stage_calls": groq_stages,
         "groq_stage_calls_total": sum(groq_stages.values()),
+        # a fixed status label (never model output): anything but `completed` means the
+        # deterministic scheduler, not the model, chose the plan
+        "itinerary_reasoning_status": _value(reasoning.status) if reasoning is not None else None,
     }
 
     # -- persistence -------------------------------------------------------------------------
@@ -1122,6 +1132,35 @@ def _render(report: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _prepare_live_environment(workdir: Path) -> dict[str, int]:
+    """The production-shaped configuration on throwaway storage in `workdir`,
+    shared with the tuning benchmark. Returns the provider-cache hit counter
+    that `_run` reports (by namespace; script-side observation only)."""
+    sys.path.insert(0, str(_SCRIPTS_DIR))
+    sys.path.insert(0, str(_BACKEND_DIR))
+    from benchmark_cities import _configure_environment  # same production-shaped configuration
+
+    _configure_environment(workdir)
+
+    from app.core.config import get_settings
+
+    get_settings.cache_clear()
+
+    from app.storage.provider_cache_store import ProviderCacheStore
+
+    cache_hits: dict[str, int] = {}
+    original_get = ProviderCacheStore.get
+
+    def _counting_get(self: Any, source: str, query_hash: str, *get_args: Any, **get_kwargs: Any) -> Any:
+        entry = original_get(self, source, query_hash, *get_args, **get_kwargs)
+        if entry is not None:
+            cache_hits[source] = cache_hits.get(source, 0) + 1
+        return entry
+
+    ProviderCacheStore.get = _counting_get  # type: ignore[method-assign]
+    return cache_hits
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--city", required=True, help='destination, e.g. "City, Country"')
@@ -1139,32 +1178,10 @@ def main() -> int:
         print("Missing required environment variable(s): " + ", ".join(missing) + ". Nothing was run.")
         return 2
 
-    sys.path.insert(0, str(_SCRIPTS_DIR))
-    sys.path.insert(0, str(_BACKEND_DIR))
-    from benchmark_cities import _configure_environment  # same production-shaped configuration
-
     workdir = Path(tempfile.mkdtemp(prefix="travelobligator_canary_"))
     out_dir = args.out or workdir
     out_dir.mkdir(parents=True, exist_ok=True)
-    _configure_environment(workdir)
-
-    from app.core.config import get_settings
-
-    get_settings.cache_clear()
-
-    # Count provider-cache hits by namespace (script-side observation only).
-    from app.storage.provider_cache_store import ProviderCacheStore
-
-    cache_hits: dict[str, int] = {}
-    original_get = ProviderCacheStore.get
-
-    def _counting_get(self: Any, source: str, query_hash: str, *get_args: Any, **get_kwargs: Any) -> Any:
-        entry = original_get(self, source, query_hash, *get_args, **get_kwargs)
-        if entry is not None:
-            cache_hits[source] = cache_hits.get(source, 0) + 1
-        return entry
-
-    ProviderCacheStore.get = _counting_get  # type: ignore[method-assign]
+    cache_hits = _prepare_live_environment(workdir)
 
     report = _run(args, cache_hits)
     text = _render(report)

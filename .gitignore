@@ -49,6 +49,9 @@ venv/
 # Local backend persistence (file-backed dev storage, not a database)
 .data/
 
+# Benchmark output (local artifacts; only a deliberately sanitized summary is ever committed)
+benchmark_results/
+
 # Vercel
 .vercel/
 
