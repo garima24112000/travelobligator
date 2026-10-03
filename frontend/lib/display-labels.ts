@@ -386,6 +386,119 @@ export function aggregateIssues(issues: ValidationIssue[]): AggregatedIssue[] {
   return [...groups.values()].sort((a, b) => rank(a.severity) - rank(b.severity));
 }
 
+// ---------------------------------------------------------------------------
+// Section 2C: which validation findings Traveler view shows
+// ---------------------------------------------------------------------------
+//
+// The policy is decided from the finding's STRUCTURE (severity + category),
+// not by rewording its sentence. Developer view lists every finding and does
+// not use any of this.
+//
+//   critical    always shown.
+//   warning     shown, unless its category only describes the system's own
+//               state. Two categories whose backend sentence is a diagnostic
+//               ("3 of 5 scheduled leg(s) ...") are shown as one fixed
+//               traveler sentence instead.
+//   suggestion  hidden unless its category is explicitly listed as useful to
+//               a traveler. Every suggestion the backend emits today is a
+//               diagnostic, so the list is empty; an unknown category is
+//               hidden, never leaked.
+
+// Warning categories a traveler can act on: always shown.
+const TRAVELER_WARNING_CATEGORIES = new Set([
+  "weather",
+  "holidays",
+  "long_travel_day",
+  "must_visit",
+  "budget",
+  "constraints",
+  "geographic_spread",
+  "suspected_duplicate_stop",
+  "underfilled_plan",
+  "travel_time_buffer",
+  "scheduling",
+]);
+
+// Categories that report on routing internals, provider inventory, coverage
+// bookkeeping or the regeneration lifecycle: never shown as warnings or
+// suggestions. (Traveler view already has movement rows, maps, "Not included
+// in this plan", Flights and Apply your changes for what matters here.)
+const DIAGNOSTIC_CATEGORIES = new Set([
+  "route_aware_sequencing",
+  "route_geometry",
+  "accommodation_inventory",
+  "flight_inventory",
+  "hotel_ratings",
+  "provider_coverage_consistency",
+  "regeneration",
+  "regeneration_state_consistency",
+]);
+
+// Warnings worth knowing about whose backend sentence is diagnostic prose.
+const WARNING_CATEGORY_SENTENCES: Record<string, string> = {
+  feasibility: "Travel between some stops could not be fully checked.",
+  movement_data: "Travel times between some stops are not available.",
+};
+
+// Suggestion categories shown to a traveler. Deliberately empty for V1.
+const TRAVELER_SUGGESTION_CATEGORIES = new Set<string>([]);
+
+// Last line of defence for a warning in a category this file does not know:
+// implementation / diagnostic wording keeps it out of Traveler view.
+const DIAGNOSTIC_WORDING: RegExp[] = [
+  /scheduled leg\(s\)|\bof \d+ (?:scheduled )?legs?\b/i,
+  /route-aware|sequencing|reorder/i,
+  /route geometry/i,
+  /\bprovider\b|\bproviders\b|configur/i,
+  /\binventory\b|scraped|\bHTML\b|adapter|integration/i,
+  /regenerat|deterministic/i,
+  /Skyscanner|Expedia|Vrbo|Booking\.com|Airbnb|Tripadvisor|Google Flights/i,
+];
+
+/** True when a sentence is implementation / diagnostic prose. */
+export function hasDiagnosticWording(text: string): boolean {
+  return DIAGNOSTIC_WORDING.some((pattern) => pattern.test(text));
+}
+
+/**
+ * The finding as Traveler view shows it, or null when it is not shown.
+ * Never changes severity.
+ */
+export function travelerFinding(
+  issue: ValidationIssue,
+  suggestionCategories: ReadonlySet<string> = TRAVELER_SUGGESTION_CATEGORIES,
+): ValidationIssue | null {
+  const category = (issue.category ?? "").toLowerCase();
+  if (issue.severity === "critical") return issue;
+
+  if (issue.severity === "suggestion") {
+    return suggestionCategories.has(category) && !hasDiagnosticWording(travelerText(issue.message))
+      ? issue
+      : null;
+  }
+
+  if (DIAGNOSTIC_CATEGORIES.has(category)) return null;
+  const sentence = WARNING_CATEGORY_SENTENCES[category];
+  if (sentence) return { ...issue, message: sentence, suggested_fix: null };
+  if (TRAVELER_WARNING_CATEGORIES.has(category)) return issue;
+  return hasDiagnosticWording(travelerText(issue.message)) ? null : issue;
+}
+
+/**
+ * Traveler view's "Important limitations" rows: the findings that pass
+ * `travelerFinding`, with near-identical ones folded together.
+ */
+export function travelerFindings(
+  issues: ValidationIssue[],
+  suggestionCategories: ReadonlySet<string> = TRAVELER_SUGGESTION_CATEGORIES,
+): AggregatedIssue[] {
+  return aggregateIssues(
+    issues
+      .map((issue) => travelerFinding(issue, suggestionCategories))
+      .filter((issue): issue is ValidationIssue => issue !== null),
+  );
+}
+
 /** Aggregate plain caveat strings (e.g. per-day narrator caveats). */
 export function aggregateCaveats(caveats: string[]): { text: string; count: number }[] {
   const groups = new Map<string, { text: string; count: number }>();

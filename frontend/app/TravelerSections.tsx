@@ -8,7 +8,7 @@ import { useEffect, useId, useState, type ReactNode } from "react";
 import {
   SEVERITY_ORDER,
   SEVERITY_PRESENTATION,
-  aggregateIssues,
+  travelerFindings,
   unavailableDataLabels,
   type IssueSeverity,
 } from "@/lib/display-labels";
@@ -88,13 +88,16 @@ function SeverityBadge({ severity }: { severity: IssueSeverity }) {
 }
 
 /**
- * Traveler view "Important limitations": the validation report's findings
- * grouped CRITICAL / WARNING / SUGGESTION, near-identical findings folded
- * into one row with a count. Developer view keeps every individual finding
- * (ValidationSection); nothing is deleted from the backend report.
+ * Traveler view "Important limitations": the validation findings a traveler
+ * can act on (`travelerFindings` -- every critical finding, actionable
+ * warnings, and only explicitly traveler-eligible suggestions), grouped by
+ * severity with near-identical findings folded into one row with a count.
+ * Implementation / diagnostic findings are not shown here; Developer view
+ * keeps every individual finding (ValidationSection), and nothing is deleted
+ * from the backend report.
  */
 export function TravelerLimitationsSection({ report }: { report: ValidationReport }) {
-  const findings = aggregateIssues([...report.critical_issues, ...report.warnings]);
+  const findings = travelerFindings([...report.critical_issues, ...report.warnings]);
   const bySeverity = (severity: IssueSeverity) =>
     findings.filter((finding) => finding.severity === severity);
   const dataNotes = unavailableDataLabels(report.unavailable_data_notes);
@@ -134,13 +137,14 @@ export function TravelerLimitationsSection({ report }: { report: ValidationRepor
         Important limitations
       </h2>
       <p className="mt-1 text-xs text-slate-400">
-        Critical items need fixing, warnings are worth checking, suggestions are optional.
+        Critical items need fixing, warnings are worth checking
+        {suggestions.length > 0 ? ", suggestions are optional." : "."}
       </p>
 
       {findings.length === 0 && (
         <p className="mt-3 text-sm text-slate-300">
-          No validation findings were recorded for this plan. Still confirm opening hours,
-          prices and availability yourself.
+          Nothing specific to flag for this plan. Still confirm opening hours, prices and
+          availability yourself.
         </p>
       )}
 
@@ -160,6 +164,8 @@ export function TravelerLimitationsSection({ report }: { report: ValidationRepor
         );
       })}
 
+      {/* `suggestions` holds only traveler-eligible ones, so the count is
+          what the control reveals; with none there is no control at all. */}
       {suggestions.length > 0 && (
         <SuggestionsDisclosure count={suggestions.length}>{renderRows(suggestions)}</SuggestionsDisclosure>
       )}
