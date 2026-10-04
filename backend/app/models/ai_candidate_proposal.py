@@ -279,6 +279,10 @@ class AICandidateProposalFailureKind(str, Enum):
     # Section 1C: the stage's total wall-clock budget ran out. A latency
     # outcome -- never a statement about any place.
     DEADLINE_EXCEEDED = "deadline_exceeded"
+    # Section 3B: the discovery step itself failed unexpectedly after it was
+    # attempted (not a provider answer). Recorded so an attempted step is
+    # never left looking as if it had not run.
+    INTERNAL_ERROR = "internal_error"
 
 
 class AICandidateProposalGuardrailReport(BaseModel):

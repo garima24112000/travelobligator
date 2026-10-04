@@ -4,6 +4,8 @@ from enum import Enum
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
 
+from app.models.forbidden_text import compile_forbidden_patterns, find_forbidden_pattern
+
 # Contract-only models for a future AI reasoning layer (Step 155A,
 # docs/13_llm_reasoning_pipeline.md, docs/14_backend_architecture.md
 # section 25). No LLM provider, LangGraph, or LangSmith is wired up yet --
@@ -42,14 +44,13 @@ _FORBIDDEN_TEXT_PATTERNS: tuple[str, ...] = (
 )
 
 
+# Section 3B: matched as a whole word/phrase, never a raw substring; a
+# symbol pattern ("$") still matches anywhere. See `app.models.forbidden_text`.
+_FORBIDDEN_TEXT_REGEXES = compile_forbidden_patterns(_FORBIDDEN_TEXT_PATTERNS)
+
+
 def _find_forbidden_pattern(text: str) -> str | None:
-    for pattern in _FORBIDDEN_TEXT_PATTERNS:
-        if pattern == "$":
-            if "$" in text:
-                return pattern
-        elif pattern in text.lower():
-            return pattern
-    return None
+    return find_forbidden_pattern(text, _FORBIDDEN_TEXT_REGEXES)
 
 
 def _require_non_blank(value: str, field_name: str) -> str:

@@ -465,6 +465,18 @@ def test_live_discovery_enabled_ungrounded_proposal_records_provider_discovery_a
 # ---------------------------------------------------------------------------
 
 
+def _assert_failed_attempt_recorded(planning_state: dict) -> None:
+    batch = planning_state["ai_candidate_proposal_batch"]
+    assert batch is not None
+    assert batch["result"]["status"] == "rejected"
+    assert batch["result"]["failure_kind"] == "internal_error"
+    assert batch["result"]["proposals"] == []
+    assert "sk-should-not-leak" not in str(batch)
+    assert planning_state["candidate_grounding_batch"] is None
+    promotion = planning_state["ai_candidate_promotion_report"]
+    assert promotion is None or promotion["promoted_candidates"] == []
+
+
 def test_live_discovery_enabled_provider_exception_does_not_break_generation(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -477,10 +489,10 @@ def test_live_discovery_enabled_provider_exception_does_not_break_generation(
     assert response.status_code == 200
     assert provider.call_count == 1
     planning_state = response.json()["data"]["planning_state"]
-    # apply_discovery_to_state fails safe: nothing is stored on exception.
-    assert planning_state["ai_candidate_proposal_batch"] is None
-    assert planning_state["candidate_grounding_batch"] is None
-    assert planning_state["ai_candidate_promotion_report"] is None
+    # apply_discovery_to_state fails safe. Section 3B: the attempted step is
+    # recorded as an explicit rejected result (never left looking as if it
+    # had not run), with no proposal and no exception text.
+    _assert_failed_attempt_recorded(planning_state)
     # The rest of generation is unaffected -- still a real, provider-backed
     # itinerary, never blocked or fabricated because of the AI failure.
     assert planning_state["destination_context"] is not None
@@ -507,11 +519,9 @@ def test_live_discovery_enabled_invalid_output_does_not_fabricate_or_crash(
     assert provider.call_count == 1
     planning_state = response.json()["data"]["planning_state"]
     # apply_discovery_to_state's try/except catches the ValidationError
-    # raised while building the invalid result -- nothing is stored, never
-    # a fabricated proposal/candidate.
-    assert planning_state["ai_candidate_proposal_batch"] is None
-    assert planning_state["candidate_grounding_batch"] is None
-    assert planning_state["ai_candidate_promotion_report"] is None
+    # raised while building the invalid result -- never a fabricated
+    # proposal/candidate; the failed attempt itself is recorded (Section 3B).
+    _assert_failed_attempt_recorded(planning_state)
     assert planning_state["experience_plan"] is not None
 
 

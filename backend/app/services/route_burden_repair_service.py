@@ -31,7 +31,6 @@ import logging
 
 from app.core.config import get_settings
 from app.core.provider_usage import GenerationProviderContext
-from app.models.candidate_quality import CandidateQualityTier
 from app.models.common import GeoPoint, ProviderStatus
 from app.models.planning_state import DailyPlan, ExperienceItem, PlanningState
 from app.models.route_burden_repair import RouteBurdenRepairAttempt, RouteBurdenRepairReport
@@ -47,6 +46,8 @@ from app.services.experience_planner_service import (
     recompute_food_suggestions,
     unused_replacement_options,
 )
+from app.services.grounded_anchors import grounded_anchor_place_ids
+from app.services.interest_coverage import FOOD, valid_food_suggestion
 from app.services.must_visit_matching import must_visit_place_ids
 from app.services.route_burden import DayRouteBurden, burden_of_legs, day_route_burdens
 from app.services.route_feasibility_service import RouteFeasibilityService
@@ -56,6 +57,7 @@ logger = logging.getLogger(__name__)
 
 # A replacement may sit at most one quality tier below the stop it replaces.
 _MAX_TIER_DROP = 1
+REPLACEABLE = "replaceable"
 
 
 def _km(a: GeoPoint | None, b: GeoPoint | None) -> float:
@@ -84,6 +86,7 @@ class RouteBurdenRepairService:
 
         protected_place_ids = must_visit_place_ids(planning_state)
         locked_ids = {lock.locked_item_id for lock in planning_state.user_locks if lock.is_active}
+        anchor_place_ids = grounded_anchor_place_ids(planning_state)
         options = unused_replacement_options(planning_state)
         days = {day.day_number: day for day in plan.daily_plans}
 
@@ -92,7 +95,7 @@ class RouteBurdenRepairService:
         for burden in long_days:
             attempt, used = self._repair_day(
                 planning_state, days[burden.day_number], burden, options,
-                protected_place_ids, locked_ids, provider_context,
+                protected_place_ids, locked_ids, provider_context, anchor_place_ids,
             )
             attempts.append(attempt)
             if used is not None:
@@ -113,35 +116,39 @@ class RouteBurdenRepairService:
         protected_place_ids: set[str],
         locked_ids: set[str],
         provider_context: GenerationProviderContext | None,
+        anchor_place_ids: set[str] | None = None,
     ) -> tuple[RouteBurdenRepairAttempt, ReplacementOption | None]:
+        stops = day.experiences
+        # Why each stop may or may not be replaced (reported with every
+        # attempt of this day).
+        protections = [
+            self._protection(stop, protected_place_ids, locked_ids, anchor_place_ids or set()) for stop in stops
+        ]
+
         def outcome(reason: str, **fields: object) -> RouteBurdenRepairAttempt:
             return RouteBurdenRepairAttempt(
                 day_number=day.day_number,
                 reason=reason,
+                stop_protections=protections,
                 before_duration_seconds=burden.total_duration_seconds,
                 before_distance_meters=burden.total_distance_meters,
                 **fields,
             )
 
-        stops = day.experiences
         if len(stops) < 2 or burden.routed_legs != burden.required_legs:
-            return outcome("no_replaceable_stop"), None
+            return outcome("incomplete_route_data"), None
 
         # 1. The isolated stop: farthest from the centre of the day's other
-        #    stops, among the stops that may be replaced at all.
+        #    stops, among the stops that may be replaced at all. Section 3B:
+        #    a quality TIER is not a protection -- most ordinary broad
+        #    candidates carry the top tier, so protecting it made every stop
+        #    of a day untouchable. Only a must-visit, a user lock and a
+        #    grounded AI anchor are never traded away for a shorter route.
         isolated: ExperienceItem | None = None
         isolated_km = 0.0
         rest_centre: GeoPoint | None = None
-        for stop in stops:
-            if (
-                stop.coordinates is None
-                or stop.experience_id in locked_ids
-                or (stop.provider_place_id and stop.provider_place_id in protected_place_ids)
-                # A primary anchor or a grounded AI anchor is never traded
-                # away for a shorter route; its transfer is adapted instead.
-                or stop.quality_tier == CandidateQualityTier.PRIMARY_ANCHOR.value
-                or stop.promoted_from_ai
-            ):
+        for stop, protection in zip(stops, protections):
+            if protection != REPLACEABLE:
                 continue
             centre = centroid([other.coordinates for other in stops if other is not stop])
             distance = _km(stop.coordinates, centre)
@@ -160,6 +167,11 @@ class RouteBurdenRepairService:
             for interest in stop.matched_interests
         }
         must_cover = set(isolated.matched_interests) - covered_without
+        # Food is also covered by real nearby food (the validator's own rule,
+        # `services/interest_coverage`): when another day already has such
+        # evidence, removing this stop cannot uncover the interest.
+        if FOOD in must_cover and self._food_evidence_on_another_day(planning_state, day):
+            must_cover.discard(FOOD)
         floor_rank = quality_tier_rank(isolated.quality_tier) - _MAX_TIER_DROP
         # A replacement never makes the day more concentrated in one coarse
         # attraction class than it already is (schedule-diversity contract).
@@ -221,16 +233,48 @@ class RouteBurdenRepairService:
             **named,
         }
         min_ratio = get_settings().route_burden_repair_min_improvement_ratio
+        # Section 3B: replacing a far stop that needed a vehicle with a nearby
+        # one turns a drive into a walk, so the walking total may rise. That
+        # is an improvement as long as the day's walking stays within the
+        # (unchanged) walking limits; walking that was already excessive
+        # must not get longer.
+        walking_acceptable = (
+            after.walking_duration_seconds <= burden.walking_duration_seconds or not after.excessive_walking
+        )
         improved = (
             after.total_duration_seconds <= burden.total_duration_seconds * (1.0 - min_ratio)
             and after.max_leg_duration_seconds <= burden.max_leg_duration_seconds
-            and after.walking_duration_seconds <= burden.walking_duration_seconds
+            and walking_acceptable
         )
         if not improved:
             return outcome("no_material_improvement", **measured), None
 
         self._apply(planning_state, day, new_order, legs)
         return outcome("accepted", accepted=True, **measured), best
+
+    @staticmethod
+    def _protection(
+        stop: ExperienceItem, must_visit_ids: set[str], locked_ids: set[str], anchor_place_ids: set[str]
+    ) -> str:
+        if stop.provider_place_id and stop.provider_place_id in must_visit_ids:
+            return "must_visit"
+        if stop.experience_id in locked_ids:
+            return "user_lock"
+        if stop.promoted_from_ai or (stop.provider_place_id and stop.provider_place_id in anchor_place_ids):
+            return "grounded_anchor"
+        if stop.coordinates is None:
+            return "no_coordinates"
+        return REPLACEABLE
+
+    @staticmethod
+    def _food_evidence_on_another_day(planning_state: PlanningState, day: DailyPlan) -> bool:
+        plan = planning_state.experience_plan
+        return any(
+            valid_food_suggestion(other, suggestion)
+            for other in (plan.daily_plans if plan else [])
+            if other is not day
+            for suggestion in other.restaurant_suggestions
+        )
 
     def _route(
         self,

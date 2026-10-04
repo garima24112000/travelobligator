@@ -174,6 +174,9 @@ def _performance_section(performance: Any) -> dict[str, Any]:
                 "transport_retries": stage.transport_retries,
                 "deadline_exceeded": stage.deadline_exceeded,
                 "result": stage.result,
+                # Section 3B: fixed labels only (None when not applicable)
+                "transport_failure": stage.transport_failure,
+                "retry_after": stage.retry_after,
                 "seconds": round(performance.provider_ms.get(key, 0.0) / 1000.0, 2),
             }
             for label, key in _PERFORMANCE_PROVIDER_ROWS
@@ -234,6 +237,7 @@ def _run(args: argparse.Namespace, cache_hits: dict[str, int]) -> dict[str, Any]
     from app.models.routing import TRANSFER_MODE_DRIVE, TRANSFER_MODE_WALK, leg_mode
     from app.services import schedule_diversity as diversity
     from app.services.entity_collisions import scheduled_unresolved_collisions
+    from app.services.grounded_anchors import grounded_anchor_place_ids
     from app.services.interest_coverage import final_food_evidence, interest_coverage
     from app.services.must_visit_matching import resolve_must_visits
     from app.services.planning_orchestrator import planning_orchestrator
@@ -345,6 +349,20 @@ def _run(args: argparse.Namespace, cache_hits: dict[str, int]) -> dict[str, Any]
     days = plan.daily_plans if plan is not None else []
     scheduled = [experience for day in days for experience in day.experiences]
     scheduled_ids = {experience.provider_place_id for experience in scheduled if experience.provider_place_id}
+    # Section 3B: how many grounded (provider-grounded AND promoted) anchors reached the schedule,
+    # by provider place id -- an anchor already in the broad pool counts exactly like any other.
+    grounded_anchor_ids = grounded_anchor_place_ids(state)
+    scheduled_anchors = [stop.name for stop in scheduled if stop.provider_place_id in grounded_anchor_ids]
+    report["anchors"].update(
+        {
+            "grounded_anchor_count": len(grounded_anchor_ids),
+            "scheduled_grounded_anchor_count": len(scheduled_anchors),
+            "grounded_anchor_schedule_ratio": (
+                round(len(scheduled_anchors) / len(grounded_anchor_ids), 3) if grounded_anchor_ids else None
+            ),
+            "scheduled_grounded_anchor_names": scheduled_anchors,
+        }
+    )
 
     # -- must-visits ---------------------------------------------------------------------
     # The same identity-based resolution the validator uses (never a second, looser rule).
@@ -603,6 +621,8 @@ def _run(args: argparse.Namespace, cache_hits: dict[str, int]) -> dict[str, Any]
             "day": attempt.day_number,
             "route_burden_repair_attempted": attempt.route_burden_repair_attempted,
             "reason": attempt.reason,
+            # why each stop of the day may or may not be replaced, in stop order (fixed codes)
+            "stop_protections": list(attempt.stop_protections),
             "replaced_place": attempt.replaced_place,
             "replacement_place": attempt.replacement_place,
             "before_distance_meters": attempt.before_distance_meters,
@@ -883,6 +903,11 @@ def _render(report: dict[str, Any]) -> str:
     row("rejected", anchors["rejected"] or 0)
     row("promoted", anchors["promoted"])
     row("grounded names", "; ".join(anchors["grounded_names"]) or "none")
+    row(
+        "grounded anchors scheduled",
+        f"{anchors.get('scheduled_grounded_anchor_count', 0)} of {anchors.get('grounded_anchor_count', 0)}"
+        f" ({'; '.join(anchors.get('scheduled_grounded_anchor_names') or []) or 'none'})",
+    )
 
     hygiene = report["anchor_hygiene"]
     section("ANCHOR HYGIENE")
@@ -1020,6 +1045,7 @@ def _render(report: dict[str, Any]) -> str:
             f" | replaced: {attempt['replaced_place'] or 'none'} -> {attempt['replacement_place'] or 'none'}"
             f" | after: {attempt['after_distance_meters']} m, {attempt['after_duration_seconds']} s"
             f" | accepted: {'yes' if attempt['accepted'] else 'no'} ({attempt['reason']})"
+            f" | stop protections: {', '.join(attempt.get('stop_protections') or []) or 'none recorded'}"
         )
 
     food = report["food_locality"]
@@ -1107,7 +1133,9 @@ def _render(report: dict[str, Any]) -> str:
                 f" | structural retries: {item['structural_retries']}"
                 f" | transport retries: {item['transport_retries']}"
                 f" | deadline exceeded: {'YES' if item['deadline_exceeded'] else 'no'}"
-                f" | result: {item['result']}",
+                f" | result: {item['result']}"
+                + (f" | transport failure: {item['transport_failure']}" if item.get("transport_failure") else "")
+                + (f" | retry-after: {item['retry_after']}" if item.get("retry_after") else ""),
             )
         concurrency = performance["concurrency"]
         lines.append("")

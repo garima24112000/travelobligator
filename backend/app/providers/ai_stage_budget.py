@@ -33,10 +33,13 @@ from typing import Callable
 
 from app.core import performance
 from app.providers.ai_failure import (
+    TRANSPORT_RATE_LIMIT,
     AIProviderFailureKind,
     classify_ai_provider_exception,
     is_transient_failure,
+    retry_after_seconds,
     safe_ai_failure_message,
+    transport_failure_subtype,
 )
 
 # A retry is only worth starting with at least this much budget left.
@@ -45,6 +48,13 @@ MIN_ATTEMPT_SECONDS = 3.0
 TRANSPORT_RETRY_BACKOFF_SECONDS = 1.0
 # A budget with less than this left is spent.
 _SPENT_SECONDS = 0.25
+# Section 3B: a rate limit's Retry-After is honoured only when the wait fits
+# inside what is left of the stage budget (leaving room for the attempt). A
+# stage whose budget is disabled never waits longer than this.
+MAX_RETRY_AFTER_SECONDS_WITHOUT_BUDGET = 20.0
+RETRY_AFTER_OBEYED = "obeyed"  # waited exactly as long as the provider asked
+RETRY_AFTER_CLAMPED = "clamped"  # asked for less than the ordinary backoff: waited the backoff
+RETRY_AFTER_SKIPPED = "skipped"  # did not fit: no wait, no retry, fallback
 
 RESULT_SUCCESS = "success"
 # The model answered, but the answer was rejected (structure / validation /
@@ -84,6 +94,10 @@ class StageRun:
         self.deadline_exceeded = False
         # True once a request came back with ANY answer (usable or not).
         self.answered = False
+        # Section 3B diagnostics: the subtype of the last transport failure,
+        # and what was done with a rate limit's Retry-After (fixed labels).
+        self.transport_failure: str | None = None
+        self.retry_after: str | None = None
 
     @property
     def max_attempts(self) -> int:
@@ -136,14 +150,37 @@ class StageRun:
             # The request was cut short by the stage budget itself.
             self.deadline_exceeded = True
             return False
+        # Section 3B: which kind of transport failure this was (the last one
+        # of the stage is what is reported). Diagnostic label only.
+        self.transport_failure = transport_failure_subtype(exc) or self.transport_failure
         if not is_transient_failure(exc):
             return False
         if self.transport_retries >= self._transport_allowed or self.attempts >= self.max_attempts:
             return False
-        if not self._room_for_retry(after_pause=TRANSPORT_RETRY_BACKOFF_SECONDS):
+
+        pause = TRANSPORT_RETRY_BACKOFF_SECONDS
+        retry_after = (
+            retry_after_seconds(exc) if self.transport_failure == TRANSPORT_RATE_LIMIT else None
+        )
+        if retry_after is not None:
+            # The provider said when to come back. Retrying sooner would only
+            # be refused again, so the wait is never shorter than asked (and
+            # never shorter than the ordinary backoff); a wait that does not
+            # fit -- inside the stage budget, or under the fixed ceiling when
+            # the stage has none -- is not started at all: the stage ends
+            # now and the deterministic fallback takes over.
+            pause = max(retry_after, TRANSPORT_RETRY_BACKOFF_SECONDS)
+            fits = self._room_for_retry(after_pause=pause) and (
+                self._budget is not None or pause <= MAX_RETRY_AFTER_SECONDS_WITHOUT_BUDGET
+            )
+            if not fits:
+                self.retry_after = RETRY_AFTER_SKIPPED
+                return False
+            self.retry_after = RETRY_AFTER_OBEYED if pause == retry_after else RETRY_AFTER_CLAMPED
+        elif not self._room_for_retry(after_pause=pause):
             self.deadline_exceeded = True
             return False
-        self._sleep(TRANSPORT_RETRY_BACKOFF_SECONDS)
+        self._sleep(pause)
         self.transport_retries += 1
         return True
 
@@ -170,4 +207,6 @@ class StageRun:
             transport_retries=self.transport_retries,
             deadline_exceeded=self.deadline_exceeded,
             result=result,
+            transport_failure=self.transport_failure,
+            retry_after=self.retry_after,
         )

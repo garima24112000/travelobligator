@@ -34,7 +34,8 @@ def requested_interests(planning_state: PlanningState) -> list[str]:
     return taxonomy.canonical_interests(terms)
 
 
-def _valid_food_suggestion(day: DailyPlan, suggestion: RestaurantSuggestion) -> bool:
+def valid_food_suggestion(day: DailyPlan, suggestion: RestaurantSuggestion) -> bool:
+    """A nearby food suggestion that counts as food evidence for `day`."""
     if not suggestion.source or suggestion.coordinates is None:
         return False
     classification = taxonomy.classify_place(None, suggestion.category)
@@ -57,7 +58,7 @@ def final_food_evidence(planning_state: PlanningState) -> list[str]:
         suggestion.name
         for day in plan.daily_plans
         for suggestion in day.restaurant_suggestions
-        if _valid_food_suggestion(day, suggestion)
+        if valid_food_suggestion(day, suggestion)
     ]
 
 

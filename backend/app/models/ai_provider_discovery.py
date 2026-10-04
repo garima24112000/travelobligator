@@ -42,6 +42,10 @@ class AIProviderDiscoveryAttemptStatus(str, Enum):
     # `match`, so neither can ever be promoted.
     CATEGORY_MISMATCH = "grounding_category_mismatch"
     DUPLICATE_ANCHOR = "duplicate_grounded_anchor"
+    # Section 3B. The provider returned a place, but its record failed the
+    # grounding contract's own validation. Only that one candidate is
+    # rejected; it carries no `match` and the remaining proposals proceed.
+    CANDIDATE_VALIDATION_REJECTED = "candidate_validation_rejected"
 
 
 class AIProviderDiscoveryAttempt(BaseModel):

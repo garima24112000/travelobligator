@@ -466,11 +466,13 @@ def test_ai_candidate_node_live_enabled_discovery_failure_is_safe(
     result = node(state)
 
     # apply_discovery_to_state swallows the exception -- node still
-    # "succeeds" (it never crashes generation), but no batch is stored and
-    # promotion has nothing to promote (ai_candidate_proposal_batch stays
-    # None so apply_promotion still runs but reports "no_candidate_data").
+    # "succeeds" (it never crashes generation) and promotion has nothing to
+    # promote. Section 3B: the attempted step is recorded as an explicit
+    # rejected result with no proposal, never left looking as if it had not run.
     assert "failed_nodes" not in result
-    assert result["planning_state"].ai_candidate_proposal_batch is None
+    batch = result["planning_state"].ai_candidate_proposal_batch
+    assert batch is not None and batch.result.status.value == "rejected"
+    assert batch.result.failure_kind.value == "internal_error" and batch.result.proposals == []
 
 
 # ---------------------------------------------------------------------------

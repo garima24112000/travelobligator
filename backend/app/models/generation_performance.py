@@ -25,6 +25,12 @@ class LLMStagePerformance(BaseModel):
     # (no usable answer). For both of the latter the pipeline's
     # deterministic fallback was used.
     result: str | None = None
+    # Section 3B: the kind of the stage's last transport failure
+    # (`rate_limit` | `timeout` | `network` | `server_error` |
+    # `other_transport`), and what was done with a rate limit's Retry-After
+    # (`obeyed` | `clamped` | `skipped`). None when not applicable.
+    transport_failure: str | None = None
+    retry_after: str | None = None
 
 
 class GenerationPerformanceReport(BaseModel):

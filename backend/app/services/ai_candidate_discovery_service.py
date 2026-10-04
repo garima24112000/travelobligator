@@ -3,14 +3,18 @@ from __future__ import annotations
 import logging
 import time
 from datetime import datetime, timezone
+from typing import Any
 
 from pydantic import BaseModel, Field
 
 from app.models.ai_candidate_proposal import (
     AICandidateProposal,
     AICandidateProposalBatch,
+    AICandidateProposalFailureKind,
+    AICandidateProposalGuardrailReport,
     AICandidateProposalRequest,
     AICandidateProposalResult,
+    AICandidateProposalStatus,
     AICandidateProposalTask,
 )
 from app.models.ai_provider_discovery import AIProviderDiscoveryResult
@@ -328,6 +332,42 @@ def anchor_proposal_count(planning_state: PlanningState) -> int:
     return max(_MIN_ANCHOR_PROPOSALS, min(target + _ANCHOR_PROPOSAL_MARGIN, _MAX_ANCHOR_PROPOSALS))
 
 
+def _record_failed_discovery_attempt(
+    planning_state: PlanningState,
+    discovery_service: Any,
+    task: AICandidateProposalTask,
+    max_candidates: int,
+    provider_name: str,
+) -> None:
+    """Section 3B: a discovery step that was attempted and failed
+    unexpectedly is stored as an explicit rejected proposal result
+    (`failure_kind=internal_error`), never left looking as if it had not
+    run. Carries a fixed sentence only -- no exception text, prompt or
+    model output -- and no proposal, so nothing can be grounded from it.
+    Best effort: if even the request cannot be built the state is left as
+    it was."""
+    try:
+        builder = getattr(discovery_service, "proposal_request_builder", None) or AICandidateProposalRequestBuilder()
+        request = builder.build_request(planning_state, task=task, max_candidates=max_candidates)
+        planning_state.ai_candidate_proposal_batch = AICandidateProposalBatch(
+            request=request,
+            result=AICandidateProposalResult(
+                task=request.task,
+                status=AICandidateProposalStatus.REJECTED,
+                guardrail_report=AICandidateProposalGuardrailReport(
+                    passed=False,
+                    blocked_reasons=["AI candidate discovery failed unexpectedly; no anchor was used."],
+                    checked_fields=["discovery"],
+                ),
+                provider_name=provider_name,
+                confidence=0.0,
+                failure_kind=AICandidateProposalFailureKind.INTERNAL_ERROR,
+            ),
+        )
+    except Exception:
+        logger.warning("Could not record the failed AI candidate discovery attempt.", exc_info=True)
+
+
 def apply_discovery_to_state(
     planning_state: PlanningState,
     discovery_service: AICandidateDiscoveryService,
@@ -390,6 +430,7 @@ def apply_discovery_to_state(
                 "duration_ms": round(duration_ms, 3),
             },
         )
+        _record_failed_discovery_attempt(planning_state, discovery_service, task, max_candidates, provider_name)
         return planning_state
 
     duration_ms = (time.monotonic() - started_at) * 1000

@@ -245,7 +245,10 @@ def test_ai_candidate_proposal_exception_logs_safe_warning_no_secret_leak(
 
     planning_state = _run_through_destination_context(orchestrator)  # must not raise
 
-    assert planning_state.ai_candidate_proposal_batch is None
+    # Section 3B: recorded as an explicit rejected result, never the exception text.
+    batch = planning_state.ai_candidate_proposal_batch
+    assert batch is not None and batch.result.failure_kind.value == "internal_error"
+    assert "sk-should-not-leak" not in batch.model_dump_json()
     matching = _records_with(capture, stage="ai_candidate_proposal", status="failed")
     assert len(matching) == 1
     record = matching[0]

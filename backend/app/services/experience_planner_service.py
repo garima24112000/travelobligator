@@ -55,6 +55,7 @@ from app.services.day_order_heuristics import (
 )
 from app.services.day_rationale import deterministic_day_summary, finalize_day_explanations
 from app.services.entity_collisions import SUSPECT_COLLISION_KEY
+from app.services.grounded_anchors import grounded_anchor_place_ids
 from app.utils.geo import haversine_distance_km
 
 logger = logging.getLogger(__name__)
@@ -752,9 +753,20 @@ class ExperiencePlannerService(PlanningStageService):
         )
         used_ai_reasoning = ai_day_groups is not None
         canonical_interests = taxonomy.canonical_interests(interest_terms)
+        # Section 3B: a promoted anchor is ranked on its OWN quality score
+        # (computed when it was grounded), like every broad-pool candidate.
+        profile_scores = {**attraction_quality_lookup, **_promoted_quality_scores(promoted_pois, quality_report)}
         profiles = {
-            id(poi): _candidate_profile(poi, attraction_quality_lookup.get(id(poi)), canonical_interests)
+            id(poi): _candidate_profile(poi, profile_scores.get(id(poi)), canonical_interests)
             for poi in scheduling_candidate_pois
+        }
+        # Grounded semantic anchors in the scheduling pool, whether they came
+        # through a targeted lookup or were already in the broad pool.
+        anchor_place_ids = grounded_anchor_place_ids(planning_state)
+        anchor_ids = {
+            id(poi)
+            for poi in scheduling_candidate_pois
+            if poi.get("promoted_from_ai") or str(poi.get("place_id") or "") in anchor_place_ids
         }
         if ai_day_groups is not None:
             # Section 202B.2 (Task 22): a valid AI grouping may still leave
@@ -784,6 +796,8 @@ class ExperiencePlannerService(PlanningStageService):
                     canonical_interests,
                     must_visit_ids,
                     plan_class_cap=plan_class_cap if get_settings().schedule_diversity_enabled else None,
+                    anchor_ids=anchor_ids,
+                    anchor_seed_count=anchor_seed_count(num_days, num_days * max_per_day),
                 )
             # Section 203C.2B (canary correction): the selected set is grouped
             # into days by geography (balanced spatial clustering), not by
@@ -837,6 +851,23 @@ class ExperiencePlannerService(PlanningStageService):
                 justified=diversity.justified_classes(interest_terms),
                 enabled=get_settings().schedule_diversity_enabled,
             )
+
+        # Section 3B: requested-interest coverage. Whoever chose the days, a
+        # requested interest that no scheduled stop serves gets ONE bounded,
+        # deterministic attempt: a viable, compatible, well placed unused
+        # candidate takes the place of the weakest replaceable stop. With no
+        # such candidate the plan is left as it is and the interest stays
+        # honestly uncovered.
+        day_groups = _cover_requested_interests(
+            day_groups,
+            scheduling_candidate_pois,
+            profiles,
+            must_visit_ids,
+            anchor_ids,
+            canonical_interests,
+            markets_requested=diversity.markets_explicitly_requested(interest_terms),
+            justified=diversity.justified_classes(interest_terms),
+        )
 
         reasoning_result = planning_state.ai_itinerary_reasoning_result
         logger.info(
@@ -1279,6 +1310,32 @@ _OUTLIER_MEDIAN_FACTOR = 2.5
 _CLUSTER_CELL_DEGREES = 0.02  # ~2 km grid for structurally tagged sub-feature complexes
 
 
+# Section 3B: grounded-anchor seeds. One seed per day, never more than half
+# of the plan's slots, so the anchors shape the plan without filling it; a
+# seed must sit in one of the two top quality tiers.
+_ANCHOR_SEED_MIN_TIER_RANK = 3
+
+
+def anchor_seed_count(num_days: int, capacity: int) -> int:
+    return max(0, min(num_days, capacity // 2))
+
+
+def _promoted_quality_scores(
+    promoted_pois: list[dict[str, Any]], quality_report: Any
+) -> dict[int, CandidateQualityScore]:
+    """`{id(poi): score}` for each promoted anchor whose quality score was
+    recorded when it was grounded (`ai_directed_scores`, joined by provider
+    place id). An anchor without one keeps the neutral profile it had."""
+    directed = {
+        score.candidate_id: score for score in (quality_report.ai_directed_scores if quality_report else [])
+    }
+    return {
+        id(poi): directed[str(poi["provider_place_id"])]
+        for poi in promoted_pois
+        if poi.get("provider_place_id") and str(poi["provider_place_id"]) in directed
+    }
+
+
 @dataclass
 class _CandidateProfile:
     score: float
@@ -1341,9 +1398,22 @@ def _select_diverse_scheduling_set(
     canonical_interests: list[str],
     must_visit_ids: set[int],
     plan_class_cap: Any = None,
+    anchor_ids: set[int] | frozenset[int] = frozenset(),
+    anchor_seed_count: int = 0,
 ) -> list[dict[str, Any]]:
     """Deterministically chooses up to `capacity` candidates from the
     quality-eligible `pool`.
+
+    Section 3B (grounded-anchor seeds): right after the must-visits, up to
+    `anchor_seed_count` of the best-ranked COMPATIBLE grounded anchors
+    (`anchor_ids`) are taken as seeds, so the semantic anchor layer shapes
+    the plan instead of competing slot by slot with a long tail of equally
+    scored broad candidates. Compatible means: a primary/good quality tier,
+    not a diluted or low-value place, serving a requested interest when any
+    were requested, and inside the plan-level class cap. A seed is still
+    subject to the isolated-outlier replacement below, so an anchor that
+    would force unreasonable travel is not kept for its prominence. With no
+    anchors (or a count of 0) selection is exactly what it was.
 
     Section 203C.2B (schedule diversity): `plan_class_cap(coarse_class)`,
     when given, is the most stops of one coarse attraction class the whole
@@ -1414,6 +1484,58 @@ def _select_diverse_scheduling_set(
             break
         if id(poi) in must_visit_ids:
             take(poi)
+
+    def class_at_cap(poi: dict[str, Any]) -> bool:
+        if plan_class_cap is None:
+            return False
+        coarse = diversity.coarse_class(profiles[id(poi)].primary)
+        cap = plan_class_cap(coarse)
+        return cap is not None and (
+            [diversity.coarse_class(profiles[id(p)].primary) for p in selected].count(coarse) >= cap
+        )
+
+    # A seed must lie where the destination's candidates are: an anchor far
+    # outside the pool's own spread (the isolated-outlier rule, measured
+    # against the whole pool) would force a long transfer and is not seeded.
+    pool_points = [point for point in (_poi_coordinates(p) for p in ranked) if point is not None]
+    pool_centre: GeoPoint | None = None
+    seed_reach_km = 0.0
+    if anchor_seed_count > 0 and anchor_ids and pool_points:
+        pool_centre = GeoPoint(
+            lat=statistics.median(point.lat for point in pool_points),
+            lng=statistics.median(point.lng for point in pool_points),
+        )
+        seed_reach_km = max(
+            _OUTLIER_MIN_KM,
+            _OUTLIER_MEDIAN_FACTOR
+            * statistics.median((haversine_distance_km(pool_centre, point) or 0.0) for point in pool_points),
+        )
+
+    def within_seed_reach(poi: dict[str, Any]) -> bool:
+        point = _poi_coordinates(poi)
+        return (
+            pool_centre is not None
+            and point is not None
+            and (haversine_distance_km(pool_centre, point) or 0.0) <= seed_reach_km
+        )
+
+    seeds_taken = 0
+    for poi in ranked:
+        if seeds_taken >= anchor_seed_count or len(selected) >= capacity:
+            break
+        if id(poi) not in anchor_ids or id(poi) in selected_ids:
+            continue
+        profile = profiles[id(poi)]
+        if (
+            profile.tier_rank < _ANCHOR_SEED_MIN_TIER_RANK
+            or is_diluted(poi)
+            or (canonical_interests and not profile.matched_interests)
+            or class_at_cap(poi)
+            or not within_seed_reach(poi)
+        ):
+            continue
+        take(poi)
+        seeds_taken += 1
 
     for interest in canonical_interests:
         if len(selected) >= capacity:
@@ -1689,6 +1811,113 @@ def _top_up_underfilled_days(
             pick = 0
         filled[day_index].append(unused.pop(pick))
     return filled
+
+
+_INTEREST_COVER_MAX_CANDIDATES = 10
+_FOOD_INTEREST = "food"
+
+
+def _cover_requested_interests(
+    day_groups: list[list[dict[str, Any]]],
+    pool: list[dict[str, Any]],
+    profiles: dict[int, _CandidateProfile],
+    must_visit_ids: set[int],
+    anchor_ids: set[int],
+    canonical_interests: list[str],
+    *,
+    markets_requested: bool,
+    justified: frozenset[str] = frozenset(),
+) -> list[list[dict[str, Any]]]:
+    """Section 3B: one bounded pass so each requested interest is served by
+    a scheduled stop when a viable compatible candidate exists.
+
+    For every requested interest no scheduled stop serves (food excepted:
+    it is covered by real nearby food and is never a reason to schedule a
+    market), the best-ranked unused matching candidates are tried in order
+    (at most `_INTEREST_COVER_MAX_CANDIDATES`). A candidate replaces the
+    weakest stop that may be replaced:
+
+      * never a must-visit or a grounded anchor;
+      * never the only stop serving another requested interest;
+      * at most one quality tier above the candidate;
+      * in a day the candidate is near (the diversity pass's own bounds);
+      * without making that day more concentrated in one class, and never
+        next to an unresolved suspected duplicate.
+
+    Nothing is added, dropped or invented: a stop is exchanged for a
+    provider-grounded candidate of the same pool, or the plan is left
+    exactly as it is and the interest stays honestly uncovered.
+    """
+    days = [list(group) for group in day_groups]
+
+    def scheduled() -> list[dict[str, Any]]:
+        return [poi for group in days for poi in group]
+
+    def cls(poi: dict[str, Any]) -> str:
+        return diversity.coarse_class(profiles[id(poi)].primary)
+
+    def excess(classes: list[str]) -> int:
+        return sum(diversity.relievable_excess(classes, markets_requested, justified).values())
+
+    for interest in canonical_interests:
+        if interest == _FOOD_INTEREST:
+            continue
+        current = scheduled()
+        if any(interest in profiles[id(poi)].matched_interests for poi in current):
+            continue
+        used = {id(poi) for poi in current}
+        candidates = sorted(
+            (
+                poi
+                for poi in pool
+                if id(poi) not in used
+                and interest in profiles[id(poi)].matched_interests
+                and not profiles[id(poi)].low_value
+                and _poi_coordinates(poi) is not None
+                and not _suspected_duplicate_of_any(poi, current)
+            ),
+            key=lambda poi: (profiles[id(poi)].tier_rank, profiles[id(poi)].score),
+            reverse=True,  # stable: pool order breaks ties
+        )[:_INTEREST_COVER_MAX_CANDIDATES]
+
+        for candidate in candidates:
+            candidate_profile = profiles[id(candidate)]
+            candidate_point = _poi_coordinates(candidate)
+            targets: list[tuple[tuple[int, float, float], int, int]] = []
+            for day_index, day in enumerate(days):
+                for stop_index, stop in enumerate(day):
+                    stop_profile = profiles[id(stop)]
+                    if id(stop) in must_visit_ids or id(stop) in anchor_ids:
+                        continue
+                    if stop_profile.tier_rank > candidate_profile.tier_rank + _DIVERSITY_MAX_TIER_DROP:
+                        continue
+                    others = [poi for poi in current if poi is not stop]
+                    still_covered = {name for poi in others for name in profiles[id(poi)].matched_interests}
+                    if set(stop_profile.matched_interests) - still_covered:
+                        continue
+                    rest = [poi for poi in day if poi is not stop]
+                    rest_classes = [cls(poi) for poi in rest]
+                    if excess([*rest_classes, cls(candidate)]) > excess([*rest_classes, cls(stop)]):
+                        continue
+                    points = [point for point in (_poi_coordinates(poi) for poi in rest) if point is not None]
+                    if points:
+                        centre = GeoPoint(
+                            lat=sum(point.lat for point in points) / len(points),
+                            lng=sum(point.lng for point in points) / len(points),
+                        )
+                        stop_point = _poi_coordinates(stop)
+                        stop_km = (haversine_distance_km(centre, stop_point) or 0.0) if stop_point else 0.0
+                        candidate_km = haversine_distance_km(centre, candidate_point) or 0.0
+                        if candidate_km > max(_DIVERSITY_NEAR_KM, _DIVERSITY_DISTANCE_FACTOR * stop_km):
+                            continue
+                    else:
+                        candidate_km = 0.0
+                    targets.append(((stop_profile.tier_rank, stop_profile.score, candidate_km), day_index, stop_index))
+            if targets:
+                _, day_index, stop_index = min(targets)
+                days[day_index][stop_index] = candidate
+                break
+    return days
 
 
 # Diversity repair bounds. A replacement may sit at most one quality tier
@@ -2282,6 +2511,7 @@ def unused_replacement_options(planning_state: PlanningState) -> list[Replacemen
     )
     promoted_pois, _ = _build_promoted_candidate_pois(planning_state, candidate_pois)
     pool = _select_candidates_by_quality(candidate_pois, quality_lookup) + promoted_pois
+    quality_lookup = {**quality_lookup, **_promoted_quality_scores(promoted_pois, quality_report)}
 
     traveler_profile = planning_state.traveler_profile
     interest_terms = (

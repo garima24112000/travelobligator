@@ -163,6 +163,8 @@ class PerformanceRecorder:
         transport_retries: int,
         deadline_exceeded: bool,
         result: str,
+        transport_failure: str | None = None,
+        retry_after: str | None = None,
     ) -> None:
         with self._lock:
             entry = self._llm_stages.setdefault(
@@ -175,6 +177,11 @@ class PerformanceRecorder:
                     "result": result,
                 },
             )
+            # Present only when there is something to report.
+            if transport_failure:
+                entry["transport_failure"] = transport_failure
+            if retry_after:
+                entry["retry_after"] = retry_after
             entry["attempts"] += attempts
             entry["structural_retries"] += structural_retries
             entry["transport_retries"] += transport_retries
@@ -253,6 +260,10 @@ def note_batch(operation: str, size: int) -> None:
 
 
 _LLM_RESULTS = frozenset({"success", "fallback", "failed"})
+# Section 3B: the only labels a stage may report (see `providers/ai_failure`
+# and `providers/ai_stage_budget`).
+_LLM_TRANSPORT_FAILURES = frozenset({"rate_limit", "timeout", "network", "server_error", "other_transport"})
+_LLM_RETRY_AFTER = frozenset({"obeyed", "clamped", "skipped"})
 
 
 def note_llm_stage(
@@ -263,14 +274,20 @@ def note_llm_stage(
     transport_retries: int,
     deadline_exceeded: bool,
     result: str,
+    transport_failure: str | None = None,
+    retry_after: str | None = None,
 ) -> None:
     """What one model stage did: request attempts, the retries among them,
-    whether its total budget ran out, and how it ended."""
+    whether its total budget ran out, and how it ended -- plus, as fixed
+    labels only, the kind of its last transport failure and what was done
+    with a rate limit's Retry-After (anything else is dropped)."""
     try:
         recorder = _ACTIVE.get()
         if recorder is not None and _safe_key(stage) is not None and result in _LLM_RESULTS:
             recorder.note_llm_stage(
-                stage, int(attempts), int(structural_retries), int(transport_retries), bool(deadline_exceeded), result
+                stage, int(attempts), int(structural_retries), int(transport_retries), bool(deadline_exceeded), result,
+                transport_failure if transport_failure in _LLM_TRANSPORT_FAILURES else None,
+                retry_after if retry_after in _LLM_RETRY_AFTER else None,
             )
     except Exception:  # noqa: BLE001 - diagnostics never break a generation
         pass

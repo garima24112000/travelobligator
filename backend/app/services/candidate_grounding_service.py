@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import re
 
+from pydantic import ValidationError
+
 from app.models.ai_candidate_proposal import AICandidateProposal, AICandidateProposalType
 from app.models.candidate_grounding import (
     CandidateGroundingConfidenceTier,
@@ -115,9 +117,22 @@ class CandidateGroundingService:
         rejected_proposals: list[RejectedCandidateProposal] = []
 
         for proposal in request.proposals:
-            grounded, rejected = self._ground_one(
-                proposal, request.provider_candidates, request.ai_directed_matches
-            )
+            # Section 3B: a validation rejection while grounding ONE proposal
+            # rejects that proposal and the pass continues. Any other error
+            # still surfaces.
+            try:
+                grounded, rejected = self._ground_one(
+                    proposal, request.provider_candidates, request.ai_directed_matches
+                )
+            except ValidationError:
+                grounded, rejected = None, RejectedCandidateProposal(
+                    proposal_id=proposal.proposal_id,
+                    # an identifier, never text that could fail validation again
+                    candidate_name=proposal.proposal_id,
+                    candidate_type=proposal.candidate_type,
+                    reject_reason=CandidateGroundingRejectReason.CANDIDATE_VALIDATION_FAILED,
+                    message="The matched provider record failed candidate validation, so it was not grounded.",
+                )
             if grounded is not None:
                 grounded_candidates.append(grounded)
             else:

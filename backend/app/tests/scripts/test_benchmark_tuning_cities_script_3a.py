@@ -73,7 +73,11 @@ def _fake_report(**overrides: Any) -> dict[str, Any]:
             "T": 9, "R": 8, "H": 21, "broad_candidate_count": 120, "viable_meaningful_candidate_count": 40,
             "inventory_status": "healthy",
         },
-        "anchors": {"proposal_status": "completed", "failure_kind": None, "proposed": 12, "grounded": 9, "promoted": 7},
+        "anchors": {
+            "proposal_status": "completed", "failure_kind": None, "proposed": 12, "grounded": 9, "promoted": 7,
+            "grounded_anchor_count": 7, "scheduled_grounded_anchor_count": 3, "grounded_anchor_schedule_ratio": 0.429,
+        },
+        "route_repair": [],
         "final_itinerary": [
             {"day": number, "attractions": copy.deepcopy(stops), "warnings": []} for number in (1, 2, 3)
         ],
@@ -276,9 +280,14 @@ def test_metrics_extraction_from_a_fake_canary_result() -> None:
     assert record["quality"] == {
         "meaningful_scheduled_stops": 9, "target_attainment_ratio": 1.0, "empty_days": [], "duplicate_count": 0,
         "low_value_scheduled_count": 0, "interest_coverage": {"history": True},
+        "requested_interests_uncovered": [],
     }
     assert record["factual_safety"] == {"fabricated_or_unverified_scheduled_identities": 0, "unsupported_factual_claims": 0}
-    assert record["anchors"] == {"proposed": 12, "grounded": 9, "promoted": 7, "failure_kind": None}
+    assert record["anchors"] == {
+        "proposed": 12, "grounded": 9, "promoted": 7, "failure_kind": None, "grounded_anchor_count": 7,
+        "scheduled_grounded_anchor_count": 3, "grounded_anchor_schedule_ratio": 0.429, "transport_failure": None,
+    }
+    assert record["route_repair_failure_reasons"] == []
     assert record["routing"] == {
         "required_legs": 6, "factual_routed_legs": 6, "coverage_percentage": 100.0, "walk_legs": 5,
         "vehicle_transfer_legs": 1, "unresolved_movement_data_failures": 0, "failures_by_status": {},
@@ -419,6 +428,101 @@ def test_boundaries_and_generic_names_use_only_the_pipelines_own_signals() -> No
     # generic tooling: the rule knows no place and no city
     source = _SCRIPT_PATH.read_text().split("DEFAULT_SCENARIO", 1)[1]
     assert not any(city.split(",")[0] in source.replace('"origin": "New York"', "") for city in bench.CANONICAL_CITIES)
+
+
+def test_an_uncovered_requested_interest_is_flagged_with_its_name(tmp_path: Path) -> None:
+    coverage = {"architecture": False, "history": True, "food": True}
+    record = _metrics(quality__interest_coverage=coverage)
+    assert record["quality"]["requested_interests_uncovered"] == ["architecture"]
+    assert record["manual_review_flags"] == ["UNCOVERED_REQUESTED_INTEREST"]
+
+    # a passing city with an uncovered interest is never a clean manual review
+    city = bench.CANONICAL_CITIES[0]
+    summary = _run(tmp_path, [city], lambda _: _fake_report(quality__interest_coverage=coverage))
+    assert summary["cities"][0]["acceptance"]["passed"] is True
+    assert summary["aggregate"]["cities_flagged_for_manual_review"] == [city]
+    markdown = (tmp_path / "summary.md").read_text()
+    assert f"- **{city}**: UNCOVERED_REQUESTED_INTEREST" in markdown
+    assert "  - requested interests not covered: architecture" in markdown
+    row = next(csv.DictReader(io.StringIO((tmp_path / "summary.csv").read_text())))
+    assert row["requested_interests_uncovered"] == "architecture"
+
+
+@pytest.mark.parametrize(
+    ("grounded", "scheduled", "days", "flagged"),
+    [
+        (6, 0, 3, True),  # several grounded anchors, none scheduled
+        (4, 1, 3, True),  # the threshold itself: 4 grounded, at most 1 scheduled
+        (4, 2, 3, False),  # more than one reached the schedule
+        (3, 0, 3, False),  # too few grounded anchors to call it low utilization
+        (0, 0, 3, False),  # no anchors at all (e.g. the proposal failed) is a different finding
+        (6, 1, 1, False),  # a one-day plan seeds a single anchor by design
+    ],
+)
+def test_low_grounded_anchor_utilization_needs_several_anchors_and_almost_none_scheduled(
+    grounded: int, scheduled: int, days: int, flagged: bool
+) -> None:
+    assert (bench.LOW_ANCHOR_UTILIZATION_MIN_GROUNDED, bench.LOW_ANCHOR_UTILIZATION_MAX_SCHEDULED) == (4, 1)
+    record = bench.extract_metrics(
+        _fake_report(
+            anchors__grounded_anchor_count=grounded, anchors__scheduled_grounded_anchor_count=scheduled,
+            anchors__grounded_anchor_schedule_ratio=round(scheduled / grounded, 3) if grounded else None,
+        ),
+        city=bench.CANONICAL_CITIES[0], scenario={**bench.DEFAULT_SCENARIO, "days": days},
+        run_timestamp="2027-03-01T00:00:00Z",
+    )
+    assert record["manual_review_flags"] == (["LOW_GROUNDED_ANCHOR_UTILIZATION"] if flagged else [])
+
+
+def test_route_repair_failure_reasons_and_anchor_transport_subtype_are_reported(tmp_path: Path) -> None:
+    report = _fake_report(
+        route_repair=[
+            {"day": 2, "accepted": False, "reason": "no_replaceable_stop",
+             "stop_protections": ["must_visit", "grounded_anchor", "user_lock"]},
+            {"day": 3, "accepted": True, "reason": "accepted", "stop_protections": ["replaceable"] * 3},
+        ],
+        performance__llm_stages=[
+            {"label": "Groq anchor", "attempts": 2, "deadline_exceeded": False, "transport_failure": "rate_limit",
+             "retry_after": "skipped"},
+        ],
+    )
+    city = bench.CANONICAL_CITIES[0]
+    record = bench.extract_metrics(
+        report, city=city, scenario=bench.DEFAULT_SCENARIO, run_timestamp="2027-03-01T00:00:00Z"
+    )
+    assert record["route_repair_failure_reasons"] == [
+        {"day": 2, "reason": "no_replaceable_stop", "stop_protections": ["must_visit", "grounded_anchor", "user_lock"]}
+    ]
+    assert record["anchors"]["transport_failure"] == "rate_limit"
+
+    _run(tmp_path, [city], lambda _: _fake_report(**{"quality__empty_days": [1]}) | {
+        "route_repair": report["route_repair"], "performance": report["performance"],
+    })
+    markdown = (tmp_path / "summary.md").read_text()
+    assert "  - route repair, day 2: no_replaceable_stop (stops: must_visit; grounded_anchor; user_lock)" in markdown
+    assert "  - anchor proposal transport failure: rate_limit" in markdown
+    row = next(csv.DictReader(io.StringIO((tmp_path / "summary.csv").read_text())))
+    assert row["route_repair_failure_reasons"] == "day 2: no_replaceable_stop"
+    assert row["anchor_transport_failure"] == "rate_limit" and row["grounded_anchor_count"] == "7"
+
+
+def test_results_written_before_the_3b_diagnostics_still_summarise(tmp_path: Path) -> None:
+    city = bench.CANONICAL_CITIES[0]
+    _run(tmp_path, [city], lambda _: _fake_report())
+    path = tmp_path / "cities" / f"{bench.city_slug(city)}.json"
+    stored = json.loads(path.read_text())
+    for key in ("grounded_anchor_count", "scheduled_grounded_anchor_count", "grounded_anchor_schedule_ratio",
+                "transport_failure"):
+        del stored["metrics"]["anchors"][key]
+    del stored["metrics"]["quality"]["requested_interests_uncovered"]
+    del stored["metrics"]["route_repair_failure_reasons"]
+    path.write_text(json.dumps(stored))
+
+    summary = bench.write_summary(
+        tmp_path, scenario=bench.DEFAULT_SCENARIO, start_date=_START, generated_at="2027-03-01T00:00:00Z"
+    )
+    assert summary["aggregate"]["acceptance_pass_count"] == 1
+    assert next(csv.DictReader(io.StringIO((tmp_path / "summary.csv").read_text())))["grounded_anchor_count"] == ""
 
 
 def test_a_narrator_fallback_and_a_reasoning_fallback_are_counted_separately() -> None:

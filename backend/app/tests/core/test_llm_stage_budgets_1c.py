@@ -416,6 +416,7 @@ def test_repair_budget_exhaustion_leaves_the_existing_top_up_path(clock: _Clock,
     assert result.failure_kind == "deadline_exceeded"
     assert recorder.snapshot()["llm_stages"]["groq_repair"] == {
         "attempts": 1, "structural_retries": 0, "transport_retries": 0, "deadline_exceeded": True, "result": "failed",
+        "transport_failure": "server_error",  # Section 3B: the kind of the failed request
     }
 
 
@@ -603,6 +604,7 @@ def test_old_reports_states_and_configuration_stay_compatible() -> None:
     assert old.llm_stages == {} and old.process_peak_geoapify_concurrency == 0
     assert LLMStagePerformance().model_dump() == {
         "attempts": 0, "structural_retries": 0, "transport_retries": 0, "deadline_exceeded": False, "result": None,
+        "transport_failure": None, "retry_after": None,  # Section 3B diagnostics, optional
     }
     # results stored before `failure_kind` existed
     assert ItineraryNarrativeReport.model_validate({"status": "failed", "message": "x"}).failure_kind is None

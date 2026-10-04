@@ -10,6 +10,7 @@ from app.models.ai_candidate_proposal import (
     AICandidateVerificationRequirement,
 )
 from app.models.common import DataStatus, GeoPoint
+from app.models.forbidden_text import compile_forbidden_patterns, find_forbidden_pattern
 
 # Contract-only models for a future candidate grounding/verification layer
 # (Step 158A, itinerary-generator-build-spec.md Stage 6 "Grounding &
@@ -59,12 +60,14 @@ _FORBIDDEN_TEXT_PATTERNS: tuple[str, ...] = (
 )
 
 
+# Section 3B: matched as a whole word/phrase, never a raw substring -- a
+# provider's real place name ("Preservation Hall") is not a "reservation"
+# claim. See `app.models.forbidden_text`.
+_FORBIDDEN_TEXT_REGEXES = compile_forbidden_patterns(_FORBIDDEN_TEXT_PATTERNS)
+
+
 def _find_forbidden_pattern(text: str) -> str | None:
-    lowered = text.lower()
-    for pattern in _FORBIDDEN_TEXT_PATTERNS:
-        if pattern in lowered:
-            return pattern
-    return None
+    return find_forbidden_pattern(text, _FORBIDDEN_TEXT_REGEXES)
 
 
 def _require_non_blank(value: str, field_name: str) -> str:
@@ -120,6 +123,9 @@ class CandidateGroundingRejectReason(str, Enum):
     # found), it is "there is nothing here yet for a future provider
     # search (Section 192) to resolve."
     DISCOVERY_QUERY_AWAITING_PROVIDER_SEARCH = "discovery_query_awaiting_provider_search"
+    # Section 3B: the matched provider record failed this contract's own
+    # validation. Only that one proposal is rejected.
+    CANDIDATE_VALIDATION_FAILED = "candidate_validation_failed"
 
 
 class ProviderCandidateForGrounding(BaseModel):

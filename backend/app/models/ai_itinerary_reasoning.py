@@ -4,6 +4,8 @@ from enum import Enum
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
 
+from app.models.forbidden_text import compile_forbidden_patterns, find_forbidden_pattern
+
 from app.models.common import DataStatus, GeoPoint
 
 # Section 193A (docs/14_backend_architecture.md section 141): contract-only
@@ -63,12 +65,13 @@ _FORBIDDEN_TEXT_PATTERNS: tuple[str, ...] = (
 )
 
 
+# Section 3B: matched as a whole word/phrase, never a raw substring (a
+# rationale may name a real place). See `app.models.forbidden_text`.
+_FORBIDDEN_TEXT_REGEXES = compile_forbidden_patterns(_FORBIDDEN_TEXT_PATTERNS)
+
+
 def _find_forbidden_pattern(text: str) -> str | None:
-    lowered = text.lower()
-    for pattern in _FORBIDDEN_TEXT_PATTERNS:
-        if pattern in lowered:
-            return pattern
-    return None
+    return find_forbidden_pattern(text, _FORBIDDEN_TEXT_REGEXES)
 
 
 def _require_non_blank(value: str, field_name: str) -> str:

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from enum import Enum
 
 # Section 202B.1 (Tasks 16-17): one shared, provider-agnostic taxonomy for
@@ -101,6 +103,70 @@ def is_transient_failure(exc: BaseException) -> bool:
         return True
     status = _status_code(exc)
     return kind == AIProviderFailureKind.PROVIDER_ERROR and status is not None and status >= 500
+
+
+# Section 3B: a finer, diagnostic-only label for a failed request -- which
+# kind of transport problem it was. Fixed labels only; decided from the
+# same structured attributes as the classification above, never from
+# message text or a response body.
+TRANSPORT_RATE_LIMIT = "rate_limit"
+TRANSPORT_TIMEOUT = "timeout"
+TRANSPORT_NETWORK = "network"
+TRANSPORT_SERVER_ERROR = "server_error"
+TRANSPORT_OTHER = "other_transport"
+TRANSPORT_FAILURE_SUBTYPES = frozenset(
+    {TRANSPORT_RATE_LIMIT, TRANSPORT_TIMEOUT, TRANSPORT_NETWORK, TRANSPORT_SERVER_ERROR, TRANSPORT_OTHER}
+)
+
+
+def transport_failure_subtype(exc: BaseException) -> str | None:
+    """Which kind of transport failure `exc` is, or None when it is not a
+    transport failure at all (a malformed / schema-rejected model answer is
+    an output problem and is never reported, or retried, as transport)."""
+    kind = classify_ai_provider_exception(exc)
+    if kind == AIProviderFailureKind.MALFORMED_OUTPUT:
+        return None
+    if kind == AIProviderFailureKind.RATE_LIMITED:
+        return TRANSPORT_RATE_LIMIT
+    status = _status_code(exc)
+    type_name = type(exc).__name__
+    if kind == AIProviderFailureKind.TIMEOUT_OR_NETWORK:
+        # A timeout is checked first: the SDK's timeout error is a subclass
+        # of its connection error.
+        timed_out = status in _TIMEOUT_STATUS_CODES or isinstance(exc, TimeoutError) or "Timeout" in type_name
+        return TRANSPORT_TIMEOUT if timed_out else TRANSPORT_NETWORK
+    if status is None:
+        # No HTTP status and not a timeout/connection error: the request
+        # never failed in transit (e.g. a local validation rejection).
+        return None
+    return TRANSPORT_SERVER_ERROR if status >= 500 else TRANSPORT_OTHER
+
+
+def retry_after_seconds(exc: BaseException) -> float | None:
+    """The provider's own Retry-After for a rate-limited request, in
+    seconds, read from the response headers the SDK exposes on the
+    exception (`retry-after-ms`, or `retry-after` as seconds or an HTTP
+    date). None when absent or unreadable. Only the header value is read --
+    never the response body."""
+    headers = getattr(getattr(exc, "response", None), "headers", None)
+    if headers is None:
+        return None
+    try:
+        milliseconds = headers.get("retry-after-ms")
+        if milliseconds is not None:
+            return max(0.0, float(milliseconds) / 1000.0)
+        value = headers.get("retry-after")
+        if value is None:
+            return None
+        try:
+            return max(0.0, float(value))
+        except (TypeError, ValueError):
+            moment = parsedate_to_datetime(str(value))
+            if moment.tzinfo is None:
+                moment = moment.replace(tzinfo=timezone.utc)
+            return max(0.0, (moment - datetime.now(timezone.utc)).total_seconds())
+    except Exception:  # noqa: BLE001 - an unreadable header is simply "no Retry-After"
+        return None
 
 
 def safe_ai_failure_message(provider_label: str, kind: AIProviderFailureKind) -> str:

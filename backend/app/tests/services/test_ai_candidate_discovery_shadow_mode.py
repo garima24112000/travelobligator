@@ -703,5 +703,9 @@ def test_shadow_mode_fails_safe_when_dry_run_raises(monkeypatch: pytest.MonkeyPa
     planning_state = orchestrator.run_traveler_profile_stage(planning_state)
     planning_state = orchestrator.run_destination_context_stage(planning_state)  # must not raise
 
-    assert planning_state.ai_candidate_proposal_batch is None
+    # Section 3B: an attempted step that failed is an explicit rejected
+    # result with no proposal, never left looking as if it had not run.
+    batch = planning_state.ai_candidate_proposal_batch
+    assert batch is not None and batch.result.status.value == "rejected"
+    assert batch.result.failure_kind.value == "internal_error" and batch.result.proposals == []
     assert planning_state.candidate_grounding_batch is None

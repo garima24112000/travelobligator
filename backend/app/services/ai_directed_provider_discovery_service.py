@@ -19,6 +19,8 @@ from app.models.common import ProviderStatus
 from app.models.planning_state import PlanningState
 from typing import Any
 
+from pydantic import ValidationError
+
 from app.providers.gateway import ProviderGateway, provider_gateway
 from app.services.anchor_category_compatibility import CATEGORY_MISMATCH_REASON, anchor_category_compatible
 from app.utils.geo import haversine_distance_km
@@ -391,16 +393,28 @@ class AIDirectedProviderDiscoveryService:
                 ),
             )
 
-        match = ProviderCandidateForGrounding(
-            provider_name=place.source,
-            provider_place_id=place.place_id,
-            name=place.name,
-            category=place.category,
-            coordinates=place.coordinates,
-            data_status=place.data_status,
-            confidence=place.confidence,
-            provider_tags=place.provider_tags,
-        )
+        # Section 3B: one provider record the grounding contract rejects is
+        # that candidate's own outcome -- never a reason to abort the pass.
+        # Only the contract's validation rejection is caught; any other
+        # error still surfaces.
+        try:
+            match = ProviderCandidateForGrounding(
+                provider_name=place.source,
+                provider_place_id=place.place_id,
+                name=place.name,
+                category=place.category,
+                coordinates=place.coordinates,
+                data_status=place.data_status,
+                confidence=place.confidence,
+                provider_tags=place.provider_tags,
+            )
+        except ValidationError:
+            return AIProviderDiscoveryAttempt(
+                proposal_id=proposal.proposal_id,
+                search_query=query,
+                status=AIProviderDiscoveryAttemptStatus.CANDIDATE_VALIDATION_REJECTED,
+                message="Provider found a place, but its record failed candidate validation.",
+            )
         return AIProviderDiscoveryAttempt(
             proposal_id=proposal.proposal_id,
             search_query=query,

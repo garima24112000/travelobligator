@@ -23,10 +23,15 @@ class RouteBurdenRepairAttempt(BaseModel):
     # True only when a replacement was actually routed with the provider.
     route_burden_repair_attempted: bool = False
     accepted: bool = False
-    # A fixed code: accepted, no_replaceable_stop, no_suitable_candidate,
-    # route_budget_exhausted, replacement_route_unavailable,
-    # no_material_improvement.
+    # A fixed code: accepted, incomplete_route_data, no_replaceable_stop,
+    # no_suitable_candidate, route_budget_exhausted,
+    # replacement_route_unavailable, no_material_improvement.
     reason: str
+    # Section 3B: why each stop of the day may or may not be replaced, in
+    # stop order -- a fixed code per stop: replaceable, must_visit,
+    # user_lock, grounded_anchor, no_coordinates. So "no replaceable stop"
+    # always names its cause.
+    stop_protections: list[str] = Field(default_factory=list)
     replaced_place: str | None = None
     replacement_place: str | None = None
     before_duration_seconds: float | None = None

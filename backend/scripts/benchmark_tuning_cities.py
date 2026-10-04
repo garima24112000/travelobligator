@@ -103,6 +103,16 @@ FLAG_LATENCY = "LATENCY_OVER_90S"
 FLAG_LLM_DEADLINE = "LLM_STAGE_DEADLINE_EXCEEDED"
 FLAG_NARRATOR_FALLBACK = "NARRATOR_FALLBACK"
 FLAG_GENERIC_NAMES = "GENERIC_OR_LOW_VALUE_SCHEDULED_NAMES"
+FLAG_UNCOVERED_INTEREST = "UNCOVERED_REQUESTED_INTEREST"
+FLAG_LOW_ANCHOR_UTILIZATION = "LOW_GROUNDED_ANCHOR_UTILIZATION"
+
+# LOW_GROUNDED_ANCHOR_UTILIZATION: the planner seeds one grounded anchor per
+# day when that is feasible, so a multi-day plan that had SEVERAL grounded
+# anchors to choose from (at least this many) is expected to schedule more
+# than one. At most one scheduled is worth a look; fewer grounded anchors
+# than this is too small a sample to call "low utilization".
+LOW_ANCHOR_UTILIZATION_MIN_GROUNDED = 4
+LOW_ANCHOR_UTILIZATION_MAX_SCHEDULED = 1
 
 # -- secret safety ----------------------------------------------------------------------------
 
@@ -273,6 +283,10 @@ def extract_metrics(report: dict[str, Any], *, city: str, scenario: dict[str, An
                 "duplicate_count": len(quality.get("duplicates") or []),
                 "low_value_scheduled_count": len(quality.get("low_value_scheduled_objects") or []),
                 "interest_coverage": quality.get("interest_coverage"),
+                # requested interests the final plan does not serve (the validator's own rule)
+                "requested_interests_uncovered": sorted(
+                    name for name, covered in (quality.get("interest_coverage") or {}).items() if covered is False
+                ),
             },
             "factual_safety": {
                 "fabricated_or_unverified_scheduled_identities": len(
@@ -285,6 +299,15 @@ def extract_metrics(report: dict[str, Any], *, city: str, scenario: dict[str, An
                 "grounded": anchors.get("grounded"),
                 "promoted": anchors.get("promoted"),
                 "failure_kind": anchors.get("failure_kind"),
+                # grounded = provider-grounded AND promoted; scheduled = of those, on the final plan
+                "grounded_anchor_count": anchors.get("grounded_anchor_count"),
+                "scheduled_grounded_anchor_count": anchors.get("scheduled_grounded_anchor_count"),
+                "grounded_anchor_schedule_ratio": anchors.get("grounded_anchor_schedule_ratio"),
+                # the kind of transport failure of the anchor proposal stage, when it had one
+                "transport_failure": next(
+                    (stage.get("transport_failure") for stage in llm_stages if stage.get("label") == "Groq anchor"),
+                    None,
+                ),
             },
             "routing": {
                 "required_legs": required,
@@ -344,6 +367,16 @@ def extract_metrics(report: dict[str, Any], *, city: str, scenario: dict[str, An
             "reasoning": {"status": reasoning_status, "fallback": reasoning_status != "completed"},
             "scheduled_places": scheduled,
             "generic_or_low_value_scheduled_names": _generic_or_low_value_names(scheduled),
+            # why a long-travel day could not be repaired (fixed codes only)
+            "route_repair_failure_reasons": [
+                {
+                    "day": attempt.get("day"),
+                    "reason": attempt.get("reason"),
+                    "stop_protections": list(attempt.get("stop_protections") or []),
+                }
+                for attempt in report.get("route_repair") or []
+                if not attempt.get("accepted")
+            ],
             "canary_warnings": [
                 *(f"acceptance check failed: {name}" for name in failed_checks),
                 *(
@@ -356,6 +389,20 @@ def extract_metrics(report: dict[str, Any], *, city: str, scenario: dict[str, An
     )
     metrics["manual_review_flags"] = manual_review_flags(metrics)
     return metrics
+
+
+def _low_anchor_utilization(metrics: dict[str, Any]) -> bool:
+    """Several grounded anchors existed for a multi-day plan, and almost
+    none reached the schedule (see `LOW_ANCHOR_UTILIZATION_*`)."""
+    anchors = metrics.get("anchors") or {}
+    grounded, scheduled = anchors.get("grounded_anchor_count"), anchors.get("scheduled_grounded_anchor_count")
+    return (
+        grounded is not None
+        and scheduled is not None
+        and (metrics.get("scenario") or {}).get("days", 0) >= 2
+        and grounded >= LOW_ANCHOR_UTILIZATION_MIN_GROUNDED
+        and scheduled <= LOW_ANCHOR_UTILIZATION_MAX_SCHEDULED
+    )
 
 
 def manual_review_flags(metrics: dict[str, Any]) -> list[str]:
@@ -390,6 +437,8 @@ def manual_review_flags(metrics: dict[str, Any]) -> list[str]:
             FLAG_GENERIC_NAMES,
             quality["low_value_scheduled_count"] > 0 or bool(metrics["generic_or_low_value_scheduled_names"]),
         ),
+        (FLAG_UNCOVERED_INTEREST, bool(quality.get("requested_interests_uncovered"))),
+        (FLAG_LOW_ANCHOR_UTILIZATION, _low_anchor_utilization(metrics)),
     )
     return [flag for flag, raised in rules if raised]
 
@@ -487,7 +536,9 @@ _CSV_COLUMNS: tuple[str, ...] = (
     "readiness", "blocking_codes", "review_codes", "T", "R", "H", "broad_candidates", "viable_meaningful_candidates",
     "inventory_status", "meaningful_stops", "target_attainment_ratio", "empty_days", "duplicates",
     "low_value_scheduled", "fabricated_identities", "unsupported_claims", "anchors_proposed", "anchors_grounded",
-    "anchors_promoted", "anchor_failure_kind", "required_legs", "routed_legs", "routing_coverage_percent", "walk_legs",
+    "anchors_promoted", "anchor_failure_kind", "anchor_transport_failure", "grounded_anchor_count",
+    "scheduled_grounded_anchor_count", "grounded_anchor_schedule_ratio", "requested_interests_uncovered",
+    "route_repair_failure_reasons", "required_legs", "routed_legs", "routing_coverage_percent", "walk_legs",
     "vehicle_transfer_legs", "unresolved_movement_data_failures", "hard_diversity_violations",
     "unresolved_scheduled_collisions", "zero_distance_same_class_pairs", "food_repeated", "food_beyond_radius",
     "save", "reload", "geoapify_credits", "geoapify_refused_calls", "latency_seconds", "generation_peak_concurrency",
@@ -540,6 +591,15 @@ def csv_row(record: dict[str, Any]) -> dict[str, Any]:
             "anchors_grounded": record["anchors"]["grounded"],
             "anchors_promoted": record["anchors"]["promoted"],
             "anchor_failure_kind": record["anchors"]["failure_kind"],
+            # Section 3B diagnostics (absent from results written before they existed)
+            "anchor_transport_failure": record["anchors"].get("transport_failure"),
+            "grounded_anchor_count": record["anchors"].get("grounded_anchor_count"),
+            "scheduled_grounded_anchor_count": record["anchors"].get("scheduled_grounded_anchor_count"),
+            "grounded_anchor_schedule_ratio": record["anchors"].get("grounded_anchor_schedule_ratio"),
+            "requested_interests_uncovered": _join(quality.get("requested_interests_uncovered")),
+            "route_repair_failure_reasons": _join(
+                f"day {item.get('day')}: {item.get('reason')}" for item in record.get("route_repair_failure_reasons") or []
+            ),
             "required_legs": routing["required_legs"],
             "routed_legs": routing["factual_routed_legs"],
             "routing_coverage_percent": routing["coverage_percentage"],
@@ -670,6 +730,22 @@ def render_markdown(summary: dict[str, Any]) -> str:
         doubtful = record.get("generic_or_low_value_scheduled_names") or []
         if doubtful:
             lines.append(f"  - generic / low-value names: {_cell(_join(doubtful))}")
+        uncovered = (record.get("quality") or {}).get("requested_interests_uncovered") or []
+        if uncovered:
+            lines.append(f"  - requested interests not covered: {_cell(_join(uncovered))}")
+        anchors = record.get("anchors") or {}
+        if anchors.get("grounded_anchor_count"):
+            lines.append(
+                f"  - grounded anchors scheduled: {anchors.get('scheduled_grounded_anchor_count')}"
+                f" of {anchors['grounded_anchor_count']}"
+            )
+        if anchors.get("transport_failure"):
+            lines.append(f"  - anchor proposal transport failure: {_cell(anchors['transport_failure'])}")
+        for item in record.get("route_repair_failure_reasons") or []:
+            lines.append(
+                f"  - route repair, day {item.get('day')}: {_cell(item.get('reason'))}"
+                f" (stops: {_cell(_join(item.get('stop_protections')) or 'not recorded')})"
+            )
     lines += ["", "## Scheduled places (for manual quality review)", ""]
     for record in records:
         places = record.get("scheduled_places") or []
