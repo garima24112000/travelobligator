@@ -55,7 +55,7 @@ from app.services.day_order_heuristics import (
 )
 from app.services.day_rationale import deterministic_day_summary, finalize_day_explanations
 from app.services.entity_collisions import SUSPECT_COLLISION_KEY
-from app.services.grounded_anchors import grounded_anchor_place_ids
+from app.services.grounded_anchors import grounded_anchor_place_ids, low_anchor_utilization
 from app.utils.geo import haversine_distance_km
 
 logger = logging.getLogger(__name__)
@@ -852,6 +852,24 @@ class ExperiencePlannerService(PlanningStageService):
                 enabled=get_settings().schedule_diversity_enabled,
             )
 
+        # Section 3C.1: a plan the reasoning model chose is kept, but when it
+        # clearly under-uses the grounded anchors a bounded number of ordinary
+        # broad-pool stops give way to compatible anchors -- before routing
+        # and validation, so both judge the final stops. An active user lock
+        # leaves the plan untouched.
+        if used_ai_reasoning and not any(lock.is_active for lock in planning_state.user_locks):
+            day_groups = _raise_anchor_utilization(
+                day_groups,
+                scheduling_candidate_pois,
+                profiles,
+                must_visit_ids,
+                anchor_ids,
+                canonical_interests,
+                max_per_day,
+                markets_requested=diversity.markets_explicitly_requested(interest_terms),
+                justified=diversity.justified_classes(interest_terms),
+            )
+
         # Section 3B: requested-interest coverage. Whoever chose the days, a
         # requested interest that no scheduled stop serves gets ONE bounded,
         # deterministic attempt: a viable, compatible, well placed unused
@@ -1320,6 +1338,30 @@ def anchor_seed_count(num_days: int, capacity: int) -> int:
     return max(0, min(num_days, capacity // 2))
 
 
+def _pool_reach(pool: list[dict[str, Any]]) -> Any:
+    """A predicate: does a candidate lie where the destination's candidates
+    are? The isolated-outlier rule (`_OUTLIER_*`) measured against the whole
+    `pool`: within the larger of the minimum outlier distance and a multiple
+    of the pool's median distance from its own median centre. With no located
+    candidate nothing is within reach."""
+    points = [point for point in (_poi_coordinates(p) for p in pool) if point is not None]
+    if not points:
+        return lambda poi: False
+    centre = GeoPoint(
+        lat=statistics.median(point.lat for point in points), lng=statistics.median(point.lng for point in points)
+    )
+    reach_km = max(
+        _OUTLIER_MIN_KM,
+        _OUTLIER_MEDIAN_FACTOR * statistics.median((haversine_distance_km(centre, point) or 0.0) for point in points),
+    )
+
+    def within(poi: dict[str, Any]) -> bool:
+        point = _poi_coordinates(poi)
+        return point is not None and (haversine_distance_km(centre, point) or 0.0) <= reach_km
+
+    return within
+
+
 def _promoted_quality_scores(
     promoted_pois: list[dict[str, Any]], quality_report: Any
 ) -> dict[int, CandidateQualityScore]:
@@ -1497,27 +1539,7 @@ def _select_diverse_scheduling_set(
     # A seed must lie where the destination's candidates are: an anchor far
     # outside the pool's own spread (the isolated-outlier rule, measured
     # against the whole pool) would force a long transfer and is not seeded.
-    pool_points = [point for point in (_poi_coordinates(p) for p in ranked) if point is not None]
-    pool_centre: GeoPoint | None = None
-    seed_reach_km = 0.0
-    if anchor_seed_count > 0 and anchor_ids and pool_points:
-        pool_centre = GeoPoint(
-            lat=statistics.median(point.lat for point in pool_points),
-            lng=statistics.median(point.lng for point in pool_points),
-        )
-        seed_reach_km = max(
-            _OUTLIER_MIN_KM,
-            _OUTLIER_MEDIAN_FACTOR
-            * statistics.median((haversine_distance_km(pool_centre, point) or 0.0) for point in pool_points),
-        )
-
-    def within_seed_reach(poi: dict[str, Any]) -> bool:
-        point = _poi_coordinates(poi)
-        return (
-            pool_centre is not None
-            and point is not None
-            and (haversine_distance_km(pool_centre, point) or 0.0) <= seed_reach_km
-        )
+    within_seed_reach = _pool_reach(ranked if anchor_seed_count > 0 and anchor_ids else [])
 
     seeds_taken = 0
     for poi in ranked:
@@ -1811,6 +1833,132 @@ def _top_up_underfilled_days(
             pick = 0
         filled[day_index].append(unused.pop(pick))
     return filled
+
+
+def _raise_anchor_utilization(
+    day_groups: list[list[dict[str, Any]]],
+    pool: list[dict[str, Any]],
+    profiles: dict[int, _CandidateProfile],
+    must_visit_ids: set[int],
+    anchor_ids: set[int],
+    canonical_interests: list[str],
+    max_per_day: int,
+    *,
+    markets_requested: bool,
+    justified: frozenset[str] = frozenset(),
+) -> list[list[dict[str, Any]]]:
+    """Section 3C.1: a bounded, deterministic check of a plan the reasoning
+    model chose. The model decides the plan; this only acts when the plan
+    clearly under-uses the grounded anchors (`low_anchor_utilization`: several
+    grounded anchors existed and at most one was scheduled).
+
+    Then up to one grounded anchor per day (the same number the deterministic
+    scheduler seeds, `anchor_seed_count`) takes the place of an ordinary
+    broad-pool stop. An anchor is eligible exactly as a seed is: top two
+    quality tiers, not diluted or low-value, serving a requested interest
+    when any were requested, and inside the pool's own spread. A stop gives
+    way only when ALL of this holds:
+
+      * it is not a must-visit and not itself a grounded anchor;
+      * it is not the only stop serving a requested interest the anchor does
+        not serve;
+      * it is not in a higher quality tier than the anchor;
+      * the anchor is no farther from the day's other stops than the stop it
+        replaces (or within the diversity pass's near distance), so the day
+        does not get more spread out;
+      * the day does not become more concentrated in one class, and the
+        anchor is not an unresolved suspected duplicate of a scheduled stop.
+
+    Among the stops that may give way, the one whose replacement tightens
+    its day the most is chosen, and a day receives at most one anchor. The
+    exchange is one for one (T/R and day sizes are untouched), nothing is
+    invented, and with no acceptable exchange the model's plan stands. Not
+    every anchor is scheduled and there is no quota: an anchor that does not
+    fit is simply left out.
+    """
+    num_days = len(day_groups)
+    days = [list(group) for group in day_groups]
+    within_reach = _pool_reach(pool)
+
+    def compatible(poi: dict[str, Any]) -> bool:
+        profile = profiles[id(poi)]
+        return (
+            id(poi) in anchor_ids
+            and profile.tier_rank >= _ANCHOR_SEED_MIN_TIER_RANK
+            and not profile.low_value
+            and not profile.commercial_gallery
+            and bool(profile.matched_interests or not canonical_interests)
+            and within_reach(poi)
+        )
+
+    scheduled_ids = {id(poi) for group in days for poi in group}
+    scheduled_anchors = sum(1 for group in days for poi in group if id(poi) in anchor_ids)
+    # The trigger counts every grounded anchor in the pool (the same figure
+    # the benchmark's flag uses); only the compatible ones may be scheduled.
+    grounded = sum(1 for poi in pool if id(poi) in anchor_ids)
+    if not low_anchor_utilization(grounded, scheduled_anchors, num_days):
+        return days
+    available = [poi for poi in pool if compatible(poi)]
+    target = anchor_seed_count(num_days, num_days * max_per_day)
+
+    def cls(poi: dict[str, Any]) -> str:
+        return diversity.coarse_class(profiles[id(poi)].primary)
+
+    def excess(classes: list[str]) -> int:
+        return sum(diversity.relievable_excess(classes, markets_requested, justified).values())
+
+    unused = sorted(
+        (poi for poi in available if id(poi) not in scheduled_ids),
+        key=lambda poi: (profiles[id(poi)].tier_rank, profiles[id(poi)].score),
+        reverse=True,  # stable: pool order breaks ties
+    )
+    changed_days: set[int] = set()
+    for anchor in unused:
+        if scheduled_anchors >= target:
+            break
+        current = [poi for group in days for poi in group]
+        if _suspected_duplicate_of_any(anchor, current):
+            continue
+        anchor_profile = profiles[id(anchor)]
+        anchor_point = _poi_coordinates(anchor)
+        options: list[tuple[tuple[float, int, float], int, int]] = []
+        for day_index, day in enumerate(days):
+            if day_index in changed_days or any(id(poi) in anchor_ids for poi in day):
+                continue  # one anchor per day: the anchors are spread, not stacked
+            for stop_index, stop in enumerate(day):
+                stop_profile = profiles[id(stop)]
+                if id(stop) in must_visit_ids or id(stop) in anchor_ids:
+                    continue
+                if stop_profile.tier_rank > anchor_profile.tier_rank:
+                    continue
+                others = [poi for poi in current if poi is not stop]
+                still_covered = {name for poi in others for name in profiles[id(poi)].matched_interests}
+                if set(stop_profile.matched_interests) - still_covered - set(anchor_profile.matched_interests):
+                    continue
+                rest = [poi for poi in day if poi is not stop]
+                rest_classes = [cls(poi) for poi in rest]
+                if excess([*rest_classes, cls(anchor)]) > excess([*rest_classes, cls(stop)]):
+                    continue
+                points = [point for point in (_poi_coordinates(poi) for poi in rest) if point is not None]
+                stop_point = _poi_coordinates(stop)
+                if not points or stop_point is None:
+                    continue  # nothing to measure the day's spread against
+                centre = GeoPoint(
+                    lat=sum(point.lat for point in points) / len(points),
+                    lng=sum(point.lng for point in points) / len(points),
+                )
+                stop_km = haversine_distance_km(centre, stop_point) or 0.0
+                anchor_km = haversine_distance_km(centre, anchor_point) or 0.0
+                if anchor_km > max(_DIVERSITY_NEAR_KM, stop_km):
+                    continue
+                options.append(((anchor_km - stop_km, stop_profile.tier_rank, stop_profile.score), day_index, stop_index))
+        if not options:
+            continue
+        _, day_index, stop_index = min(options)
+        days[day_index][stop_index] = anchor
+        changed_days.add(day_index)
+        scheduled_anchors += 1
+    return days
 
 
 _INTEREST_COVER_MAX_CANDIDATES = 10

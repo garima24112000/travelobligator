@@ -158,31 +158,131 @@ def _provider_context_components(result: dict[str, Any]) -> list[frozenset[str]]
     return [t for t in (_tokens(v) for v in values) if t]
 
 
-def _is_plausible_geocode_result(query: str, result: dict[str, Any]) -> bool:
+# Section 3C.1: why a geocode result was not accepted as the destination.
+# Fixed codes only -- they are logged, and never carry the query, a provider
+# name for the place, or any part of the provider's response.
+REJECT_UNSUPPORTED_RESULT_TYPE = "unsupported_result_type"
+REJECT_INSUFFICIENT_GEO_EVIDENCE = "insufficient_geo_evidence"
+REJECT_LOCALITY_MISMATCH = "locality_mismatch"
+REJECT_COUNTRY_MISMATCH = "country_mismatch"
+REJECT_REGION_MISMATCH = "region_mismatch"
+
+# Section 3C.1 (equivalent locality). The provider answers in ONE language,
+# so a city whose name is romanised in more than one way comes back under a
+# spelling the traveller did not type, and rule 2 above (token-exact names)
+# rejected a result that is plainly the requested city. There is no alias
+# table and no fuzzy matching of the whole answer; instead the alternate
+# spelling is accepted only on STRUCTURED evidence, all of it required:
+#
+#   a. the result is itself a city-level settlement (never a suburb,
+#      district, county, state or country standing in for the city);
+#   b. the name that differs is the provider's own name for that settlement
+#      (the feature's name or its city/town/village/municipality component);
+#   c. it differs from the requested name by a single edit (one letter
+#      substituted, inserted, dropped, or two adjacent letters swapped) and
+#      is long enough for that to be meaningful;
+#   d. the query names a country and the provider's COUNTRY component
+#      matches it exactly -- a segment too short to verify (rule 3) is not
+#      country agreement here.
+#
+# Every other check (result type, further region segments) still applies, so
+# a same-name place in another country, an unrelated locality and a
+# non-settlement result stay rejected exactly as before.
+_CITY_LEVEL_TYPES = frozenset({"city", "town", "village", "municipality"})
+# Result types that may appear in a log line (a closed vocabulary; anything
+# else is logged as "other").
+_LOGGABLE_RESULT_TYPES = _CITY_LEVEL_TYPES | frozenset(
+    {"suburb", "district", "county", "state", "country", "postcode", "street", "amenity", "building", "administrative", "unknown"}
+)
+_LOCALITY_COMPONENT_KEYS = ("city", "town", "village", "municipality")
+_EQUIVALENT_NAME_MIN_LENGTH = 6
+
+
+def _single_edit_apart(a: str, b: str) -> bool:
+    """True when `a` and `b` differ by exactly one substitution, insertion,
+    deletion or adjacent transposition."""
+    if a == b or abs(len(a) - len(b)) > 1:
+        return False
+    if len(a) > len(b):
+        a, b = b, a
+    index = 0
+    while index < len(a) and a[index] == b[index]:
+        index += 1
+    if len(a) == len(b):
+        return a[index + 1 :] == b[index + 1 :] or (
+            index + 1 < len(a)
+            and a[index] == b[index + 1]
+            and a[index + 1] == b[index]
+            and a[index + 2 :] == b[index + 2 :]
+        )
+    return a[index:] == b[index + 1 :]
+
+
+def _settlement_names(result: dict[str, Any]) -> list[str]:
+    """Normalised names the provider gives the SETTLEMENT a city-level
+    result is: its own name and its locality address component."""
+    names = [result.get("name")]
+    address = result.get("address")
+    if isinstance(address, dict):
+        names.extend(address.get(key) for key in _LOCALITY_COMPONENT_KEYS)
+    return [text for text in (_normalize_text(name) for name in names if isinstance(name, str)) if text]
+
+
+def _country_agrees(segments: list[str], result: dict[str, Any]) -> bool:
+    address = result.get("address")
+    country = address.get("country") if isinstance(address, dict) else None
+    if len(segments) < 2 or not isinstance(country, str):
+        return False
+    requested = _tokens(segments[-1])
+    return len("".join(requested)) > _UNVERIFIABLE_SEGMENT_MAX_LENGTH and requested == _tokens(country)
+
+
+def _is_equivalent_locality(segments: list[str], result: dict[str, Any]) -> bool:
+    if result.get("type") not in _CITY_LEVEL_TYPES or not _country_agrees(segments, result):
+        return False
+    requested = _normalize_text(segments[0])
+    return len(requested) >= _EQUIVALENT_NAME_MIN_LENGTH and any(
+        len(name) >= _EQUIVALENT_NAME_MIN_LENGTH and _single_edit_apart(requested, name)
+        for name in _settlement_names(result)
+    )
+
+
+def destination_rejection_reason(query: str, result: dict[str, Any]) -> str | None:
+    """None when `result` is a plausible resolution of `query`; otherwise the
+    fixed code of the first check it failed."""
     category = result.get("category") or result.get("class")
     if category is None:
         # No structural evidence at all (older/minimal response shape).
-        return _is_plausible_geocode_match(query, str(result.get("display_name") or ""))
+        if _is_plausible_geocode_match(query, str(result.get("display_name") or "")):
+            return None
+        return REJECT_INSUFFICIENT_GEO_EVIDENCE if not _significant_tokens(query) else REJECT_LOCALITY_MISMATCH
     if category not in _ACCEPTED_GEOCODE_CATEGORIES:
-        return False
+        return REJECT_UNSUPPORTED_RESULT_TYPE
 
     segments = [segment for segment in (part.strip() for part in query.split(",")) if segment]
-    if not segments:
-        return False
-    place_tokens = _tokens(segments[0])
-    if not any(_compatible(place_tokens, name) for name in _provider_place_names(result)):
-        return False
+    place_tokens = _tokens(segments[0]) if segments else frozenset()
+    provider_names = _provider_place_names(result)
+    if not place_tokens or not provider_names:
+        return REJECT_INSUFFICIENT_GEO_EVIDENCE
+    if not any(_compatible(place_tokens, name) for name in provider_names) and not _is_equivalent_locality(
+        segments, result
+    ):
+        return REJECT_LOCALITY_MISMATCH
 
     components = _provider_context_components(result)
-    for segment in segments[1:]:
+    for index, segment in enumerate(segments[1:], start=1):
         segment_tokens = _tokens(segment)
         if not segment_tokens:
             continue
         if len("".join(segment_tokens)) <= _UNVERIFIABLE_SEGMENT_MAX_LENGTH:
             continue
         if not any(_compatible(segment_tokens, component) for component in components):
-            return False
-    return True
+            return REJECT_COUNTRY_MISMATCH if index == len(segments) - 1 else REJECT_REGION_MISMATCH
+    return None
+
+
+def _is_plausible_geocode_result(query: str, result: dict[str, Any]) -> bool:
+    return destination_rejection_reason(query, result) is None
 
 
 _DESTINATION_ADDRESS_KEYS = (
@@ -207,6 +307,9 @@ def _hit_evidence(hit: GeocodeHit) -> dict[str, Any]:
     }
     if hit.feature_class is not None:
         evidence["category"] = hit.feature_class
+    if hit.feature_type is not None:
+        # the provider's own result type (city, suburb, county, ...)
+        evidence["type"] = hit.feature_type
     return evidence
 
 
@@ -498,9 +601,15 @@ class DestinationResolutionMixin:
         if hit is None:
             return None
 
-        if not _is_plausible_geocode_result(place_name, _hit_evidence(hit)):
+        rejection = destination_rejection_reason(place_name, _hit_evidence(hit))
+        if rejection is not None:
+            # Fixed identifiers only: the provider, the reason code and the
+            # provider's result type -- never the query or the response.
             logger.warning(
-                "Rejecting implausible geocode match (provider=%s).", self._geocoder.provider_name
+                "Rejecting implausible geocode match (provider=%s, reason=%s, result_type=%s).",
+                self._geocoder.provider_name,
+                rejection,
+                hit.feature_type if hit.feature_type in _LOGGABLE_RESULT_TYPES else "other",
             )
             return None
 
