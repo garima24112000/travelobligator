@@ -40,6 +40,42 @@ class RouteBurdenRepairAttempt(BaseModel):
     after_distance_meters: float | None = None
 
 
+class RoutabilityRepairAttempt(BaseModel):
+    """What the bounded routability repair did for one day whose legs the
+    routing provider could not route (Section 3C.2). Fixed codes, place
+    names and counts only -- never provider text, and never a route."""
+
+    day_number: int
+    # A fixed code: accepted, localized (the legs routed once asked for one
+    # at a time; no stop was replaced), transient_failure, malformed_request,
+    # no_suspect_stop, suspect_protected, no_suitable_candidate,
+    # route_budget_exhausted, replacement_unroutable, replacement_route_burden.
+    reason: str
+    accepted: bool = False
+    # Legs of the day without a factual route, before and after the attempt.
+    failed_legs_before: int = 0
+    failed_legs_after: int = 0
+    # Legs asked for again one at a time to find the stop that cannot be routed.
+    relocalized_legs: int = 0
+    # The stop every one of whose legs failed, and why it may not be replaced
+    # (`replaceable`, `must_visit`, `user_lock`, `no_coordinates`).
+    suspect_place: str | None = None
+    suspect_protection: str | None = None
+    # True when the replaced stop was a grounded anchor: allowed here only,
+    # because a place the provider cannot route to outranks anchor preference.
+    suspect_was_grounded_anchor: bool = False
+    replaced_place: str | None = None
+    replacement_place: str | None = None
+
+
+class RoutabilityRepairReport(BaseModel):
+    attempts: list[RoutabilityRepairAttempt] = Field(default_factory=list)
+    # Plan-wide factual routing coverage (routed legs / required legs).
+    coverage_before: float | None = None
+    coverage_after: float | None = None
+    generated_at: datetime = Field(default_factory=_utc_now)
+
+
 class RouteBurdenRepairReport(BaseModel):
     attempts: list[RouteBurdenRepairAttempt] = Field(default_factory=list)
     generated_at: datetime = Field(default_factory=_utc_now)

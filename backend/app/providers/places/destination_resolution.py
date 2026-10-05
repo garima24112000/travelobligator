@@ -25,6 +25,7 @@ from app.models.common import DataStatus, GeoPoint, ProviderStatus
 from app.models.providers import NormalizedPlace, ProviderResponse
 from app.providers.base import failed_response, not_connected_response, unavailable_response
 from app.providers.geocoding.base import GeocodeHit, GeocoderError
+from app.providers.places.country_identity import same_country
 from app.services.place_taxonomy import filter_provider_tags
 from app.storage.provider_cache_store import ProviderCacheStore, make_query_hash
 from app.utils.geo import haversine_distance_km, point_in_bounding_box
@@ -228,22 +229,55 @@ def _settlement_names(result: dict[str, Any]) -> list[str]:
     return [text for text in (_normalize_text(name) for name in names if isinstance(name, str)) if text]
 
 
+def _same_country_identity(segment: str, result: dict[str, Any]) -> bool:
+    """Section 3C.2: the query's country segment and the provider's
+    `country_code` are the same ISO 3166 country (`country_identity`). False
+    whenever the name does not resolve or the code is missing/malformed."""
+    address = result.get("address")
+    return same_country(segment, address.get("country_code") if isinstance(address, dict) else None)
+
+
 def _country_agrees(segments: list[str], result: dict[str, Any]) -> bool:
+    """STRONG country agreement: the query names a country, and it is the
+    provider's country -- by exact display name, or by ISO identity."""
+    if len(segments) < 2:
+        return False
     address = result.get("address")
     country = address.get("country") if isinstance(address, dict) else None
-    if len(segments) < 2 or not isinstance(country, str):
-        return False
     requested = _tokens(segments[-1])
-    return len("".join(requested)) > _UNVERIFIABLE_SEGMENT_MAX_LENGTH and requested == _tokens(country)
+    if len("".join(requested)) <= _UNVERIFIABLE_SEGMENT_MAX_LENGTH:
+        return False
+    if isinstance(country, str) and requested == _tokens(country):
+        return True
+    return _same_country_identity(segments[-1], result)
+
+
+# Section 3C.2 (separator variation). A provider may write a settlement's
+# name as separate words where the traveller wrote one (or the reverse): the
+# letters are identical and only the separators differ. Such a name is the
+# same name when the COMPACT forms (normalised, separators removed) are
+# identical -- never a substring, never a similarity -- and long enough to be
+# unambiguous. It is accepted on the same structured evidence as an
+# alternate spelling: a city-level result, the provider's own settlement
+# name, and strong country agreement.
+_COMPACT_NAME_MIN_LENGTH = 5
+
+
+def _compact(normalized: str) -> str:
+    return normalized.replace(" ", "")
 
 
 def _is_equivalent_locality(segments: list[str], result: dict[str, Any]) -> bool:
     if result.get("type") not in _CITY_LEVEL_TYPES or not _country_agrees(segments, result):
         return False
     requested = _normalize_text(segments[0])
+    names = _settlement_names(result)
+    if len(_compact(requested)) >= _COMPACT_NAME_MIN_LENGTH and any(
+        _compact(name) == _compact(requested) for name in names
+    ):
+        return True
     return len(requested) >= _EQUIVALENT_NAME_MIN_LENGTH and any(
-        len(name) >= _EQUIVALENT_NAME_MIN_LENGTH and _single_edit_apart(requested, name)
-        for name in _settlement_names(result)
+        len(name) >= _EQUIVALENT_NAME_MIN_LENGTH and _single_edit_apart(requested, name) for name in names
     )
 
 
@@ -277,7 +311,12 @@ def destination_rejection_reason(query: str, result: dict[str, Any]) -> str | No
         if len("".join(segment_tokens)) <= _UNVERIFIABLE_SEGMENT_MAX_LENGTH:
             continue
         if not any(_compatible(segment_tokens, component) for component in components):
-            return REJECT_COUNTRY_MISMATCH if index == len(segments) - 1 else REJECT_REGION_MISMATCH
+            is_last = index == len(segments) - 1
+            # Section 3C.2: the last segment may name the provider's country
+            # under another ISO 3166 name -- the same identity, so it agrees.
+            if is_last and _same_country_identity(segment, result):
+                continue
+            return REJECT_COUNTRY_MISMATCH if is_last else REJECT_REGION_MISMATCH
     return None
 
 

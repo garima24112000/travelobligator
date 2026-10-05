@@ -41,6 +41,13 @@ idna==3.19
 # project's own pinned httpx==0.28.1 above) and requires idna>=3.18,
 # hence the idna bump above.
 mcp==2.2.0
+# ISO 3166 country data (Section 3C.2) -- backs
+# backend/app/providers/places/country_identity.py, which resolves a country
+# NAME to its ISO alpha-2 identity so a destination's country is compared
+# with the geocoder's `country_code` rather than by display name. Data only
+# (no network); imported lazily, and without it country names simply do not
+# resolve and the existing display-name comparison is used.
+pycountry==24.6.1
 pydantic==2.13.3
 pydantic_core==2.46.3
 pydantic-settings==2.7.1

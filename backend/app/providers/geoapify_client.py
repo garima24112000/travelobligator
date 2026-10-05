@@ -17,12 +17,31 @@ import httpx
 
 from app.core import performance
 from app.core.config import get_settings
-from app.providers.errors import CooldownBreaker, ProviderRequestError
+from app.providers.errors import (
+    REASON_PROVIDER_BAD_REQUEST,
+    CooldownBreaker,
+    ProviderRequestError,
+    classify_bad_request,
+)
 from app.core.provider_usage import BudgetExhausted, ProviderUsageTracker
 
 # Shared by every Geoapify API: a 429 or a rejected key on one of them
 # means the others would fail the same way.
 request_breaker = CooldownBreaker()
+
+
+def _bad_request_reason(response: httpx.Response) -> str:
+    """The fixed reason code for a 4xx response (see
+    `errors.classify_bad_request`). Reads only the error message field of a
+    JSON error body; an unreadable body is `provider_bad_request`."""
+    try:
+        body = response.json()
+    except Exception:  # noqa: BLE001 - any unreadable body is simply unclassified
+        return REASON_PROVIDER_BAD_REQUEST
+    message = body.get("message") if isinstance(body, dict) else None
+    if isinstance(message, list):  # some APIs report a list of messages
+        message = " ".join(part for part in message if isinstance(part, str))
+    return classify_bad_request(message)
 
 
 def is_production() -> bool:
@@ -65,10 +84,10 @@ def geoapify_get(
         except BudgetExhausted:
             raise ProviderRequestError("budget_exhausted") from None
 
-    def _fail(kind: str) -> ProviderRequestError:
+    def _fail(kind: str, reason: str | None = None) -> ProviderRequestError:
         if reservation is not None:
             reservation.release()
-        return ProviderRequestError(kind)
+        return ProviderRequestError(kind, reason)
 
     # Section 1A (measurement only): the wall-clock of this request, and
     # whether the same request was already made in this generation. The
@@ -98,7 +117,9 @@ def geoapify_get(
     if status >= 500:
         raise _fail("server")
     if status >= 400:
-        raise _fail("bad_request")
+        # Section 3C.2: a 400 is classified into a fixed reason code from the
+        # response's own error message; the message itself never leaves here.
+        raise _fail("bad_request", _bad_request_reason(response))
 
     try:
         payload = response.json()

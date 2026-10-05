@@ -468,6 +468,7 @@ class RouteFeasibilityService:
             mode_adaptation_attempted=attempted,
             walking_distance_meters=walking.distance_meters if drive is not None else None,
             walking_duration_seconds=walking.duration_seconds if drive is not None else None,
+            failure_reason=result.failure_reason if result.status != ProviderStatus.SUCCESS else None,
             from_experience_id=from_experience.experience_id,
             from_experience_name=from_experience.name,
             to_experience_id=to_experience.experience_id,

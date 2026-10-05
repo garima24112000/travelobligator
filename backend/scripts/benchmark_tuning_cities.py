@@ -377,6 +377,23 @@ def extract_metrics(report: dict[str, Any], *, city: str, scenario: dict[str, An
                 for attempt in report.get("route_repair") or []
                 if not attempt.get("accepted")
             ],
+            # Section 3C.2: what the routability repair did, and why each unrouted leg failed
+            "routability_repair": [
+                {
+                    key: attempt.get(key)
+                    for key in ("day", "reason", "accepted", "failed_legs_before", "failed_legs_after",
+                                "suspect_protection", "suspect_was_grounded_anchor")
+                }
+                for attempt in _part(report, "routability_repair").get("attempts") or []
+            ],
+            "route_leg_failure_reasons": sorted(
+                {
+                    str(leg.get("failure_reason") or leg.get("status"))
+                    for day in itinerary
+                    for leg in day.get("route_legs") or []
+                    if leg.get("distance_meters") is None
+                }
+            ),
             "canary_warnings": [
                 *(f"acceptance check failed: {name}" for name in failed_checks),
                 *(
@@ -741,6 +758,13 @@ def render_markdown(summary: dict[str, Any]) -> str:
             )
         if anchors.get("transport_failure"):
             lines.append(f"  - anchor proposal transport failure: {_cell(anchors['transport_failure'])}")
+        if record.get("route_leg_failure_reasons"):
+            lines.append(f"  - unrouted leg reasons: {_cell(_join(record['route_leg_failure_reasons']))}")
+        for item in record.get("routability_repair") or []:
+            lines.append(
+                f"  - routability repair, day {item.get('day')}: {_cell(item.get('reason'))}"
+                f" (failed legs {item.get('failed_legs_before')} -> {item.get('failed_legs_after')})"
+            )
         for item in record.get("route_repair_failure_reasons") or []:
             lines.append(
                 f"  - route repair, day {item.get('day')}: {_cell(item.get('reason'))}"

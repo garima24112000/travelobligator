@@ -19,7 +19,7 @@ from app.models.flight import FlightSearchResult
 from app.models.generation_performance import GenerationPerformanceReport
 from app.models.inventory_sufficiency import InventorySufficiencyReport, ProviderUsageReport
 from app.models.itinerary_narrative import ItineraryNarrativeReport
-from app.models.route_burden_repair import RouteBurdenRepairReport
+from app.models.route_burden_repair import RoutabilityRepairReport, RouteBurdenRepairReport
 from app.models.common import (
     AccommodationType,
     ChecklistItemStatus,
@@ -1462,6 +1462,10 @@ class PlanningState(BaseModel):
     # What the single bounded post-routing repair did for each long-route
     # day of the LAST generation (None when no day needed one).
     route_burden_repair_report: RouteBurdenRepairReport | None = None
+    # Section 3C.2: what the bounded routability repair did for each day
+    # whose legs the routing provider could not route (None when the plan's
+    # factual routing coverage already met the release threshold).
+    routability_repair_report: RoutabilityRepairReport | None = None
     # True once this generation used its single deterministic top-up pass
     # for an underfilled plan (reset by the inventory sufficiency gate at
     # the start of every generation).

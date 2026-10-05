@@ -197,6 +197,11 @@ class RouteResult(BaseModel):
     # this leg in (`walk` / `drive`). `None` only for a result that carries
     # no route, or one from an adapter that predates the field.
     mode: str | None = None
+    # Section 3C.2: why the provider gave no route, as a fixed code only
+    # (`unroutable_endpoint`, `no_route`, `invalid_coordinates`,
+    # `malformed_request`, `provider_bad_request`, or a request failure kind
+    # such as `timeout`). Never provider text. None for a success.
+    failure_reason: str | None = None
 
 
 # Factual transfer modes of one itinerary leg (Section 203C.2B). `drive` is
@@ -290,6 +295,10 @@ class RouteLegFeasibility(BaseModel):
     mode_adaptation_attempted: bool = False
     walking_distance_meters: float | None = None
     walking_duration_seconds: float | None = None
+    # Section 3C.2: the routing result's fixed failure code (see
+    # `RouteResult.failure_reason`). None for a routed leg and for legs
+    # stored before this field existed.
+    failure_reason: str | None = None
 
 
 class RouteFeasibilityReport(BaseModel):

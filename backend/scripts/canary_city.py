@@ -452,6 +452,8 @@ def _run(args: argparse.Namespace, cache_hits: dict[str, int]) -> dict[str, Any]
                         "distance_meters": leg.distance_meters if leg else None,
                         "duration_seconds": leg.duration_seconds if leg else None,
                         "status": _value(leg.status) if leg else "missing",
+                        # a fixed code for a leg the provider did not route (never provider text)
+                        "failure_reason": leg.failure_reason if leg else None,
                         "mode_adaptation_attempted": bool(leg.mode_adaptation_attempted) if leg else False,
                         # the provider's original walking figures, kept when the leg became a vehicle transfer
                         "walking_distance_meters": leg.walking_distance_meters if leg else None,
@@ -633,6 +635,29 @@ def _run(args: argparse.Namespace, cache_hits: dict[str, int]) -> dict[str, Any]
         }
         for attempt in (repair.attempts if repair is not None else [])
     ]
+
+    # -- routability repair (Section 3C.2: a stop the provider cannot route to) -------------------
+    routability = state.routability_repair_report
+    report["routability_repair"] = {
+        "coverage_before": round(100.0 * routability.coverage_before, 1) if routability and routability.coverage_before is not None else None,
+        "coverage_after": round(100.0 * routability.coverage_after, 1) if routability and routability.coverage_after is not None else None,
+        "attempts": [
+            {
+                "day": attempt.day_number,
+                "reason": attempt.reason,
+                "accepted": attempt.accepted,
+                "failed_legs_before": attempt.failed_legs_before,
+                "failed_legs_after": attempt.failed_legs_after,
+                "relocalized_legs": attempt.relocalized_legs,
+                "suspect_place": attempt.suspect_place,
+                "suspect_protection": attempt.suspect_protection,
+                "suspect_was_grounded_anchor": attempt.suspect_was_grounded_anchor,
+                "replaced_place": attempt.replaced_place,
+                "replacement_place": attempt.replacement_place,
+            }
+            for attempt in (routability.attempts if routability is not None else [])
+        ],
+    }
 
     # -- food locality ---------------------------------------------------------------------------
     all_suggestions = [suggestion.name for day in days for suggestion in day.restaurant_suggestions]
@@ -977,7 +1002,10 @@ def _render(report: dict[str, Any]) -> str:
         lines.append(f"Day {day['day']}")
         for leg in day["route_legs"]:
             lines.append(f"  {leg['from']} -> {leg['to']}")
-            lines.append(f"    mode: {leg['mode'] or 'none (' + str(leg['status']) + ')'}")
+            lines.append(
+                f"    mode: {leg['mode'] or 'none (' + str(leg['status']) + ')'}"
+                + (f" | reason: {leg['failure_reason']}" if leg.get("failure_reason") else "")
+            )
             lines.append(f"    distance (m): {leg['distance_meters']}")
             lines.append(f"    duration (s): {leg['duration_seconds']}")
             lines.append(f"    mode adaptation attempted: {'yes' if leg['mode_adaptation_attempted'] else 'no'}")
@@ -1046,6 +1074,21 @@ def _render(report: dict[str, Any]) -> str:
             f" | after: {attempt['after_distance_meters']} m, {attempt['after_duration_seconds']} s"
             f" | accepted: {'yes' if attempt['accepted'] else 'no'} ({attempt['reason']})"
             f" | stop protections: {', '.join(attempt.get('stop_protections') or []) or 'none recorded'}"
+        )
+
+    routability = report.get("routability_repair") or {"attempts": []}
+    section("ROUTABILITY REPAIR")
+    if not routability["attempts"]:
+        lines.append("- not needed (factual routing coverage met the threshold, or no leg failed)")
+    else:
+        row("coverage before -> after (%)", f"{routability['coverage_before']} -> {routability['coverage_after']}")
+    for attempt in routability["attempts"]:
+        lines.append(
+            f"- day {attempt['day']}: {attempt['reason']} | failed legs: {attempt['failed_legs_before']} -> "
+            f"{attempt['failed_legs_after']} | legs asked again one at a time: {attempt['relocalized_legs']}"
+            f" | suspect: {attempt['suspect_place'] or 'none'} ({attempt['suspect_protection'] or 'n/a'}"
+            f"{', grounded anchor' if attempt['suspect_was_grounded_anchor'] else ''})"
+            f" | replaced: {attempt['replaced_place'] or 'none'} -> {attempt['replacement_place'] or 'none'}"
         )
 
     food = report["food_locality"]

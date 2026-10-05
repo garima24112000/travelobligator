@@ -506,6 +506,42 @@ def test_route_repair_failure_reasons_and_anchor_transport_subtype_are_reported(
     assert row["anchor_transport_failure"] == "rate_limit" and row["grounded_anchor_count"] == "7"
 
 
+def test_routability_repair_and_unrouted_leg_reasons_are_reported(tmp_path: Path) -> None:
+    report = _fake_report(
+        routability_repair={
+            "coverage_before": 66.7, "coverage_after": 66.7,
+            "attempts": [
+                {"day": 3, "reason": "suspect_protected", "accepted": False, "failed_legs_before": 2,
+                 "failed_legs_after": 2, "suspect_place": "Old Fort", "suspect_protection": "must_visit",
+                 "suspect_was_grounded_anchor": False, "replaced_place": None, "replacement_place": None},
+            ],
+        },
+        routing__coverage_percentage=66.7,
+    )
+    report["final_itinerary"][2]["route_legs"] = [
+        {"from": "Old Fort", "to": "City Museum", "status": "failed", "failure_reason": "unroutable_endpoint",
+         "distance_meters": None, "mode": None},
+        {"from": "City Museum", "to": "Grand Hall", "status": "success", "failure_reason": None,
+         "distance_meters": 400.0, "mode": "walk"},
+    ]
+    city = bench.CANONICAL_CITIES[0]
+    record = bench.extract_metrics(report, city=city, scenario=bench.DEFAULT_SCENARIO, run_timestamp="2027-03-01T00:00:00Z")
+    assert record["route_leg_failure_reasons"] == ["unroutable_endpoint"]
+    assert record["routability_repair"] == [
+        {"day": 3, "reason": "suspect_protected", "accepted": False, "failed_legs_before": 2, "failed_legs_after": 2,
+         "suspect_protection": "must_visit", "suspect_was_grounded_anchor": False}
+    ]
+    assert "ROUTING_COVERAGE_BELOW_90" in record["manual_review_flags"]  # the failure stays a finding
+    # a clean report has neither
+    clean = _metrics()
+    assert clean["routability_repair"] == [] and clean["route_leg_failure_reasons"] == []
+
+    _run(tmp_path, [city], lambda _: report)
+    markdown = (tmp_path / "summary.md").read_text()
+    assert "  - unrouted leg reasons: unroutable_endpoint" in markdown
+    assert "  - routability repair, day 3: suspect_protected (failed legs 2 -> 2)" in markdown
+
+
 def test_results_written_before_the_3b_diagnostics_still_summarise(tmp_path: Path) -> None:
     city = bench.CANONICAL_CITIES[0]
     _run(tmp_path, [city], lambda _: _fake_report())

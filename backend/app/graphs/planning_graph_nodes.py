@@ -47,6 +47,7 @@ from app.services.plan_validator_service import PlanValidatorService
 from app.services.usefulness_contract import evaluate_usefulness
 from app.services.route_aware_sequencing_service import RouteAwareSequencingService
 from app.services.day_rationale import finalize_day_explanations
+from app.services.routability_repair_service import apply_routability_repair_safely
 from app.services.route_burden_repair_service import apply_route_burden_repair_safely
 from app.services.route_feasibility_service import RouteFeasibilityService
 from app.services.stay_transport_service import StayTransportService
@@ -691,6 +692,12 @@ def build_route_aware_sequencing_node(
             # Section 203C.2B (final correction): one bounded repair attempt
             # per long-route day, on the final routed order.
             with performance.stage("route_repair"):
+                # Section 3C.2: first the bounded routability repair (a stop
+                # the provider cannot route to), then the burden repair, so
+                # the latter judges the final legs.
+                apply_routability_repair_safely(
+                    planning_state, resolved_route_feasibility_service, state.get("provider_context")
+                )
                 apply_route_burden_repair_safely(
                     planning_state, resolved_route_feasibility_service, state.get("provider_context")
                 )

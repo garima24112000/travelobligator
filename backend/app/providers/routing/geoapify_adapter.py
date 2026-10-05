@@ -212,7 +212,13 @@ class GeoapifyRoutingAdapter(RoutingProvider):
         self, plan: "_RouteRequestPlan", fetched: "dict[str, Any] | ProviderRequestError"
     ) -> list[RouteResult]:
         if isinstance(fetched, ProviderRequestError):
-            logger.warning("Routing request failed (provider=%s, kind=%s).", self.provider_name, fetched.kind)
+            # Fixed identifiers only: the failure kind, its classified reason
+            # and how many waypoints the rejected request carried.
+            reason = fetched.reason or fetched.kind
+            logger.warning(
+                "Routing request failed (provider=%s, kind=%s, reason=%s, mode=%s, waypoints=%d).",
+                self.provider_name, fetched.kind, reason, plan.mode, len(plan.points),
+            )
             status = (
                 ProviderStatus.NOT_CONNECTED
                 if fetched.kind == "not_connected"
@@ -220,7 +226,8 @@ class GeoapifyRoutingAdapter(RoutingProvider):
                 if fetched.kind in ("budget_exhausted", "no_generation_context")
                 else ProviderStatus.FAILED
             )
-            return [self._result(status, _FAILURE_MESSAGES.get(fetched.kind, _FAILED_MESSAGE))] * len(plan.legs)
+            failed = self._result(status, _FAILURE_MESSAGES.get(fetched.kind, _FAILED_MESSAGE))
+            return [failed.model_copy(update={"failure_reason": reason})] * len(plan.legs)
 
         results = self._normalize(fetched, len(plan.legs), plan.mode)
         for (origin, destination), result in zip(plan.legs, results):
