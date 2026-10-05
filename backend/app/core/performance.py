@@ -63,8 +63,84 @@ _GROQ_COUNT_LABELS: dict[str, str] = {
 }
 
 
+# A Gemini request of a stage is counted under its own label, reported only
+# when the generation made one (Groq <-> Gemini resilience group).
+_GEMINI_COUNT_LABELS: dict[str, str] = {
+    "gemini_anchor": "gemini_anchor_calls",
+    "gemini_reasoning": "gemini_reasoning_calls",
+    "gemini_repair": "gemini_repair_calls",
+    "gemini_narrator": "gemini_narrator_calls",
+}
+
+
 def _safe_key(name: object) -> str | None:
     return name if isinstance(name, str) and _KEY_PATTERN.match(name) else None
+
+
+def _safe_number(value: object) -> float | int | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return value if value == value and value not in (float("inf"), float("-inf")) else None
+
+
+def _safe_labels(values: object) -> list[str]:
+    return [value for value in values if _safe_key(value)] if isinstance(values, (list, tuple)) else []
+
+
+# The only provider-health states and quota figures a stage may report.
+_LLM_PROVIDER_STATES = frozenset({"healthy", "draining", "open", "half_open"})
+_LLM_QUOTA_KEYS: dict[str, frozenset[str]] = {
+    "groq_quota": frozenset({"remaining_request_ratio", "remaining_token_ratio", "reset_seconds"}),
+    "gemini_quota": frozenset({"configured_rpm", "configured_tpm", "configured_rpd", "advisory_remaining_ratio"}),
+}
+
+
+def _safe_state_map(values: object) -> dict[str, str]:
+    if not isinstance(values, dict):
+        return {}
+    return {key: value for key, value in values.items() if _safe_key(key) and value in _LLM_PROVIDER_STATES}
+
+
+def _safe_quota(values: object, allowed: frozenset[str]) -> dict[str, float | int | None]:
+    if not isinstance(values, dict):
+        return {}
+    return {key: _safe_number(value) for key, value in values.items() if key in allowed}
+
+
+def sanitize_llm_providers(providers: object) -> dict[str, Any]:
+    """A stage's provider record (`llm_provider_router.StageRoute.diagnostics`)
+    reduced to fixed lower-case labels and numbers. Anything that is not
+    one is dropped, so no key, header, prompt, model answer or URL can be
+    carried into the report through it."""
+    if not isinstance(providers, dict):
+        return {}
+    clean: dict[str, Any] = {
+        "preferred_provider": _safe_key(providers.get("preferred_provider")),
+        "selected_provider": _safe_key(providers.get("selected_provider")),
+        "attempted_providers": _safe_labels(providers.get("attempted_providers")),
+        "final_provider": _safe_key(providers.get("final_provider")),
+        "failover_used": bool(providers.get("failover_used")),
+        "failover_reason": _safe_key(providers.get("failover_reason")),
+        "provider_health_before": _safe_state_map(providers.get("provider_health_before")),
+        "provider_health_after": _safe_state_map(providers.get("provider_health_after")),
+        "total_provider_requests": int(_safe_number(providers.get("total_provider_requests")) or 0),
+        "provider_attempts": [
+            {
+                "provider": _safe_key(attempt.get("provider")),
+                "result": _safe_key(attempt.get("result")),
+                "transport_failure_kind": _safe_key(attempt.get("transport_failure_kind")),
+                "duration_ms": _safe_number(attempt.get("duration_ms")),
+                "structural_validation_result": _safe_key(attempt.get("structural_validation_result")),
+            }
+            for attempt in providers.get("provider_attempts") or []
+            if isinstance(attempt, dict)
+        ],
+    }
+    for key, allowed in _LLM_QUOTA_KEYS.items():
+        quota = _safe_quota(providers.get(key), allowed)
+        if quota:
+            clean[key] = quota
+    return clean
 
 
 class PerformanceRecorder:
@@ -165,6 +241,7 @@ class PerformanceRecorder:
         result: str,
         transport_failure: str | None = None,
         retry_after: str | None = None,
+        providers: dict[str, Any] | None = None,
     ) -> None:
         with self._lock:
             entry = self._llm_stages.setdefault(
@@ -187,6 +264,15 @@ class PerformanceRecorder:
             entry["transport_retries"] += transport_retries
             entry["deadline_exceeded"] = bool(entry["deadline_exceeded"] or deadline_exceeded)
             entry["result"] = result
+            if providers:
+                # A stage can run more than once in a generation (repair):
+                # the requests add up, the rest describes the latest run.
+                earlier = entry.get("provider_attempts") or []
+                entry.update(providers)
+                entry["provider_attempts"] = [*earlier, *providers.get("provider_attempts", [])]
+                entry["attempted_providers"] = [attempt["provider"] for attempt in entry["provider_attempts"]]
+                entry["total_provider_requests"] = len(entry["provider_attempts"])
+                entry["failover_used"] = bool(entry.get("failover_used")) or len(set(entry["attempted_providers"])) > 1
 
     def set_llm_result(self, stage: str, result: str) -> None:
         with self._lock:
@@ -209,6 +295,9 @@ class PerformanceRecorder:
                 counts[label] = int(calls_by_api.get(api, 0))
             for api, label in _GROQ_COUNT_LABELS.items():
                 counts[label] = self._provider_attempts.get(api, 0)
+            for api, label in _GEMINI_COUNT_LABELS.items():
+                if self._provider_attempts.get(api):
+                    counts[label] = self._provider_attempts[api]
             counts["cache_hits"] = sum(self._cache_hits.values())
             return {
                 "total_ms": round(total_ms, 1) if total_ms is not None else None,
@@ -276,11 +365,14 @@ def note_llm_stage(
     result: str,
     transport_failure: str | None = None,
     retry_after: str | None = None,
+    providers: dict[str, Any] | None = None,
 ) -> None:
     """What one model stage did: request attempts, the retries among them,
     whether its total budget ran out, and how it ended -- plus, as fixed
     labels only, the kind of its last transport failure and what was done
-    with a rate limit's Retry-After (anything else is dropped)."""
+    with a rate limit's Retry-After (anything else is dropped). `providers`
+    is the stage's provider record (which provider was preferred, tried and
+    final, and why it switched), kept as fixed labels and numbers only."""
     try:
         recorder = _ACTIVE.get()
         if recorder is not None and _safe_key(stage) is not None and result in _LLM_RESULTS:
@@ -288,6 +380,7 @@ def note_llm_stage(
                 stage, int(attempts), int(structural_retries), int(transport_retries), bool(deadline_exceeded), result,
                 transport_failure if transport_failure in _LLM_TRANSPORT_FAILURES else None,
                 retry_after if retry_after in _LLM_RETRY_AFTER else None,
+                sanitize_llm_providers(providers) if providers else None,
             )
     except Exception:  # noqa: BLE001 - diagnostics never break a generation
         pass

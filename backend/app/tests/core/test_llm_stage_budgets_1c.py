@@ -59,6 +59,22 @@ from app.tests.providers.test_narrator_structural_retry_202c1d import (
 _KEY = "SENTINEL_1C_KEY_0001"
 
 
+# The provider record of the Groq <-> Gemini pair sits beside the stage's own
+# figures in the report (it has its own tests); these tests compare the
+# figures exactly, without it.
+_PROVIDER_RECORD_KEYS = frozenset(
+    {
+        "preferred_provider", "selected_provider", "attempted_providers", "final_provider", "failover_used",
+        "failover_reason", "provider_health_before", "provider_health_after", "total_provider_requests",
+        "provider_attempts", "groq_quota", "gemini_quota",
+    }
+)
+
+
+def _figures(stage: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in stage.items() if key not in _PROVIDER_RECORD_KEYS}
+
+
 class _Clock:
     def __init__(self) -> None:
         self.now = 1_000.0
@@ -221,7 +237,7 @@ def test_a_fast_first_success_is_untouched(clock: _Clock, monkeypatch: pytest.Mo
 
     assert report.status == ItineraryNarrativeStatus.SUCCESS and report.failure_kind is None
     assert len(client.prompts) == 1 and timeouts == [20.0] and clock.slept == []
-    assert recorder.snapshot()["llm_stages"] == {
+    assert {stage: _figures(entry) for stage, entry in recorder.snapshot()["llm_stages"].items()} == {
         "groq_narrator": {
             "attempts": 1, "structural_retries": 0, "transport_retries": 0, "deadline_exceeded": False,
             "result": "success",
@@ -255,7 +271,7 @@ def test_a_late_malformed_answer_goes_straight_to_the_fallback_without_a_retry(
     assert report.message == safe_ai_failure_message("Groq", AIProviderFailureKind.DEADLINE_EXCEEDED)
     assert report.summary is None and report.daily_narratives == []  # nothing fabricated
     stage = recorder.snapshot()["llm_stages"]["groq_narrator"]
-    assert stage == {
+    assert _figures(stage) == {
         "attempts": 1, "structural_retries": 0, "transport_retries": 0, "deadline_exceeded": True, "result": "failed",
     }
 
@@ -345,7 +361,7 @@ def test_anchor_budget_exhaustion_is_a_degraded_factual_outcome(clock: _Clock, m
     assert result.proposals == [] and result.rejected_raw_items == []
     reasons = " ".join(result.guardrail_report.blocked_reasons)
     assert "did not answer within the time allowed" in reasons and "SECRET" not in reasons
-    assert recorder.snapshot()["llm_stages"]["groq_anchor"] == {
+    assert _figures(recorder.snapshot()["llm_stages"]["groq_anchor"]) == {
         "attempts": 1, "structural_retries": 0, "transport_retries": 0, "deadline_exceeded": True, "result": "failed",
     }
 
@@ -361,7 +377,7 @@ def test_the_anchor_structural_retry_obeys_the_budget_and_still_recovers_when_th
 
     assert result.status == AICandidateProposalStatus.COMPLETED and result.failure_kind is None
     assert timeouts == [25.0, 21.0]
-    assert recorder.snapshot()["llm_stages"]["groq_anchor"] == {
+    assert _figures(recorder.snapshot()["llm_stages"]["groq_anchor"]) == {
         "attempts": 2, "structural_retries": 1, "transport_retries": 0, "deadline_exceeded": False, "result": "success",
     }
 
@@ -414,10 +430,13 @@ def test_repair_budget_exhaustion_leaves_the_existing_top_up_path(clock: _Clock,
     # not `completed`: the graph never loops back, and the deterministic top-up / needs-review path runs
     assert result.status == AIItineraryRepairStatus.REJECTED and result.repaired_days == []
     assert result.failure_kind == "deadline_exceeded"
-    assert recorder.snapshot()["llm_stages"]["groq_repair"] == {
+    stage = recorder.snapshot()["llm_stages"]["groq_repair"]
+    assert _figures(stage) == {
         "attempts": 1, "structural_retries": 0, "transport_retries": 0, "deadline_exceeded": True, "result": "failed",
         "transport_failure": "server_error",  # Section 3B: the kind of the failed request
     }
+    # the provider record sits beside those figures (single provider: nothing to fail over to)
+    assert (stage["preferred_provider"], stage["attempted_providers"], stage["failover_used"]) == ("groq", ["groq"], False)
 
 
 # -- the retry stack ----------------------------------------------------------------------------------------------------
@@ -602,10 +621,12 @@ def test_old_reports_states_and_configuration_stay_compatible() -> None:
         {"total_ms": 82_100.0, "stage_ms": {"narrator": 22_000.0}, "peak_geoapify_concurrency": 4, "batch_sizes": {"places": [6]}}
     )
     assert old.llm_stages == {} and old.process_peak_geoapify_concurrency == 0
-    assert LLMStagePerformance().model_dump() == {
+    assert {
         "attempts": 0, "structural_retries": 0, "transport_retries": 0, "deadline_exceeded": False, "result": None,
         "transport_failure": None, "retry_after": None,  # Section 3B diagnostics, optional
-    }
+        # the provider record of the Groq <-> Gemini pair, optional
+        "preferred_provider": None, "final_provider": None, "failover_used": False, "total_provider_requests": 0,
+    }.items() <= LLMStagePerformance().model_dump().items()
     # results stored before `failure_kind` existed
     assert ItineraryNarrativeReport.model_validate({"status": "failed", "message": "x"}).failure_kind is None
     assert AIItineraryRepairResult.model_validate(
@@ -638,13 +659,14 @@ def test_the_canary_reports_llm_stages_and_both_concurrency_peaks_without_judgin
     assert section["concurrency"]["process_peak_geoapify_concurrency"] >= section["concurrency"]["peak_geoapify_concurrency"]
 
     section["llm_stages"] = [
-        {"label": "Groq narrator", "attempts": 1, "structural_retries": 0, "transport_retries": 0,
+        {"label": "LLM narrator", "attempts": 1, "structural_retries": 0, "transport_retries": 0,
          "deadline_exceeded": True, "result": "failed", "seconds": 23.0}
     ]
     text = canary._render(report)
     assert "LLM STAGES" in text
+    # the semantic stage is provider-neutral: its attempts are never labelled as one provider's
     assert (
-        "- Groq narrator: 1 attempt(s) in 23.0 s | structural retries: 0 | transport retries: 0"
+        "- LLM narrator: 1 attempt(s) in 23.0 s | structural retries: 0 | transport retries: 0"
         " | deadline exceeded: YES | result: failed"
     ) in text
     assert report["acceptance"]["outcome"] == "PASS"

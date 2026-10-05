@@ -27,6 +27,22 @@ from app.models.ai_itinerary_repair import (
     validate_repair_result_against_request,
 )
 from app.providers.ai_itinerary_reasoning.base import AIItineraryReasoningProvider
+from app.providers.llm_provider_health import GEMINI, GROQ
+from app.providers.llm_provider_router import (
+    PROVIDER_LABELS,
+    StageRoute,
+    after_structural_failure,
+    after_transport_failure,
+    answering_provider,
+    close_route,
+    gemini_wording,
+    not_configured_message,
+    provider_call,
+    resolve_chain,
+    start_route,
+    unavailable_failure,
+)
+from app.providers.llm_structured_clients import GeminiStructuredClient, open_groq_quota_capture
 from app.providers.ai_itinerary_reasoning.candidate_refs import (
     CandidateRefMap,
     UnknownCandidateReference,
@@ -334,6 +350,9 @@ class GroqAIItineraryReasoningProvider(AIItineraryReasoningProvider):
     """
 
     provider_name = "groq_ai_itinerary_reasoning_provider"
+    # The member of the Groq <-> Gemini pair this adapter stands for when
+    # failover is off (`app/providers/llm_provider_router.py`).
+    _selected_provider = GROQ
 
     def __init__(
         self,
@@ -356,15 +375,28 @@ class GroqAIItineraryReasoningProvider(AIItineraryReasoningProvider):
         self._max_tokens = max_tokens
         self._temperature = temperature
 
+    def _start_route(self, run: StageRun) -> StageRoute | None:
+        """The stage's provider route. None with an injected client: that
+        client is the only thing called and nothing is selected."""
+        if self._client is not None:
+            return None
+        return start_route(run, self._selected_provider, get_settings(), groq_api_key=self._api_key or "")
+
+    def _has_no_provider(self) -> bool:
+        return self._client is None and not resolve_chain(
+            self._selected_provider, get_settings(), groq_api_key=self._api_key or ""
+        )
+
     def reason(self, request: AIItineraryReasoningRequest) -> AIItineraryReasoningResult:
-        if self._client is None and not self._api_key:
-            return self._not_connected_result(
-                request, "Groq API key is not configured (GROQ_API_KEY unset)."
+        if self._has_no_provider():
+            return self._attributed(
+                self._not_connected_result(request, not_configured_message(self._selected_provider)), None
             )
 
         # Section 1C: one total wall-clock budget for the stage and at most
-        # one (transport) recovery attempt. Any non-completed result leaves
-        # the deterministic planner to schedule the days, as before.
+        # one recovery attempt (a transport retry, or the other provider of
+        # the Groq <-> Gemini pair). Any non-completed result leaves the
+        # deterministic planner to schedule the days, as before.
         settings = get_settings()
         run = StageRun(
             "groq_reasoning",
@@ -372,53 +404,133 @@ class GroqAIItineraryReasoningProvider(AIItineraryReasoningProvider):
             request_timeout_seconds=settings.groq_request_timeout_seconds,
             transport_retries=settings.groq_max_retries,
         )
-        result = self._reason_within(request, run)
-        run.close(completed=result.status == AIItineraryReasoningStatus.COMPLETED)
-        return result
+        route = self._start_route(run)
+        result = self._reason_within(request, run, route)
+        close_route(run, route, completed=result.status == AIItineraryReasoningStatus.COMPLETED)
+        return self._attributed(result, route)
+
+    def _attributed(self, result: Any, route: StageRoute | None) -> Any:
+        """Names the provider that actually answered. Provider identity is
+        metadata only: the result went through the same checks either way."""
+        if answering_provider(route, self._selected_provider) != GEMINI:
+            if self._selected_provider == GROQ:
+                return result
+            return result.model_copy(update={"provider_name": GroqAIItineraryReasoningProvider.provider_name})
+        report = result.guardrail_report
+        return result.model_copy(
+            update={
+                "provider_name": "gemini_ai_itinerary_reasoning_provider",
+                "model_name": get_settings().gemini_model,
+                "guardrail_report": report.model_copy(
+                    update={"blocked_reasons": [gemini_wording(reason) for reason in report.blocked_reasons]}
+                ),
+            }
+        )
+
+    def _build_gemini_client(self, schema: type[BaseModel], timeout: float) -> Any:
+        """The same stage on Gemini: same prompt, same wire schema, one
+        request, no tools (`app/providers/llm_structured_clients.py`)."""
+        settings = get_settings()
+        return GeminiStructuredClient(
+            schema,
+            api_key=settings.gemini_api_key or "",
+            model=settings.gemini_model or "",
+            temperature=self._temperature,
+            max_tokens=self._max_tokens,
+            timeout=timeout,
+        )
 
     def _invoke_within(
-        self, run: StageRun, build_client: Any, prompt: str, timing_key: str
+        self,
+        run: StageRun,
+        build_client: Any,
+        prompt: str,
+        timing_key: str,
+        route: StageRoute | None = None,
+        schema: type[BaseModel] | None = None,
     ) -> tuple[Any, tuple[str, str] | None, str | None]:
         """One model answer within the stage budget:
         `(raw output, None, None)`, or `(None, (failure kind, safe message), None)`
         for a failed / out-of-time call, or `(None, None, reason)` when no
-        client could be built (not connected). The request is retried at
-        most once, only for a transient transport failure, and only while
-        the budget allows it."""
+        client could be built (not connected). The stage makes at most ONE
+        recovery request, while the budget allows it: the same provider again
+        after a transient transport failure, or -- when the stage is routed
+        over the Groq <-> Gemini pair -- the other provider after a transport
+        failure or a malformed / schema-invalid answer. There is no
+        same-provider retry for a malformed answer."""
+        provider = route.first_provider() if route is not None else GROQ
+        if provider is None:
+            assert route is not None
+            kind, message = unavailable_failure(route)
+            return None, (kind.value, message), None
         while True:
+            label = PROVIDER_LABELS[provider]
             timeout = run.next_attempt_timeout()
             if timeout is None:
-                return None, (AIProviderFailureKind.DEADLINE_EXCEEDED.value, run.deadline_message("Groq")), None
+                return None, (AIProviderFailureKind.DEADLINE_EXCEEDED.value, run.deadline_message(label)), None
             if self._client is not None:
                 client = self._client
             else:
                 try:
-                    client = build_client(timeout=timeout)
+                    client = (
+                        build_client(timeout=timeout)
+                        if provider == GROQ
+                        else self._build_gemini_client(schema or _GroqItineraryReasoningSchema, timeout)
+                    )
                 except Exception as exc:  # missing package / bad config -> not_connected
-                    run.attempts = 0  # no request was made
-                    return None, None, f"Groq client could not be initialized: {exc}"
+                    run.attempts -= 1  # no request was made
+                    if run.attempts == 0:
+                        return None, None, f"{label} client could not be initialized: {exc}"
+                    return None, (AIProviderFailureKind.NOT_CONNECTED.value, f"{label} client could not be initialized."), None
+            if route is not None:
+                route.begin_attempt(provider)
             try:
-                with performance.provider_call(timing_key):
+                with provider_call(timing_key, provider):
                     raw_output = client.invoke(prompt)
             except Exception as exc:  # API/runtime failure -> rejected, never fabricated
-                if run.allow_transport_retry(exc):
+                kind, message = classify_and_message(label, exc)
+                if kind == AIProviderFailureKind.MALFORMED_OUTPUT:
+                    # The provider answered; the answer is not usable.
+                    run.answered = True
+                    if route is not None:
+                        route.record_exception(provider, exc, client=client)
+                    next_provider = after_structural_failure(run, route, provider, same_provider_retry=False)
+                else:
+                    next_provider = after_transport_failure(run, route, provider, exc)
+                if next_provider is not None:
+                    provider = next_provider
                     continue
                 if run.deadline_exceeded:
                     return (
                         None,
-                        (AIProviderFailureKind.DEADLINE_EXCEEDED.value, run.deadline_message("Groq")),
+                        (AIProviderFailureKind.DEADLINE_EXCEEDED.value, run.deadline_message(label)),
                         None,
                     )
-                kind, message = classify_and_message("Groq", exc)
-                run.answered = kind == AIProviderFailureKind.MALFORMED_OUTPUT
                 return None, (kind.value, message), None
             run.answered = True
+            structured = self._coerce_output(raw_output) is not None
+            if route is not None:
+                route.record_answer(provider, client, structured=structured)
+            if not structured:
+                next_provider = after_structural_failure(run, route, provider, same_provider_retry=False)
+                if next_provider is not None:
+                    provider = next_provider
+                    continue
+                if run.deadline_exceeded:
+                    return (
+                        None,
+                        (AIProviderFailureKind.DEADLINE_EXCEEDED.value, run.deadline_message(label)),
+                        None,
+                    )
             return raw_output, None, None
 
-    def _reason_within(self, request: AIItineraryReasoningRequest, run: StageRun) -> AIItineraryReasoningResult:
+    def _reason_within(
+        self, request: AIItineraryReasoningRequest, run: StageRun, route: StageRoute | None = None
+    ) -> AIItineraryReasoningResult:
         ref_map = CandidateRefMap.for_candidates(request.allowed_candidates)
         raw_output, failure, not_connected = self._invoke_within(
-            run, self._build_client, _build_prompt(request, ref_map), "groq_reasoning"
+            run, self._build_client, _build_prompt(request, ref_map), "groq_reasoning", route,
+            _GroqItineraryReasoningSchema,
         )
         if not_connected is not None:
             return self._not_connected_result(request, not_connected)
@@ -456,6 +568,7 @@ class GroqAIItineraryReasoningProvider(AIItineraryReasoningProvider):
         except ImportError as exc:
             raise RuntimeError("The 'langchain_groq' package is not installed.") from exc
 
+        capture = open_groq_quota_capture()
         chat = ChatGroq(
             model=self._model,
             api_key=self._api_key,
@@ -466,6 +579,8 @@ class GroqAIItineraryReasoningProvider(AIItineraryReasoningProvider):
             # recovery attempt is made by the adapter, under the stage budget.
             timeout=timeout if timeout is not None else get_settings().groq_request_timeout_seconds,
             max_retries=0,
+            # Reads the response's rate-limit numbers (nothing else).
+            http_client=capture.http_client,
         )
         return chat.with_structured_output(
             _GroqItineraryReasoningSchema, method="json_schema", strict=True
@@ -602,9 +717,9 @@ class GroqAIItineraryReasoningProvider(AIItineraryReasoningProvider):
     # -----------------------------------------------------------------
 
     def repair(self, request: AIItineraryRepairRequest) -> AIItineraryRepairResult:
-        if self._client is None and not self._api_key:
-            return self._not_connected_repair_result(
-                request, "Groq API key is not configured (GROQ_API_KEY unset)."
+        if self._has_no_provider():
+            return self._attributed(
+                self._not_connected_repair_result(request, not_configured_message(self._selected_provider)), None
             )
 
         # Section 1C: same total-budget / single-recovery policy as `reason`.
@@ -617,14 +732,18 @@ class GroqAIItineraryReasoningProvider(AIItineraryReasoningProvider):
             request_timeout_seconds=settings.groq_request_timeout_seconds,
             transport_retries=settings.groq_max_retries,
         )
-        result = self._repair_within(request, run)
-        run.close(completed=result.status == AIItineraryRepairStatus.COMPLETED)
-        return result
+        route = self._start_route(run)
+        result = self._repair_within(request, run, route)
+        close_route(run, route, completed=result.status == AIItineraryRepairStatus.COMPLETED)
+        return self._attributed(result, route)
 
-    def _repair_within(self, request: AIItineraryRepairRequest, run: StageRun) -> AIItineraryRepairResult:
+    def _repair_within(
+        self, request: AIItineraryRepairRequest, run: StageRun, route: StageRoute | None = None
+    ) -> AIItineraryRepairResult:
         ref_map = CandidateRefMap.for_candidates(request.allowed_candidates)
         raw_output, failure, not_connected = self._invoke_within(
-            run, self._build_repair_client, _build_repair_prompt(request, ref_map), "groq_repair"
+            run, self._build_repair_client, _build_repair_prompt(request, ref_map), "groq_repair", route,
+            _GroqRepairSchema,
         )
         if not_connected is not None:
             return self._not_connected_repair_result(request, not_connected)
@@ -654,6 +773,7 @@ class GroqAIItineraryReasoningProvider(AIItineraryReasoningProvider):
         except ImportError as exc:
             raise RuntimeError("The 'langchain_groq' package is not installed.") from exc
 
+        capture = open_groq_quota_capture()
         chat = ChatGroq(
             model=self._model,
             api_key=self._api_key,
@@ -664,6 +784,7 @@ class GroqAIItineraryReasoningProvider(AIItineraryReasoningProvider):
             # recovery attempt is made by the adapter, under the stage budget.
             timeout=timeout if timeout is not None else get_settings().groq_request_timeout_seconds,
             max_retries=0,
+            http_client=capture.http_client,
         )
         return chat.with_structured_output(_GroqRepairSchema, method="json_schema", strict=True)
 

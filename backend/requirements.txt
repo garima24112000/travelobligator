@@ -1,5 +1,11 @@
 annotated-doc==0.0.4
 annotated-types==0.7.0
+# Official Google Gen AI SDK -- backs the Gemini member of the Groq <-> Gemini
+# LLM resilience group (backend/app/providers/llm_structured_clients.py).
+# Like the Groq/Anthropic packages below, it is only imported lazily inside
+# the client, so the app and test suite both work whether or not it is
+# installed. Its transitive dependencies are deliberately not pinned here.
+google-genai==2.28.0
 # TODO: pin an exact version once verified against PyPI (Step 161A). The
 # adapter (backend/app/providers/ai_candidate_proposal/anthropic_adapter.py)
 # only imports this lazily inside _build_client, so the app and test suite

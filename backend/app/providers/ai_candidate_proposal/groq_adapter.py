@@ -24,6 +24,22 @@ from app.providers.ai_candidate_proposal.anchor_guidance import ANCHOR_DISCOVERY
 from app.providers.ai_candidate_proposal.base import AICandidateProposalProvider
 from app.providers.ai_candidate_proposal.proposal_dedup import deduplicate_proposals
 from app.providers.ai_candidate_proposal.proposal_validation import validate_proposals
+from app.providers.llm_provider_health import GEMINI, GROQ
+from app.providers.llm_provider_router import (
+    PROVIDER_LABELS,
+    StageRoute,
+    after_structural_failure,
+    after_transport_failure,
+    answering_provider,
+    close_route,
+    gemini_wording,
+    not_configured_message,
+    provider_call,
+    resolve_chain,
+    start_route,
+    unavailable_failure,
+)
+from app.providers.llm_structured_clients import GeminiStructuredClient, open_groq_quota_capture
 
 # Groq-backed AI candidate proposal adapter (Step 162A,
 # itinerary-generator-build-spec.md Stage 5, docs/13_llm_reasoning_
@@ -275,6 +291,9 @@ class GroqAICandidateProposalProvider(AICandidateProposalProvider):
     """
 
     provider_name = "groq_ai_candidate_proposal_provider"
+    # The member of the Groq <-> Gemini pair this adapter stands for when
+    # failover is off (`app/providers/llm_provider_router.py`).
+    _selected_provider = GROQ
 
     def __init__(
         self,
@@ -296,15 +315,18 @@ class GroqAICandidateProposalProvider(AICandidateProposalProvider):
         self._temperature = temperature
 
     def propose(self, request: AICandidateProposalRequest) -> AICandidateProposalResult:
-        if self._client is None and not self._api_key:
-            return self._not_connected_result(
-                request, "Groq API key is not configured (GROQ_API_KEY unset)."
+        settings = get_settings()
+        if self._client is None and not resolve_chain(
+            self._selected_provider, settings, groq_api_key=self._api_key or ""
+        ):
+            return self._attributed(
+                self._not_connected_result(request, not_configured_message(self._selected_provider)), None
             )
 
         # Section 1C: every attempt of this stage answers to ONE total
         # wall-clock budget, and the stage makes at most one recovery attempt
-        # (structural OR transport, never both stacked).
-        settings = get_settings()
+        # (structural OR transport OR the other provider of the Groq <->
+        # Gemini pair, never stacked).
         run = StageRun(
             "groq_anchor",
             total_budget_seconds=settings.groq_anchor_total_budget_seconds,
@@ -312,16 +334,66 @@ class GroqAICandidateProposalProvider(AICandidateProposalProvider):
             structural_retries=_MAX_STRUCTURAL_ATTEMPTS - 1,
             transport_retries=settings.groq_max_retries,
         )
-        result = self._propose_within(request, run)
-        run.close(completed=result.status == AICandidateProposalStatus.COMPLETED)
-        return result
+        # No route with an injected client: that client is the only thing called.
+        route = (
+            start_route(run, self._selected_provider, settings, groq_api_key=self._api_key or "")
+            if self._client is None
+            else None
+        )
+        result = self._propose_within(request, run, route)
+        close_route(run, route, completed=result.status == AICandidateProposalStatus.COMPLETED)
+        return self._attributed(result, route)
 
-    def _propose_within(self, request: AICandidateProposalRequest, run: StageRun) -> AICandidateProposalResult:
+    def _attributed(self, result: AICandidateProposalResult, route: StageRoute | None) -> AICandidateProposalResult:
+        """Names the provider that actually answered. Provider identity is
+        metadata only: the proposals went through the same checks either way."""
+        if answering_provider(route, self._selected_provider) != GEMINI:
+            if self._selected_provider == GROQ:
+                return result
+            return result.model_copy(update={"provider_name": GroqAICandidateProposalProvider.provider_name})
+        report = result.guardrail_report
+        return result.model_copy(
+            update={
+                "provider_name": "gemini_ai_candidate_proposal_provider",
+                "model_name": get_settings().gemini_model,
+                "guardrail_report": report.model_copy(
+                    update={"blocked_reasons": [gemini_wording(reason) for reason in report.blocked_reasons]}
+                ),
+            }
+        )
+
+    def _build_gemini_client(self, max_tokens: int | None, timeout: float) -> Any:
+        """The same stage on Gemini: same prompt, same wire schema, one
+        request, no tools (`app/providers/llm_structured_clients.py`)."""
+        settings = get_settings()
+        return GeminiStructuredClient(
+            _GroqProposalBatchSchema,
+            api_key=settings.gemini_api_key or "",
+            model=settings.gemini_model or "",
+            temperature=self._temperature,
+            max_tokens=max_tokens or self._max_tokens,
+            timeout=timeout,
+        )
+
+    def _propose_within(
+        self, request: AICandidateProposalRequest, run: StageRun, route: StageRoute | None = None
+    ) -> AICandidateProposalResult:
+        provider = route.first_provider() if route is not None else GROQ
+        if provider is None:
+            # Every provider of the pair recently refused or failed: no
+            # request is made and the broad provider pool stands on its own.
+            assert route is not None
+            return self._rejected_result(
+                request, unavailable_failure(route)[1], AICandidateProposalFailureKind.PROVIDER_FAILURE
+            )
+
         def deadline_result() -> AICandidateProposalResult:
             # A latency outcome, not a statement about any place: no anchor
             # is proposed and the broad provider pool stands on its own.
             return self._rejected_result(
-                request, run.deadline_message("Groq"), AICandidateProposalFailureKind.DEADLINE_EXCEEDED
+                request,
+                run.deadline_message(PROVIDER_LABELS[provider]),
+                AICandidateProposalFailureKind.DEADLINE_EXCEEDED,
             )
 
         # Section 202B.2 (Tasks 14-16). 202A evidence (18 baseline runs + pilot):
@@ -335,8 +407,15 @@ class GroqAICandidateProposalProvider(AICandidateProposalProvider):
         # rate limits, auth, timeouts, provider errors, and any semantic /
         # grounding / factual rejection (those come from
         # `_build_result_from_output`, after this loop).
+        #
+        # Groq <-> Gemini pair: when the stage is routed over both providers,
+        # that one recovery request goes to the OTHER provider instead --
+        # after a transport failure if it may be called at all, after a
+        # structural failure only if it is healthy -- with the same smaller
+        # batch a structural retry would have used. Still two requests at most.
         active_request = request
         while True:
+            label = PROVIDER_LABELS[provider]
             timeout = run.next_attempt_timeout()
             if timeout is None:
                 return deadline_result()
@@ -349,22 +428,37 @@ class GroqAICandidateProposalProvider(AICandidateProposalProvider):
                     # was sized for 15 and a truncated document is a structural
                     # failure).
                     budget = max(self._max_tokens, _BASE_TOKENS + _TOKENS_PER_PROPOSAL * request.max_candidates)
-                    client = self._build_client(None if budget == self._max_tokens else budget, timeout=timeout)
+                    budget_override = None if budget == self._max_tokens else budget
+                    client = (
+                        self._build_client(budget_override, timeout=timeout)
+                        if provider == GROQ
+                        else self._build_gemini_client(budget_override, timeout)
+                    )
                 except Exception as exc:  # missing package / bad config -> not_connected
-                    run.attempts = 0  # no request was made
-                    return self._not_connected_result(
-                        request, f"Groq client could not be initialized: {exc}"
+                    run.attempts -= 1  # no request was made
+                    if run.attempts == 0:
+                        return self._not_connected_result(
+                            request, f"{label} client could not be initialized: {exc}"
+                        )
+                    return self._rejected_result(
+                        request,
+                        f"{label} client could not be initialized.",
+                        AICandidateProposalFailureKind.PROVIDER_FAILURE,
                     )
 
             structural_failure: str | None = None
             structural_kind = AICandidateProposalFailureKind.SCHEMA_VALIDATION
+            if route is not None:
+                route.begin_attempt(provider)
             try:
-                with performance.provider_call("groq_anchor"):
+                with provider_call("groq_anchor", provider):
                     raw_output = client.invoke(_build_prompt(active_request))
             except Exception as exc:  # API/runtime failure -> rejected, never fabricated
-                kind, message = classify_and_message("Groq", exc)
+                kind, message = classify_and_message(label, exc)
                 if kind != AIProviderFailureKind.MALFORMED_OUTPUT:
-                    if run.allow_transport_retry(exc):
+                    next_provider = after_transport_failure(run, route, provider, exc)
+                    if next_provider is not None:
+                        provider = next_provider
                         continue
                     if run.deadline_exceeded:
                         return deadline_result()
@@ -372,21 +466,27 @@ class GroqAICandidateProposalProvider(AICandidateProposalProvider):
                         request, message, AICandidateProposalFailureKind.PROVIDER_FAILURE
                     )
                 run.answered = True
+                if route is not None:
+                    route.record_exception(provider, exc, client=client)
                 structural_failure = message
             else:
                 run.answered = True
                 output_dict = self._coerce_output(raw_output)
+                if route is not None:
+                    route.record_answer(provider, client, structured=output_dict is not None)
                 if output_dict is not None:
                     return self._build_result_from_output(request, output_dict)
-                structural_failure = "Groq did not return a structured response."
+                structural_failure = f"{label} did not return a structured response."
                 structural_kind = AICandidateProposalFailureKind.PARSE_FAILURE
 
-            if not run.allow_structural_retry():
+            next_provider = after_structural_failure(run, route, provider, same_provider_retry=True)
+            if next_provider is None:
                 if run.deadline_exceeded:
                     return deadline_result()
                 return self._rejected_result(
                     request, f"{structural_failure} (after {run.attempts} attempt(s))", structural_kind
                 )
+            provider = next_provider
             active_request = request.model_copy(
                 update={"max_candidates": max(_RETRY_MIN_CANDIDATES, request.max_candidates // 2)}
             )
@@ -432,6 +532,7 @@ class GroqAICandidateProposalProvider(AICandidateProposalProvider):
         # reproduced live at production size), while the model's default
         # effort returned a valid 15-proposal batch in an equivalent live probe.
         # The bounded structural retry below is kept.
+        capture = open_groq_quota_capture()
         chat = ChatGroq(
             model=self._model,
             api_key=self._api_key,
@@ -442,6 +543,8 @@ class GroqAICandidateProposalProvider(AICandidateProposalProvider):
             # recovery attempt is made by `propose`, under the stage budget.
             timeout=timeout if timeout is not None else get_settings().groq_request_timeout_seconds,
             max_retries=0,
+            # Reads the response's rate-limit numbers (nothing else).
+            http_client=capture.http_client,
         )
         return chat.with_structured_output(
             _GroqProposalBatchSchema, method="json_schema", strict=True

@@ -301,8 +301,10 @@ def test_metrics_extraction_from_a_fake_canary_result() -> None:
     assert record["providers"] == {
         "geoapify_credits_total": 40, "geoapify_credit_budget": 100, "geoapify_calls_refused_by_budget": 0,
         "geoapify_calls_by_api": {"places": 6, "routing": 3},
-        "groq_attempts_by_stage": {"Groq anchor": 1, "Groq reasoning": 2},
-        "deadline_exceeded_by_stage": {"Groq anchor": False, "Groq reasoning": False},
+        # semantic-stage totals are provider-neutral, even from a report whose labels still said "Groq"
+        "llm_attempts_by_stage": {"LLM anchor": 1, "LLM reasoning": 2},
+        "llm_calls_by_provider": None,  # this (older-shaped) report carries no provider counters
+        "deadline_exceeded_by_stage": {"LLM anchor": False, "LLM reasoning": False},
     }
     assert record["performance"] == {
         "total_generation_seconds": 40.0, "stage_seconds": {"reasoning": 6.5},
@@ -317,8 +319,9 @@ def test_metrics_extraction_from_a_fake_canary_result() -> None:
     }
     assert record["canary_warnings"] == [] and record["manual_review_flags"] == []
 
-    # without a recorded performance report the stage-level Groq count is used
-    assert _metrics(performance={"available": False})["providers"]["groq_attempts_by_stage"] == {"anchor_proposal": 1}
+    # without a recorded performance report the stage-level count is used (here from a report
+    # written when the canary still called it `groq_stage_calls`)
+    assert _metrics(performance={"available": False})["providers"]["llm_attempts_by_stage"] == {"anchor_proposal": 1}
 
 
 def test_metrics_extraction_matches_the_real_canary_report(

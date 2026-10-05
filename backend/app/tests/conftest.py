@@ -144,6 +144,23 @@ def _isolate_ai_candidate_proposal_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("GROQ_API_KEY", "")
     monkeypatch.setenv("ANTHROPIC_MODEL", Settings.model_fields["anthropic_model"].default)
     monkeypatch.setenv("GROQ_MODEL", Settings.model_fields["groq_model"].default)
+    # Groq <-> Gemini resilience group: no Gemini credentials, the default
+    # pair order and no optional limits, whatever a developer's `.env` holds
+    # (same "set, never delete" rule as above). The provider-health record is
+    # process memory, so it is emptied around every test.
+    monkeypatch.setenv("GEMINI_API_KEY", "")
+    monkeypatch.setenv("GEMINI_MODEL", "")
+    monkeypatch.setenv("LLM_PRIMARY_PROVIDER", "groq")
+    monkeypatch.setenv("LLM_SECONDARY_PROVIDER", "gemini")
+    monkeypatch.setenv("LLM_FAILOVER_ENABLED", "true")
+    monkeypatch.setenv("LLM_QUOTA_RESERVE_RATIO", "0.10")
+    monkeypatch.setenv("LLM_PROVIDER_SHORT_COOLDOWN_SECONDS", "60")
+    monkeypatch.setenv("LLM_PROVIDER_PROBE_SECONDS", "300")
+    for name in ("GEMINI_RPM_LIMIT", "GEMINI_TPM_LIMIT", "GEMINI_RPD_LIMIT"):
+        monkeypatch.setenv(name, "")
+    from app.providers.llm_provider_health import get_llm_provider_health
+
+    get_llm_provider_health().reset()
     # Section 203C.2B: the inventory sufficiency gate + usefulness contract
     # are ON by default (and required in production). This suite's legacy
     # fixtures use a deliberately tiny deterministic pool (two attractions),
@@ -153,6 +170,7 @@ def _isolate_ai_candidate_proposal_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("INVENTORY_SUFFICIENCY_GATE_ENABLED", "false")
     get_settings.cache_clear()
     yield
+    get_llm_provider_health().reset()
     get_settings.cache_clear()
 
 

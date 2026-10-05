@@ -129,7 +129,11 @@ def test_provider_package_calls_no_langgraph_or_disallowed_vendor() -> None:
     import app.providers.ai_itinerary_reasoning.groq_adapter as groq_module
     import app.providers.ai_itinerary_reasoning.not_connected_adapter as not_connected_module
 
-    disallowed_substrings = ("langgraph", "langsmith", "openai_", "gemini")
+    # Gemini is the second member of the Groq <-> Gemini resilience group, so
+    # the package's own `gemini_adapter` selector is allowed; what stays
+    # forbidden is importing a Google SDK here (it is reached only through
+    # `app.providers.llm_structured_clients`, lazily).
+    disallowed_substrings = ("langgraph", "langsmith", "openai_", "google.genai", "google.generativeai", "genai")
     for module in (anthropic_module, factory_module, groq_module, not_connected_module):
         imported_names = _imported_module_names(module)
         for name in imported_names:

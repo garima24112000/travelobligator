@@ -29,7 +29,7 @@ deadline (the attempt cap still applies).
 from __future__ import annotations
 
 import time
-from typing import Callable
+from typing import Any, Callable
 
 from app.core import performance
 from app.providers.ai_failure import (
@@ -48,6 +48,8 @@ MIN_ATTEMPT_SECONDS = 3.0
 TRANSPORT_RETRY_BACKOFF_SECONDS = 1.0
 # A budget with less than this left is spent.
 _SPENT_SECONDS = 0.25
+# A stage routed over two providers never makes more requests than this.
+ROUTED_MAX_ATTEMPTS = 2
 # Section 3B: a rate limit's Retry-After is honoured only when the wait fits
 # inside what is left of the stage budget (leaving room for the attempt). A
 # stage whose budget is disabled never waits longer than this.
@@ -84,6 +86,9 @@ class StageRun:
         self._request_timeout = request_timeout_seconds
         self._structural_allowed = max(0, structural_retries)
         self._transport_allowed = max(0, transport_retries)
+        # Set by `enable_failover` for a stage routed over two providers.
+        self._failover_allowed = 0
+        self.failovers = 0
         self._clock = clock
         self._sleep = sleep
         self._started_at = clock()
@@ -100,9 +105,52 @@ class StageRun:
         self.retry_after: str | None = None
 
     @property
+    def clock(self) -> Callable[[], float]:
+        """The stage's monotonic clock (request durations are measured on it)."""
+        return self._clock
+
+    @property
     def max_attempts(self) -> int:
-        """One attempt plus at most ONE kind of recovery -- never a product."""
-        return 1 + max(self._structural_allowed, self._transport_allowed)
+        """One attempt plus at most ONE kind of recovery -- never a product.
+        A stage routed over two providers makes at most TWO requests in
+        total, whatever its transport-retry setting."""
+        allowed = 1 + max(self._structural_allowed, self._transport_allowed, self._failover_allowed)
+        return min(allowed, ROUTED_MAX_ATTEMPTS) if self._failover_allowed else allowed
+
+    def enable_failover(self) -> None:
+        """This stage may send its one recovery attempt to the other
+        provider (`app/providers/llm_provider_router.py`). That attempt
+        shares the single recovery slot with the structural and transport
+        retries, and answers to the same budget: the clock is not reset."""
+        self._failover_allowed = 1
+
+    def allow_failover(self) -> bool:
+        """True when the one recovery attempt may start now, on the other
+        provider. No pause: a refusal or outage of one provider is not a
+        reason to make the other one wait."""
+        if self.failovers >= self._failover_allowed or self.attempts >= self.max_attempts:
+            return False
+        if not self._room_for_retry():
+            self.deadline_exceeded = True
+            return False
+        self.failovers += 1
+        return True
+
+    def cut_short_by_budget(self, exc: BaseException) -> bool:
+        """True when `exc` is a timeout of a request that only had what was
+        left of the stage budget -- the stage's own deadline, which says
+        nothing about the provider. Marks the stage `deadline_exceeded`."""
+        timed_out = classify_ai_provider_exception(exc) == AIProviderFailureKind.TIMEOUT_OR_NETWORK
+        remaining = self.remaining()
+        if timed_out and self._last_timeout_clipped and remaining is not None and remaining < _SPENT_SECONDS:
+            self.deadline_exceeded = True
+            return True
+        return False
+
+    def note_transport_failure(self, exc: BaseException) -> None:
+        """Remembers the kind of the stage's last transport failure (a
+        fixed diagnostic label)."""
+        self.transport_failure = transport_failure_subtype(exc) or self.transport_failure
 
     def remaining(self) -> float | None:
         """Seconds of budget left (never negative); None with no budget."""
@@ -144,15 +192,12 @@ class StageRun:
         """After a request raised `exc`: True (after the backoff) when the
         one recovery attempt may start. Never for a failure that repeating
         cannot fix."""
-        timed_out = classify_ai_provider_exception(exc) == AIProviderFailureKind.TIMEOUT_OR_NETWORK
-        remaining = self.remaining()
-        if timed_out and self._last_timeout_clipped and remaining is not None and remaining < _SPENT_SECONDS:
+        if self.cut_short_by_budget(exc):
             # The request was cut short by the stage budget itself.
-            self.deadline_exceeded = True
             return False
         # Section 3B: which kind of transport failure this was (the last one
         # of the stage is what is reported). Diagnostic label only.
-        self.transport_failure = transport_failure_subtype(exc) or self.transport_failure
+        self.note_transport_failure(exc)
         if not is_transient_failure(exc):
             return False
         if self.transport_retries >= self._transport_allowed or self.attempts >= self.max_attempts:
@@ -187,11 +232,24 @@ class StageRun:
     def deadline_message(self, provider_label: str) -> str:
         return safe_ai_failure_message(provider_label, AIProviderFailureKind.DEADLINE_EXCEEDED)
 
-    def close(self, completed: bool) -> None:
+    def close(self, completed: bool, providers: dict[str, Any] | None = None) -> None:
         """Records the stage's attempt counts and outcome for the
         generation being profiled (numbers and fixed labels only). Nothing
-        is recorded for a stage that never made a request."""
+        is recorded for a stage that never made a request -- unless it was
+        routed and no provider could be called, which is itself the outcome.
+        `providers` is the route's sanitized record of which provider was
+        chosen and how each request ended."""
         if self.attempts == 0:
+            if providers is not None and providers.get("selected_provider") is None and providers.get("preferred_provider"):
+                performance.note_llm_stage(
+                    self.stage,
+                    attempts=0,
+                    structural_retries=0,
+                    transport_retries=0,
+                    deadline_exceeded=False,
+                    result=RESULT_FAILED,
+                    providers=providers,
+                )
             return
         result = (
             RESULT_SUCCESS
@@ -209,4 +267,5 @@ class StageRun:
             result=result,
             transport_failure=self.transport_failure,
             retry_after=self.retry_after,
+            providers=providers,
         )

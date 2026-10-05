@@ -124,7 +124,12 @@ def test_canary_report_covers_every_section_and_is_sanitized(
     assert report["factual_safety"]["fabricated_or_unverified_scheduled_identities"] == []
     usage = report["provider_usage"]
     assert usage["total_geoapify_credits"] == sum(usage["geoapify_credits_by_api"].values()) <= 100
-    assert set(usage["groq_stage_calls"]) == {"anchor_proposal", "itinerary_reasoning", "itinerary_repair_attempts", "narrator"}
+    assert set(usage["llm_stage_runs"]) == {"anchor_proposal", "itinerary_reasoning", "itinerary_repair_attempts", "narrator"}
+    # requests actually sent, per provider and stage (no model provider is connected in this fixture)
+    assert usage["llm_calls_by_provider"] == {
+        provider: {"anchor": 0, "reasoning": 0, "repair": 0, "narrator": 0} for provider in ("groq", "gemini")
+    }
+    assert not [key for key in usage if "groq" in key]
     assert report["persistence"] == {"save_succeeded": True, "reload_succeeded": True}
     assert report["latency"]["total_generation_seconds"] >= 0
 

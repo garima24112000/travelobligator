@@ -45,7 +45,8 @@ def test_unknown_provider_name_falls_back_to_not_connected() -> None:
 
 
 def test_unknown_provider_never_silently_maps_to_groq() -> None:
-    provider = get_ai_itinerary_reasoning_provider("gemini")
+    # ("gemini" is a supported selector now -- the other member of the Groq <-> Gemini pair.)
+    provider = get_ai_itinerary_reasoning_provider("openai")
     assert not isinstance(provider, GroqAIItineraryReasoningProvider)
     assert isinstance(provider, NotConnectedAIItineraryReasoningProvider)
 

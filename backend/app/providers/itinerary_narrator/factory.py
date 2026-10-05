@@ -3,6 +3,7 @@ from __future__ import annotations
 from app.core.config import get_settings
 from app.providers.itinerary_narrator.anthropic_adapter import AnthropicItineraryNarratorProvider
 from app.providers.itinerary_narrator.base import ItineraryNarratorProvider
+from app.providers.itinerary_narrator.gemini_adapter import GeminiItineraryNarratorProvider
 from app.providers.itinerary_narrator.groq_adapter import GroqItineraryNarratorProvider
 from app.providers.itinerary_narrator.not_connected_adapter import (
     NotConnectedItineraryNarratorProvider,
@@ -27,6 +28,10 @@ _SUPPORTED_PROVIDERS: dict[str, type[ItineraryNarratorProvider]] = {
     "not_connected": NotConnectedItineraryNarratorProvider,
     "anthropic": AnthropicItineraryNarratorProvider,
     "groq": GroqItineraryNarratorProvider,
+    # The same stage adapter, standing for the other member of the Groq <->
+    # Gemini pair (see `gemini_adapter.py`). Only "groq" and "gemini" are ever
+    # routed between each other; "not_connected" and "anthropic" never are.
+    "gemini": GeminiItineraryNarratorProvider,
 }
 
 

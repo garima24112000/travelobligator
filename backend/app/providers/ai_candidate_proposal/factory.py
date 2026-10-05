@@ -5,6 +5,7 @@ from app.providers.ai_candidate_proposal.anthropic_adapter import (
     AnthropicAICandidateProposalProvider,
 )
 from app.providers.ai_candidate_proposal.base import AICandidateProposalProvider
+from app.providers.ai_candidate_proposal.gemini_adapter import GeminiAICandidateProposalProvider
 from app.providers.ai_candidate_proposal.groq_adapter import GroqAICandidateProposalProvider
 from app.providers.ai_candidate_proposal.not_connected_adapter import (
     NotConnectedAICandidateProposalProvider,
@@ -30,6 +31,10 @@ _SUPPORTED_PROVIDERS: dict[str, type[AICandidateProposalProvider]] = {
     "not_connected": NotConnectedAICandidateProposalProvider,
     "anthropic": AnthropicAICandidateProposalProvider,
     "groq": GroqAICandidateProposalProvider,
+    # The same stage adapter, standing for the other member of the Groq <->
+    # Gemini pair (see `gemini_adapter.py`). Only "groq" and "gemini" are ever
+    # routed between each other; "not_connected" and "anthropic" never are.
+    "gemini": GeminiAICandidateProposalProvider,
 }
 
 

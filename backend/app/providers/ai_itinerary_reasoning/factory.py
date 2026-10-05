@@ -5,6 +5,7 @@ from app.providers.ai_itinerary_reasoning.anthropic_adapter import (
     AnthropicAIItineraryReasoningProvider,
 )
 from app.providers.ai_itinerary_reasoning.base import AIItineraryReasoningProvider
+from app.providers.ai_itinerary_reasoning.gemini_adapter import GeminiAIItineraryReasoningProvider
 from app.providers.ai_itinerary_reasoning.groq_adapter import GroqAIItineraryReasoningProvider
 from app.providers.ai_itinerary_reasoning.not_connected_adapter import (
     NotConnectedAIItineraryReasoningProvider,
@@ -22,6 +23,10 @@ _SUPPORTED_PROVIDERS: dict[str, type[AIItineraryReasoningProvider]] = {
     "not_connected": NotConnectedAIItineraryReasoningProvider,
     "anthropic": AnthropicAIItineraryReasoningProvider,
     "groq": GroqAIItineraryReasoningProvider,
+    # The same stage adapter, standing for the other member of the Groq <->
+    # Gemini pair (see `gemini_adapter.py`). Only "groq" and "gemini" are ever
+    # routed between each other; "not_connected" and "anthropic" never are.
+    "gemini": GeminiAIItineraryReasoningProvider,
 }
 
 

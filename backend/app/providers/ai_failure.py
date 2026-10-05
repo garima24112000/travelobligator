@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from enum import Enum
+from typing import Any
+
+import httpx
 
 # Section 202B.1 (Tasks 16-17): one shared, provider-agnostic taxonomy for
 # WHY a call to an AI model provider (Groq/Anthropic) failed, so the rest
@@ -34,6 +38,15 @@ class AIProviderFailureKind(str, Enum):
     DEADLINE_EXCEEDED = "deadline_exceeded"
 
 
+class LLMStructuredOutputError(Exception):
+    """A request the provider completed successfully, whose answer is not
+    valid structured output (empty, not JSON, or not matching the stage's
+    wire schema). Raised locally by a structured client that validates the
+    answer itself; classified as `MALFORMED_OUTPUT`, exactly like a
+    provider-reported `json_validate_failed`. The message is a fixed
+    sentence -- never the model's text."""
+
+
 _TIMEOUT_STATUS_CODES = frozenset({408, 504})
 _MALFORMED_ERROR_CODES = frozenset({"json_validate_failed"})
 
@@ -42,10 +55,18 @@ def _status_code(exc: BaseException) -> int | None:
     for candidate in (
         getattr(exc, "status_code", None),
         getattr(getattr(exc, "response", None), "status_code", None),
+        # google-genai's `APIError` carries the HTTP status as an int `code`.
+        getattr(exc, "code", None),
     ):
-        if isinstance(candidate, int):
+        if isinstance(candidate, int) and not isinstance(candidate, bool) and 100 <= candidate <= 599:
             return candidate
     return None
+
+
+def _is_httpx_transport_error(exc: BaseException) -> bool:
+    """google-genai lets httpx's own timeout / connection errors through
+    unwrapped (the Groq SDK wraps them in its `APIConnectionError`)."""
+    return isinstance(exc, httpx.TransportError)
 
 
 def _provider_error_code(exc: BaseException) -> str | None:
@@ -61,6 +82,8 @@ def _provider_error_code(exc: BaseException) -> str | None:
 
 
 def classify_ai_provider_exception(exc: BaseException) -> AIProviderFailureKind:
+    if isinstance(exc, LLMStructuredOutputError):
+        return AIProviderFailureKind.MALFORMED_OUTPUT
     status = _status_code(exc)
     type_name = type(exc).__name__
 
@@ -73,6 +96,7 @@ def classify_ai_provider_exception(exc: BaseException) -> AIProviderFailureKind:
         or isinstance(exc, (TimeoutError, ConnectionError))
         or "Timeout" in type_name
         or "Connection" in type_name
+        or _is_httpx_transport_error(exc)
     ):
         return AIProviderFailureKind.TIMEOUT_OR_NETWORK
     if _provider_error_code(exc) in _MALFORMED_ERROR_CODES:
@@ -166,6 +190,131 @@ def retry_after_seconds(exc: BaseException) -> float | None:
                 moment = moment.replace(tzinfo=timezone.utc)
             return max(0.0, (moment - datetime.now(timezone.utc)).total_seconds())
     except Exception:  # noqa: BLE001 - an unreadable header is simply "no Retry-After"
+        return None
+
+
+# Provider health (`app/providers/llm_provider_health.py`): what a failed
+# request says about the PROVIDER, as fixed labels. Finer than the transport
+# subtype above (which keeps its labels for the existing diagnostics): a 503
+# is temporary unavailability, never quota, and an unrecognized 4xx is named
+# as such rather than read as a structural answer.
+HEALTH_RATE_LIMIT = "rate_limit"
+HEALTH_PROVIDER_UNAVAILABLE = "provider_unavailable"
+HEALTH_SERVER_ERROR = "server_error"
+HEALTH_TIMEOUT = "timeout"
+HEALTH_CONNECTION_ERROR = "connection_error"
+HEALTH_AUTHENTICATION = "authentication_error"
+# The provider itself reported malformed structured output.
+HEALTH_MALFORMED_RESPONSE = "malformed_response"
+# The answer arrived and failed the stage's wire schema locally.
+HEALTH_SCHEMA_VALIDATION = "schema_validation"
+HEALTH_UNKNOWN_TRANSPORT = "unknown_transport"
+HEALTH_FAILURE_KINDS = frozenset(
+    {
+        HEALTH_RATE_LIMIT, HEALTH_PROVIDER_UNAVAILABLE, HEALTH_SERVER_ERROR, HEALTH_TIMEOUT,
+        HEALTH_CONNECTION_ERROR, HEALTH_AUTHENTICATION, HEALTH_MALFORMED_RESPONSE,
+        HEALTH_SCHEMA_VALIDATION, HEALTH_UNKNOWN_TRANSPORT,
+    }
+)
+# The provider received and processed the request: a statement about the
+# model's output, not about the provider's availability or quota.
+HEALTH_STRUCTURAL_KINDS = frozenset({HEALTH_MALFORMED_RESPONSE, HEALTH_SCHEMA_VALIDATION})
+
+
+def health_failure_kind(exc: BaseException) -> str | None:
+    """What `exc` says about the provider, or None when it says nothing (an
+    exception with no HTTP status that is not a timeout / connection error
+    was raised locally, after or outside the request)."""
+    kind = classify_ai_provider_exception(exc)
+    if kind == AIProviderFailureKind.MALFORMED_OUTPUT:
+        return HEALTH_SCHEMA_VALIDATION if isinstance(exc, LLMStructuredOutputError) else HEALTH_MALFORMED_RESPONSE
+    if kind == AIProviderFailureKind.RATE_LIMITED:
+        return HEALTH_RATE_LIMIT
+    if kind == AIProviderFailureKind.AUTHENTICATION:
+        return HEALTH_AUTHENTICATION
+    if kind == AIProviderFailureKind.TIMEOUT_OR_NETWORK:
+        return HEALTH_TIMEOUT if transport_failure_subtype(exc) == TRANSPORT_TIMEOUT else HEALTH_CONNECTION_ERROR
+    status = _status_code(exc)
+    if status is None:
+        return None
+    if status == 503 or getattr(exc, "status", None) == "UNAVAILABLE":
+        return HEALTH_PROVIDER_UNAVAILABLE
+    return HEALTH_SERVER_ERROR if status >= 500 else HEALTH_UNKNOWN_TRANSPORT
+
+
+_DURATION_PART = re.compile(r"(\d+(?:\.\d+)?)(ms|h|m|s)")
+_DURATION_UNIT_SECONDS = {"h": 3600.0, "m": 60.0, "s": 1.0, "ms": 0.001}
+
+
+def parse_duration_seconds(value: object) -> float | None:
+    """A provider's reset / retry duration in seconds: a plain number of
+    seconds or a Go-style duration (`7.66s`, `2m59.56s`, `1h2m3s`, `250ms`).
+    None for anything else -- an unreadable value is never guessed."""
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value) if value >= 0 else None
+    text = str(value).strip().lower()
+    if not text:
+        return None
+    try:
+        seconds = float(text)
+    except ValueError:
+        pass
+    else:
+        return seconds if seconds >= 0 and seconds != float("inf") else None
+    position, total = 0, 0.0
+    for match in _DURATION_PART.finditer(text):
+        if match.start() != position:
+            return None
+        total += float(match.group(1)) * _DURATION_UNIT_SECONDS[match.group(2)]
+        position = match.end()
+    return total if position == len(text) and position > 0 else None
+
+
+def _retry_info_seconds(details: Any) -> float | None:
+    """Gemini's structured `google.rpc.RetryInfo.retryDelay` from an error
+    body the SDK already parsed. Only that one field is read."""
+    error = details.get("error") if isinstance(details, dict) else None
+    items = error.get("details") if isinstance(error, dict) else None
+    if not isinstance(items, list):
+        return None
+    for item in items:
+        if isinstance(item, dict) and "retryDelay" in item:
+            return parse_duration_seconds(item["retryDelay"])
+    return None
+
+
+def _exhausted_quota_reset_seconds(headers: Any) -> float | None:
+    """The reset of whichever rate-limit dimension the response headers show
+    as used up (`x-ratelimit-remaining-* == 0`); the longest when both are."""
+    resets: list[float] = []
+    for dimension in ("requests", "tokens"):
+        try:
+            remaining = float(headers.get(f"x-ratelimit-remaining-{dimension}"))
+        except (TypeError, ValueError):
+            continue
+        reset = parse_duration_seconds(headers.get(f"x-ratelimit-reset-{dimension}"))
+        if remaining <= 0 and reset is not None:
+            resets.append(reset)
+    return max(resets) if resets else None
+
+
+def provider_reset_seconds(exc: BaseException) -> float | None:
+    """When a rate-limited provider says it can be called again, in seconds:
+    its Retry-After, else its structured retry delay, else the reset of the
+    quota dimension its headers show as exhausted. None when it said nothing
+    readable. Header values and one structured field only -- never a message."""
+    seconds = retry_after_seconds(exc)
+    if seconds is not None:
+        return seconds
+    try:
+        seconds = _retry_info_seconds(getattr(exc, "details", None))
+        if seconds is not None:
+            return seconds
+        headers = getattr(getattr(exc, "response", None), "headers", None)
+        return _exhausted_quota_reset_seconds(headers) if headers is not None else None
+    except Exception:  # noqa: BLE001 - unreadable metadata is simply "no reset known"
         return None
 
 

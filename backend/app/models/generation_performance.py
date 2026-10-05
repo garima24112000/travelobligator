@@ -11,6 +11,21 @@ from __future__ import annotations
 from pydantic import BaseModel, Field
 
 
+class LLMProviderAttempt(BaseModel):
+    """One provider request of a model stage. Fixed labels and a duration."""
+
+    provider: str | None = None
+    # `success` | `transport_failure` | `structural_failure` | `deadline`
+    result: str | None = None
+    # `rate_limit` | `provider_unavailable` | `server_error` | `timeout` |
+    # `connection_error` | `authentication_error` | `malformed_response` |
+    # `schema_validation` | `unknown_transport`; None for a success.
+    transport_failure_kind: str | None = None
+    duration_ms: float | None = None
+    # `valid` | `invalid`; None when no answer arrived.
+    structural_validation_result: str | None = None
+
+
 class LLMStagePerformance(BaseModel):
     """One model stage of a generation (Section 1C). Counts and fixed
     labels only -- never a prompt or any model output."""
@@ -31,6 +46,33 @@ class LLMStagePerformance(BaseModel):
     # (`obeyed` | `clamped` | `skipped`). None when not applicable.
     transport_failure: str | None = None
     retry_after: str | None = None
+    # Groq <-> Gemini resilience group (`app/providers/llm_provider_router.py`).
+    # Which provider the stage preferred, which it started with, every
+    # provider it sent a request to (in order), and which one produced the
+    # accepted answer (None when the deterministic fallback was used).
+    # Provider identity is observability only: a valid answer counts the
+    # same whichever provider gave it. All optional, so a report stored
+    # before these existed loads unchanged.
+    preferred_provider: str | None = None
+    selected_provider: str | None = None
+    attempted_providers: list[str] = Field(default_factory=list)
+    final_provider: str | None = None
+    failover_used: bool = False
+    # A fixed label: `<provider>_<failure kind>` (the first request failed),
+    # `<provider>_circuit_open` / `<provider>_draining` (the preferred
+    # provider was not tried first), or `all_providers_unavailable`.
+    failover_reason: str | None = None
+    # Provider -> `healthy` | `draining` | `open` | `half_open`.
+    provider_health_before: dict[str, str] = Field(default_factory=dict)
+    provider_health_after: dict[str, str] = Field(default_factory=dict)
+    total_provider_requests: int = 0
+    provider_attempts: list[LLMProviderAttempt] = Field(default_factory=list)
+    # Sanitized quota figures (numbers only), present when known: Groq's
+    # `remaining_request_ratio` / `remaining_token_ratio` / `reset_seconds`
+    # from its rate-limit headers; Gemini's `configured_rpm` / `_tpm` / `_rpd`
+    # and `advisory_remaining_ratio` from this process's own counters.
+    groq_quota: dict[str, float | None] = Field(default_factory=dict)
+    gemini_quota: dict[str, float | None] = Field(default_factory=dict)
 
 
 class GenerationPerformanceReport(BaseModel):
@@ -71,7 +113,13 @@ class GenerationPerformanceReport(BaseModel):
     # generation in it) had in flight while this generation was making one.
     process_peak_geoapify_concurrency: int = 0
     # What each generation-time model stage did, keyed by stage
-    # (`groq_anchor`, `groq_reasoning`, `groq_repair`, `groq_narrator`):
+    # (`groq_anchor`, `groq_reasoning`, `groq_repair`, `groq_narrator`).
+    # Those keys are historical SEMANTIC stage ids, kept so stored reports
+    # still load: they do not mean Groq was called. A stage's `attempts` is
+    # every provider's requests together; the requests actually sent to a
+    # provider are `provider_attempts["groq_<stage>"]` /
+    # `provider_attempts["gemini_<stage>"]` (and `counts[..._calls]`), which
+    # is what any report must use to name a provider. Per stage:
     # request attempts, the structural / transport retries among them,
     # whether the stage's total budget ran out, and how it ended.
     llm_stages: dict[str, LLMStagePerformance] = Field(default_factory=dict)

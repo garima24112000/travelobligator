@@ -2,7 +2,7 @@ import os
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Step 182E: allowed values for the optional manual/local HTML
@@ -44,6 +44,8 @@ _ALLOWED_PERSISTENCE_BACKENDS = frozenset({"local_json", "postgres"})
 # PROVIDER_CACHE_ENABLED=false switch -- there is no third backend value, so
 # the two settings never overlap. An unknown value raises (no silent switch).
 _ALLOWED_PROVIDER_CACHE_BACKENDS = frozenset({"redis", "sqlite"})
+# The two members of the Groq <-> Gemini resilience group.
+_ALLOWED_LLM_PAIR_PROVIDERS = frozenset({"groq", "gemini"})
 _ALLOWED_GEOCODING_PROVIDERS = frozenset({"nominatim", "geoapify"})
 _ALLOWED_PLACES_PROVIDERS = frozenset({"openstreetmap", "geoapify"})
 
@@ -175,6 +177,39 @@ class Settings(BaseSettings):
     groq_narrator_total_budget_seconds: float = Field(
         default=25.0, alias="GROQ_NARRATOR_TOTAL_BUDGET_SECONDS", ge=0.0
     )
+
+    # Groq <-> Gemini resilience group (`app/providers/llm_provider_router.py`).
+    # Gemini is a second LLM base for the SAME generation-time stages, never a
+    # factual source: it gets the same grounded input Groq gets, no search or
+    # maps grounding tool is ever sent, and its output goes through the same
+    # schemas and validation. Like `groq_api_key`, a missing `gemini_api_key`
+    # never stops startup. `GEMINI_MODEL` has NO default on purpose: without
+    # it Gemini is simply not configured.
+    gemini_api_key: str | None = Field(default=None, alias="GEMINI_API_KEY", repr=False)
+    gemini_model: str | None = Field(default=None, alias="GEMINI_MODEL")
+    # The order of the pair, used only by a stage whose own selector is
+    # already "groq" or "gemini" (a disabled, "not_connected" or "anthropic"
+    # stage is never routed). An unknown value raises: silently mapping a typo
+    # to another provider is not acceptable for a selector.
+    llm_primary_provider: str = Field(default="groq", alias="LLM_PRIMARY_PROVIDER")
+    llm_secondary_provider: str = Field(default="gemini", alias="LLM_SECONDARY_PROVIDER")
+    # False = every stage uses exactly its selected provider, as before.
+    llm_failover_enabled: bool = Field(default=True, alias="LLM_FAILOVER_ENABLED")
+    # A provider whose known remaining quota is at or under this share of its
+    # limit is DRAINING: later stages prefer the other provider.
+    llm_quota_reserve_ratio: float = Field(default=0.10, alias="LLM_QUOTA_RESERVE_RATIO", ge=0.0, lt=1.0)
+    # How long a provider stays OPEN after a 503 / 5xx / timeout / network
+    # failure, and after a 429 that carried no reset information.
+    llm_provider_short_cooldown_seconds: float = Field(
+        default=60.0, alias="LLM_PROVIDER_SHORT_COOLDOWN_SECONDS", gt=0.0
+    )
+    llm_provider_probe_seconds: float = Field(default=300.0, alias="LLM_PROVIDER_PROBE_SECONDS", gt=0.0)
+    # Optional project limits for Gemini's advisory in-process counters. No
+    # defaults and no guessed free-tier numbers: unset means no proactive
+    # near-quota decision (a 429 still opens the circuit).
+    gemini_rpm_limit: int | None = Field(default=None, alias="GEMINI_RPM_LIMIT", gt=0)
+    gemini_tpm_limit: int | None = Field(default=None, alias="GEMINI_TPM_LIMIT", gt=0)
+    gemini_rpd_limit: int | None = Field(default=None, alias="GEMINI_RPD_LIMIT", gt=0)
 
     # Config gate for get_ai_candidate_proposal_provider (Step 160E,
     # extended in Step 161A, corrected in Step 191A). "not_connected"
@@ -1499,6 +1534,26 @@ class Settings(BaseSettings):
     def _normalize_log_level(cls, value: str) -> str:
         normalized = value.strip().upper() if value else "INFO"
         return normalized if normalized in _ALLOWED_LOG_LEVELS else "INFO"
+
+    @field_validator("gemini_model", "gemini_rpm_limit", "gemini_tpm_limit", "gemini_rpd_limit", mode="before")
+    @classmethod
+    def _blank_optional_gemini_value_is_unset(cls, value: object) -> object:
+        # `GEMINI_RPM_LIMIT=` in a dotenv file means "not configured".
+        return None if isinstance(value, str) and not value.strip() else value
+
+    @field_validator("llm_primary_provider", "llm_secondary_provider", mode="after")
+    @classmethod
+    def _normalize_llm_pair_provider(cls, value: str) -> str:
+        normalized = (value or "").strip().lower()
+        if normalized not in _ALLOWED_LLM_PAIR_PROVIDERS:
+            raise ValueError("LLM_PRIMARY_PROVIDER / LLM_SECONDARY_PROVIDER must be 'groq' or 'gemini'.")
+        return normalized
+
+    @model_validator(mode="after")
+    def _llm_pair_providers_differ(self) -> "Settings":
+        if self.llm_primary_provider == self.llm_secondary_provider:
+            raise ValueError("LLM_PRIMARY_PROVIDER and LLM_SECONDARY_PROVIDER must be different providers.")
+        return self
 
     def resolved_local_storage_path(self) -> Path:
         """Local development storage path, not a production database.

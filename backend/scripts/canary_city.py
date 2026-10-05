@@ -9,7 +9,9 @@ imported by `backend/app`, and no city is known to it.
     python scripts/canary_city.py --city "City, Country" --days 3 --pace balanced \
         --interests "architecture, history, food" --must-visit "Some Place" --must-visit "Another Place"
 
-Requires GEOAPIFY_API_KEY and GROQ_API_KEY in the environment. Never prints
+Requires GEOAPIFY_API_KEY and at least one LLM provider in the environment
+(GROQ_API_KEY, or GEMINI_API_KEY with GEMINI_MODEL; with both, the model
+stages fail over between them and the report says which one served). Never prints
 a key, a request URL or raw exception text. Uses the same production-shaped
 configuration as `benchmark_cities.py` on a throwaway Local JSON store and a
 throwaway SQLite provider cache (so credits are cold-cache numbers).
@@ -93,11 +95,46 @@ _PERFORMANCE_PROVIDER_ROWS: tuple[tuple[str, str], ...] = (
     ("Geoapify drive routing", "geoapify_routing_drive"),
     ("Open-Meteo", "open_meteo"),
     ("Nager.Date", "nager_date"),
+    # Requests actually sent to each LLM provider (timed per provider: these ARE provider rows).
     ("Groq anchor", "groq_anchor"),
     ("Groq reasoning", "groq_reasoning"),
     ("Groq repair", "groq_repair"),
     ("Groq narrator", "groq_narrator"),
+    ("Gemini anchor", "gemini_anchor"),
+    ("Gemini reasoning", "gemini_reasoning"),
+    ("Gemini repair", "gemini_repair"),
+    ("Gemini narrator", "gemini_narrator"),
 )
+# The SEMANTIC model stages: (provider-neutral label, short name, the stage's stored id). The
+# stored ids are historical (`groq_<stage>`) and say nothing about which provider served the
+# stage -- a stage's attempts are every provider's requests together, so its label never names
+# a provider. Who was actually called is `llm_calls_by_provider`, from the provider counters.
+_LLM_STAGE_ROWS: tuple[tuple[str, str, str], ...] = (
+    ("LLM anchor", "anchor", "groq_anchor"),
+    ("LLM reasoning", "reasoning", "groq_reasoning"),
+    ("LLM repair", "repair", "groq_repair"),
+    ("LLM narrator", "narrator", "groq_narrator"),
+)
+_LLM_PROVIDERS: tuple[str, ...] = ("groq", "gemini")
+
+
+def _stage_name(label: Any) -> str:
+    """`LLM anchor` -> `anchor` (also for a report written when the label still said `Groq`)."""
+    text = str(label or "")
+    for prefix in ("LLM ", "Groq "):
+        if text.startswith(prefix):
+            return text[len(prefix):]
+    return text
+
+
+def _llm_calls_by_provider(performance: Any) -> dict[str, dict[str, int]]:
+    """Requests actually sent to each LLM provider, per stage -- the generation's own provider
+    request counters (one per HTTP attempt), never inferred from a stage's total."""
+    attempts = performance.provider_attempts
+    return {
+        provider: {name: int(attempts.get(f"{provider}_{name}", 0)) for _, name, _ in _LLM_STAGE_ROWS}
+        for provider in _LLM_PROVIDERS
+    }
 _PERFORMANCE_REDUNDANT_ROWS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("repeated geocode calls", ("geocoding",)),
     ("repeated details calls", ("place_details",)),
@@ -107,6 +144,50 @@ _PERFORMANCE_REDUNDANT_ROWS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("repeated destination resolutions (cache-served or live)", ("destination_resolution",)),
     ("repeated route lookups (memo-served or live)", ("route_sequence_lookup", "route_leg_lookup", "alternate_mode_lookup")),
 )
+
+
+def _llm_provider_record(stage: Any) -> dict[str, Any] | None:
+    """One model stage's provider record, or None when the generation recorded none (a stage
+    served by an injected client, or a report stored before the record existed)."""
+    if not getattr(stage, "preferred_provider", None):
+        return None
+    return {
+        "preferred": stage.preferred_provider,
+        "selected": stage.selected_provider,
+        "attempted": list(stage.attempted_providers),
+        "final": stage.final_provider,
+        "failover": bool(stage.failover_used),
+        "reason": stage.failover_reason,
+        "health_before": dict(stage.provider_health_before),
+        "health_after": dict(stage.provider_health_after),
+        "total_provider_requests": stage.total_provider_requests,
+        "attempts": [
+            {
+                "provider": attempt.provider,
+                "result": attempt.result,
+                "failure_kind": attempt.transport_failure_kind,
+                "seconds": round((attempt.duration_ms or 0.0) / 1000.0, 2),
+                "structural_validation": attempt.structural_validation_result,
+            }
+            for attempt in stage.provider_attempts
+        ],
+        # sanitized quota figures (ratios, limits and seconds only)
+        "groq_quota": {
+            "remaining_requests_ratio": stage.groq_quota.get("remaining_request_ratio"),
+            "remaining_tpm_ratio": stage.groq_quota.get("remaining_token_ratio"),
+            "reset_seconds": stage.groq_quota.get("reset_seconds"),
+        }
+        if stage.groq_quota
+        else None,
+        "gemini_quota": {
+            "configured_rpm": stage.gemini_quota.get("configured_rpm"),
+            "configured_tpm": stage.gemini_quota.get("configured_tpm"),
+            "configured_rpd": stage.gemini_quota.get("configured_rpd"),
+            "advisory_remaining_ratio": stage.gemini_quota.get("advisory_remaining_ratio"),
+        }
+        if stage.gemini_quota
+        else None,
+    }
 
 
 def _performance_section(performance: Any) -> dict[str, Any]:
@@ -165,11 +246,20 @@ def _performance_section(performance: Any) -> dict[str, Any]:
                 name: round(value / 1000.0, 2) for name, value in sorted(performance.stage_task_ms.items())
             },
         },
-        # Section 1C: what each model stage did (counts and fixed labels only)
+        # Requests actually sent to each LLM provider, per stage (the provider request counters).
+        "llm_calls_by_provider": _llm_calls_by_provider(performance),
+        # Section 1C: what each SEMANTIC model stage did (counts and fixed labels only). `attempts`
+        # is provider-neutral: every provider's requests for the stage together.
         "llm_stages": [
             {
                 "label": label,
+                "stage": name,
                 "attempts": stage.attempts,
+                # of those attempts, how many went to each provider (the provider request counters)
+                "provider_requests": {
+                    provider: int(performance.provider_attempts.get(f"{provider}_{name}", 0))
+                    for provider in _LLM_PROVIDERS
+                },
                 "structural_retries": stage.structural_retries,
                 "transport_retries": stage.transport_retries,
                 "deadline_exceeded": stage.deadline_exceeded,
@@ -177,9 +267,21 @@ def _performance_section(performance: Any) -> dict[str, Any]:
                 # Section 3B: fixed labels only (None when not applicable)
                 "transport_failure": stage.transport_failure,
                 "retry_after": stage.retry_after,
-                "seconds": round(performance.provider_ms.get(key, 0.0) / 1000.0, 2),
+                # every provider's requests for this stage (a Gemini request is timed as `gemini_<stage>`)
+                "seconds": round(
+                    (
+                        performance.provider_ms.get(key, 0.0)
+                        + performance.provider_ms.get(key.replace("groq_", "gemini_", 1), 0.0)
+                    )
+                    / 1000.0,
+                    2,
+                ),
+                # Groq <-> Gemini pair: which provider served the stage (fixed labels and numbers
+                # only). Observability, never an acceptance input: a valid answer counts the same
+                # whichever provider gave it.
+                "providers": _llm_provider_record(stage),
             }
-            for label, key in _PERFORMANCE_PROVIDER_ROWS
+            for label, name, key in _LLM_STAGE_ROWS
             if (stage := performance.llm_stages.get(key)) is not None
         ],
         # raw figures, for comparing runs
@@ -729,7 +831,9 @@ def _run(args: argparse.Namespace, cache_hits: dict[str, int]) -> dict[str, Any]
         "candidates_merged_by_name_proximity": merges.get("name_proximity", 0),
     }
     reasoning = state.ai_itinerary_reasoning_result
-    groq_stages = {
+    # Which SEMANTIC model stages ran, from the stored stage results. Provider-neutral: a stage
+    # that ran may have been served by either provider (see `llm_calls_by_provider`).
+    llm_stage_runs = {
         "anchor_proposal": 1 if batch is not None and _value(batch.result.status) != "not_connected" else 0,
         "itinerary_reasoning": 1 if reasoning is not None and _value(reasoning.status) not in ("not_connected", "skipped") else 0,
         "itinerary_repair_attempts": state.ai_itinerary_repair_attempt_count,
@@ -747,9 +851,13 @@ def _run(args: argparse.Namespace, cache_hits: dict[str, int]) -> dict[str, Any]
             "drive": (usage.credits_by_api.get("routing_drive", 0) if usage is not None else 0),
         },
         "provider_cache_hits": dict(cache_hits),
-        # Stage-level count: a stage's own internal retries are not visible here.
-        "groq_stage_calls": groq_stages,
-        "groq_stage_calls_total": sum(groq_stages.values()),
+        # Stage-level count: a stage's own internal retries are not visible here, and it does
+        # not say which provider was called.
+        "llm_stage_runs": llm_stage_runs,
+        "llm_stage_runs_total": sum(llm_stage_runs.values()),
+        # Requests actually sent to each LLM provider, per stage: the generation's own provider
+        # request counters. None when the generation carried no performance report.
+        "llm_calls_by_provider": report["performance"].get("llm_calls_by_provider"),
         # a fixed status label (never model output): anything but `completed` means the
         # deterministic scheduler, not the model, chose the plan
         "itinerary_reasoning_status": _value(reasoning.status) if reasoning is not None else None,
@@ -1133,7 +1241,16 @@ def _render(report: dict[str, Any]) -> str:
     row("routing credits by mode", usage["routing_credits_by_mode"])
     row("calls refused by budget", usage["geoapify_calls_refused_by_budget"])
     row("provider cache hits", usage["provider_cache_hits"] or 0)
-    row("Groq calls (by stage)", usage["groq_stage_calls"])
+    row("LLM stages run (provider-neutral)", usage["llm_stage_runs"])
+    calls_by_provider = usage.get("llm_calls_by_provider")
+    if calls_by_provider is None:
+        row("LLM calls by provider/stage", "not recorded for this generation")
+    else:
+        lines.append("- LLM calls by provider/stage (requests actually sent):")
+        for provider, stages in calls_by_provider.items():
+            lines.append(
+                f"    {provider.capitalize()}: " + ", ".join(f"{name}: {count}" for name, count in stages.items())
+            )
 
     section("PERSISTENCE")
     row("save succeeded", report["persistence"]["save_succeeded"])
@@ -1166,13 +1283,18 @@ def _render(report: dict[str, Any]) -> str:
         row("cache hits by source", performance["cache_hits_by_source"] or 0)
         row("cache misses by source", performance["cache_misses_by_source"] or 0)
         lines.append("")
-        lines.append("LLM STAGES (request attempts under one total budget per stage):")
+        lines.append(
+            "LLM STAGES (request attempts under one total budget per stage, all providers together):"
+        )
         if not performance["llm_stages"]:
             lines.append("- no model stage made a request")
         for item in performance["llm_stages"]:
+            sent = item.get("provider_requests")
             row(
-                item["label"],
+                f"LLM {_stage_name(item['label'])}",
                 f"{item['attempts']} attempt(s) in {item['seconds']} s"
+                + (f" | sent to: {', '.join(f'{p} {n}' for p, n in sent.items())}" if sent else "")
+                +
                 f" | structural retries: {item['structural_retries']}"
                 f" | transport retries: {item['transport_retries']}"
                 f" | deadline exceeded: {'YES' if item['deadline_exceeded'] else 'no'}"
@@ -1180,6 +1302,29 @@ def _render(report: dict[str, Any]) -> str:
                 + (f" | transport failure: {item['transport_failure']}" if item.get("transport_failure") else "")
                 + (f" | retry-after: {item['retry_after']}" if item.get("retry_after") else ""),
             )
+        lines.append("")
+        lines.append("LLM PROVIDERS (which provider served each stage; reported, never judged):")
+        recorded = [item for item in performance["llm_stages"] if item.get("providers")]
+        if not recorded:
+            lines.append("- no provider record for this generation")
+        for item in recorded:
+            providers = item["providers"]
+            lines.append(f"{_stage_name(item['label'])}:")
+            lines.append(f"  preferred: {providers['preferred']}")
+            lines.append(f"  attempted: [{', '.join(providers['attempted'])}]")
+            lines.append(f"  final: {providers['final'] or 'none (deterministic fallback)'}")
+            lines.append(f"  failover: {'yes' if providers['failover'] else 'no'}")
+            if providers.get("reason"):
+                lines.append(f"  reason: {providers['reason']}")
+            lines.append(f"  provider health: {providers['health_before']} -> {providers['health_after']}")
+            for attempt in providers["attempts"]:
+                lines.append(
+                    f"  - {attempt['provider']}: {attempt['result']} in {attempt['seconds']} s"
+                    + (f" ({attempt['failure_kind']})" if attempt.get("failure_kind") else "")
+                )
+            for name in ("groq_quota", "gemini_quota"):
+                if providers.get(name):
+                    lines.append(f"  {name.replace('_', ' ')}: {providers[name]}")
         concurrency = performance["concurrency"]
         lines.append("")
         lines.append("CONCURRENCY (bounded batches of independent provider requests):")
@@ -1201,6 +1346,25 @@ def _render(report: dict[str, Any]) -> str:
             + ("" if item["passed"] else f"  -> generic stage: {item['stage_if_failed']}")
         )
     return "\n".join(lines)
+
+
+def _missing_environment() -> list[str]:
+    """What the environment still needs before a live run: the Geoapify key, and at least one
+    configured LLM provider of the Groq <-> Gemini pair (Gemini also needs its model name)."""
+    missing = [] if os.environ.get("GEOAPIFY_API_KEY") else ["GEOAPIFY_API_KEY"]
+    gemini = os.environ.get("GEMINI_API_KEY") and os.environ.get("GEMINI_MODEL")
+    if not os.environ.get("GROQ_API_KEY") and not gemini:
+        missing.append("GROQ_API_KEY (or GEMINI_API_KEY with GEMINI_MODEL)")
+    return missing
+
+
+def _force_open_provider(provider: str) -> None:
+    """DEVELOPMENT ONLY (`--force-open-provider`): makes this process treat one LLM provider as
+    OPEN, so a run proves the other one can serve every stage. It lives in this script -- there
+    is no setting or environment variable for it, so the application cannot be started this way."""
+    from app.providers.llm_provider_health import get_llm_provider_health
+
+    get_llm_provider_health().force_open(provider)
 
 
 def _prepare_live_environment(workdir: Path) -> dict[str, int]:
@@ -1240,11 +1404,15 @@ def main() -> int:
     parser.add_argument("--interests", action="append", help="comma-separated and/or repeated")
     parser.add_argument("--must-visit", action="append", dest="must_visit", help="repeat once per place")
     parser.add_argument("--out", type=Path, default=None, help="directory for the report files (default: a temp dir)")
+    parser.add_argument(
+        "--force-open-provider", choices=["groq", "gemini"], default=None,
+        help="DEVELOPMENT ONLY: treat this LLM provider as unavailable for this run, so the other one serves every stage",
+    )
     args = parser.parse_args()
     if args.days < 1:
         parser.error("--days must be at least 1")
 
-    missing = [name for name in ("GEOAPIFY_API_KEY", "GROQ_API_KEY") if not os.environ.get(name)]
+    missing = _missing_environment()
     if missing:
         print("Missing required environment variable(s): " + ", ".join(missing) + ". Nothing was run.")
         return 2
@@ -1253,6 +1421,9 @@ def main() -> int:
     out_dir = args.out or workdir
     out_dir.mkdir(parents=True, exist_ok=True)
     cache_hits = _prepare_live_environment(workdir)
+    if args.force_open_provider:
+        _force_open_provider(args.force_open_provider)
+        print(f"DEVELOPMENT ONLY: LLM provider '{args.force_open_provider}' is forced OPEN for this run.")
 
     report = _run(args, cache_hits)
     text = _render(report)

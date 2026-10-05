@@ -12,7 +12,10 @@ aggregate summary. Benchmark tooling only: nothing here is imported by
     python scripts/benchmark_tuning_cities.py --start-date 2026-10-10 \
         --out ../benchmark_results/tuning_run1 --resume
 
-Requires GEOAPIFY_API_KEY and GROQ_API_KEY in the environment. Storage is a
+Requires GEOAPIFY_API_KEY and at least one LLM provider in the environment
+(GROQ_API_KEY, or GEMINI_API_KEY with GEMINI_MODEL; with both, the model
+stages fail over between them and the summary says which one served --
+reported only, never an acceptance input). Storage is a
 throwaway Local JSON store and a throwaway SQLite provider cache (no Redis,
 no PostgreSQL). `--resume` skips every city whose result file in `--out` is
 already complete; a city that failed technically is run again. The summary
@@ -208,6 +211,65 @@ def _generic_or_low_value_names(scheduled: list[dict[str, Any]]) -> list[str]:
     return doubtful
 
 
+LLM_PROVIDERS: tuple[str, ...] = ("groq", "gemini")
+_REASON_ALL_UNAVAILABLE = "all_providers_unavailable"
+
+
+def _stage_label(stage: dict[str, Any]) -> str:
+    """The provider-neutral label of a semantic model stage (`LLM anchor`), also for a canary
+    report written when that label still named Groq."""
+    return f"LLM {canary_city._stage_name(stage.get('label'))}"
+
+
+def llm_provider_metrics(llm_stages: list[dict[str, Any]]) -> dict[str, Any]:
+    """One generation's LLM-provider figures, from the canary's per-stage provider records
+    (fixed labels and counts only). A stage completed by either provider counts the same; the
+    provider is only named here."""
+    stages: dict[str, dict[str, Any]] = {}
+    successful = {provider: 0 for provider in LLM_PROVIDERS}
+    failed = {provider: 0 for provider in LLM_PROVIDERS}
+    opened = draining = 0
+    for stage in llm_stages:
+        record = stage.get("providers")
+        if not record:
+            continue
+        label = canary_city._stage_name(stage.get("label"))
+        completed = stage.get("result") == "success"
+        # The provider credited with a completed stage is the one whose own request succeeded:
+        # taken from the per-request record, never assumed from the stage.
+        attempts = [attempt for attempt in record.get("attempts") or [] if isinstance(attempt, dict)]
+        succeeded = [attempt.get("provider") for attempt in attempts if attempt.get("result") == "success"]
+        final = (record.get("final") if record.get("final") in succeeded else None) if completed else None
+        stages[label] = {
+            "preferred": record.get("preferred"),
+            "attempted": list(record.get("attempted") or []),
+            "final": final,
+            "failover": bool(record.get("failover")),
+            "reason": record.get("reason"),
+        }
+        if final in successful:
+            successful[final] += 1
+        for provider in LLM_PROVIDERS:
+            requests = sum(1 for attempt in attempts if attempt.get("provider") == provider)
+            failed[provider] += requests - (1 if provider == final and requests else 0)
+        before, after = record.get("health_before") or {}, record.get("health_after") or {}
+        opened += sum(1 for provider, state in after.items() if state == "open" and before.get(provider) != "open")
+        draining += sum(
+            1 for provider, state in after.items() if state == "draining" and before.get(provider) != "draining"
+        )
+    return {
+        "stages": stages,
+        "successful_stage_calls": successful,
+        "failed_stage_calls": failed,
+        "failover_count": sum(1 for stage in stages.values() if stage["failover"]),
+        # a model stage that made (or was refused) a request and ended on its deterministic fallback
+        "deterministic_fallback_count": sum(1 for stage in llm_stages if stage.get("result") != "success"),
+        "all_providers_unavailable": any(stage["reason"] == _REASON_ALL_UNAVAILABLE for stage in stages.values()),
+        "circuit_open_events": opened,
+        "draining_events": draining,
+    }
+
+
 def extract_metrics(report: dict[str, Any], *, city: str, scenario: dict[str, Any], run_timestamp: str) -> dict[str, Any]:
     """The benchmark's per-city record, taken from one canary report."""
     latency = _part(report, "latency").get("total_generation_seconds")
@@ -305,7 +367,11 @@ def extract_metrics(report: dict[str, Any], *, city: str, scenario: dict[str, An
                 "grounded_anchor_schedule_ratio": anchors.get("grounded_anchor_schedule_ratio"),
                 # the kind of transport failure of the anchor proposal stage, when it had one
                 "transport_failure": next(
-                    (stage.get("transport_failure") for stage in llm_stages if stage.get("label") == "Groq anchor"),
+                    (
+                        stage.get("transport_failure")
+                        for stage in llm_stages
+                        if canary_city._stage_name(stage.get("label")) == "anchor"
+                    ),
                     None,
                 ),
             },
@@ -340,15 +406,24 @@ def extract_metrics(report: dict[str, Any], *, city: str, scenario: dict[str, An
                 "geoapify_credit_budget": usage.get("geoapify_credit_budget"),
                 "geoapify_calls_refused_by_budget": usage.get("geoapify_calls_refused_by_budget") or 0,
                 "geoapify_calls_by_api": dict(usage.get("geoapify_calls_by_api") or {}),
-                # request attempts per model stage when the generation recorded them,
-                # otherwise the canary's stage-level count
-                "groq_attempts_by_stage": (
-                    {stage["label"]: stage.get("attempts", 0) for stage in llm_stages}
+                # Request attempts per SEMANTIC model stage when the generation recorded them,
+                # otherwise the canary's stage-level count. Provider-neutral: every provider's
+                # requests for the stage together (a report written before the Groq <-> Gemini
+                # pair called its stage count `groq_stage_calls`).
+                "llm_attempts_by_stage": (
+                    {_stage_label(stage): stage.get("attempts", 0) for stage in llm_stages}
                     if llm_stages
-                    else dict(usage.get("groq_stage_calls") or {})
+                    else dict(usage.get("llm_stage_runs") or usage.get("groq_stage_calls") or {})
+                ),
+                # Requests actually sent to each provider, per stage (the provider request
+                # counters); None when the generation did not record them.
+                "llm_calls_by_provider": (
+                    {provider: dict(stages) for provider, stages in calls_by_provider.items()}
+                    if (calls_by_provider := usage.get("llm_calls_by_provider"))
+                    else None
                 ),
                 "deadline_exceeded_by_stage": {
-                    stage["label"]: bool(stage.get("deadline_exceeded")) for stage in llm_stages
+                    _stage_label(stage): bool(stage.get("deadline_exceeded")) for stage in llm_stages
                 },
             },
             "performance": {
@@ -365,6 +440,8 @@ def extract_metrics(report: dict[str, Any], *, city: str, scenario: dict[str, An
                 "fallback": narrative_source != "ai",
             },
             "reasoning": {"status": reasoning_status, "fallback": reasoning_status != "completed"},
+            # which LLM provider served each model stage (observability only: acceptance never reads it)
+            "llm_providers": llm_provider_metrics(llm_stages),
             "scheduled_places": scheduled,
             "generic_or_low_value_scheduled_names": _generic_or_low_value_names(scheduled),
             # why a long-travel day could not be repaired (fixed codes only)
@@ -476,6 +553,45 @@ def _rate(count: int, of: int) -> dict[str, Any]:
     return {"count": count, "of": of, "rate": round(count / of, 3) if of else None}
 
 
+_LLM_PROVIDER_AGGREGATE_ROWS: tuple[tuple[str, str], ...] = (
+    ("Groq successful stage calls", "groq_successful_stage_calls"),
+    ("Gemini successful stage calls", "gemini_successful_stage_calls"),
+    ("Groq failed stage calls", "groq_failed_stage_calls"),
+    ("Gemini failed stage calls", "gemini_failed_stage_calls"),
+    ("provider failover count", "provider_failover_count"),
+    ("generations using provider failover", "generations_using_provider_failover"),
+    ("deterministic LLM fallback count", "deterministic_llm_fallback_count"),
+    ("generations where all configured LLM providers were unavailable", "generations_with_all_llm_providers_unavailable"),
+    ("provider circuit-open events", "provider_circuit_open_events"),
+    ("provider draining events", "provider_draining_events"),
+)
+
+
+def _aggregate_llm_providers(completed: list[dict[str, Any]]) -> dict[str, Any]:
+    """Run-level LLM-provider counts. A city recorded before these figures existed adds nothing."""
+    figures = [_part(record, "llm_providers") for record in completed]
+
+    def total(key: str, provider: str | None = None) -> int:
+        return sum(
+            int((item.get(key) or {}).get(provider, 0) if provider else item.get(key) or 0) for item in figures
+        )
+
+    return {
+        "groq_successful_stage_calls": total("successful_stage_calls", "groq"),
+        "gemini_successful_stage_calls": total("successful_stage_calls", "gemini"),
+        "groq_failed_stage_calls": total("failed_stage_calls", "groq"),
+        "gemini_failed_stage_calls": total("failed_stage_calls", "gemini"),
+        "provider_failover_count": total("failover_count"),
+        "generations_using_provider_failover": sum(1 for item in figures if item.get("failover_count")),
+        "deterministic_llm_fallback_count": total("deterministic_fallback_count"),
+        "generations_with_all_llm_providers_unavailable": sum(
+            1 for item in figures if item.get("all_providers_unavailable")
+        ),
+        "provider_circuit_open_events": total("circuit_open_events"),
+        "provider_draining_events": total("draining_events"),
+    }
+
+
 def aggregate(records: list[dict[str, Any]]) -> dict[str, Any]:
     """Run-level figures over the cities that have a result. Every rate is
     over the cities run (a technical failure counts against it); the pass
@@ -539,6 +655,9 @@ def aggregate(records: list[dict[str, Any]]) -> dict[str, Any]:
         },
         "narrator_fallback_count": sum(1 for record in completed if record["narrative"]["fallback"]),
         "reasoning_fallback_count": sum(1 for record in completed if record["reasoning"]["fallback"]),
+        # Groq <-> Gemini pair. Reported only: no rate here is an acceptance input, and a stage
+        # completed by Gemini is the same completed stage as one completed by Groq.
+        "llm_providers": _aggregate_llm_providers(completed),
         "cities_below_R": cities(FLAG_BELOW_R),
         "cities_with_empty_days": cities(FLAG_EMPTY_DAY),
         "cities_with_suspicious_collision_outcomes": cities(FLAG_COLLISION),
@@ -561,6 +680,8 @@ _CSV_COLUMNS: tuple[str, ...] = (
     "save", "reload", "geoapify_credits", "geoapify_refused_calls", "latency_seconds", "generation_peak_concurrency",
     "process_peak_concurrency", "llm_deadline_exceeded_stages", "narrative_source", "narrator_fallback",
     "reasoning_status", "reasoning_fallback", "manual_review_flags",
+    # Groq <-> Gemini pair (appended: earlier columns keep their positions)
+    "llm_final_providers", "llm_failover_count", "llm_failover_reasons", "llm_deterministic_fallback_count",
 )
 
 
@@ -641,6 +762,20 @@ def csv_row(record: dict[str, Any]) -> dict[str, Any]:
             "narrator_fallback": record["narrative"]["fallback"],
             "reasoning_status": record["reasoning"]["status"],
             "reasoning_fallback": record["reasoning"]["fallback"],
+        }
+    )
+    llm = _part(record, "llm_providers")
+    stages = llm.get("stages") or {}
+    row.update(
+        {
+            "llm_final_providers": _join(
+                f"{stage}={figures.get('final') or 'fallback'}" for stage, figures in stages.items()
+            ),
+            "llm_failover_count": llm.get("failover_count"),
+            "llm_failover_reasons": _join(
+                f"{stage}={figures['reason']}" for stage, figures in stages.items() if figures.get("reason")
+            ),
+            "llm_deterministic_fallback_count": llm.get("deterministic_fallback_count"),
         }
     )
     return row
@@ -735,6 +870,16 @@ def render_markdown(summary: dict[str, Any]) -> str:
         f"- cities with empty days: {_join(figures['cities_with_empty_days']) or 'none'}",
         f"- cities with suspicious collision outcomes: {_join(figures['cities_with_suspicious_collision_outcomes']) or 'none'}",
         f"- technical failures: {_join(figures['technical_failures']) or 'none'}",
+        "",
+        "## LLM providers",
+        "",
+        "Which provider served the model stages. Reported only: a stage completed by either provider "
+        "counts the same, and nothing here is an acceptance check.",
+        "",
+        *(
+            f"- {label}: {(figures.get('llm_providers') or {}).get(key, 0)}"
+            for label, key in _LLM_PROVIDER_AGGREGATE_ROWS
+        ),
         "",
         "## Manual review",
         "",
@@ -932,7 +1077,7 @@ def main(argv: list[str] | None = None) -> int:
     if not cities:
         parser.error("no city selected")
 
-    missing = [name for name in ("GEOAPIFY_API_KEY", "GROQ_API_KEY") if not os.environ.get(name)]
+    missing = canary_city._missing_environment()
     if missing:
         print("Missing required environment variable(s): " + ", ".join(missing) + ". Nothing was run.")
         return 2

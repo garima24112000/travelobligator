@@ -47,7 +47,7 @@ def test_factory_returns_groq_provider_for_explicit_name() -> None:
 
 @pytest.mark.parametrize(
     "unsupported_name",
-    ["openai", "gemini", "made_up_provider", "", "NOT_CONNECTED", "kiwi_mcp"],
+    ["openai", "made_up_provider", "", "NOT_CONNECTED", "kiwi_mcp"],
 )
 def test_factory_falls_back_to_not_connected_for_unsupported_names(
     unsupported_name: str,

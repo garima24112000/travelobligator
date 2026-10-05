@@ -4979,3 +4979,92 @@ step -- the system prompt already explicitly forbids the exact banned
 vocabulary and no instance of that vocabulary appeared in either real
 run -- but noted here for whoever tunes the narrator's system prompt
 further.
+
+## 122. Groq ↔ Gemini Resilience Group: A Second LLM Base, Never a Second Source of Facts
+
+An 18-city tuning run hit a system-wide Groq rate limit: anchor proposal,
+itinerary reasoning and the narrator were refused for every city within
+about 0.1 s, and spacing the cities out did not help. The deterministic
+fallbacks held, but the AI pipeline never ran. The generation-time model
+stages can now fail over between two providers:
+
+```text
+preferred provider (Groq by default)
+      ↓ quota low / rate limit / unavailable
+alternate provider (Gemini)
+      ↓ unavailable
+the stage's existing deterministic fallback
+```
+
+This is infrastructure. It changes which provider answers, never what an
+answer is allowed to contain or how it is checked.
+
+**The invariant is unchanged.** The LLM proposes, reasons and narrates;
+providers establish facts; deterministic code validates. Gemini receives
+exactly the prompt Groq receives (built from the same already-grounded
+input) and is asked to answer through the same wire schema. No `tools` are
+ever sent, so there is no Google Search or Maps grounding and no function
+calling. Its answer is validated locally against that schema and then goes
+through the stage's one existing path: per-proposal validation and
+forbidden-claim filtering, candidate-reference resolution against the
+allowed set, the place-identity check, and the narrator's sanitizer,
+grounding and factual-claim guards. A Gemini proposal still has to be
+grounded by a provider before it can be scheduled.
+
+**Which stages are routed.** Only a stage that is already enabled and whose
+own selector is `groq` or `gemini`. A disabled stage, `not_connected` and
+`anthropic` are never routed, whatever keys exist.
+
+| Stage selector | `LLM_FAILOVER_ENABLED` | Configured | Behaviour |
+|---|---|---|---|
+| stage disabled / `not_connected` | any | any | unchanged, no request |
+| `anthropic` | any | any | existing Anthropic adapter, never routed |
+| `groq` or `gemini` | `false` | selected one | exactly the selected provider |
+| `groq` or `gemini` | `true` | both | `LLM_PRIMARY_PROVIDER`, then `LLM_SECONDARY_PROVIDER` |
+| `groq` or `gemini` | `true` | one | that one only |
+| `groq` or `gemini` | any | neither | `not_connected`, as before |
+
+Gemini is configured when both `GEMINI_API_KEY` and `GEMINI_MODEL` are set.
+There is no default model.
+
+**Two requests at most.** `StageRun` (section on stage budgets) stays the
+only retry layer. A routed stage makes at most two provider requests under
+its one wall-clock budget; the clock is not reset when the provider
+changes, and no request starts with under 3 s left. The second request is
+one of:
+
+| First request | Other provider | Second request |
+|---|---|---|
+| transport failure (429, 503, 5xx, timeout, network, credentials, unknown 4xx) | callable | the other provider, at once |
+| transport failure | not callable | none: the failed provider's circuit is open, nobody is eligible, the deterministic fallback runs |
+| malformed / schema-invalid answer | HEALTHY | the other provider, with the same corrective input |
+| malformed / schema-invalid answer | not HEALTHY | anchor, narrator: their own structural retry; reasoning, repair: none |
+| parsed, then rejected by validation or grounding | any | none |
+
+**Provider health** is a small in-process record shared by every stage and
+generation of the process (`app/providers/llm_provider_health.py`):
+
+| Event | Effect |
+|---|---|
+| request completed (even with an unusable answer) | HEALTHY |
+| 429 | OPEN until the provider's reset / Retry-After, else `LLM_PROVIDER_PROBE_SECONDS` |
+| 503, other 5xx, timeout, network, unknown 4xx | OPEN for `LLM_PROVIDER_SHORT_COOLDOWN_SECONDS` |
+| rejected credentials | unavailable until the process restarts |
+| cooldown over | HALF_OPEN: one probe request at a time |
+| known remaining quota at or under `LLM_QUOTA_RESERVE_RATIO` | DRAINING: later stages prefer the other provider |
+
+A 503 is temporary unavailability and is never treated as quota. DRAINING
+only ever comes from evidence: Groq's `x-ratelimit-*` response headers, or
+the optional `GEMINI_RPM_LIMIT` / `GEMINI_TPM_LIMIT` / `GEMINI_RPD_LIMIT`
+measured against this process's own counters (token usage only as reported
+by the provider). Without evidence there is no proactive switch.
+
+The record is process memory: one container's view, not shared across
+containers, and never required for correctness.
+
+**Reporting.** Each stage's performance entry names the preferred, attempted
+and final provider, why it switched, the health before and after, and each
+request's outcome — fixed labels and numbers only. The canary prints an
+`LLM PROVIDERS` section and the tuning benchmark adds run-level counts.
+Provider identity is never an acceptance input: a stage completed by Gemini
+is the same completed stage as one completed by Groq.

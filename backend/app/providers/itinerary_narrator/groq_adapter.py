@@ -19,6 +19,22 @@ from app.models.itinerary_narrative import (
 from app.providers.ai_failure import AIProviderFailureKind, classify_ai_provider_exception
 from app.providers.ai_stage_budget import StageRun
 from app.providers.itinerary_narrator.base import ItineraryNarratorProvider
+from app.providers.llm_provider_health import GEMINI, GROQ
+from app.providers.llm_provider_router import (
+    PROVIDER_LABELS,
+    StageRoute,
+    after_structural_failure,
+    after_transport_failure,
+    answering_provider,
+    close_route,
+    gemini_wording,
+    not_configured_message,
+    provider_call,
+    resolve_chain,
+    start_route,
+    unavailable_failure,
+)
+from app.providers.llm_structured_clients import GeminiStructuredClient, open_groq_quota_capture
 from app.providers.itinerary_narrator.structural_retry import (
     MAX_NARRATOR_ATTEMPTS,
     RETRY_FORMAT_REMINDER,
@@ -144,6 +160,9 @@ class GroqItineraryNarratorProvider(ItineraryNarratorProvider):
     """
 
     provider_name = "groq_itinerary_narrator_provider"
+    # The member of the Groq <-> Gemini pair this adapter stands for when
+    # failover is off (`app/providers/llm_provider_router.py`).
+    _selected_provider = GROQ
 
     def __init__(
         self,
@@ -170,16 +189,19 @@ class GroqItineraryNarratorProvider(ItineraryNarratorProvider):
         self._timeout_seconds = settings.itinerary_narrator_timeout_seconds
 
     def narrate(self, request: ItineraryNarrativeRequest) -> ItineraryNarrativeReport:
-        if self._client is None and not self._api_key:
-            return self._not_connected_result(
-                "Groq API key is not configured (GROQ_API_KEY unset)."
+        settings = get_settings()
+        if self._client is None and not resolve_chain(
+            self._selected_provider, settings, groq_api_key=self._api_key or ""
+        ):
+            return self._attributed(
+                self._not_connected_result(not_configured_message(self._selected_provider)), None
             )
 
         # Section 1C: every attempt of this stage answers to ONE total
         # wall-clock budget, and the stage makes at most one recovery attempt
-        # (structural OR transport, never both stacked). Whatever does not
-        # succeed is narrated by the deterministic fallback, as before.
-        settings = get_settings()
+        # (structural OR transport OR the other provider of the Groq <->
+        # Gemini pair, never stacked). Whatever does not succeed is narrated
+        # by the deterministic fallback, as before.
         run = StageRun(
             "groq_narrator",
             total_budget_seconds=settings.groq_narrator_total_budget_seconds,
@@ -187,14 +209,59 @@ class GroqItineraryNarratorProvider(ItineraryNarratorProvider):
             structural_retries=MAX_NARRATOR_ATTEMPTS - 1,
             transport_retries=settings.groq_max_retries,
         )
-        report = self._narrate_within(request, run)
-        run.close(completed=report.status == ItineraryNarrativeStatus.SUCCESS)
-        return report
+        # No route with an injected client: that client is the only thing called.
+        route = (
+            start_route(run, self._selected_provider, settings, groq_api_key=self._api_key or "")
+            if self._client is None
+            else None
+        )
+        report = self._narrate_within(request, run, route)
+        close_route(run, route, completed=report.status == ItineraryNarrativeStatus.SUCCESS)
+        return self._attributed(report, route)
 
-    def _narrate_within(self, request: ItineraryNarrativeRequest, run: StageRun) -> ItineraryNarrativeReport:
+    def _attributed(self, report: ItineraryNarrativeReport, route: StageRoute | None) -> ItineraryNarrativeReport:
+        """Names the provider that actually answered. Provider identity is
+        metadata only: the narrative went through the same checks either way."""
+        if answering_provider(route, self._selected_provider) != GEMINI:
+            if self._selected_provider == GROQ:
+                return report
+            return report.model_copy(update={"provider": GroqItineraryNarratorProvider.provider_name})
+        return report.model_copy(
+            update={
+                "provider": "gemini_itinerary_narrator_provider",
+                "model": get_settings().gemini_model,
+                "message": gemini_wording(report.message),
+            }
+        )
+
+    def _build_gemini_client(self, timeout: float) -> Any:
+        """The same stage on Gemini: same prompt, same wire schema, one
+        request, no tools (`app/providers/llm_structured_clients.py`)."""
+        settings = get_settings()
+        return GeminiStructuredClient(
+            _NarratorBatchSchema,
+            api_key=settings.gemini_api_key or "",
+            model=settings.gemini_model or "",
+            temperature=self._temperature,
+            max_tokens=self._max_tokens,
+            timeout=timeout,
+        )
+
+    def _narrate_within(
+        self, request: ItineraryNarrativeRequest, run: StageRun, route: StageRoute | None = None
+    ) -> ItineraryNarrativeReport:
+        provider = route.first_provider() if route is not None else GROQ
+        if provider is None:
+            # Every provider of the pair recently refused or failed: no
+            # request is made and the deterministic narrative is used.
+            assert route is not None
+            kind, message = unavailable_failure(route)
+            return self._failed_result(message, failure_kind=kind.value)
+
         def deadline_result() -> ItineraryNarrativeReport:
             return self._failed_result(
-                run.deadline_message("Groq"), failure_kind=AIProviderFailureKind.DEADLINE_EXCEEDED.value
+                run.deadline_message(PROVIDER_LABELS[provider]),
+                failure_kind=AIProviderFailureKind.DEADLINE_EXCEEDED.value,
             )
 
         # Section 202C.1D: one initial attempt + at most one retry for a
@@ -205,9 +272,16 @@ class GroqItineraryNarratorProvider(ItineraryNarratorProvider):
         # budget goes straight to the deterministic fallback. Never retried:
         # auth, a non-transient provider error, and any parsed result that
         # `_build_result` rejects.
+        #
+        # Groq <-> Gemini pair: when the stage is routed over both providers,
+        # that one recovery request goes to the OTHER provider instead --
+        # after a transport failure if it may be called at all, after a
+        # structural failure only if it is healthy (with the same format
+        # reminder a structural retry carries). Still two requests at most.
         prompt = _build_prompt(request)
         structural_retry = False
         while True:
+            label = PROVIDER_LABELS[provider]
             timeout = run.next_attempt_timeout()
             if timeout is None:
                 return deadline_result()
@@ -215,19 +289,32 @@ class GroqItineraryNarratorProvider(ItineraryNarratorProvider):
                 client = self._client
             else:
                 try:
-                    client = self._build_client(timeout=timeout)
+                    client = (
+                        self._build_client(timeout=timeout)
+                        if provider == GROQ
+                        else self._build_gemini_client(timeout)
+                    )
                 except Exception as exc:  # missing package / bad config -> not_connected
-                    run.attempts = 0  # no request was made
-                    return self._not_connected_result(f"Groq client could not be initialized: {exc}")
+                    run.attempts -= 1  # no request was made
+                    if run.attempts == 0:
+                        return self._not_connected_result(f"{label} client could not be initialized: {exc}")
+                    return self._failed_result(
+                        f"{label} client could not be initialized.",
+                        failure_kind=AIProviderFailureKind.NOT_CONNECTED.value,
+                    )
 
             attempt_prompt = f"{prompt}\n\n{RETRY_FORMAT_REMINDER}" if structural_retry else prompt
+            if route is not None:
+                route.begin_attempt(provider)
             try:
-                with performance.provider_call("groq_narrator"):
+                with provider_call("groq_narrator", provider):
                     raw_output = client.invoke(attempt_prompt)
             except Exception as exc:  # API/runtime/timeout failure -> failed, never fabricated
-                structural, failure_message = structural_failure_message("Groq", exc)
+                structural, failure_message = structural_failure_message(label, exc)
                 if not structural:
-                    if run.allow_transport_retry(exc):
+                    next_provider = after_transport_failure(run, route, provider, exc)
+                    if next_provider is not None:
+                        provider = next_provider
                         continue
                     if run.deadline_exceeded:
                         return deadline_result()
@@ -235,16 +322,21 @@ class GroqItineraryNarratorProvider(ItineraryNarratorProvider):
                         failure_message, failure_kind=classify_ai_provider_exception(exc).value
                     )
                 run.answered = True
+                if route is not None:
+                    route.record_exception(provider, exc, client=client)
             else:
                 run.answered = True
                 output_dict = self._coerce_output(raw_output)
+                if route is not None:
+                    route.record_answer(provider, client, structured=output_dict is not None)
                 if output_dict is not None:
                     if structural_retry:
                         log_retry_outcome(self.provider_name, recovered=True)
                     return self._build_result(request, output_dict)
-                failure_message = "Groq did not return a structured response."
+                failure_message = f"{label} did not return a structured response."
 
-            if not run.allow_structural_retry():
+            next_provider = after_structural_failure(run, route, provider, same_provider_retry=True)
+            if next_provider is None:
                 if structural_retry:
                     log_retry_outcome(self.provider_name, recovered=False)
                 if run.deadline_exceeded:
@@ -252,6 +344,7 @@ class GroqItineraryNarratorProvider(ItineraryNarratorProvider):
                 return self._failed_result(
                     failure_message, failure_kind=AIProviderFailureKind.MALFORMED_OUTPUT.value
                 )
+            provider = next_provider
             structural_retry = True
             log_retrying(self.provider_name)
 
@@ -267,6 +360,7 @@ class GroqItineraryNarratorProvider(ItineraryNarratorProvider):
         except ImportError as exc:
             raise RuntimeError("The 'langchain_groq' package is not installed.") from exc
 
+        capture = open_groq_quota_capture()
         chat = ChatGroq(
             model=self._model,
             api_key=self._api_key,
@@ -277,6 +371,8 @@ class GroqItineraryNarratorProvider(ItineraryNarratorProvider):
             # recovery attempt is made by `narrate`, under the stage budget.
             timeout=timeout if timeout is not None else self._timeout_seconds,
             max_retries=0,
+            # Reads the response's rate-limit numbers (nothing else).
+            http_client=capture.http_client,
         )
         # Section 195 (Task 18): switched to Structured Outputs
         # (`method="json_schema", strict=True`) -- the Section 191A.1
