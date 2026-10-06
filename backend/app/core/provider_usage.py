@@ -225,6 +225,13 @@ class GenerationProviderContext:
     # Leg results already obtained in this generation, keyed by the routing
     # adapter, so later stages read them without another request.
     route_memo: dict = field(default_factory=dict)
+    # Routing REQUESTS the provider already answered, in this generation,
+    # with a definitive "this cannot be routed" (`no_route` /
+    # `unroutable_endpoint`), keyed by the routing adapter on the whole
+    # request. The identical request is answered from here: no second
+    # request, no allowance, no credit. Never a transient failure, never
+    # written to the provider cache, and gone with the generation.
+    route_failure_memo: dict = field(default_factory=dict)
     # Place Details lookups still allowed for off-pool grounded anchors.
     place_details_left: int = 12
     # Broad factual pool fetched during this generation, so a grounded

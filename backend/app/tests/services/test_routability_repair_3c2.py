@@ -16,7 +16,10 @@ from app.providers import errors, geoapify_client
 from app.providers.errors import ProviderRequestError, classify_bad_request
 from app.providers.routing import geoapify_adapter as routing_module
 from app.providers.routing.geoapify_adapter import GeoapifyRoutingAdapter
+from app.models.route_burden_repair import RoutabilityRepairAttempt
+from app.services.experience_planner_service import recompute_food_suggestions
 from app.services.grounded_anchors import grounded_anchor_place_ids
+from app.services.route_burden_repair_service import RouteBurdenRepairService
 from app.services.routability_repair_service import (
     ROUTING_COVERAGE_RELEASE_THRESHOLD,
     RoutabilityRepairService,
@@ -26,7 +29,7 @@ from app.services.routability_repair_service import (
 from app.services.route_feasibility_service import RouteFeasibilityService
 from app.storage.provider_cache_store import ProviderCacheStore
 from app.tests.services.test_batch1_tuning_fixes_3b import _promoted, _promotion
-from app.tests.services.test_final_quality_correction_203c2b import _Gateway, _poi, _point, _state
+from app.tests.services.test_final_quality_correction_203c2b import _Gateway, _poi, _point, _restaurant, _state
 
 # Section 3C.2: the bounded routability repair, and the safe classification
 # of a rejected routing request. A day is routed with ONE multi-waypoint
@@ -47,6 +50,8 @@ _NEAR = _poi("near", "Museum Nearby", _point(50.053, 10.051))
 _NEAR_TWO = _poi("near2", "Museum Nearby Two", _point(50.0535, 10.0515))
 
 _X_POINT = (50.052, 10.052)
+# Two balanced days: T = 6, R = 5. Five stops is exactly R, so no stop may be removed.
+_AT_R = [[_A, _B], [_D, _X, _E]]
 
 
 class _RejectingGateway(_Gateway):
@@ -199,12 +204,13 @@ def test_an_unroutable_grounded_anchor_may_be_replaced_for_routability_only() ->
     assert "history" in state.experience_plan.daily_plans[1].experiences[1].matched_interests
     assert report.coverage_after == 1.0
 
-    # an ordinary stop is preferred to an anchor when either could be the cause (a two-stop day)
-    gateway = _RejectingGateway(unroutable=((50.050, 10.050), _X_POINT))
+    # an ordinary stop is tried before an anchor when either could be the cause (a two-stop day)
+    gateway = _RejectingGateway(unroutable=((50.050, 10.050),))
     state, service = _routed_state(gateway, [[_D, _X]], unused=(_NEAR, _NEAR_TWO))
     state.ai_candidate_promotion_report = _promotion([_promoted("x", "Museum Unroutable", _point(50.052, 10.052))])
     attempt = _repair(state, service).attempts[0]
     assert attempt.suspect_place == "Museum Delta" and attempt.suspect_was_grounded_anchor is False
+    assert attempt.accepted and attempt.verification_attempts == 1 and len(gateway.calls) == 1
 
 
 # 3. a must-visit causes the failures
@@ -272,18 +278,19 @@ def test_a_replacement_that_makes_the_day_a_long_travel_day_is_rolled_back() -> 
     assert _names(state) == ["Museum Delta", "Museum Unroutable", "Museum Epsilon"]
     assert _leg_statuses(state)[2:] == ["failed", "failed"]
 
-    # a candidate far from the day is not even tried
+    # a candidate far from the day is not even tried (the plan is at R, so nothing is removed either)
     remote = _poi("remote", "Museum Remote", _point(50.400, 10.400))
     gateway = _RejectingGateway()
-    state, service = _routed_state(gateway, unused=(remote,))
+    state, service = _routed_state(gateway, _AT_R, unused=(remote,))
     attempt = _repair(state, service).attempts[0]
     assert attempt.reason == "no_suitable_candidate" and len(gateway.calls) == 2
 
 
 # 7. no compatible replacement
 def test_without_a_compatible_replacement_the_itinerary_is_kept_with_its_failure_signal() -> None:
+    # five stops over two balanced days is exactly R: the suspect cannot be removed either
     gateway = _RejectingGateway()
-    state, service = _routed_state(gateway, unused=())
+    state, service = _routed_state(gateway, _AT_R, unused=())
 
     report = _repair(state, service)
 
@@ -291,14 +298,14 @@ def test_without_a_compatible_replacement_the_itinerary_is_kept_with_its_failure
     assert (attempt.reason, attempt.accepted, attempt.replacement_place) == ("no_suitable_candidate", False, None)
     assert attempt.suspect_place == "Museum Unroutable"
     assert _names(state) == ["Museum Delta", "Museum Unroutable", "Museum Epsilon"]
-    assert _leg_statuses(state) == ["success", "success", "failed", "failed"]
-    assert report.coverage_after == 0.5 and routing_coverage(state) < ROUTING_COVERAGE_RELEASE_THRESHOLD
+    assert _leg_statuses(state) == ["success", "failed", "failed"]
+    assert report.coverage_after == pytest.approx(1 / 3) and routing_coverage(state) < ROUTING_COVERAGE_RELEASE_THRESHOLD
 
     # a candidate of a clearly lower quality tier is not a compatible replacement
     weak = {**_poi("weak", "Old Marker", _point(50.053, 10.051)), "category": "memorial",
             "provider_tags": {"historic": "memorial"}}
     gateway = _RejectingGateway()
-    state, service = _routed_state(gateway, unused=(weak,))
+    state, service = _routed_state(gateway, _AT_R, unused=(weak,))
     for stop in state.experience_plan.daily_plans[1].experiences:
         stop.quality_tier = "primary_anchor"
     assert _repair(state, service).attempts[0].reason == "no_suitable_candidate"
@@ -525,3 +532,372 @@ def test_the_routing_adapter_carries_the_reason_onto_each_leg_and_logs_fixed_fie
 
     report = RouteFeasibilityService(_AdapterGateway()).build_report(state)  # type: ignore[arg-type]
     assert [(leg.status, leg.failure_reason) for leg in report.legs] == [(ProviderStatus.FAILED, "unroutable_endpoint")] * 2
+
+
+# =====================================================================================
+# Ambiguous end stops: a failed leg between two unproven stops (a two-stop day)
+# =====================================================================================
+
+_D_POINT = (50.050, 10.050)
+_NEAR_POINT = (50.053, 10.051)
+# Day 1 routes; day 2 is ONE leg, so neither of its stops has a routed leg.
+_TWO_STOP = [[_A, _B, _C], [_D, _X]]
+
+
+def _dump(state: PlanningState) -> dict[str, Any]:
+    return state.model_dump(mode="json", exclude={"routability_repair_report", "updated_at"})
+
+
+def _plan(state: PlanningState) -> dict[str, Any]:
+    """The scheduled plan alone (localising a failure may add a routed leg to the route report)."""
+    return state.experience_plan.model_dump(mode="json")
+
+
+def test_when_the_first_replacement_cannot_be_routed_the_other_end_stop_gets_one_attempt() -> None:
+    # the SECOND stop is the unroutable one; stop order alone picks the first
+    gateway = _RejectingGateway()
+    state, service = _routed_state(gateway, _TWO_STOP, unused=(_NEAR, _NEAR_TWO))
+    assert routing_coverage(state) == pytest.approx(2 / 3)
+
+    report = _repair(state, service)
+
+    attempt = report.attempts[0]
+    assert (attempt.reason, attempt.accepted, attempt.verification_attempts) == ("accepted", True, 2)
+    assert (attempt.suspect_place, attempt.replaced_place, attempt.replacement_place) == (
+        "Museum Unroutable", "Museum Unroutable", "Museum Nearby",
+    )
+    # exactly two requests: the first replacement routed TO the unroutable stop, then the other stop replaced
+    assert gateway.calls == [[_NEAR_POINT, _X_POINT], [_D_POINT, _NEAR_POINT]]
+    assert _names(state) == ["Museum Delta", "Museum Nearby"] and report.coverage_after == 1.0
+    assert _leg_statuses(state) == ["success"] * 3
+    assert len(report.attempts) == 1  # one attempt record and one accepted change for the day
+
+
+def test_a_first_end_stop_that_is_the_unroutable_one_is_repaired_with_one_request() -> None:
+    gateway = _RejectingGateway(unroutable=(_D_POINT,))
+    state, service = _routed_state(gateway, _TWO_STOP, unused=(_NEAR, _NEAR_TWO))
+
+    attempt = _repair(state, service).attempts[0]
+
+    assert (attempt.reason, attempt.accepted, attempt.verification_attempts) == ("accepted", True, 1)
+    assert attempt.replaced_place == "Museum Delta" and gateway.calls == [[_NEAR_POINT, _X_POINT]]
+    assert _names(state) == ["Museum Nearby", "Museum Unroutable"]
+
+
+def test_two_failed_verifications_change_nothing_and_stop_at_two_requests() -> None:
+    gateway = _RejectingGateway(unroutable=(_D_POINT, _X_POINT))
+    # five candidates are available: still only two requests
+    spare = tuple(_poi(f"s{i}", f"Museum Spare {i}", _point(50.051 + 0.0001 * i, 10.051)) for i in range(3))
+    state, service = _routed_state(gateway, _TWO_STOP, unused=(_NEAR, _NEAR_TWO, *spare))
+    before = _dump(state)
+
+    report = _repair(state, service)
+
+    attempt = report.attempts[0]
+    assert (attempt.reason, attempt.accepted, attempt.verification_attempts) == ("replacement_unroutable", False, 2)
+    assert len(gateway.calls) == 2 and all(len(points) == 2 for points in gateway.calls)
+    assert _dump(state) == before and report.coverage_after == pytest.approx(2 / 3)
+
+
+def test_the_second_attempt_is_refused_when_the_allowance_is_spent() -> None:
+    gateway = _RejectingGateway()
+    state, service = _routed_state(gateway, _TWO_STOP, unused=(_NEAR, _NEAR_TWO))
+    before = _dump(state)
+    context = GenerationProviderContext.new(trip_days=2)
+    context.route_requests_left = 1
+
+    attempt = _repair(state, service, context).attempts[0]
+
+    assert (attempt.reason, attempt.accepted, attempt.verification_attempts) == ("route_budget_exhausted", False, 1)
+    assert len(gateway.calls) == 1 and context.route_requests_left == 0
+    assert _dump(state) == before
+
+
+def test_a_protected_other_end_stop_is_never_the_second_attempt() -> None:
+    # must-visit
+    gateway = _RejectingGateway()
+    days = [[_A, _B, _C], [_D, {**_X, "must_visit_term": "The Unroutable One"}]]
+    state, service = _routed_state(gateway, days, unused=(_NEAR, _NEAR_TWO), must_visit=["The Unroutable One"])
+    attempt = _repair(state, service).attempts[0]
+    assert (attempt.reason, attempt.verification_attempts, attempt.replaced_place) == (
+        "replacement_unroutable", 1, "Museum Delta",
+    )
+    assert len(gateway.calls) == 1 and _names(state) == ["Museum Delta", "Museum Unroutable"]
+
+    # user lock
+    gateway = _RejectingGateway()
+    state, service = _routed_state(gateway, _TWO_STOP, unused=(_NEAR, _NEAR_TWO))
+    locked = state.experience_plan.daily_plans[1].experiences[1]
+    state.user_locks = [UserLock(locked_item_type="experience", locked_item_id=locked.experience_id)]
+    attempt = _repair(state, service).attempts[0]
+    assert (attempt.reason, attempt.verification_attempts) == ("replacement_unroutable", 1)
+    assert len(gateway.calls) == 1 and _names(state) == ["Museum Delta", "Museum Unroutable"]
+
+
+def test_a_localised_suspect_still_gets_exactly_one_attempt() -> None:
+    # interior suspect, two candidates, the better one unroutable: the second candidate is NOT tried
+    gateway = _RejectingGateway(unroutable=(_X_POINT, _NEAR_POINT))
+    state, service = _routed_state(gateway, unused=(_NEAR, _NEAR_TWO))
+    attempt = _repair(state, service).attempts[0]
+    assert (attempt.reason, attempt.verification_attempts) == ("replacement_unroutable", 1)
+    assert [len(points) for points in gateway.calls] == [2, 2, 3]
+
+    # a proven end stop (its neighbour has a routed leg): one attempt, as before
+    gateway = _RejectingGateway(unroutable=(_X_POINT, _NEAR_POINT))
+    state, service = _routed_state(gateway, [[_A, _B, _C], [_X, _D, _E]], unused=(_NEAR, _NEAR_TWO))
+    attempt = _repair(state, service).attempts[0]
+    assert (attempt.reason, attempt.verification_attempts) == ("replacement_unroutable", 1)
+    assert [len(points) for points in gateway.calls] == [2, 2, 2]
+    assert _names(state) == ["Museum Unroutable", "Museum Delta", "Museum Epsilon"]
+
+
+def test_the_ambiguous_repair_is_deterministic() -> None:
+    outcomes = []
+    for _ in range(3):
+        gateway = _RejectingGateway()
+        state, service = _routed_state(gateway, _TWO_STOP, unused=(_NEAR_TWO, _NEAR))
+        report = _repair(state, service)
+        outcomes.append((_names(state), report.attempts[0].model_dump(), gateway.calls))
+    assert outcomes[0] == outcomes[1] == outcomes[2] and outcomes[0][1]["verification_attempts"] == 2
+
+
+# =====================================================================================
+# No replacement: the ONE proven suspect is removed, while the plan stays useful
+# =====================================================================================
+
+# Two balanced days: R = 5. Six stops, so one may go.
+_END_FIRST = [[_A, _B, _C], [_X, _D, _E]]
+
+
+def test_a_proven_end_stop_without_a_replacement_is_removed_with_no_request() -> None:
+    gateway = _RejectingGateway()
+    state, service = _routed_state(gateway, _END_FIRST, unused=())
+    day = state.experience_plan.daily_plans[1]
+    day.ai_rationale_warning = "AI rationale: three museums in one walk."
+    day.warnings.append(day.ai_rationale_warning)
+
+    report = _repair(state, service)
+
+    attempt = report.attempts[0]
+    assert (attempt.reason, attempt.accepted) == ("suspect_removed", True)
+    assert (attempt.suspect_place, attempt.replaced_place, attempt.replacement_place) == (
+        "Museum Unroutable", "Museum Unroutable", None,
+    )
+    assert (attempt.failed_legs_before, attempt.failed_legs_after, attempt.verification_attempts) == (2, 0, 0)
+    # only the two localisation requests: removing an end stop asks the provider for nothing
+    assert [len(points) for points in gateway.calls] == [2, 2]
+    assert _names(state) == ["Museum Delta", "Museum Epsilon"]
+    assert [stop.stop_order for stop in day.experiences] == [1, 2]
+    # the route report is the resulting schedule's: every leg routed, none for the removed stop
+    pairs = [(leg.from_experience_name, leg.to_experience_name) for leg in state.route_feasibility_report.legs]
+    assert pairs == [("Museum Alpha", "Museum Beta"), ("Museum Beta", "Museum Gamma"), ("Museum Delta", "Museum Epsilon")]
+    assert _leg_statuses(state) == ["success"] * 3 and report.coverage_after == 1.0
+    # no stale explanation: the summary names the stops that remain and the old rationale is gone
+    assert day.goal == "This day's stops, grouped by location: Museum Delta and Museum Epsilon."
+    assert day.ai_rationale_warning is None and not any("AI rationale" in warning for warning in day.warnings)
+    # the plan is still at or above R
+    assert sum(len(d.experiences) for d in state.experience_plan.daily_plans) == 5
+
+
+def test_removal_never_takes_the_plan_below_r() -> None:
+    for days in ([[_A, _B], [_X, _D, _E]], [[_A, _B], [_D, _X, _E]], [[_A], [_D, _E, _X]]):
+        gateway = _RejectingGateway()
+        state, service = _routed_state(gateway, days, unused=())
+        before = _plan(state)
+        attempt = _repair(state, service).attempts[0]
+        assert (attempt.reason, attempt.accepted) == ("no_suitable_candidate", False)
+        assert _plan(state) == before
+        assert sum(len(d.experiences) for d in state.experience_plan.daily_plans) == len([p for d in days for p in d])
+
+
+def test_removal_never_empties_a_day() -> None:
+    gateway = _RejectingGateway()
+    state, service = _routed_state(gateway, [[_A, _B, _C], [_D, _E], [_X]], unused=())
+    day = state.experience_plan.daily_plans[2]
+    attempt = RoutabilityRepairService(service)._remove_suspect(
+        state, day, 0, None, {"day_number": 3},
+        lambda reason, **extra: RoutabilityRepairAttempt(day_number=3, reason=reason, **extra),
+    )
+    assert attempt.reason == "no_suitable_candidate" and _names(state, 2) == ["Museum Unroutable"]
+
+
+def test_a_proven_unroutable_must_visit_or_locked_stop_is_never_removed() -> None:
+    # must-visit end stop, no replacement, plan above R
+    gateway = _RejectingGateway()
+    days = [[_A, _B, _C], [{**_X, "must_visit_term": "The Unroutable One"}, _D, _E]]
+    state, service = _routed_state(gateway, days, unused=(), must_visit=["The Unroutable One"])
+    attempt = _repair(state, service).attempts[0]
+    assert (attempt.reason, attempt.suspect_protection, attempt.accepted) == ("suspect_protected", "must_visit", False)
+    assert _names(state) == ["Museum Unroutable", "Museum Delta", "Museum Epsilon"]
+
+    # user-locked end stop
+    gateway = _RejectingGateway()
+    state, service = _routed_state(gateway, _END_FIRST, unused=())
+    locked = state.experience_plan.daily_plans[1].experiences[0]
+    state.user_locks = [UserLock(locked_item_type="experience", locked_item_id=locked.experience_id)]
+    attempt = _repair(state, service).attempts[0]
+    assert (attempt.reason, attempt.suspect_protection, attempt.accepted) == ("suspect_protected", "user_lock", False)
+    assert _names(state) == ["Museum Unroutable", "Museum Delta", "Museum Epsilon"]
+
+
+def test_the_sole_scheduled_cover_of_a_requested_interest_is_never_removed() -> None:
+    # history: only the suspect serves it
+    gateway = _RejectingGateway()
+    state, service = _routed_state(gateway, _END_FIRST, unused=(), interests=["history", "art"])
+    for scheduled_day in state.experience_plan.daily_plans:
+        for stop in scheduled_day.experiences:
+            stop.matched_interests = ["history"] if stop.name == "Museum Unroutable" else ["art"]
+    before = _plan(state)
+    attempt = _repair(state, service).attempts[0]
+    assert (attempt.reason, attempt.accepted) == ("no_suitable_candidate", False) and _plan(state) == before
+
+    # ... and it IS removed once another scheduled stop serves that interest too
+    gateway = _RejectingGateway()
+    state, service = _routed_state(gateway, _END_FIRST, unused=(), interests=["history", "art"])
+    for scheduled_day in state.experience_plan.daily_plans:
+        for stop in scheduled_day.experiences:
+            stop.matched_interests = ["history"] if stop.name in ("Museum Unroutable", "Museum Alpha") else ["art"]
+    assert _repair(state, service).attempts[0].reason == "suspect_removed"
+
+
+def test_food_is_treated_like_any_other_interest_even_with_nearby_food_elsewhere() -> None:
+    # day 1 has real nearby food, so the REPLACEMENT rule would waive food; removal does not
+    gateway = _RejectingGateway()
+    days = _END_FIRST
+    pois = [poi for day in days for poi in day]
+    state = _state(pois, days, restaurants=[_restaurant("one", _point(50.001, 10.001))], interests=["food", "history"])
+    service = RouteFeasibilityService(gateway)  # type: ignore[arg-type]
+    state.route_feasibility_report = service.build_report(state)
+    gateway.calls.clear()
+    recompute_food_suggestions(state)
+    for scheduled_day in state.experience_plan.daily_plans:
+        for stop in scheduled_day.experiences:
+            stop.matched_interests = ["food"] if stop.name == "Museum Unroutable" else ["history"]
+    assert RouteBurdenRepairService._food_evidence_on_another_day(state, state.experience_plan.daily_plans[1])
+    before = _plan(state)
+
+    attempt = _repair(state, service).attempts[0]
+
+    assert (attempt.reason, attempt.accepted) == ("no_suitable_candidate", False)
+    assert _plan(state) == before and "Museum Unroutable" in _names(state)
+
+
+def test_removal_never_runs_for_two_ambiguous_end_stops() -> None:
+    # six stops over two days (R = 5): removing one would be allowed by R, but neither stop is proven
+    extra = _poi("c2", "Museum Gamma Two", _point(50.006, 10.000))
+    days = [[_A, _B, _C, extra], [_D, _X]]
+
+    # no candidate at all
+    gateway = _RejectingGateway()
+    state, service = _routed_state(gateway, days, unused=())
+    before = _dump(state)
+    attempt = _repair(state, service).attempts[0]
+    assert (attempt.reason, attempt.accepted) == ("no_suitable_candidate", False)
+    assert gateway.calls == [] and _dump(state) == before
+
+    # candidates exist but neither replacement routes: still nothing is removed
+    gateway = _RejectingGateway(unroutable=(_D_POINT, _X_POINT))
+    state, service = _routed_state(gateway, days, unused=(_NEAR, _NEAR_TWO))
+    before = _dump(state)
+    attempt = _repair(state, service).attempts[0]
+    assert attempt.reason == "replacement_unroutable" and _dump(state) == before
+
+    # ... even when the other end stop is protected, which leaves ONE replaceable stop but TWO suspects
+    gateway = _RejectingGateway()
+    protected = [[_A, _B, _C, extra], [_D, {**_X, "must_visit_term": "The Unroutable One"}]]
+    state, service = _routed_state(gateway, protected, unused=(), must_visit=["The Unroutable One"])
+    before = _dump(state)
+    attempt = _repair(state, service).attempts[0]
+    assert attempt.reason == "no_suitable_candidate" and _dump(state) == before
+
+
+def test_an_interior_suspect_is_removed_only_when_the_bridging_leg_routes() -> None:
+    gateway = _RejectingGateway()
+    state, service = _routed_state(gateway, unused=())
+    context = GenerationProviderContext.new(trip_days=2)
+    available = context.route_requests_left
+
+    report = _repair(state, service, context)
+
+    attempt = report.attempts[0]
+    assert (attempt.reason, attempt.accepted, attempt.verification_attempts) == ("suspect_removed", True, 1)
+    # two to localise, one for the leg that now joins the neighbours -- from the ordinary allowance
+    assert gateway.calls == [[_D_POINT, _X_POINT], [_X_POINT, (50.054, 10.050)], [_D_POINT, (50.054, 10.050)]]
+    assert available - context.route_requests_left == 3
+    assert _names(state) == ["Museum Delta", "Museum Epsilon"] and report.coverage_after == 1.0
+    bridge = state.route_feasibility_report.legs[-1]
+    assert (bridge.from_experience_name, bridge.to_experience_name) == ("Museum Delta", "Museum Epsilon")
+    assert bridge.status == ProviderStatus.SUCCESS and bridge.distance_meters is not None
+
+    # the bridging leg does not route: nothing is removed
+    gateway = _RejectingGateway(unroutable=(_X_POINT, (50.054, 10.050)))
+    state, service = _routed_state(gateway, unused=())
+    before = _dump(state)
+    attempt = _repair(state, service).attempts[0]
+    assert (attempt.reason, attempt.accepted, attempt.verification_attempts) == ("no_suitable_candidate", False, 1)
+    assert _dump(state) == before
+
+    # the bridging leg would make the day a long-travel day: nothing is removed
+    far = _poi("far", "Museum Far End", _point(50.120, 10.050))
+    gateway = _RejectingGateway()
+    state, service = _routed_state(gateway, [[_A, _B, _C], [_D, _X, far]], unused=())
+    before = _dump(state)
+    attempt = _repair(state, service).attempts[0]
+    assert (attempt.reason, attempt.accepted) == ("no_suitable_candidate", False) and _dump(state) == before
+
+    # no allowance left for the bridging request: nothing is removed
+    gateway = _RejectingGateway()
+    state, service = _routed_state(gateway, unused=())
+    context = GenerationProviderContext.new(trip_days=2)
+    context.route_requests_left = 2
+    attempt = _repair(state, service, context).attempts[0]
+    assert attempt.reason == "route_budget_exhausted" and len(gateway.calls) == 2
+    assert _names(state) == ["Museum Delta", "Museum Unroutable", "Museum Epsilon"]
+
+
+def test_a_grounded_anchor_may_be_removed_only_when_every_guard_passes() -> None:
+    def anchored(days: list[list[dict[str, Any]]], **trip: Any) -> tuple[_RejectingGateway, PlanningState, Any]:
+        gateway = _RejectingGateway()
+        state, service = _routed_state(gateway, days, unused=(), interests=["history"], **trip)
+        state.ai_candidate_promotion_report = _promotion([_promoted("x", "Museum Unroutable", _point(50.052, 10.052))])
+        assert grounded_anchor_place_ids(state) == {"geoapify/x"}
+        return gateway, state, service
+
+    # every guard passes: the anchor is an AI preference, and the provider cannot route to it
+    _, state, service = anchored(_END_FIRST)
+    attempt = _repair(state, service).attempts[0]
+    assert (attempt.reason, attempt.accepted, attempt.suspect_was_grounded_anchor) == ("suspect_removed", True, True)
+    assert _names(state) == ["Museum Delta", "Museum Epsilon"]
+
+    # at R: kept
+    _, state, service = anchored([[_A, _B], [_X, _D, _E]])
+    attempt = _repair(state, service).attempts[0]
+    assert (attempt.reason, attempt.accepted) == ("no_suitable_candidate", False)
+    assert "Museum Unroutable" in _names(state)
+
+    # sole cover of a requested interest: kept
+    _, state, service = anchored(_END_FIRST)
+    for scheduled_day in state.experience_plan.daily_plans:
+        for stop in scheduled_day.experiences:
+            stop.matched_interests = ["history"] if stop.name == "Museum Unroutable" else []
+    assert _repair(state, service).attempts[0].reason == "no_suitable_candidate"
+
+    # the same place as a user's must-visit: protected, never removed
+    gateway = _RejectingGateway()
+    days = [[_A, _B, _C], [{**_X, "must_visit_term": "The Unroutable One"}, _D, _E]]
+    state, service = _routed_state(gateway, days, unused=(), must_visit=["The Unroutable One"])
+    state.ai_candidate_promotion_report = _promotion([_promoted("x", "Museum Unroutable", _point(50.052, 10.052))])
+    attempt = _repair(state, service).attempts[0]
+    assert (attempt.reason, attempt.suspect_protection) == ("suspect_protected", "must_visit")
+    assert "Museum Unroutable" in _names(state)
+
+
+def test_removal_is_one_change_per_day_and_deterministic() -> None:
+    outcomes = []
+    for _ in range(3):
+        gateway = _RejectingGateway()
+        state, service = _routed_state(gateway, _END_FIRST, unused=())
+        report = _repair(state, service)
+        outcomes.append(([_names(state, 0), _names(state)], [a.model_dump() for a in report.attempts], gateway.calls))
+    assert outcomes[0] == outcomes[1] == outcomes[2]
+    assert [attempt["reason"] for attempt in outcomes[0][1]] == ["suspect_removed"]

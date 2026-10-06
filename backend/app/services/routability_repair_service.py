@@ -28,6 +28,21 @@ release threshold. For each day with unrouted legs, at most ONE replacement:
      real provider route and the day does not become a long-travel day;
      otherwise nothing is changed.
 
+Two bounded exceptions, each still at most ONE accepted change per day:
+
+  * AMBIGUOUS END STOPS. A failed leg between two end stops that are both
+    unproven (a two-stop day) does not say which of them is at fault. When
+    the first replacement cannot be routed -- it was verified against the
+    other unproven stop -- that other stop gets one attempt of its own: at
+    most two verification requests for such a day, never more.
+  * NO REPLACEMENT. When exactly one stop is the suspect and no candidate
+    fits, the stop is removed instead -- only while the plan keeps at least R
+    meaningful stops, the day stays non-empty and every requested interest
+    the scheduled stops cover stays covered by a scheduled stop. An interior
+    stop is removed only when the provider routes the leg that then joins
+    its neighbours. Never a must-visit or a user-locked stop, and never one
+    of two ambiguous end stops.
+
 Nothing is estimated: no route is inferred, no coordinate is moved, and a
 leg the provider did not route stays unrouted and keeps its review finding.
 Requests are bounded by the generation's route-request allowance and the
@@ -38,6 +53,7 @@ error) is not evidence about any stop and never triggers a replacement.
 from __future__ import annotations
 
 import logging
+from typing import Callable
 
 from app.core.provider_usage import GenerationProviderContext
 from app.models.common import GeoPoint, ProviderStatus
@@ -58,7 +74,7 @@ from app.services.experience_planner_service import (
 from app.services.grounded_anchors import grounded_anchor_place_ids
 from app.services.interest_coverage import FOOD
 from app.services.must_visit_matching import must_visit_place_ids
-from app.services.pace_targets import pace_of
+from app.services.pace_targets import pace_of, pace_targets, trip_days_of
 from app.services.route_burden import burden_of_legs
 from app.services.route_burden_repair_service import REPLACEABLE, RouteBurdenRepairService
 from app.services.route_feasibility_service import RouteFeasibilityService
@@ -83,6 +99,8 @@ _TRANSIENT_REASONS = frozenset(
     }
 )
 _ANCHOR = "grounded_anchor"
+# Fixed reason code: the one proven suspect was removed (no replacement fitted).
+_REMOVED = "suspect_removed"
 
 
 def _routed(leg: RouteLegFeasibility | None) -> bool:
@@ -145,6 +163,8 @@ class RoutabilityRepairService:
             attempts.append(attempt)
             if used is not None:
                 options = [option for option in options if option is not used]
+                replaced = True
+            elif attempt.reason == _REMOVED:
                 replaced = True
         if replaced:
             # Food is judged against the stops the traveller is shown.
@@ -255,44 +275,126 @@ class RoutabilityRepairService:
             return outcome(
                 "suspect_protected", suspect_place=stops[first].name, suspect_protection=protections[first]
             ), None
-        position = replaceable[0]
-        suspect = stops[position]
-        fields.update(
-            {
+        # Exactly one stop is the suspect: an end stop whose neighbour has a
+        # routed leg, or the interior stop the rule above singles out.
+        sole_suspect = len(ranked) == 1
+        # A failed leg between two END stops that are both unproven suspects
+        # (in practice a two-stop day) gives no evidence which of them is at
+        # fault. Only then, when the first replacement's verification fails
+        # -- it was routed to the other unproven stop -- that other stop gets
+        # the one further attempt. Never for an interior suspect, and never
+        # for a stop that is not next to the first one.
+        attempts = replaceable[:1]
+        if not interior and len(replaceable) > 1 and abs(replaceable[1] - replaceable[0]) == 1:
+            attempts = replaceable[:2]
+
+        unroutable: RoutabilityRepairAttempt | None = None
+        for position in attempts:
+            suspect = stops[position]
+            # After a failed first verification the day is reported as that
+            # attempt left it unless this one gets as far as its own request.
+            suspect_fields = {
                 "suspect_place": suspect.name,
                 "suspect_protection": REPLACEABLE,
                 "suspect_was_grounded_anchor": protections[position] == _ANCHOR,
             }
-        )
 
-        # 3. The best unused candidate that would not make the plan worse.
-        best = self._best_option(planning_state, day, suspect, options)
-        if best is None:
-            return outcome("no_suitable_candidate"), None
-        replacement = build_replacement_experience(planning_state, best)
-        if is_meaningful_stop(suspect) and not is_meaningful_stop(replacement):
-            return outcome("no_suitable_candidate"), None
-        named = {"replaced_place": suspect.name, "replacement_place": replacement.name}
+            # 3. The best unused candidate that would not make the plan worse.
+            best = self._best_option(planning_state, day, suspect, options)
+            replacement = build_replacement_experience(planning_state, best) if best is not None else None
+            if replacement is None or (is_meaningful_stop(suspect) and not is_meaningful_stop(replacement)):
+                if unroutable is not None:
+                    return unroutable, None
+                fields.update(suspect_fields)
+                if sole_suspect:
+                    return self._remove_suspect(planning_state, day, position, provider_context, fields, outcome), None
+                return outcome("no_suitable_candidate"), None
+            fields.update(suspect_fields)
+            named = {"replaced_place": suspect.name, "replacement_place": replacement.name}
 
-        # 4. Route ONLY the legs next to the replacement (one request).
-        if provider_context is not None and provider_context.route_requests_left <= 0:
-            return outcome("route_budget_exhausted", **named), None
-        start, end = max(0, position - 1), min(len(stops) - 1, position + 1)
-        affected = [replacement if index == position else stops[index] for index in range(start, end + 1)]
-        fresh = self._route(affected, provider_context)
-        if fresh is None:
-            return outcome("replacement_unroutable", **named), None
+            # 4. Route ONLY the legs next to the replacement (one request).
+            if provider_context is not None and provider_context.route_requests_left <= 0:
+                return outcome("route_budget_exhausted", **named), None
+            start, end = max(0, position - 1), min(len(stops) - 1, position + 1)
+            affected = [replacement if index == position else stops[index] for index in range(start, end + 1)]
+            fresh = self._route(affected, provider_context)
+            fields["verification_attempts"] = int(fields.get("verification_attempts", 0)) + 1
+            if fresh is None:
+                unroutable = outcome("replacement_unroutable", **named)
+                continue
 
-        new_stops = [replacement if index == position else stop for index, stop in enumerate(stops)]
-        new_legs = {start + offset: leg for offset, leg in enumerate(fresh)}
-        day_legs = self._day_legs(planning_state, stops, new_stops, new_legs)
-        burden = burden_of_legs(day.day_number, len(new_stops) - 1, day_legs, pace_of(planning_state))
-        if burden.long_route:
-            # A routable day that is an unreasonable amount of travel is not an improvement.
-            return outcome("replacement_route_burden", **named), None
+            new_stops = [replacement if index == position else stop for index, stop in enumerate(stops)]
+            new_legs = {start + offset: leg for offset, leg in enumerate(fresh)}
+            day_legs = self._day_legs(planning_state, stops, new_stops, new_legs)
+            burden = burden_of_legs(day.day_number, len(new_stops) - 1, day_legs, pace_of(planning_state))
+            if burden.long_route:
+                # A routable day that is an unreasonable amount of travel is not an improvement.
+                return outcome("replacement_route_burden", **named), None
+
+            self._apply(planning_state, day, new_stops, day_legs)
+            return outcome("accepted", accepted=True, **named), best
+        return unroutable, None
+
+    # -- removal ----------------------------------------------------------------------
+
+    def _remove_suspect(
+        self,
+        planning_state: PlanningState,
+        day: DailyPlan,
+        position: int,
+        provider_context: GenerationProviderContext | None,
+        fields: dict[str, object],
+        outcome: Callable[..., RoutabilityRepairAttempt],
+    ) -> RoutabilityRepairAttempt:
+        """The day's ONE proven suspect has no suitable replacement: it is
+        taken out of its day, but only when the plan stays useful without it
+        -- at least R meaningful stops, no empty day, and every requested
+        interest the scheduled stops cover still covered by a scheduled stop
+        (food included: a nearby-food suggestion is not counted on here).
+        The caller has already excluded a must-visit and a user-locked stop.
+        Removing an end stop needs no request; removing an interior stop is
+        kept only when the provider routes the leg that now joins its
+        neighbours and the day does not become a long-travel day. Otherwise
+        nothing is changed and the day keeps its failure signal."""
+        stops = day.experiences
+        suspect = stops[position]
+        plan = planning_state.experience_plan
+        others = [stop for other_day in plan.daily_plans for stop in other_day.experiences if stop is not suspect]
+        targets = pace_targets(trip_days_of(planning_state), pace_of(planning_state))
+        still_covered = {interest for stop in others for interest in stop.matched_interests}
+        if (
+            len(stops) < 2
+            or sum(1 for stop in others if is_meaningful_stop(stop)) < targets.minimum_useful
+            or set(suspect.matched_interests) - still_covered
+        ):
+            return outcome("no_suitable_candidate")
+
+        new_stops = [stop for stop in stops if stop is not suspect]
+        bridge: RouteLegFeasibility | None = None
+        if 0 < position < len(stops) - 1:
+            if provider_context is not None and provider_context.route_requests_left <= 0:
+                return outcome("route_budget_exhausted")
+            fresh = self._route([stops[position - 1], stops[position + 1]], provider_context)
+            fields["verification_attempts"] = int(fields.get("verification_attempts", 0)) + 1
+            if fresh is None:
+                return outcome("no_suitable_candidate")
+            bridge = fresh[0]
+
+        # The day's legs for the stops that remain: the bridging leg where
+        # one was needed, otherwise the leg already stored for that pair.
+        stored = self._legs(planning_state)
+        day_legs: list[RouteLegFeasibility] = []
+        for index, (a, b) in enumerate(zip(new_stops, new_stops[1:])):
+            leg = bridge if bridge is not None and index == position - 1 else stored.get((a.experience_id, b.experience_id))
+            if leg is not None:
+                day_legs.append(leg)
+        if bridge is not None and burden_of_legs(
+            day.day_number, len(new_stops) - 1, day_legs, pace_of(planning_state)
+        ).long_route:
+            return outcome("no_suitable_candidate")
 
         self._apply(planning_state, day, new_stops, day_legs)
-        return outcome("accepted", accepted=True, **named), best
+        return outcome(_REMOVED, accepted=True, replaced_place=suspect.name)
 
     # -- candidates -----------------------------------------------------------------
 

@@ -25,7 +25,7 @@ from app.models.planning_state import (
     TravelGroupType,
     TripRequest,
 )
-from app.models.routing import RouteRequest
+from app.models.routing import RouteRequest, RoutingProfile
 from app.providers import geoapify_client
 from app.providers.errors import ProviderRequestError
 from app.providers.gateway import ProviderGateway
@@ -669,6 +669,156 @@ def test_routing_requests_are_bounded_per_generation(
     refused = adapter.get_route_sequence([(50.0, 30.0), (50.0, 31.0)])[0]
     assert refused.status == ProviderStatus.UNAVAILABLE
     assert refused.message == "The route request budget for this generation was reached."
+    assert len(network.requests["routing"]) == 2
+
+
+# -- a definitive "cannot be routed" answer is remembered for the generation -------------------------------
+
+
+def _rejected(message: str) -> Callable[[httpx.Request], httpx.Response]:
+    return lambda request: httpx.Response(400, json={"statusCode": 400, "error": "Bad Request", "message": message})
+
+
+_NO_ROUTE = _rejected("No path could be found for input")
+_UNROUTABLE_ENDPOINT = _rejected("No suitable edges near location")
+
+
+@pytest.mark.parametrize(("failure", "reason"), [(_NO_ROUTE, "no_route"), (_UNROUTABLE_ENDPOINT, "unroutable_endpoint")])
+def test_a_definitive_routing_failure_is_replayed_without_a_request_allowance_or_credit(
+    monkeypatch: pytest.MonkeyPatch, configured: None, tmp_path: Path, failure: Any, reason: str
+) -> None:
+    store = ProviderCacheStore(tmp_path / "c.sqlite3")
+    network = _Network(routing=failure)
+    context = _context()
+    allowance = context.route_requests_left
+    adapter = _routing(monkeypatch, network, store).bound_to(context)
+
+    first = adapter.get_route_sequence(_DAY)
+    assert [(result.status, result.failure_reason) for result in first] == [(ProviderStatus.FAILED, reason)] * 2
+    assert len(network.requests["routing"]) == 1 and context.route_requests_left == allowance - 1
+
+    # the identical request, three more times (and through `get_route_sequences`): the same answer from memory
+    replays = [adapter.get_route_sequence(_DAY) for _ in range(3)] + adapter.get_route_sequences([_DAY])
+    for replay in replays:
+        assert replay == first and all(result is first[0] for result in replay)  # the exact same result
+        assert all(result.distance_meters is None and result.duration_seconds is None for result in replay)
+    assert len(network.requests["routing"]) == 1  # zero further HTTP requests
+    assert context.route_requests_left == allowance - 1  # zero further allowance
+    assert context.usage_tracker.credits_used() == 0 and context.usage_tracker.calls_made() == 0  # zero credits
+    assert context.usage_tracker.snapshot()["refused_calls"] == 0
+
+    # generation memory only: a NEW generation asks the provider again, and nothing was written to the cache
+    other = _context()
+    healthy = _Network(routing=_route_response)
+    again = _routing(monkeypatch, healthy, store).bound_to(other).get_route_sequence(_DAY)
+    assert again[0].status == ProviderStatus.SUCCESS and len(healthy.requests["routing"]) == 1
+    assert other.route_failure_memo == {} and other.usage_tracker.credits_used("routing") == 2
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        lambda request: httpx.Response(429),
+        lambda request: httpx.Response(500),
+        lambda request: httpx.Response(503),
+        lambda request: httpx.Response(401),
+        _timeout,
+        lambda request: httpx.Response(200, text="oops"),
+        lambda request: httpx.Response(200, json={"features": []}),
+        _rejected("Something this code has never seen"),
+        _rejected('"mode" must be one of [drive, walk]'),
+        _rejected("Invalid coordinate: latitude out of range"),
+        lambda request: httpx.Response(400, content=b"<html>not json</html>"),
+    ],
+)
+def test_a_transient_or_unrecognised_routing_failure_is_never_remembered(
+    monkeypatch: pytest.MonkeyPatch, configured: None, tmp_path: Path, failure: Any
+) -> None:
+    network = _Network(routing=failure)
+    context = _context()
+    allowance = context.route_requests_left
+    adapter = _routing(monkeypatch, network, ProviderCacheStore(tmp_path / "c.sqlite3")).bound_to(context)
+
+    first = adapter.get_route_sequence(_DAY)
+    assert first[0].status != ProviderStatus.SUCCESS and context.route_failure_memo == {}
+    geoapify_client.request_breaker.reset()  # a 429 / rejected key opens the shared breaker; that is not a memo
+    adapter.get_route_sequence(_DAY)
+
+    assert len(network.requests["routing"]) == 2  # asked again
+    assert context.route_requests_left == allowance - 2 and context.route_failure_memo == {}
+    geoapify_client.request_breaker.reset()
+
+
+def test_the_failure_memo_is_keyed_on_the_whole_request_as_it_is_sent(
+    monkeypatch: pytest.MonkeyPatch, configured: None, tmp_path: Path
+) -> None:
+    def walking_never_routes(request: httpx.Request) -> httpx.Response:
+        return _mode_route_response(request) if request.url.params["mode"] == "drive" else _NO_ROUTE(request)
+
+    network = _Network(routing=walking_never_routes)
+    context = _context()
+    adapter = _routing(monkeypatch, network, ProviderCacheStore(tmp_path / "c.sqlite3")).bound_to(context)
+    a, b, c = _DAY
+
+    def sent() -> list[tuple[str, str]]:
+        return [(request.url.params["waypoints"], request.url.params["mode"]) for request in network.requests["routing"]]
+
+    assert adapter.get_route_sequence([a, b])[0].failure_reason == "no_route"
+    assert adapter.get_route_sequence([a, b])[0].failure_reason == "no_route"
+    assert sent() == [("50.0,10.0|50.0,11.0", "walk")]
+
+    # direction is part of the identity
+    adapter.get_route_sequence([b, a])
+    # ... and so is every waypoint: a longer sequence, a shorter one, another point, another precision
+    adapter.get_route_sequence([a, b, c])
+    adapter.get_route_sequence([b, c])  # a rejected a-b-c request says nothing about the leg b-c
+    adapter.get_route_sequence([a, (50.0, 11.0000001)])
+    assert sent()[1:] == [
+        ("50.0,11.0|50.0,10.0", "walk"),
+        ("50.0,10.0|50.0,11.0|50.0,12.0", "walk"),
+        ("50.0,11.0|50.0,12.0", "walk"),
+        ("50.0,10.0|50.0,11.0000001", "walk"),
+    ]
+    # each of them is now remembered in its own right
+    for points in ([b, a], [a, b, c], [b, c], [a, (50.0, 11.0000001)]):
+        adapter.get_route_sequence(points)
+    assert len(network.requests["routing"]) == 5
+
+    # the mode is part of the identity: the same two points by vehicle are a different request
+    drive = adapter.get_route_sequence([a, b], RoutingProfile.DRIVING)[0]
+    assert drive.status == ProviderStatus.SUCCESS and sent()[-1] == ("50.0,10.0|50.0,11.0", "drive")
+    assert len(network.requests["routing"]) == 6 and len(context.route_failure_memo) == 5
+
+    # the identity covers every parameter that shapes a routing request (the key itself aside)
+    assert {key for request in network.requests["routing"] for key in request.url.params.keys()} == {
+        "waypoints", "mode", "apiKey",
+    }
+
+
+def test_a_definitive_driving_failure_is_replayed_without_another_alternate_mode_request(
+    monkeypatch: pytest.MonkeyPatch, configured: None, tmp_path: Path
+) -> None:
+    network = _Network(routing=_NO_ROUTE)
+    context = _context()
+    walking, driving = context.route_requests_left, context.alternate_mode_requests_left
+    adapter = _routing(monkeypatch, network, ProviderCacheStore(tmp_path / "c.sqlite3")).bound_to(context)
+    leg = _DAY[:2]
+
+    first = adapter.get_route_sequence(leg, RoutingProfile.DRIVING)
+    assert adapter.get_route_sequence(leg, RoutingProfile.DRIVING) == first
+    assert first[0].failure_reason == "no_route" and len(network.requests["routing"]) == 1
+    # one request from the six, none from the walking allowance; the replay took nothing
+    assert (context.route_requests_left, context.alternate_mode_requests_left) == (walking, driving - 1)
+    assert context.usage_tracker.credits_used() == 0
+
+
+def test_without_a_generation_there_is_no_failure_memo(
+    monkeypatch: pytest.MonkeyPatch, configured: None, tmp_path: Path
+) -> None:
+    network = _Network(routing=_NO_ROUTE)
+    adapter = _routing(monkeypatch, network, ProviderCacheStore(tmp_path / "c.sqlite3"))
+    adapter.get_route_sequence(_DAY)
+    adapter.get_route_sequence(_DAY)
     assert len(network.requests["routing"]) == 2
 
 

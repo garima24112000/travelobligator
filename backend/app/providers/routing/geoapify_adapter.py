@@ -32,7 +32,7 @@ from app.core.bounded_concurrency import DRIVE_ROUTE_BATCH_LIMIT, WALK_ROUTE_BAT
 from app.core.config import get_settings
 from app.models.common import ProviderStatus
 from app.models.routing import RouteRequest, RouteResult, RoutingProfile
-from app.providers.errors import ProviderRequestError
+from app.providers.errors import REASON_NO_ROUTE, REASON_UNROUTABLE_ENDPOINT, ProviderRequestError
 from app.providers.geoapify_client import geoapify_get
 from app.providers.routing.base import RoutingProvider
 from app.providers.routing.osrm_adapter import _geometry_from_cache_payload, _parse_geojson_linestring
@@ -57,6 +57,11 @@ _FAILURE_MESSAGES = {
     "no_generation_context": "The routing provider was called outside a generation.",
 }
 _FAILED_MESSAGE = "The routing provider (Geoapify) request failed."
+# The provider's own, definitive answer to a well-formed request: asking the
+# identical request again in the same generation gets the same answer. Only
+# these are remembered for the generation -- a timeout, a rate limit, a
+# server error or a 400 this code does not recognise is always asked again.
+_DEFINITIVE_FAILURE_REASONS = frozenset({REASON_NO_ROUTE, REASON_UNROUTABLE_ENDPOINT})
 _UNAVAILABLE_MESSAGE = "The routing provider (Geoapify) returned no usable route."
 
 Point = tuple[float, float]  # (lat, lon)
@@ -164,6 +169,13 @@ class GeoapifyRoutingAdapter(RoutingProvider):
 
         context = self._context
         if context is not None:
+            # The provider already answered this exact request, in this
+            # generation, with a definitive failure: the same answer, with no
+            # request and no allowance taken.
+            remembered = context.route_failure_memo.get(self._request_key(points, mode))
+            if remembered is not None:
+                performance.count("route_memo_hits")
+                return [remembered] * len(legs)
             # An alternate-mode request draws on its own per-generation cap,
             # never on the day-route allowance.
             if alternate:
@@ -228,8 +240,18 @@ class GeoapifyRoutingAdapter(RoutingProvider):
                 if fetched.kind in ("budget_exhausted", "no_generation_context")
                 else ProviderStatus.FAILED
             )
-            failed = self._result(status, _FAILURE_MESSAGES.get(fetched.kind, _FAILED_MESSAGE))
-            return [failed.model_copy(update={"failure_reason": reason})] * len(plan.legs)
+            failed = self._result(status, _FAILURE_MESSAGES.get(fetched.kind, _FAILED_MESSAGE)).model_copy(
+                update={"failure_reason": reason}
+            )
+            if (
+                self._context is not None
+                and fetched.kind == "bad_request"
+                and fetched.reason in _DEFINITIVE_FAILURE_REASONS
+            ):
+                # Generation memory only: a failure is never written to the
+                # provider cache, and a new generation asks the provider again.
+                self._context.route_failure_memo[self._request_key(plan.points, plan.mode)] = failed
+            return [failed] * len(plan.legs)
 
         results = self._normalize(fetched, len(plan.legs), plan.mode)
         for (origin, destination), result in zip(plan.legs, results):
@@ -292,6 +314,20 @@ class GeoapifyRoutingAdapter(RoutingProvider):
             {
                 "from": [round(origin[0], _COORDINATE_PRECISION), round(origin[1], _COORDINATE_PRECISION)],
                 "to": [round(destination[0], _COORDINATE_PRECISION), round(destination[1], _COORDINATE_PRECISION)],
+                "mode": mode,
+                "schema": _CACHE_SCHEMA,
+            }
+        )
+
+    def _request_key(self, points: list[Point], mode: str) -> str:
+        # The whole request as it is sent: every waypoint exactly as written
+        # into the `waypoints` parameter, in order, plus the mode. A rejected
+        # multi-waypoint request says nothing about any one of its legs, so
+        # this is never a per-leg key; a reversed or different sequence, or
+        # another mode, is a different request.
+        return make_query_hash(
+            {
+                "waypoints": [f"{lat},{lon}" for lat, lon in points],
                 "mode": mode,
                 "schema": _CACHE_SCHEMA,
             }

@@ -54,12 +54,18 @@ class RoutabilityRepairAttempt(BaseModel):
     # A fixed code: accepted, localized (the legs routed once asked for one
     # at a time; no stop was replaced), transient_failure, malformed_request,
     # no_suspect_stop, suspect_protected, no_suitable_candidate,
-    # route_budget_exhausted, replacement_unroutable, replacement_route_burden.
+    # route_budget_exhausted, replacement_unroutable, replacement_route_burden,
+    # suspect_removed (the one proven suspect had no suitable replacement and
+    # was taken out of its day; `replaced_place` names it, nothing replaces it).
     reason: str
     accepted: bool = False
     # Legs of the day without a factual route, before and after the attempt.
     failed_legs_before: int = 0
     failed_legs_after: int = 0
+    # Diagnostic only: routing requests made to verify a replacement (or the
+    # leg bridging a removed stop). At most one, or two for a failed leg
+    # whose two end stops were both unproven suspects.
+    verification_attempts: int = 0
     # Legs asked for again one at a time to find the stop that cannot be routed.
     relocalized_legs: int = 0
     # The stop every one of whose legs failed, and why it may not be replaced
