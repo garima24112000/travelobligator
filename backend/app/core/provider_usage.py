@@ -237,6 +237,10 @@ class GenerationProviderContext:
     # Legs whose alternate-mode route was already asked for and did not
     # succeed, so a rebuilt route report never asks for the same leg twice.
     alternate_mode_failed_legs: set = field(default_factory=set)
+    # Diagnostic only: why each of those legs was not adapted (a fixed code
+    # per leg; see `RouteLegFeasibility.mode_adaptation_outcome`). Never read
+    # by any decision and never an allowance.
+    alternate_mode_outcomes: dict = field(default_factory=dict)
     # How many duplicate candidates were merged, by the rule that matched
     # (`place_id` / `source_identity` / `name_proximity`). Counts only.
     entity_merges: dict = field(default_factory=dict)

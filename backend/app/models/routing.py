@@ -293,6 +293,13 @@ class RouteLegFeasibility(BaseModel):
     # provider's original walking figures are kept alongside for reference.
     mode: str | None = None
     mode_adaptation_attempted: bool = False
+    # Diagnostic only (never read by any decision): why a long walking leg
+    # whose adaptation was attempted stayed a walking leg -- a fixed code:
+    # `allowance_exhausted` (the generation's alternate-mode or credit
+    # allowance was used up, so no request was made), `provider_failed` (the
+    # driving request did not return a usable route) or `not_faster` (the
+    # provider's driving route was not shorter in time). None otherwise.
+    mode_adaptation_outcome: str | None = None
     walking_distance_meters: float | None = None
     walking_duration_seconds: float | None = None
     # Section 3C.2: the routing result's fixed failure code (see

@@ -64,7 +64,11 @@ from app.services.route_aware_sequencing_service import RouteAwareSequencingServ
 from app.services.day_rationale import finalize_day_explanations
 from app.services.routability_repair_service import apply_routability_repair_safely
 from app.services.route_burden_repair_service import apply_route_burden_repair_safely
-from app.services.route_feasibility_service import RouteFeasibilityService
+from app.services.route_feasibility_service import (
+    RouteFeasibilityService,
+    adapt_route_modes_safely,
+    build_route_report,
+)
 from app.services.stay_transport_service import StayTransportService
 from app.services.travel_time_buffer_service import TravelTimeBufferService
 from app.services.traveler_profile_service import TravelerProfileService
@@ -812,6 +816,7 @@ class PlanningOrchestrator:
         self,
         planning_state: PlanningState,
         provider_context: GenerationProviderContext | None = None,
+        defer_mode_adaptation: bool = False,
     ) -> None:
         """Builds and stores `route_feasibility_report` plus the derived
         `ProviderCoverage.routes` value (Step 165E), failing safe (Step
@@ -820,10 +825,16 @@ class PlanningOrchestrator:
         generation. On such a failure, a safe `status=failed` report with
         no legs is stored instead -- never a fabricated leg, and never raw
         exception text or a provider payload in any stored field.
+
+        `defer_mode_adaptation` builds the walking report only: the caller
+        adapts the FINAL day order once (see `run_experience_plan_stage`).
         """
         try:
-            planning_state.route_feasibility_report = self.route_feasibility_service.build_report(
-                planning_state, **context_kwargs(provider_context)
+            planning_state.route_feasibility_report = build_route_report(
+                self.route_feasibility_service,
+                planning_state,
+                provider_context,
+                defer_mode_adaptation=defer_mode_adaptation,
             )
         except Exception:
             logger.warning(
@@ -863,7 +874,17 @@ class PlanningOrchestrator:
         # route-aware-scheduling boundary (Section 166). Saved alongside
         # experience_plan by generate_full_plan's existing
         # save-after-each-stage cadence; no extra save call needed here.
-        self._build_route_feasibility_report_safe(planning_state, provider_context)
+        #
+        # While route-aware scheduling may still change a day's order, only
+        # the walking routes are fetched here: a driving route asked for now
+        # would be thrown away by a reorder, and the per-generation
+        # alternate-mode allowance is small. The final order is adapted once,
+        # below, before the repairs. With route-aware scheduling off nothing
+        # can supersede the order, so adaptation stays here, as before.
+        defer_mode_adaptation = get_settings().route_aware_scheduling_enabled
+        self._build_route_feasibility_report_safe(
+            planning_state, provider_context, defer_mode_adaptation=defer_mode_adaptation
+        )
 
         # Step 166A: shadow/report-only route-aware day-sequencing
         # suggestions, computed after route_feasibility_report and before
@@ -919,6 +940,13 @@ class PlanningOrchestrator:
                 # legs are built from consecutive scheduled pairs, which
                 # just changed for at least one day.
                 self._build_route_feasibility_report_safe(planning_state, provider_context)
+
+        if defer_mode_adaptation:
+            # The order is final: ONE mode-adaptation pass for the long
+            # walking legs of that order (a no-op for a report rebuilt just
+            # above, whose legs are already adapted). It also runs when the
+            # sequencing step failed, so a walking-only report never remains.
+            adapt_route_modes_safely(self.route_feasibility_service, planning_state, provider_context)
 
         # Section 203C.2B (final correction): one bounded repair attempt per
         # long-route day, on the final routed order. Fails safe.

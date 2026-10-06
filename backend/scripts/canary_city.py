@@ -557,6 +557,8 @@ def _run(args: argparse.Namespace, cache_hits: dict[str, int]) -> dict[str, Any]
                         # a fixed code for a leg the provider did not route (never provider text)
                         "failure_reason": leg.failure_reason if leg else None,
                         "mode_adaptation_attempted": bool(leg.mode_adaptation_attempted) if leg else False,
+                        # why an attempted adaptation left the leg a walking leg (a fixed code, or None)
+                        "mode_adaptation_outcome": leg.mode_adaptation_outcome if leg else None,
                         # the provider's original walking figures, kept when the leg became a vehicle transfer
                         "walking_distance_meters": leg.walking_distance_meters if leg else None,
                         "walking_duration_seconds": leg.walking_duration_seconds if leg else None,
@@ -734,6 +736,8 @@ def _run(args: argparse.Namespace, cache_hits: dict[str, int]) -> dict[str, Any]
             "after_distance_meters": attempt.after_distance_meters,
             "after_duration_seconds": attempt.after_duration_seconds,
             "accepted": attempt.accepted,
+            # an accepted replacement that still leaves excessive walking: improved, not resolved
+            "hard_walking_violation_remains": attempt.hard_walking_violation_remains,
         }
         for attempt in (repair.attempts if repair is not None else [])
     ]
@@ -1116,7 +1120,10 @@ def _render(report: dict[str, Any]) -> str:
             )
             lines.append(f"    distance (m): {leg['distance_meters']}")
             lines.append(f"    duration (s): {leg['duration_seconds']}")
-            lines.append(f"    mode adaptation attempted: {'yes' if leg['mode_adaptation_attempted'] else 'no'}")
+            lines.append(
+                f"    mode adaptation attempted: {'yes' if leg['mode_adaptation_attempted'] else 'no'}"
+                + (f" (not applied: {leg['mode_adaptation_outcome']})" if leg.get("mode_adaptation_outcome") else "")
+            )
             if leg["walking_duration_seconds"] is not None:
                 lines.append(
                     f"    original walking route: {leg['walking_distance_meters']} m, "
@@ -1181,7 +1188,8 @@ def _render(report: dict[str, Any]) -> str:
             f" | replaced: {attempt['replaced_place'] or 'none'} -> {attempt['replacement_place'] or 'none'}"
             f" | after: {attempt['after_distance_meters']} m, {attempt['after_duration_seconds']} s"
             f" | accepted: {'yes' if attempt['accepted'] else 'no'} ({attempt['reason']})"
-            f" | stop protections: {', '.join(attempt.get('stop_protections') or []) or 'none recorded'}"
+            + (" | hard walking violation remains: YES" if attempt.get("hard_walking_violation_remains") else "")
+            + f" | stop protections: {', '.join(attempt.get('stop_protections') or []) or 'none recorded'}"
         )
 
     routability = report.get("routability_repair") or {"attempts": []}

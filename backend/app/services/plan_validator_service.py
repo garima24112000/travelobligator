@@ -22,13 +22,16 @@ from app.core.errors import DESTINATION_UNRESOLVED_MESSAGE
 from app.services.plan_quality_findings import build_plan_quality_findings
 from app.services.entity_collisions import scheduled_unresolved_collisions
 from app.services.must_visit_matching import resolve_must_visits
+from app.services.day_order_heuristics import GEOGRAPHIC_SPREAD_THRESHOLD_KM, day_spread_km
 from app.services.route_burden import day_route_burdens
 from app.services.usefulness_contract import evaluate_usefulness, usefulness_findings
 from app.services.experience_identity import experience_stable_key
 from app.services.base import PlanningStageService
 from app.utils.geo import haversine_distance_km
 
-_GEOGRAPHIC_SPREAD_WARNING_THRESHOLD_KM = 8.0
+# The one shared boundary (and measure): also read by the planner's
+# prospective pass over AI-chosen days.
+_GEOGRAPHIC_SPREAD_WARNING_THRESHOLD_KM = GEOGRAPHIC_SPREAD_THRESHOLD_KM
 
 
 class PlanValidatorService(PlanningStageService):
@@ -1666,20 +1669,7 @@ def _day_geographic_spread_km(day: DailyPlan) -> float | None:
     invented or estimated. Returns None if the day has fewer than two
     coordinate-backed experiences, since spread can't be measured.
     """
-    points = [
-        experience.coordinates
-        for experience in day.experiences
-        if experience.coordinates is not None
-    ]
-    if len(points) < 2:
-        return None
-
-    total_km = 0.0
-    for previous_point, next_point in zip(points, points[1:]):
-        distance_km = haversine_distance_km(previous_point, next_point)
-        if distance_km is not None:
-            total_km += distance_km
-    return total_km
+    return day_spread_km([experience.coordinates for experience in day.experiences])
 
 
 # Step 175B: provider-coverage consistency hardening. `ProviderCoverageService`

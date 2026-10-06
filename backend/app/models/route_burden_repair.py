@@ -38,6 +38,11 @@ class RouteBurdenRepairAttempt(BaseModel):
     before_distance_meters: float | None = None
     after_duration_seconds: float | None = None
     after_distance_meters: float | None = None
+    # Diagnostic only: an ACCEPTED replacement made the day materially
+    # better, yet the routing provider's own legs still show excessive
+    # walking (a walk leg or the day's walking beyond the unchanged limits).
+    # Such a day is improved, not resolved: it keeps its long-travel finding.
+    hard_walking_violation_remains: bool = False
 
 
 class RoutabilityRepairAttempt(BaseModel):

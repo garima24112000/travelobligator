@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import logging
 from datetime import date, datetime, timezone
 from datetime import time as time_of_day
@@ -142,6 +143,76 @@ def _needs_alternate_mode(walking: RouteResult) -> bool:
     )
 
 
+# Diagnostic labels for a long walking leg that was not adapted (fixed codes).
+ADAPTATION_ALLOWANCE_EXHAUSTED = "allowance_exhausted"
+ADAPTATION_PROVIDER_FAILED = "provider_failed"
+ADAPTATION_NOT_FASTER = "not_faster"
+# The routing result's fixed code for a request refused locally because a
+# per-generation allowance (alternate-mode requests, or credits) was used up.
+_BUDGET_EXHAUSTED = "budget_exhausted"
+
+
+def _adaptation_outcome(drive: RouteResult | None) -> str | None:
+    """Why an unusable driving result was unusable. A label for the report
+    only; None when the provider offers no second mode at all."""
+    if drive is None:
+        return None
+    if drive.status == ProviderStatus.SUCCESS and drive.duration_seconds is not None and drive.distance_meters is not None:
+        return ADAPTATION_NOT_FASTER
+    if drive.failure_reason == _BUDGET_EXHAUSTED:
+        return ADAPTATION_ALLOWANCE_EXHAUSTED
+    return ADAPTATION_PROVIDER_FAILED
+
+
+def _walking_result_of(leg: RouteLegFeasibility) -> RouteResult:
+    """The routing result a stored leg was built from (its own provider
+    figures, nothing recomputed), so the mode adaptation can be applied to
+    a report that was built walking-only."""
+    return RouteResult(
+        provider=leg.provider,
+        status=leg.status,
+        distance_meters=leg.distance_meters,
+        duration_seconds=leg.duration_seconds,
+        geometry=leg.route_geometry,
+        source=leg.provider,
+        mode=leg.mode,
+        failure_reason=leg.failure_reason,
+    )
+
+
+def build_route_report(
+    service: "RouteFeasibilityService",
+    planning_state: PlanningState,
+    provider_context: GenerationProviderContext | None = None,
+    *,
+    defer_mode_adaptation: bool = False,
+) -> RouteFeasibilityReport:
+    """`service.build_report`, walking-only when the caller will adapt the
+    final order itself and the service supports that; otherwise exactly the
+    ordinary call (the report then already carries its adaptation, and the
+    later `adapt_route_modes_safely` finds nothing left to do)."""
+    kwargs = context_kwargs(provider_context)
+    if defer_mode_adaptation and "adapt_modes" in inspect.signature(service.build_report).parameters:
+        return service.build_report(planning_state, adapt_modes=False, **kwargs)
+    return service.build_report(planning_state, **kwargs)
+
+
+def adapt_route_modes_safely(
+    service: "RouteFeasibilityService",
+    planning_state: PlanningState,
+    provider_context: GenerationProviderContext | None = None,
+) -> None:
+    """Runs the one mode-adaptation pass for the final order. Never lets it
+    fail generation: on an unexpected error the walking legs simply stand."""
+    adapt = getattr(service, "adapt_report_modes", None)
+    if not callable(adapt):
+        return
+    try:
+        adapt(planning_state, provider_context)
+    except Exception:
+        logger.warning("Mode adaptation failed unexpectedly; the walking legs stand.", exc_info=True)
+
+
 class RouteFeasibilityService:
     """Builds a `RouteFeasibilityReport` for the current `experience_plan`
     (Step 165E). Run by `PlanningOrchestrator.run_experience_plan_stage`
@@ -170,7 +241,14 @@ class RouteFeasibilityService:
         self,
         planning_state: PlanningState,
         provider_context: GenerationProviderContext | None = None,
+        adapt_modes: bool = True,
     ) -> RouteFeasibilityReport:
+        """`adapt_modes=False` builds the WALKING report only: no driving
+        route is asked for yet. A generation whose day order may still be
+        changed by route-aware sequencing builds it that way and adapts the
+        final order once (`adapt_report_modes`), so the per-generation
+        alternate-mode allowance is never spent on legs of an order that is
+        then replaced. The default is the unchanged behaviour."""
         provider_name = getattr(self.gateway.routing, "provider_name", "routing_provider")
         legs: list[RouteLegFeasibility] = []
 
@@ -186,9 +264,9 @@ class RouteFeasibilityService:
             # and leg order.
             days = [day_plan.experiences for day_plan in experience_plan.daily_plans]
             walked = self._route_days(days, provider_context)
-            drives = self._alternate_mode_routes(days, walked, provider_context)
+            drives = self._alternate_mode_routes(days, walked, provider_context) if adapt_modes else None
             for experiences, day_results in zip(days, walked):
-                legs.extend(self._day_legs(experiences, day_results, provider_context, drives))
+                legs.extend(self._day_legs(experiences, day_results, provider_context, drives, adapt_modes))
 
         report_status = _aggregate_status([leg.status for leg in legs])
         route_data_source = (
@@ -203,6 +281,54 @@ class RouteFeasibilityService:
             generated_at=_utc_now(),
             movement_data_provenance=movement_data_provenance_from_status(report_status),
         )
+
+    def adapt_report_modes(
+        self,
+        planning_state: PlanningState,
+        provider_context: GenerationProviderContext | None = None,
+    ) -> None:
+        """The bounded per-leg mode adaptation, applied ONCE to the stored
+        report for the days as they are now ordered. Every long walking leg
+        that has not been offered a driving route yet gets the same single
+        driving request `build_report` would have made for it, in day and
+        leg order; the leg is replaced in place. The walking results already
+        in the report are reused -- no walking request is made -- and a leg
+        that was already adapted or already attempted is left alone, so the
+        pass is idempotent. Driving requests draw on the generation's
+        unchanged alternate-mode allowance; nothing here adds to it."""
+        report = planning_state.route_feasibility_report
+        plan = planning_state.experience_plan
+        if report is None or plan is None:
+            return
+        positions = {(leg.from_experience_id, leg.to_experience_id): index for index, leg in enumerate(report.legs)}
+        targets: list[tuple[int, ExperienceItem, ExperienceItem, RouteResult]] = []
+        for day in plan.daily_plans:
+            for origin, destination in zip(day.experiences, day.experiences[1:]):
+                index = positions.get((origin.experience_id, destination.experience_id))
+                if index is None or origin.coordinates is None or destination.coordinates is None:
+                    continue
+                leg = report.legs[index]
+                walking = _walking_result_of(leg)
+                if leg.mode_adaptation_attempted or not _needs_alternate_mode(walking):
+                    continue
+                targets.append((index, origin, destination, walking))
+        if not targets:
+            return
+        prefetched = self._alternate_mode_routes(
+            [[origin, destination] for _, origin, destination, _ in targets],
+            [[walking] for _, _, _, walking in targets],
+            provider_context,
+        )
+        provider_name = getattr(self.gateway.routing, "provider_name", "routing_provider")
+        for index, origin, destination, walking in targets:
+            report.legs[index] = self._build_leg(
+                origin,
+                destination,
+                provider_name,
+                result=walking,
+                provider_context=provider_context,
+                prefetched_drives=prefetched,
+            )
 
     def replace_day_legs(
         self,
@@ -232,24 +358,28 @@ class RouteFeasibilityService:
         to_point: GeoPoint,
         provider_context: GenerationProviderContext | None,
         prefetched: dict[_LegKey, RouteResult | Exception | None] | None = None,
-    ) -> tuple[RouteResult | None, bool]:
-        """`(driving result, attempted)` for one leg. A driving route is
-        asked for only when the provider's WALKING route for this leg exceeds
-        the walking-leg limit, at most once per leg per generation, and is
-        used only when the provider returned a real, shorter-in-time route.
-        Otherwise the factual walking leg stands.
+    ) -> tuple[RouteResult | None, bool, str | None]:
+        """`(driving result, attempted, outcome)` for one leg. A driving
+        route is asked for only when the provider's WALKING route for this
+        leg exceeds the walking-leg limit, at most once per leg per
+        generation, and is used only when the provider returned a real,
+        shorter-in-time route. Otherwise the factual walking leg stands.
+
+        `outcome` is a diagnostic label only (see
+        `RouteLegFeasibility.mode_adaptation_outcome`): why an attempted
+        adaptation was not applied. It never influences what is done.
 
         `prefetched` (Section 1B) holds the driving results already obtained
         for this report's legs as one batch; a leg found there is not asked
         for again."""
         if not _needs_alternate_mode(walking):
-            return None, False
+            return None, False, None
         alternate = getattr(self.gateway, "get_alternate_mode_route", None)
         if not callable(alternate):
-            return None, False
+            return None, False, None
         origin, destination = (from_point.lat, from_point.lng), (to_point.lat, to_point.lng)
         if provider_context is not None and (origin, destination) in provider_context.alternate_mode_failed_legs:
-            return None, True
+            return None, True, provider_context.alternate_mode_outcomes.get((origin, destination))
         try:
             if prefetched is not None and (origin, destination) in prefetched:
                 drive = prefetched[(origin, destination)]
@@ -271,11 +401,14 @@ class RouteFeasibilityService:
             and drive.duration_seconds < walking.duration_seconds
         )
         if not usable:
+            outcome = _adaptation_outcome(drive)
             if provider_context is not None:
                 provider_context.alternate_mode_failed_legs.add((origin, destination))
+                if outcome is not None:
+                    provider_context.alternate_mode_outcomes[(origin, destination)] = outcome
             # The provider offers no second mode at all: nothing was attempted.
-            return None, drive is not None
-        return drive.model_copy(update={"mode": TRANSFER_MODE_DRIVE}), True
+            return None, drive is not None, outcome
+        return drive.model_copy(update={"mode": TRANSFER_MODE_DRIVE}), True, None
 
     def route_day_legs(
         self,
@@ -292,6 +425,7 @@ class RouteFeasibilityService:
         day_results: list[RouteResult] | None,
         provider_context: GenerationProviderContext | None,
         prefetched_drives: dict[_LegKey, RouteResult | Exception | None] | None = None,
+        adapt_modes: bool = True,
     ) -> list[RouteLegFeasibility]:
         provider_name = getattr(self.gateway.routing, "provider_name", "routing_provider")
         return [
@@ -302,6 +436,7 @@ class RouteFeasibilityService:
                 result=day_results[index] if day_results is not None else None,
                 provider_context=provider_context,
                 prefetched_drives=prefetched_drives,
+                adapt_modes=adapt_modes,
             )
             for index in range(len(experiences) - 1)
         ]
@@ -418,6 +553,7 @@ class RouteFeasibilityService:
         result: RouteResult | None = None,
         provider_context: GenerationProviderContext | None = None,
         prefetched_drives: dict[_LegKey, RouteResult | Exception | None] | None = None,
+        adapt_modes: bool = True,
     ) -> RouteLegFeasibility:
         from_point = from_experience.coordinates
         to_point = to_experience.coordinates
@@ -454,8 +590,12 @@ class RouteFeasibilityService:
         # long gets ONE driving-route request for this same leg. When that
         # succeeds the leg becomes a vehicle transfer and the stops stay.
         walking = result
-        drive, attempted = self._alternate_mode_route(
-            result, from_point, to_point, provider_context, prefetched_drives
+        # With `adapt_modes` off the walking leg is recorded as it is; the
+        # final order is adapted later (`adapt_report_modes`).
+        drive, attempted, adaptation_outcome = (
+            self._alternate_mode_route(result, from_point, to_point, provider_context, prefetched_drives)
+            if adapt_modes
+            else (None, False, None)
         )
         if drive is not None:
             result = drive
@@ -466,6 +606,7 @@ class RouteFeasibilityService:
         return RouteLegFeasibility(
             mode=(result.mode or TRANSFER_MODE_WALK) if result.status == ProviderStatus.SUCCESS else None,
             mode_adaptation_attempted=attempted,
+            mode_adaptation_outcome=adaptation_outcome,
             walking_distance_meters=walking.distance_meters if drive is not None else None,
             walking_duration_seconds=walking.duration_seconds if drive is not None else None,
             failure_reason=result.failure_reason if result.status != ProviderStatus.SUCCESS else None,

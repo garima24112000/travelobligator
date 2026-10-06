@@ -250,7 +250,15 @@ class RouteBurdenRepairService:
             return outcome("no_material_improvement", **measured), None
 
         self._apply(planning_state, day, new_order, legs)
-        return outcome("accepted", accepted=True, **measured), best
+        # Kept because it is materially better -- but a day whose walking is
+        # still excessive is not resolved, and is reported as such (it keeps
+        # its long-travel finding; nothing more is tried).
+        return (
+            outcome(
+                "accepted", accepted=True, hard_walking_violation_remains=after.excessive_walking, **measured
+            ),
+            best,
+        )
 
     @staticmethod
     def _protection(

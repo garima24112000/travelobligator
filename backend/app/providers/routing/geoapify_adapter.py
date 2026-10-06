@@ -168,9 +168,11 @@ class GeoapifyRoutingAdapter(RoutingProvider):
             # never on the day-route allowance.
             if alternate:
                 if context.alternate_mode_requests_left <= 0:
-                    return [
-                        self._result(ProviderStatus.UNAVAILABLE, _FAILURE_MESSAGES["budget_exhausted"])
-                    ] * len(legs)
+                    # Refused locally, no request: the fixed code only names
+                    # the cause for the report (same code as a credit-cap
+                    # refusal); the cap and what happens next are unchanged.
+                    refused = self._result(ProviderStatus.UNAVAILABLE, _FAILURE_MESSAGES["budget_exhausted"])
+                    return [refused.model_copy(update={"failure_reason": "budget_exhausted"})] * len(legs)
                 context.alternate_mode_requests_left -= 1
             else:
                 if context.route_requests_left <= 0:

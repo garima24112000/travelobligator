@@ -25,7 +25,29 @@ ALTERNATIVE_MAX_LENGTH_RATIO = 0.85
 MISPLACED_DISTANCE_RATIO = 2.5
 MISPLACED_MIN_KM = 3.0
 
+# Geographic spread of ONE day: the straight-line length of its ordered,
+# located stops. Beyond this the plan validator reports the day
+# (`geographic_spread`), and the planner's prospective pass over AI-chosen
+# days uses the very same measure and boundary -- one value, read by both.
+GEOGRAPHIC_SPREAD_THRESHOLD_KM = 8.0
+
 T = TypeVar("T")
+
+
+def day_spread_km(points: Sequence[GeoPoint | None]) -> float | None:
+    """Sum of straight-line distances between consecutive located stops, in
+    the order given. Stops without coordinates are skipped (never invented
+    or estimated); None with fewer than two located stops, since spread
+    cannot be measured."""
+    located = [point for point in points if point is not None]
+    if len(located) < 2:
+        return None
+    total_km = 0.0
+    for previous_point, next_point in zip(located, located[1:]):
+        distance_km = haversine_distance_km(previous_point, next_point)
+        if distance_km is not None:
+            total_km += distance_km
+    return total_km
 
 
 def _gap_km(a: GeoPoint | None, b: GeoPoint | None) -> float:

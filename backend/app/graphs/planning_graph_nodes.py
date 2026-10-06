@@ -49,7 +49,11 @@ from app.services.route_aware_sequencing_service import RouteAwareSequencingServ
 from app.services.day_rationale import finalize_day_explanations
 from app.services.routability_repair_service import apply_routability_repair_safely
 from app.services.route_burden_repair_service import apply_route_burden_repair_safely
-from app.services.route_feasibility_service import RouteFeasibilityService
+from app.services.route_feasibility_service import (
+    RouteFeasibilityService,
+    adapt_route_modes_safely,
+    build_route_report,
+)
 from app.services.stay_transport_service import StayTransportService
 from app.services.travel_time_buffer_service import TravelTimeBufferService
 from app.services.traveler_profile_service import TravelerProfileService
@@ -631,7 +635,18 @@ def build_route_feasibility_node(
     def route_feasibility_node(state: PlanningGraphState) -> dict[str, Any]:
         planning_state = state["planning_state"]
         try:
-            report = resolved_service.build_report(planning_state, **_context(state))
+            # While route-aware scheduling may still change a day's order,
+            # only the walking routes are fetched here: a driving route asked
+            # for now would be thrown away by a reorder, and the
+            # per-generation alternate-mode allowance is small. The
+            # sequencing node adapts the FINAL order once. With route-aware
+            # scheduling off, adaptation stays here, as before.
+            report = build_route_report(
+                resolved_service,
+                planning_state,
+                state.get("provider_context"),
+                defer_mode_adaptation=get_settings().route_aware_scheduling_enabled,
+            )
         except Exception:
             return {
                 "failed_nodes": ["route_feasibility"],
@@ -672,11 +687,14 @@ def build_route_aware_sequencing_node(
 
     def route_aware_sequencing_node(state: PlanningGraphState) -> dict[str, Any]:
         planning_state = state["planning_state"]
+        settings = get_settings()
+        # Whether the route report was built walking-only (see the
+        # route-feasibility node): the final order is then adapted here.
+        defer_mode_adaptation = settings.route_aware_scheduling_enabled
         try:
             report = resolved_sequencing_service.build_report(planning_state, **_context(state))
             planning_state.route_aware_sequencing_report = report
 
-            settings = get_settings()
             if settings.route_aware_scheduling_enabled:
                 applied = resolved_sequencing_service.apply_report(
                     planning_state,
@@ -689,6 +707,13 @@ def build_route_aware_sequencing_node(
                     planning_state.provider_coverage.routes = _ROUTE_STATUS_TO_COVERAGE_VALUE.get(
                         rebuilt.status, "not_connected"
                     )
+            if defer_mode_adaptation:
+                # The order is final: ONE mode-adaptation pass for the long
+                # walking legs of that order (a no-op for a report rebuilt
+                # just above, whose legs are already adapted).
+                adapt_route_modes_safely(
+                    resolved_route_feasibility_service, planning_state, state.get("provider_context")
+                )
             # Section 203C.2B (final correction): one bounded repair attempt
             # per long-route day, on the final routed order.
             with performance.stage("route_repair"):
@@ -704,6 +729,12 @@ def build_route_aware_sequencing_node(
             # The days are final now: one authoritative explanation per day.
             finalize_day_explanations(planning_state)
         except Exception:
+            if defer_mode_adaptation:
+                # The sequencing step failed: the walking-only report must
+                # still get its one adaptation pass (idempotent).
+                adapt_route_modes_safely(
+                    resolved_route_feasibility_service, planning_state, state.get("provider_context")
+                )
             return {
                 "failed_nodes": ["route_aware_sequencing"],
                 "errors": [_safe_error("route_aware_sequencing")],

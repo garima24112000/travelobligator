@@ -48,9 +48,11 @@ from app.services import schedule_diversity as diversity
 from app.services.base import PlanningStageService
 from app.services.day_order_heuristics import (
     ALTERNATIVE_MAX_LENGTH_RATIO,
+    GEOGRAPHIC_SPREAD_THRESHOLD_KM,
     balanced_day_sizes,
     balanced_spatial_clusters,
     centroid,
+    day_spread_km,
     grouping_length_km,
 )
 from app.services.day_rationale import deterministic_day_summary, finalize_day_explanations
@@ -833,6 +835,32 @@ class ExperiencePlannerService(PlanningStageService):
         day_groups, collision_separations = _separate_suspected_duplicates(
             day_groups, scheduling_candidate_pois, profiles, must_visit_ids
         )
+
+        # A plan the reasoning model chose gets ONE prospective geographic
+        # pass (the deterministic selection has its own outlier control): an
+        # ordinary broad-pool stop that would put its day beyond the
+        # validator's geographic-spread boundary gives way to a comparable
+        # unused local candidate, when one exists. Only with sufficient
+        # verified inventory (viable >= T), never against a must-visit or a
+        # grounded anchor, and an active user lock leaves the plan untouched.
+        sufficiency = planning_state.inventory_sufficiency_report
+        if (
+            used_ai_reasoning
+            and sufficiency is not None
+            and sufficiency.viable_candidates >= sufficiency.target_stops
+            and not any(lock.is_active for lock in planning_state.user_locks)
+        ):
+            with performance.stage("spatial_grouping"):
+                day_groups = _limit_ai_day_spread(
+                    day_groups,
+                    scheduling_candidate_pois,
+                    profiles,
+                    must_visit_ids,
+                    anchor_ids,
+                    canonical_interests,
+                    markets_requested=diversity.markets_explicitly_requested(interest_terms),
+                    justified=diversity.justified_classes(interest_terms),
+                )
 
         # Section 203C.2B: schedule diversity. Once the days are grouped --
         # whoever grouped them -- a day may not hold more markets than the
@@ -2065,6 +2093,119 @@ def _cover_requested_interests(
                 _, day_index, stop_index = min(targets)
                 days[day_index][stop_index] = candidate
                 break
+    return days
+
+
+def _limit_ai_day_spread(
+    day_groups: list[list[dict[str, Any]]],
+    pool: list[dict[str, Any]],
+    profiles: dict[int, _CandidateProfile],
+    must_visit_ids: set[int],
+    anchor_ids: set[int],
+    canonical_interests: list[str],
+    *,
+    markets_requested: bool,
+    justified: frozenset[str] = frozenset(),
+) -> list[list[dict[str, Any]]]:
+    """One prospective geographic pass over days the reasoning model chose.
+
+    The deterministic selection already replaces isolated outliers; a set the
+    model chose had no such control, so an ordinary broad-pool stop far from
+    everything else could put a whole day beyond the validator's own
+    geographic-spread boundary (`GEOGRAPHIC_SPREAD_THRESHOLD_KM`, measured
+    the same way: the straight-line length of the day's ordered stops) while
+    comparable local candidates sat unused.
+
+    Per day, the protected stops (grounded must-visits and grounded anchors)
+    are the reference -- or, with none, the day's best-ranked stop. Each
+    other stop, in rank order, is kept when the day stays within the
+    boundary with it. Otherwise it gives way to an unused candidate that
+    keeps the day within the boundary and
+
+      * is located, not low-value and not a commercial gallery on a
+        non-art trip, and sits at most one quality tier below;
+      * ITSELF serves every requested interest the stop is the plan's only
+        cover for (food excepted, as in the interest-coverage pass: it is
+        covered by real nearby food);
+      * is not an unresolved suspected duplicate of a scheduled stop;
+      * does not make the day more concentrated in one class.
+
+    The nearest such candidate to the reference stops is used (then tier,
+    score, pool order). With none, the stop stays where it is: a remote
+    place is never discarded for its distance alone. A day whose protected
+    stops already exceed the boundary is left untouched, and a must-visit or
+    grounded anchor is never replaced. Nothing is added, dropped or
+    invented, and nothing here calls a provider or a model: the distances
+    only choose between candidates and are never shown, stored or validated.
+    """
+    days = [list(group) for group in day_groups]
+    used = {id(poi) for group in days for poi in group}
+    pool_order = {id(poi): index for index, poi in enumerate(pool)}
+    art_focused = "art" in canonical_interests
+
+    def spread(stops: list[dict[str, Any]]) -> float:
+        ordered = _order_day_by_distance(stops)
+        return day_spread_km([_poi_coordinates(poi) for poi in ordered]) or 0.0
+
+    def cls(poi: dict[str, Any]) -> str:
+        return diversity.coarse_class(profiles[id(poi)].primary)
+
+    def excess(classes: list[str]) -> int:
+        return sum(diversity.relievable_excess(classes, markets_requested, justified).values())
+
+    def rank(poi: dict[str, Any]) -> tuple[int, float, int]:
+        profile = profiles[id(poi)]
+        return (-profile.tier_rank, -profile.score, pool_order.get(id(poi), len(pool_order)))
+
+    for day in days:
+        protected = [poi for poi in day if id(poi) in must_visit_ids or id(poi) in anchor_ids]
+        others = sorted((poi for poi in day if poi not in protected), key=rank)
+        reference = list(protected) if protected else others[:1]
+        if spread(reference) > GEOGRAPHIC_SPREAD_THRESHOLD_KM:
+            continue  # the protected stops alone are spread out: nothing here may change that
+        for stop in others:
+            if any(stop is kept for kept in reference) or _poi_coordinates(stop) is None:
+                continue
+            if spread([*reference, stop]) <= GEOGRAPHIC_SPREAD_THRESHOLD_KM:
+                reference.append(stop)
+                continue
+
+            stop_profile = profiles[id(stop)]
+            scheduled_others = [poi for group in days for poi in group if poi is not stop]
+            still_covered = {name for poi in scheduled_others for name in profiles[id(poi)].matched_interests}
+            must_cover = (set(stop_profile.matched_interests) & set(canonical_interests)) - still_covered
+            must_cover.discard(_FOOD_INTEREST)
+            rest_classes = [cls(poi) for poi in day if poi is not stop]
+            current_excess = excess([*rest_classes, cls(stop)])
+            centre = centroid([_poi_coordinates(poi) for poi in reference])
+
+            def acceptable(candidate: dict[str, Any]) -> bool:
+                profile = profiles[id(candidate)]
+                return (
+                    id(candidate) not in used
+                    and _poi_coordinates(candidate) is not None
+                    and not profile.low_value
+                    and not (profile.commercial_gallery and not art_focused)
+                    and profile.tier_rank >= stop_profile.tier_rank - _DIVERSITY_MAX_TIER_DROP
+                    and must_cover <= set(profile.matched_interests)
+                    and not _suspected_duplicate_of_any(candidate, scheduled_others)
+                    and excess([*rest_classes, cls(candidate)]) <= current_excess
+                    and spread([*reference, candidate]) <= GEOGRAPHIC_SPREAD_THRESHOLD_KM
+                )
+
+            candidates = [candidate for candidate in pool if acceptable(candidate)]
+            if not candidates:
+                continue  # no acceptable local alternative: the stop stays
+            replacement = min(
+                candidates,
+                key=lambda candidate: (
+                    round(haversine_distance_km(centre, _poi_coordinates(candidate)) or 0.0, 3),
+                    *rank(candidate),
+                ),
+            )
+            day[next(index for index, poi in enumerate(day) if poi is stop)] = replacement
+            used.add(id(replacement))
+            reference.append(replacement)
     return days
 
 
