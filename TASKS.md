@@ -2,56 +2,62 @@
 
 This file tracks implementation tasks for TravelObligator.
 
-**Status note (added Step 181B):** This file began as an early,
-pre-implementation checklist, written before any backend or frontend code
-existed. Everything below Section 3 is that original checklist, preserved
-as historical record — its `- [ ]` boxes were never updated as work was
-done, so an unchecked box below does **not** mean the task is outstanding;
-it means the checklist itself predates the implementation. Do not treat
-any specific unchecked line below as a live task without first checking
-whether it was actually completed (`docs/CODEBASE_OVERVIEW.md`'s Section
-170-179 running log and the numbered `docs/` files are the current source
-of truth for what's actually built). See Section 1 below for an accurate,
-current summary.
+**Status note (V1 release):** TravelObligator V1 is implemented, deployed
+and production-verified. Section 1 below is the current summary. Everything
+from Section 3 onward is the original pre-implementation checklist, kept
+as a historical record — its `- [ ]` boxes were never updated as work was
+done, so an unchecked box does **not** mean the task is outstanding. The
+current sources of truth are `docs/23_v1_release_reference.md`, the code,
+and the running log in `docs/CODEBASE_OVERVIEW.md`.
 
 ---
 
-## 1. Current Status
+## 1. Current Status: V1 complete
 
-Architecture V1 is finalized, and the MVP it describes is implemented:
-shared/backend models, the API foundation, in-memory/local-JSON
-repositories, the full `PlanningOrchestrator` stage pipeline, provider
-interfaces (with several real adapters wired in — OpenStreetMap/Overpass,
-Nominatim, Open-Meteo, Nager.Date, Frankfurter, OSRM, a local/manual
-scraped-HTML provider for accommodation and flights, and a real live
-Kiwi-via-MCP flight integration behind explicit opt-in), the AI reasoning
-layer (Anthropic primary, Groq dev-only, both candidate-proposal-only —
-never a factual data source), stage implementations, feedback capture,
-and an MVP-scoped feedback-driven regeneration workflow (Section 174 —
-see `README.md`'s "Current Regeneration Status" for the exact contract).
-The frontend renders the full `PlanningState` dashboard, including a
-trust dashboard, provider-coverage/validation views, route-aware
-day-by-day scheduling with a map view, and inventory/candidate-review
-panels.
+V1 is live at <https://travelobligator.vercel.app> (Vercel frontend →
+same-origin `/api/*` rewrite → Render FastAPI backend → Neon PostgreSQL +
+Upstash Redis).
 
-Sections 170-179 (tracked in `docs/CODEBASE_OVERVIEW.md`) added the AI
-candidate-promotion pipeline, LangGraph orchestration alongside the
-original synchronous pipeline, route-aware scheduling, the hotel-ratings
-provider layer, the Kiwi MCP flight integration, and a frontend
-visual/accessibility polish pass. A full feature-level rewrite of this
-file is a separate, upcoming pass — this note only corrects the status
-claim, not the detailed checklists below.
+Completed in V1:
 
-Deferred / not yet implemented (production-hardening work):
+- Single-city planning through the staged `PlanningState` pipeline, with
+  LangGraph orchestration.
+- Production factual providers: Geoapify Geocoding, Places and Routing,
+  plus Open-Meteo, Nager.Date and Frankfurter. Overpass, Nominatim and
+  OSRM remain as development-only adapters.
+- AI anchor proposals grounded through the geocoder, AI itinerary
+  reasoning, deterministic planning, validation and a narrator. Groq is
+  the preferred LLM provider, Gemini the secondary, with a deterministic
+  fallback. No LLM is a factual data source.
+- Route-aware day plans with maps, movement data and nearby food.
+- Accounts: signup, login, logout, signed session cookie, per-user trip
+  isolation.
+- Asynchronous generation jobs with polling, owned by database leases.
+- PostgreSQL persistence with Alembic migrations, optimistic concurrency,
+  revisions and branches.
+- Redis provider-response caching.
+- Feedback capture and refusal-first regeneration with versions (see
+  `docs/17_regeneration_manual_qa.md` for the safety contract).
+- Hardened Docker images, a five-job CI pipeline, health/readiness
+  endpoints, metrics and structured, redacted logging.
+- Production deployment and acceptance (one check still pending: cold-start
+  recovery after a genuine idle sleep on the free Render instance).
 
-- async/background job processing for plan generation
-- PostgreSQL persistence (today: a local, gitignored JSON file)
-- authentication and per-user trip isolation
-- Docker/deployment hardening
-- observability / structured logging
+Evaluation at release: tuning 15/18, unseen holdout 9/10, stress 8/8, with
+zero fabricated identities, duplicate scheduled places or unsupported
+claims in every set. Details: `docs/23_v1_release_reference.md`.
 
-This is a working MVP with real integrations, not a finished production
-system.
+### Future / post-V1
+
+Genuine future work, none of it a V1 blocker:
+
+- multi-city trips
+- a durable worker and queue for generation (today: `BackgroundTasks` +
+  database leases, not exactly-once)
+- transit-specific planning (GTFS / OpenTripPlanner)
+- richer official inventory APIs for accommodation and flights
+- booking and payment execution
+- a paid, high-availability deployment
 
 ---
 
@@ -73,6 +79,9 @@ All implementation work must follow these rules:
 ---
 
 ## 3. Phase 1: Shared Types and Backend Models
+
+> **Historical.** Sections 3–17 are the original pre-implementation checklist.
+> Unchecked boxes are not open tasks; see Section 1 for the current status.
 
 Goal:
 
@@ -545,6 +554,10 @@ checked by hand after any change to a provider adapter or to
 
 ## 15. Not In MVP
 
+> **Historical.** This was the scope boundary of the early MVP. Some items
+> below (authentication, PostgreSQL, deployment) were later built for V1;
+> see Section 1.
+
 Do not implement yet:
 
 - final hotel booking
@@ -576,6 +589,9 @@ does not (yet) handle.
 
 ## 16. Immediate Next Tasks
 
+> **Historical.** This was the starting order for the first implementation
+> pass. All of it is done.
+
 Start implementation in this order:
 
 1. Update `shared/types.ts`
@@ -592,6 +608,10 @@ Start implementation in this order:
 ---
 
 ## 17. Definition of Done for MVP Architecture Implementation
+
+> **Historical.** The original MVP exit criteria, superseded by the V1
+> summary in Section 1. The boxes are left unticked on purpose (see the
+> status note at the top).
 
 The MVP architecture implementation is complete when:
 

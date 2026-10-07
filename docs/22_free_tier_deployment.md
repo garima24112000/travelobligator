@@ -1,8 +1,15 @@
 # 22. Free-Tier Deployment Contract (Section 203B)
 
-This document is the deployment **contract** for the portfolio release. Section 203B prepared and validated
-it; nothing here has been provisioned or deployed. Section 203C creates the real services by following
-[section 11](#11-203c-deployment-checklist-not-yet-executed).
+This document is the deployment **contract** for the portfolio release, and the record of carrying it out.
+
+| Stage | Status |
+| --- | --- |
+| 203B — contract prepared and validated | Completed |
+| 203C — deployment ([section 11](#11-deployment-checklist-executed-in-203c)) | Completed |
+| 203D — production acceptance ([section 14](#14-production-verification-record)) | Completed, except cold-start recovery (pending) |
+
+Live system: frontend <https://travelobligator.vercel.app>, backend
+<https://travelobligator-backend.onrender.com> (reached through the frontend's `/api/*` rewrite).
 
 It is a hobby/portfolio deployment on free tiers, **not** an SLA-backed production service. Target recurring
 cost: $0/month within each provider's current free-tier limits. No step in this document needs a payment
@@ -28,7 +35,7 @@ Browser
        -> Upstash Redis                  disposable provider-response cache (TLS)
 ```
 
-The browser never calls the Render backend directly. Because every API call is same-origin with the page, the
+The browser does not normally call the Render backend directly. Because every API call is same-origin with the page, the
 session cookie is a first-party, host-only cookie and no cross-site cookie behaviour is relied on.
 
 ## 2. Invariants carried forward (unchanged by 203B)
@@ -66,10 +73,11 @@ session cookie is a first-party, host-only cookie and no cross-site cookie behav
 config sets the same header on `/api/:path*`. API traffic is never cached at the CDN. Static frontend assets
 keep normal Next.js/Vercel caching.
 
-**To confirm in 203C** (cannot be verified without a real deployment): that the hosted rewrite forwards
-`Set-Cookie` and `Cache-Control` unchanged, and what the platform's time limit for a proxied request is. The
-same rewrite was exercised locally against a self-hosted Next.js server in 203B (signup, `/auth/me`, trip
-list, logout: cookie and `no-store` preserved).
+**Confirmed in 203C/203D.** The hosted rewrite forwards `Set-Cookie` and `Cache-Control` unchanged: the
+session cookie arrives host-scoped to the Vercel origin and `/api/health` carries `no-store` (section 14). The
+same rewrite had been exercised locally against a self-hosted Next.js server in 203B. The platform's time
+limit for a proxied request was not measured; generation is a polled background job, so no single request
+depends on it.
 
 ## 4. Sessions and cookies
 
@@ -194,14 +202,17 @@ Backend (Render):
 | `DB_POOL_SIZE` | public | `3` |
 | `DB_MAX_OVERFLOW` | public | `2` |
 | `DB_CONNECT_TIMEOUT_SECONDS` | public | `15` |
-| `GROQ_API_KEY` | provider | only needed for the AI features you enable |
+| `GROQ_API_KEY` | provider | preferred LLM provider for the AI stages |
+| `GEMINI_API_KEY`, `GEMINI_MODEL` | provider / public | secondary LLM provider; both are needed for failover (dashboard only, not in `render.yaml`) |
+| `LLM_FAILOVER_ENABLED`, `LLM_PRIMARY_PROVIDER`, `LLM_SECONDARY_PROVIDER` | public | defaults `true` / `groq` / `gemini` |
 | `GEOCODING_PROVIDER` | public | `geoapify` |
 | `GEOAPIFY_API_KEY` | secret | `<GEOAPIFY_API_KEY>` (free plan); required when `GEOCODING_PROVIDER=geoapify` |
 
-**Geocoder (Section 203C.1).** The first production generation was blocked by HTTP 429 from the public
-Nominatim search endpoint: destination geocoding and every named-place lookup went to it from a shared hosting
-address. Geocoding is now a separate, configurable provider. Production uses Geoapify for destination geocoding
-and named-place search; Overpass still does all OpenStreetMap POI discovery. With `APP_ENV=production` the
+**Geocoder (Section 203C.1, historical context).** The first production generation was blocked by HTTP 429
+from the public Nominatim search endpoint: destination geocoding and every named-place lookup went to it from a
+shared hosting address. Geocoding is now a separate, configurable provider. Production uses Geoapify for
+destination geocoding and named-place search. (At 203C.1 Overpass still did POI discovery; 203C.2B below
+replaced it in production with Geoapify Places.) With `APP_ENV=production` the
 backend refuses to start when `GEOCODING_PROVIDER=geoapify` has no `GEOAPIFY_API_KEY`, and when the geocoder is
 the public Nominatim endpoint (unless `ALLOW_PUBLIC_NOMINATIM_IN_PRODUCTION=true` is set deliberately). There is
 no automatic fallback from Geoapify to Nominatim. Geocode results are cached in Redis under their own
@@ -226,7 +237,8 @@ development (`PLACES_PROVIDER=openstreetmap`) and production refuses to start wi
 
 Itinerary reasoning, repair and the narrator (`AI_ITINERARY_REASONING_ENABLED`, `AI_ITINERARY_REPAIR_ENABLED`,
 `ITINERARY_NARRATOR_ENABLED` and their `*_PROVIDER=groq` selectors) are part of the same engine and are set in the
-Render dashboard alongside `GROQ_API_KEY`.
+Render dashboard alongside `GROQ_API_KEY`. With the Gemini variables also set, each of these stages fails over
+from Groq to Gemini and then to its deterministic fallback.
 
 *Verified provider facts (checked 2026-10-01 against Geoapify's documentation).* Category identifiers used are
 listed in `backend/app/providers/places/geoapify_categories.py` and checked by a contract test against a snapshot
@@ -260,15 +272,23 @@ regeneration has its own isolated budget, a call beyond it is refused locally, a
 another provider or a paid tier. Cache hits cost nothing. A successful but empty Places answer is cached for
 `GEOAPIFY_EMPTY_RESULT_CACHE_TTL_SECONDS` (6 h); failures are never cached.
 
-*Before release.* The fixed 28-city benchmark (18 tuning, 10 holdout, 8 holdout stress scenarios;
-`backend/scripts/benchmark_cities.py`) must pass: destination resolution 100%, zero fabricated identities,
-duplicate scheduled places and unsupported claims, no empty day and at least R meaningful stops whenever
-`viable ≥ R`, routing coverage ≥ 90%, persistence/reload 100%, and the provider budget never exceeded.
+*Pre-release benchmark: target and outcome.* The target set before release for the fixed 28-city benchmark
+(18 tuning cities and 10 unseen holdout cities) plus 8 stress scenarios (`backend/scripts/benchmark_cities.py`)
+was: destination
+resolution 100%, zero fabricated identities, duplicate scheduled places and unsupported claims, no empty day
+and at least R meaningful stops whenever `viable ≥ R`, routing coverage ≥ 90%, persistence/reload 100%, and the
+provider budget never exceeded.
+
+The outcome did not meet every line of that target, and is recorded as it happened: tuning 15/18, unseen
+holdout 9/10 (destination resolution 0.9), stress 8/8. Fabricated identities, duplicate scheduled places and
+unsupported claims were zero in every set, and the credit cap was never exceeded. The holdout miss was a
+generic destination-resolution defect, fixed and verified by a separate canary without rerunning the holdout.
+V1 was released on that basis. Full figures: [`23_v1_release_reference.md`](23_v1_release_reference.md).
 
 The AI feature switches (`AI_ITINERARY_REASONING_ENABLED`, `AI_FEEDBACK_INTERPRETER_ENABLED`,
 `TARGETED_REGENERATION_ENABLED`, `ITINERARY_NARRATOR_ENABLED` and their `*_PROVIDER` selectors) are public
-configuration and default to off / `not_connected`. Which of them the portfolio release turns on is a product
-decision for 203C; they are not set in `render.yaml`. `PORT` is injected by Render and must not be set.
+configuration and default to off / `not_connected`. The ones the release uses are set in the Render
+dashboard, not in `render.yaml`. `PORT` is injected by Render and must not be set.
 
 Frontend (Vercel):
 
@@ -283,7 +303,7 @@ No value for any of these is committed to the repository.
 
 ## 10. Free-tier constraints and honest behaviour at a limit
 
-Limits change; check each provider's current published free-tier terms in 203C rather than relying on numbers
+Limits change; check each provider's current published free-tier terms rather than relying on numbers
 written here.
 
 | Provider | Constraint | What the application does when it bites |
@@ -296,9 +316,10 @@ written here.
 No provider is upgraded automatically, there is no paid fallback, and none of the steps below adds a payment
 method.
 
-## 11. 203C deployment checklist (not yet executed)
+## 11. Deployment checklist (executed in 203C)
 
-Order matters: the backend needs the database migrated first, the frontend build needs the backend origin, and
+This checklist was carried out for the V1 release and is kept as the procedure for a fresh deployment or a
+redeploy. Step G.7 (cold-start recovery) is the one item still pending. Order matters: the backend needs the database migrated first, the frontend build needs the backend origin, and
 the backend's CORS value needs the frontend origin.
 
 **A. Neon**
@@ -337,8 +358,8 @@ For every later release that adds a migration: repeat B for the new commit first
 
 1. Create the service from `render.yaml` (Blueprint), or create one free Docker web service by hand with the
    same settings. Decline anything that asks for a paid plan or a payment method.
-2. In the dashboard set `DATABASE_URL`, `REDIS_URL`, `GROQ_API_KEY` (if AI features are enabled),
-   `GEOAPIFY_API_KEY` (create a free Geoapify project and copy its API key) and
+2. In the dashboard set `DATABASE_URL`, `REDIS_URL`, `GROQ_API_KEY`, `GEMINI_API_KEY` and `GEMINI_MODEL` (for
+   the AI stages and their failover), `GEOAPIFY_API_KEY` (create a free Geoapify project and copy its API key) and
    `BACKEND_CORS_ORIGINS`. The Vercel hostname does not exist yet: enter the intended
    `https://<project>.vercel.app` origin now and correct it in step F if it differs. Browser traffic does not
    depend on this value.
@@ -372,8 +393,10 @@ For every later release that adds a migration: repeat B for the new commit first
 5. `<VERCEL_FRONTEND_ORIGIN>/api/ready` and `/api/metrics` return 404.
 6. Create a trip and generate a plan; confirm the job is polled to completion.
 7. Leave the site idle until the backend sleeps, revisit, and confirm the cold start is slow but recovers.
+   **Pending for V1:** not yet verified after a genuine idle sleep.
 
-**H. Section 203D acceptance** — the full acceptance run against the deployed system.
+**H. Section 203D acceptance** — the full acceptance run against the deployed system. Completed, apart from
+G.7; the record is in [section 14](#14-production-verification-record).
 
 ## 12. Production configuration validation
 
@@ -432,3 +455,33 @@ trickles in slowly could still run somewhat past the budget.
 The canary (`backend/scripts/canary_city.py`) prints, per run, the stage and provider wall time, the
 concurrent batches and both Geoapify concurrency peaks, and for each model stage its attempts, retries,
 whether its deadline was exceeded and how it ended. These are reported, never acceptance checks.
+
+## 14. Production verification record
+
+Checks performed against the deployed system for Sections 203C and 203D. No credential, connection string,
+session value or token is recorded here.
+
+| Area | Check | Result |
+| --- | --- | --- |
+| Backend | `/health` (public) | 200 |
+| Backend | `/ready` and `/metrics` without the ops token | 404 |
+| Backend | `/ready` with the ops token | 200, status `ready` |
+| Backend | PostgreSQL backend | ready |
+| Backend | Schema head, expected and current | `d41a7e2c9b53` for both |
+| Backend | Redis provider cache | healthy |
+| Proxy | `/api/health` on the Vercel origin | 200, `Cache-Control: no-store` |
+| Proxy | `/api/ready` and `/api/metrics` | 404 |
+| Proxy | Browser API traffic | goes to `travelobligator.vercel.app/api/*`, not to the Render host |
+| Auth | Signup, login, logout | work; after logout `/api/auth/me` returns 401 |
+| Auth | Session cookie | `Secure`, `HttpOnly`, `SameSite=Lax`, `Path=/`, host-scoped to `travelobligator.vercel.app` |
+| Auth | Reload with a valid session | session kept |
+| Auth | `SESSION_SECRET_KEY` rotation | done after a session-cookie value was exposed during testing; old sessions invalidated, confirmed by a fresh authentication |
+| Persistence | Trip creation | works |
+| Persistence | Async generation | returns 202 and is polled to completion |
+| Persistence | Reload of a completed itinerary | no regeneration |
+| Persistence | Existing Lisbon trip after the secret rotation and a fresh login | still present |
+| UI | Lisbon 3-day balanced itinerary | rendered: 9 scheduled places, maps, routes, movement rows |
+| UI | Limitations and unavailable data | labelled as such |
+| UI | Final production smoke | no uncaught application error observed |
+| Render | Deployed commit | `f55401c` |
+| Render | Cold-start recovery after a genuine idle sleep | **Pending — not yet verified** |
