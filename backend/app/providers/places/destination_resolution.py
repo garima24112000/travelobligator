@@ -196,7 +196,7 @@ _LOGGABLE_RESULT_TYPES = _CITY_LEVEL_TYPES | frozenset(
     {"suburb", "district", "county", "state", "country", "postcode", "street", "amenity", "building", "administrative", "unknown"}
 )
 _LOCALITY_COMPONENT_KEYS = ("city", "town", "village", "municipality")
-_EQUIVALENT_NAME_MIN_LENGTH = 6
+_EQUIVALENT_NAME_MIN_LENGTH = 5
 
 
 def _single_edit_apart(a: str, b: str) -> bool:

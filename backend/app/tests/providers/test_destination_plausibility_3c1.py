@@ -61,6 +61,8 @@ def test_an_equivalent_spelling_of_the_same_city_is_accepted_on_structured_evide
 ) -> None:
     assert _reason(query, _city(provider_name)) is None
 
+def test_a_five_character_equivalent_city_is_accepted_with_strong_country_agreement() -> None:
+    assert _reason("Cusco, Peru", _city("Cuzco", "Peru")) is None
 
 # 3. accent / Unicode variation
 @pytest.mark.parametrize(
