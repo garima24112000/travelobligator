@@ -20,7 +20,7 @@
 #
 # No credential is baked in: every secret/URL is supplied at RUN time by the environment.
 
-ARG PYTHON_IMAGE=python:3.11.16-slim-bookworm
+ARG PYTHON_IMAGE=python:3.11.17-slim-bookworm
 
 FROM ${PYTHON_IMAGE} AS builder
 ENV PIP_NO_CACHE_DIR=1 \
