@@ -22,6 +22,15 @@ V1 is deployed and production-verified, with one operational check still open (s
 
 This is a portfolio / research / demo deployment. It is not an SLA-backed production service.
 
+**Release tagging is paused; a final quality phase is open.** The V1 candidate described here passed its
+infrastructure and factual-safety acceptance, and that result stands: this document remains the
+factual-safety and infrastructure baseline. A user-facing comparison then exposed itinerary-composition
+quality gaps (day grouping, a requested interest not represented, a severe walking leg left as a warning,
+scarce slots spent on weak candidates). No `v1.0.0` tag has been created. A final phase, *Itinerary Quality
+& Day Composition*, was opened; its acceptance contract, development scenarios and new frozen quality
+holdout are in [`24_itinerary_quality_contract.md`](24_itinerary_quality_contract.md). The tuning, holdout
+and stress results in sections 8–10 are historical and unchanged, and the original holdout is not rerun.
+
 ## 2. Product scope
 
 V1 plans a trip to a **single city**. It is a travel *decision* system: the itinerary is the output, and the
@@ -424,6 +433,10 @@ found by the holdout and fixed without rerunning it, and 8/8 on stress.
 
 One operational check remains open: cold-start recovery after a genuine idle sleep on the free Render
 instance (section 12).
+
+That conclusion covers infrastructure and factual safety. Itinerary-composition quality is being addressed
+in the phase described in [`24_itinerary_quality_contract.md`](24_itinerary_quality_contract.md), and the
+release tag waits for it (section 1).
 
 The README before this release cleanup was a much longer implementation history. Its last version is in git
 history at commit `f55401c`; the step-by-step detail it carried remains in

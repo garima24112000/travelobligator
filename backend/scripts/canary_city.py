@@ -33,6 +33,7 @@ from typing import Any
 
 _SCRIPTS_DIR = Path(__file__).resolve().parent
 _BACKEND_DIR = _SCRIPTS_DIR.parent
+_QUALITY_DATA_PATH = _SCRIPTS_DIR / "benchmark" / "quality_v1.json"
 # A week from today: inside the weather provider's forecast horizon, so the
 # canary exercises a real forecast instead of a known "not yet available".
 _START_DATE = date.today() + timedelta(days=7)
@@ -317,6 +318,29 @@ def _slug(text: str) -> str:
 def _norm(text: Any) -> str:
     plain = "".join(c for c in unicodedata.normalize("NFKD", str(text or "")) if not unicodedata.combining(c))
     return re.sub(r"[^a-z0-9]+", " ", plain.casefold()).strip()
+
+
+def _quality_metrics_module() -> Any:
+    """The Phase Q0 quality-metric extractor that lives beside this script."""
+    if str(_SCRIPTS_DIR) not in sys.path:
+        sys.path.insert(0, str(_SCRIPTS_DIR))
+    import quality_metrics
+
+    return quality_metrics
+
+
+def _is_quality_holdout_city(city: str) -> bool:
+    """Whether `city` belongs to the frozen, unseen quality holdout (Phase Q0).
+    The names are read from the benchmark data; this script knows none."""
+    try:
+        data = json.loads(_QUALITY_DATA_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    wanted = _norm(city.split(",")[0])
+    return bool(wanted) and any(
+        _norm(str(scenario.get("destination", "")).split(",")[0]) == wanted
+        for scenario in data.get("quality_holdout", [])
+    )
 
 
 def _split_list(values: list[str] | None) -> list[str]:
@@ -879,6 +903,13 @@ def _run(args: argparse.Namespace, cache_hits: dict[str, int]) -> dict[str, Any]
         ),
     }
 
+    # -- itinerary quality (Phase Q0; docs/24_itinerary_quality_contract.md) -----------------
+    # Reported only: computed from the stored state, and never read by `_acceptance`.
+    try:
+        report["itinerary_quality"] = _quality_metrics_module().extract_quality_metrics(state)
+    except Exception as exc:  # a reporting extra can never fail a run; by TYPE only
+        report["itinerary_quality"] = {"unavailable": type(exc).__name__}
+
     report["acceptance"] = _acceptance(report)
     return report
 
@@ -1346,6 +1377,14 @@ def _render(report: dict[str, Any]) -> str:
         for item in performance["redundant_work"]:
             row(item["label"], f"{item['repeated']} of {item['total']}")
 
+    itinerary_quality = report.get("itinerary_quality") or {}
+    if itinerary_quality:
+        section("ITINERARY QUALITY (reported only; never an acceptance check)")
+        if "unavailable" in itinerary_quality:
+            row("unavailable", itinerary_quality["unavailable"])
+        else:
+            lines.extend(_quality_metrics_module().render_lines(itinerary_quality))
+
     acceptance = report["acceptance"]
     section(f"ACCEPTANCE: {acceptance['outcome']}")
     for item in acceptance["checks"]:
@@ -1416,9 +1455,19 @@ def main() -> int:
         "--force-open-provider", choices=["groq", "gemini"], default=None,
         help="DEVELOPMENT ONLY: treat this LLM provider as unavailable for this run, so the other one serves every stage",
     )
+    parser.add_argument(
+        "--allow-quality-holdout", action="store_true",
+        help="required to run a city of the frozen quality holdout (never while tuning)",
+    )
     args = parser.parse_args()
     if args.days < 1:
         parser.error("--days must be at least 1")
+    if _is_quality_holdout_city(args.city) and not args.allow_quality_holdout:
+        print(
+            "Refusing to run: this city belongs to the frozen quality holdout, which is not run while tuning "
+            "(--allow-quality-holdout). Nothing was run."
+        )
+        return 2
 
     missing = _missing_environment()
     if missing:

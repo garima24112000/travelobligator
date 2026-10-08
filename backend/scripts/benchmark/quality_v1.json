@@ -1,0 +1,153 @@
+{
+  "_comment": "Phase Q0 itinerary-quality benchmark data (docs/24_itinerary_quality_contract.md). BENCHMARK-ONLY: never imported by backend/app, and no name in this file may enter production logic. A scenario states a request (destination, days, pace, interests, must-visits) and the generic quality dimensions it exercises; it never states an expected itinerary, day grouping, neighbourhood or stop. quality_tuning MAY be run repeatedly while improving the planner and uses only cities of the existing tuning set in cities.json. quality_holdout is FROZEN and UNSEEN: it is not run, in whole or in part, until the tuning freeze, and then exactly once.",
+  "frozen_on": "2026-10-08",
+  "defaults": {"travelers": 2, "travel_group_type": "couple"},
+  "quality_tuning": [
+    {
+      "id": "Q-T1",
+      "destination": "New York, United States",
+      "trip_days": 4,
+      "pace": "balanced",
+      "interests": ["museums", "piers"],
+      "must_visit": ["Statue of Liberty", "Central Park", "Empire State Building"],
+      "covers": ["waterfront-interest normalization", "must-visit identity", "day grouping", "severe route burden", "limited-slot attraction quality"]
+    },
+    {
+      "id": "Q-T2",
+      "destination": "Kraków, Poland",
+      "trip_days": 3,
+      "pace": "balanced",
+      "interests": ["history", "architecture"],
+      "must_visit": ["Wawel Castle"],
+      "covers": ["dense historic core", "day grouping", "limited-slot attraction quality"]
+    },
+    {
+      "id": "Q-T3",
+      "destination": "Cape Town, South Africa",
+      "trip_days": 4,
+      "pace": "relaxed",
+      "interests": ["waterfront", "outdoors", "food"],
+      "must_visit": ["Table Mountain"],
+      "covers": ["waterfront/coastal grouping", "topographic separation", "pace fit", "mixed interests"]
+    },
+    {
+      "id": "Q-T4",
+      "destination": "Paris, France",
+      "trip_days": 3,
+      "pace": "packed",
+      "interests": ["museums", "art"],
+      "must_visit": ["Louvre Museum", "Musée d'Orsay"],
+      "covers": ["museums/art", "multiple must-visits", "must-visit identity", "redundancy"]
+    },
+    {
+      "id": "Q-T5",
+      "destination": "Mexico City, Mexico",
+      "trip_days": 4,
+      "pace": "balanced",
+      "interests": ["food", "markets", "history"],
+      "must_visit": [],
+      "covers": ["food/markets", "sprawling city", "severe route burden", "mixed interests"]
+    },
+    {
+      "id": "Q-T6",
+      "destination": "Melbourne, Australia",
+      "trip_days": 3,
+      "pace": "balanced",
+      "interests": ["parks", "art", "food"],
+      "must_visit": ["Royal Botanic Gardens"],
+      "covers": ["parks/outdoors", "mixed interests", "day grouping"]
+    }
+  ],
+  "quality_holdout": [
+    {
+      "id": "Q-H1",
+      "destination": "Chicago, United States",
+      "trip_days": 3,
+      "pace": "balanced",
+      "interests": ["architecture", "museums", "riverfront"],
+      "must_visit": ["Art Institute of Chicago", "Millennium Park"],
+      "covers": ["river corridor", "architecture", "museums/culture", "multiple must-visits"]
+    },
+    {
+      "id": "Q-H2",
+      "destination": "Barcelona, Spain",
+      "trip_days": 4,
+      "pace": "balanced",
+      "interests": ["architecture", "food", "markets"],
+      "must_visit": ["Sagrada Família", "Park Güell"],
+      "covers": ["architecture", "markets/food", "multiple must-visits", "topographic/geographic separation"]
+    },
+    {
+      "id": "Q-H3",
+      "destination": "Rome, Italy",
+      "trip_days": 3,
+      "pace": "packed",
+      "interests": ["history", "art"],
+      "must_visit": ["Colosseum", "Pantheon"],
+      "covers": ["compact historic core", "multiple must-visits", "must-visit identity", "pace fit"]
+    },
+    {
+      "id": "Q-H4",
+      "destination": "Singapore",
+      "trip_days": 3,
+      "pace": "balanced",
+      "interests": ["gardens", "food", "waterfront"],
+      "must_visit": ["Gardens by the Bay"],
+      "covers": ["dense urban transit context", "waterfront/harbor", "outdoors/parks", "markets/food"]
+    },
+    {
+      "id": "Q-H5",
+      "destination": "Bangkok, Thailand",
+      "trip_days": 4,
+      "pace": "balanced",
+      "interests": ["history", "markets", "food"],
+      "must_visit": ["Grand Palace"],
+      "covers": ["large/sprawling city", "river corridor", "markets/food"]
+    },
+    {
+      "id": "Q-H6",
+      "destination": "Sydney, Australia",
+      "trip_days": 3,
+      "pace": "relaxed",
+      "interests": ["harbour", "outdoors", "museums"],
+      "must_visit": ["Sydney Opera House"],
+      "covers": ["waterfront/harbor", "outdoors/parks", "museums/culture", "pace fit"]
+    },
+    {
+      "id": "Q-H7",
+      "destination": "Reykjavík, Iceland",
+      "trip_days": 2,
+      "pace": "relaxed",
+      "interests": ["architecture", "museums", "harbor"],
+      "must_visit": [],
+      "covers": ["compact core", "thin inventory", "waterfront/harbor", "museums/culture"]
+    },
+    {
+      "id": "Q-H8",
+      "destination": "Rio de Janeiro, Brazil",
+      "trip_days": 4,
+      "pace": "balanced",
+      "interests": ["outdoors", "history", "food"],
+      "must_visit": ["Christ the Redeemer", "Sugarloaf Mountain"],
+      "covers": ["topographic/geographic separation", "outdoors/parks", "multiple must-visits"]
+    },
+    {
+      "id": "Q-H9",
+      "destination": "Prague, Czechia",
+      "trip_days": 3,
+      "pace": "balanced",
+      "interests": ["history", "architecture", "art"],
+      "must_visit": ["Charles Bridge", "Prague Castle"],
+      "covers": ["compact historic core", "river corridor", "architecture", "multiple must-visits"]
+    },
+    {
+      "id": "Q-H10",
+      "destination": "Mumbai, India",
+      "trip_days": 3,
+      "pace": "packed",
+      "interests": ["history", "markets", "food", "promenade"],
+      "must_visit": ["Gateway of India"],
+      "covers": ["large/sprawling city", "dense urban transit context", "waterfront/harbor", "markets/food"]
+    }
+  ]
+}
