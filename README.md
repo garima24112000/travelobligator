@@ -109,8 +109,9 @@ Browser -> Vercel (Next.js) -> /api/* rewrite -> Render (FastAPI) -> Neon Postgr
 ```
 
 The browser talks only to the Vercel origin, so the session cookie is first-party: `Secure`, `HttpOnly`,
-`SameSite=Lax`. PostgreSQL is authoritative. Redis only caches provider responses and can be lost without
-losing data. Generation runs as a background job that the browser polls.
+`SameSite=Lax`. PostgreSQL is authoritative. Redis contents are disposable: Redis only caches provider
+responses, and the backend does NOT wait for it to start, so losing the cache only causes future provider
+calls. Generation runs as a background job that the browser polls.
 
 Live at <https://travelobligator.vercel.app>. Deployment details are in
 [docs/22_free_tier_deployment.md](docs/22_free_tier_deployment.md).

@@ -8,8 +8,9 @@ This document is the deployment **contract** for the portfolio release, and the 
 | 203C — deployment ([section 11](#11-deployment-checklist-executed-in-203c)) | Completed |
 | 203D — production acceptance ([section 14](#14-production-verification-record)) | Completed, except cold-start recovery (pending) |
 
-Live system: frontend <https://travelobligator.vercel.app>, backend
-<https://travelobligator-backend.onrender.com> (reached through the frontend's `/api/*` rewrite).
+Live deployment URLs are recorded in `README.md` and `docs/23_v1_release_reference.md`. This contract uses
+`<VERCEL_FRONTEND_ORIGIN>` and `<RENDER_BACKEND_ORIGIN>` throughout so it remains reusable and contains no
+deployment-specific hosted URL.
 
 It is a hobby/portfolio deployment on free tiers, **not** an SLA-backed production service. Target recurring
 cost: $0/month within each provider's current free-tier limits. No step in this document needs a payment
@@ -471,9 +472,9 @@ session value or token is recorded here.
 | Backend | Redis provider cache | healthy |
 | Proxy | `/api/health` on the Vercel origin | 200, `Cache-Control: no-store` |
 | Proxy | `/api/ready` and `/api/metrics` | 404 |
-| Proxy | Browser API traffic | goes to `travelobligator.vercel.app/api/*`, not to the Render host |
+| Proxy | Browser API traffic | goes to `<VERCEL_FRONTEND_ORIGIN>/api/*`, not to the Render host |
 | Auth | Signup, login, logout | work; after logout `/api/auth/me` returns 401 |
-| Auth | Session cookie | `Secure`, `HttpOnly`, `SameSite=Lax`, `Path=/`, host-scoped to `travelobligator.vercel.app` |
+| Auth | Session cookie | `Secure`, `HttpOnly`, `SameSite=Lax`, `Path=/`, host-scoped to `<VERCEL_FRONTEND_ORIGIN>` |
 | Auth | Reload with a valid session | session kept |
 | Auth | `SESSION_SECRET_KEY` rotation | done after a session-cookie value was exposed during testing; old sessions invalidated, confirmed by a fresh authentication |
 | Persistence | Trip creation | works |
