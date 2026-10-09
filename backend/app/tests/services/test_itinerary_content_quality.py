@@ -120,9 +120,14 @@ def test_other_functional_types_are_unsuitable_structurally(tags: dict[str, str]
 
 
 def test_a_must_visit_can_override_an_unsuitable_type() -> None:
-    hospital = poi("h1", "Museum Hospital", {"amenity": "hospital"})
+    # Q1: must-visit status comes from the term the destination-context stage recorded
+    # on the provider candidate, never from the candidate's name.
+    hospital = poi("h1", "Museum Hospital", {"amenity": "hospital"}, must_visit_term="museum hospital")
     score = CandidateQualityService().score_attraction(hospital, must_visit_names=["museum hospital"])
     assert CandidateRejectReason.UNSUITABLE_PLACE_TYPE not in score.reject_reasons
+    untagged = poi("h2", "Museum Hospital", {"amenity": "hospital"})
+    same_name = CandidateQualityService().score_attraction(untagged, must_visit_names=["museum hospital"])
+    assert CandidateRejectReason.UNSUITABLE_PLACE_TYPE in same_name.reject_reasons
 
 
 def test_small_objects_are_low_value_unless_provider_carries_significance() -> None:

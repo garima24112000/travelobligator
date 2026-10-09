@@ -358,10 +358,12 @@ def test_quality_metrics_are_deterministic_and_read_stored_state_only(
 
     interests = metrics["interests"]
     assert interests["requested_terms"] == ["history", "museum", "piers"]
-    assert interests["canonical"] == ["history", "museum"]
-    # today's taxonomy does not recognise the term, so it is not tracked -- the gap the contract names
-    assert interests["unrecognised_terms"] == ["piers"]
-    assert set(interests["covered"]) | set(interests["uncovered"]) == {"history", "museum"}
+    # Q1 (contract A2): the waterfront family is a tracked canonical interest, so "piers" is no
+    # longer unrecognised; this pool has no waterfront place, so it is honestly without supply.
+    assert interests["canonical"] == ["history", "museum", "waterfront"]
+    assert interests["unrecognised_terms"] == []
+    assert interests["uncovered_without_supply"] == ["waterfront"]
+    assert set(interests["covered"]) | set(interests["uncovered"]) == {"history", "museum", "waterfront"}
     assert set(interests["uncovered"]) == set(interests["uncovered_with_supply"]) | set(interests["uncovered_without_supply"])
     assert all(interests["viable_supply_by_interest"][name] >= 1 for name in interests["covered"])
 

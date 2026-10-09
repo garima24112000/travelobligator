@@ -220,6 +220,12 @@ class DestinationContext(BaseModel):
     # provider ids, name variants, yes/no identity flags, separation, coarse
     # classes; never a provider payload. Empty for plans stored before this.
     suspect_entity_collisions: list[dict[str, Any]] = Field(default_factory=list)
+    # Q1 (must-visit identity): 1 once this stage has recorded each grounded
+    # must-visit term on the provider candidate it refers to
+    # (`must_visit_terms` / `must_visit_term`), so downstream stages read
+    # that record only. 0 for a context stored before Q1, where
+    # `app.services.must_visit_matching` applies its narrow legacy fallback.
+    must_visit_grounding_version: int = 0
     candidate_pois: list[dict[str, Any]] = Field(default_factory=list)
     candidate_restaurants: list[dict[str, Any]] = Field(default_factory=list)
     # Open-data location candidates only (e.g. OSM), never bookable inventory.

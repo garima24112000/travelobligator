@@ -58,6 +58,7 @@ from app.services.day_order_heuristics import (
 from app.services.day_rationale import deterministic_day_summary, finalize_day_explanations
 from app.services.entity_collisions import SUSPECT_COLLISION_KEY
 from app.services.grounded_anchors import grounded_anchor_place_ids, low_anchor_utilization
+from app.services.must_visit_matching import is_tagged_must_visit, legacy_must_visit_place_ids
 from app.utils.geo import haversine_distance_km
 
 logger = logging.getLogger(__name__)
@@ -731,7 +732,10 @@ class ExperiencePlannerService(PlanningStageService):
         has_any_attraction_candidates = bool(candidate_pois) or bool(promoted_pois)
 
         ordered_pois, must_visit_ids, interest_ids = _order_candidates(
-            scheduling_candidate_pois, must_visit_terms, interest_terms
+            scheduling_candidate_pois,
+            must_visit_terms,
+            interest_terms,
+            legacy_must_visit_place_ids(planning_state),
         )
 
         # Section 193C (docs/14_backend_architecture.md section 143):
@@ -1103,14 +1107,11 @@ class ExperiencePlannerService(PlanningStageService):
 
 
 def _matches_must_visit(poi: dict[str, Any], terms_lower: list[str]) -> bool:
-    name = str(poi.get("name") or "").lower()
-    if any(term in name for term in terms_lower):
-        return True
-    # Section 203C.2B: a place the provider grounded FOR a must-visit term
-    # carries that term, so it matches even when the provider's name for it
-    # differs from what the user typed.
-    grounded_term = str(poi.get("must_visit_term") or "").lower()
-    return bool(grounded_term) and grounded_term in terms_lower
+    # Q1: a must-visit is the provider place the destination-context stage
+    # recorded the user's term on -- whatever the provider calls it. The
+    # place's NAME is never compared with a term here: a related place whose
+    # name contains (or equals) the user's words inherits nothing.
+    return is_tagged_must_visit(poi, terms_lower)
 
 
 def _matches_interests(poi: dict[str, Any], terms_lower: list[str]) -> bool:
@@ -1129,8 +1130,14 @@ def _order_candidates(
     candidate_pois: list[dict[str, Any]],
     must_visit_terms: list[str],
     interest_terms: list[str],
+    legacy_must_visit_place_ids: frozenset[str] = frozenset(),
 ) -> tuple[list[dict[str, Any]], set[int], set[int]]:
     """Order candidates into must-visit / interest / remaining tiers.
+
+    A candidate is in the must-visit tier when it carries a requested term
+    (`_matches_must_visit`). `legacy_must_visit_place_ids` are the provider
+    ids `must_visit_matching` resolved for a context stored before Q1; it is
+    empty for every context built since, so the tier is then tag-only.
 
     Only reorders `candidate_pois` as returned by the places provider; never
     invents new candidates. Relative provider order is preserved within each
@@ -1146,7 +1153,10 @@ def _order_candidates(
     unmatched: list[dict[str, Any]] = []
 
     for poi in candidate_pois:
-        if must_visit_terms_lower and _matches_must_visit(poi, must_visit_terms_lower):
+        if must_visit_terms_lower and (
+            _matches_must_visit(poi, must_visit_terms_lower)
+            or (poi.get("place_id") and str(poi["place_id"]) in legacy_must_visit_place_ids)
+        ):
             must_visit_matched.append(poi)
         elif interest_terms_lower and _matches_interests(poi, interest_terms_lower):
             interest_matched.append(poi)

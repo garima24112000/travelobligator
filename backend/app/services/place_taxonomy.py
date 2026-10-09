@@ -419,13 +419,13 @@ def classify_candidate(candidate: dict[str, Any]) -> PlaceClassification:
 
 # Audit of the real interest vocabulary: `TripRequest.interests` is free
 # text ("museums, hiking, local food", "food", "history", "architecture",
-# "nightlife", "outdoors", "parks"). No new interest values are added --
-# a term maps only when one of its words is a recognised synonym; an
+# "nightlife", "outdoors", "parks"). Q1 added the `waterfront` family.
+# A term maps only when one of its words is a recognised synonym; an
 # unrecognised term maps to nothing (no claim is made about it).
 _INTEREST_WORDS: dict[str, frozenset[str]] = {
     "food": frozenset({"food", "foodie", "culinary", "cuisine", "eat", "eating", "dining", "restaurant", "gastronomy", "cooking"}),
     "nightlife": frozenset({"nightlife", "bar", "pub", "club", "cocktail", "nightclub"}),
-    "outdoors": frozenset({"outdoors", "outdoor", "nature", "park", "hike", "hiking", "trail", "beach", "garden", "scenic", "waterfront", "walk"}),
+    "outdoors": frozenset({"outdoors", "outdoor", "nature", "park", "hike", "hiking", "trail", "beach", "garden", "scenic", "walk"}),
     "history": frozenset({"history", "historic", "historical", "heritage", "ancient", "castle", "monument"}),
     "museum": frozenset({"museum"}),
     "art": frozenset({"art", "gallery", "painting", "sculpture"}),
@@ -433,6 +433,11 @@ _INTEREST_WORDS: dict[str, frozenset[str]] = {
     # Section 203C.2B: an explicit request for markets is a shopping request
     # (generic words only -- no place or city name).
     "shopping": frozenset({"shopping", "shop", "boutique", "market", "bazaar", "souk"}),
+    # Q1: one canonical interest for the waterfront family (generic words
+    # only). It is its own interest, not a synonym of `outdoors`, so a request
+    # for piers or a harbour can only be met by a place the provider describes
+    # as waterfront -- never by a park.
+    "waterfront": frozenset({"waterfront", "pier", "riverfront", "harbor", "harbour", "promenade"}),
 }
 
 INTEREST_CATEGORIES: dict[str, frozenset[str]] = {
@@ -452,6 +457,10 @@ INTEREST_CATEGORIES: dict[str, frozenset[str]] = {
     # memorial or a restaurant in a `historic=yes` building is not it.
     "architecture": frozenset({ARCHITECTURE}),
     "shopping": frozenset({SHOPPING, FOOD_MARKET}),
+    # Q1: only the provider-derived WATERFRONT category (see `classify_place`).
+    # A waterfront place still serves `outdoors` above; an ordinary park,
+    # garden or viewpoint does not serve `waterfront`.
+    "waterfront": frozenset({WATERFRONT}),
 }
 
 

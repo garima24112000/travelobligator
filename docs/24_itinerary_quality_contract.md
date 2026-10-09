@@ -81,23 +81,30 @@ Part A always wins. A plan with a hard failure is a failed plan whatever parts B
 
 ### 4.2 New generic correctness requirements
 
-These are requirements for Q1 and later. Q0 only states them and measures what it can.
+Q0 stated these and measured what it could. A1 and A2 were implemented in Q1; A3 is still open.
 
 **A1. Must-visit identity.** A user's must-visit term resolves through provider identity. A related entity
 does not inherit must-visit protection merely because its name contains the requested term. One term
 protects the place it was grounded to; a differently identified place that shares words with it is an
-ordinary candidate. *Today:* `services/must_visit_matching.py` also grounds any pool place whose provider
-name contains the term, which is how the related place in section 1 became protected.
+ordinary candidate. *Before Q1:* any pool place whose provider name contained the term was grounded for
+it, which is how the related place in section 1 became protected. *Implemented in Q1:* the
+destination-context stage is the only stage that establishes the identity. It records the user's term on
+the provider candidate (`must_visit_terms`), and the planner, candidate quality, validation and both
+repairs read that record through `services/must_visit_matching.py`; none compares a place name with a
+term. An exact provider name is only a grounding-time shortcut, and only when exactly one pool candidate
+has it; otherwise the provider's targeted lookup decides, and an ungroundable term stays ungrounded.
+Several terms may ground to one provider place, which is then scheduled and protected once.
 
 **A2. Requested-interest normalization.** Common lexical variants map consistently into the supported
 canonical interests. The waterfront family must be supported explicitly: `pier`, `piers`, `waterfront`,
 `riverfront`, `harbor`, `harbour`, `promenade`. The canonical representation follows the existing taxonomy
 conventions (`services/place_taxonomy.py`: a canonical interest key backed by provider-derived
-categories); no city-specific interest is created. *Today:* `waterfront` maps to `outdoors`, and the other
-six terms map to nothing, so they are not tracked and cannot even be reported as uncovered. Whether the
-family becomes its own canonical key or is folded into an existing one is a Q1 design decision; the
-requirement is that a request for it is tracked and can only be satisfied by a place the provider
-describes as waterfront.
+categories); no city-specific interest is created. The requirement is that a request for the family is
+tracked and can only be satisfied by a place the provider describes as waterfront. *Before Q1:*
+`waterfront` mapped to `outdoors`, and the other six terms mapped to nothing, so they were not tracked and
+could not even be reported as uncovered. *Implemented in Q1:* the seven words map to one canonical
+interest, `waterfront`, backed only by the provider-derived `WATERFRONT` category. A waterfront place
+still serves `outdoors`; a park, garden or viewpoint does not serve `waterfront`.
 
 **A3. Severe route burden.** When viable ≥ T, or there is clearly sufficient unused verified inventory, a
 severe route-burden finding must lead to recomposition or replacement before finalization. It may not
@@ -327,5 +334,12 @@ several slots. The summary fields are named `baseline_hard_correctness_passed` a
 
 Q0 added this contract, the benchmark data, the runner, the reported-only metrics and their tests. It did
 not change planner behaviour, candidate scoring, the interest taxonomy, must-visit matching, prompts,
-routing, repair, the frontend, configuration, deployment or CI. The gaps named under A1, A2 and A3 are
-therefore still present in the released system and are the subject of Q1.
+routing, repair, the frontend, configuration, deployment or CI.
+
+## 10. Scope of Q1
+
+Q1 implemented A1 and A2 (section 4.2) as generic production fixes, and nothing else. It did not change
+candidate scoring weights, ranking, AI anchor handling, clustering, day composition, route repair logic,
+prompts, providers, configuration or the frontend, and it ran no benchmark. A3 and the quality dimensions
+of part B are the subject of the later steps. The quality metrics of section 5.2 were not edited; their
+values change only because the production semantics did.

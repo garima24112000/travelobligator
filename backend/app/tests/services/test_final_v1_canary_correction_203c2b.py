@@ -317,6 +317,8 @@ def test_the_deterministic_planner_groups_each_day_geographically() -> None:
 def test_neighbouring_must_visits_share_a_day_instead_of_being_spread_out() -> None:
     pois = _area_pois(["west", "east", "centre"] * 3)
     pois[0]["name"], pois[3]["name"] = "Museum west-0 Tower", "Museum west-1 Abbey"  # two neighbours in the west
+    # Q1: a must-visit is the candidate the user's term was recorded on, not one whose name contains it.
+    pois[0]["must_visit_term"], pois[3]["must_visit_term"] = "Tower", "Abbey"
     state = _planner_state(pois, must_visit=["Tower", "Abbey"])
     ExperiencePlannerService().run(state)
 

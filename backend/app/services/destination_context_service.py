@@ -22,12 +22,12 @@ from app.core.provider_usage import GenerationProviderContext
 from app.services.base import PlanningStageService
 from app.services.entity_collisions import apply_suspect_collisions
 from app.services.pace_targets import pace_targets_for
-from app.services.experience_planner_service import _matches_must_visit
+from app.services.must_visit_matching import (
+    MUST_VISIT_GROUNDING_VERSION,
+    exact_name_candidates,
+    record_grounded_term,
+)
 from app.services.provider_coverage_service import ProviderCoverageService, provider_coverage_service
-
-
-def _normalize_name(name: Any) -> str:
-    return str(name or "").strip().lower()
 
 
 class DestinationContextService(PlanningStageService):
@@ -89,8 +89,8 @@ class DestinationContextService(PlanningStageService):
     those yet.
 
     After general attraction search, any must_visit term (from
-    `traveler_profile` if present, else `trip_request`) not already matched
-    by name in `candidate_pois` gets one targeted provider lookup via
+    `traveler_profile` if present, else `trip_request`) that exactly one
+    `candidate_pois` entry does not already name gets one targeted provider lookup via
     `_append_must_visit_candidates` before scheduling ever runs, so a
     user's explicit must-visit place isn't missed just because it fell
     outside the general search. Only a real, named, coordinate-backed place
@@ -277,6 +277,7 @@ class DestinationContextService(PlanningStageService):
                 if attractions_response.failure_reason == "destination_unresolved"
                 else None
             ),
+            must_visit_grounding_version=MUST_VISIT_GROUNDING_VERSION,
             candidate_pois=candidate_pois,
             candidate_restaurants=candidate_restaurants,
             candidate_accommodation_pois=candidate_accommodation_pois,
@@ -494,27 +495,32 @@ class DestinationContextService(PlanningStageService):
         candidate_pois: list[dict[str, Any]],
         places: Any = None,
     ) -> tuple[list[dict[str, Any]], list[str]]:
-        """Targeted provider lookup fallback for must-visit places the
-        general attraction search missed. Returns `(candidate_pois,
-        ungrounded_terms)`.
+        """Establishes which PROVIDER IDENTITY each must-visit term refers to
+        (Q1). Returns `(candidate_pois, ungrounded_terms)`.
 
-        Section 203C.2B: this runs BEFORE candidate ranking. A grounded
-        must-visit is tagged with the user's own term (`must_visit_term`)
-        so the deterministic preference follows the grounded place even
-        when the provider's name differs from what the user typed; a term
-        the provider cannot ground is returned in `ungrounded_terms` and
-        disclosed, never fabricated.
+        This is the only place a term becomes an identity; it runs BEFORE
+        candidate ranking and records the user's own term on the provider
+        candidate (`record_grounded_term`: `must_visit_terms`, plus
+        `must_visit_term` for older readers). Every later stage reads that
+        record and never compares a place name with a term.
 
-        For each must_visit term not already matched by name in
-        `candidate_pois`, ask the places provider for that specific place
-        (`"{must_visit_term}, {primary_destination}"`) instead of leaving it
-        to PlanValidatorService's unmatched-must-visit warning. Only a real,
-        named, coordinate-backed place returned by the provider is ever
-        appended -- if the targeted lookup fails or finds nothing, no place
-        is invented and the existing unmatched-must-visit warning behavior
-        is unchanged. Duplicates are avoided both by `place_id` and by
-        normalized name against every candidate already present, including
-        ones appended earlier in this same loop.
+        Per term, in the user's order:
+
+          * exactly ONE broad-pool candidate has the term as its exact
+            comparable provider name -> that candidate is recorded and no
+            lookup is made;
+          * none has it (a longer or related name is NOT a match), or
+            several have it (ambiguous) -> one targeted provider lookup
+            (`"{must_visit_term}, {primary_destination}"`), and only the
+            place the provider returns is recorded -- on the pool candidate
+            with that same provider `place_id`, otherwise appended once
+            under its own id (never merged into a same-named candidate).
+
+        Several terms the provider resolves to one place are all recorded on
+        that one candidate. A term the provider cannot ground (no result, or
+        a result without a provider id) is returned in `ungrounded_terms` and
+        disclosed -- never fabricated, never guessed from a name -- and the
+        existing unmatched-must-visit warning applies.
         """
         traveler_profile = planning_state.traveler_profile
         must_visit_terms = (
@@ -527,63 +533,59 @@ class DestinationContextService(PlanningStageService):
 
         places = places or self.gateway.places
         ungrounded_terms: list[str] = []
-        seen_place_ids = {poi.get("place_id") for poi in candidate_pois if poi.get("place_id")}
-        seen_names = {
-            _normalize_name(poi.get("name")) for poi in candidate_pois if poi.get("name")
-        }
+        terms = list(dict.fromkeys(term for term in must_visit_terms if term and term.strip()))
 
-        # Section 1B: the lookups of the terms the broad pool does not already
-        # match are independent, so a provider that can fetch several named
-        # places as one bounded concurrent batch is asked to. The responses
-        # are then applied below in the user's own must-visit order.
+        def unique_exact_match(term: str) -> dict[str, Any] | None:
+            """The ONE pool candidate the provider names exactly as the user
+            did, or None when there is none or the name is ambiguous."""
+            exact = exact_name_candidates(candidate_pois, term)
+            return exact[0] if len(exact) == 1 else None
+
+        # Section 1B: the lookups of the terms the broad pool does not
+        # uniquely identify are independent, so a provider that can fetch
+        # several named places as one bounded concurrent batch is asked to.
+        # The responses are then applied below in the user's own order.
         search_many = getattr(places, "search_must_visit_places", None)
         prefetched: dict[str, ProviderResponse[Any]] = {}
         if callable(search_many):
-            unmatched = [
-                term
-                for term in dict.fromkeys(term for term in must_visit_terms if term)
-                if not any(_matches_must_visit(poi, [term.lower()]) for poi in candidate_pois)
-            ]
+            unmatched = [term for term in terms if unique_exact_match(term) is None]
             if len(unmatched) > 1:
                 for term, response in zip(unmatched, search_many(unmatched, destination_name)):
                     if isinstance(response, Exception):
                         raise response
                     prefetched[term] = response
 
-        for term in must_visit_terms:
-            if not term:
+        for term in terms:
+            exact = unique_exact_match(term)
+            if exact is not None:
+                # The provider itself names exactly one place with the user's
+                # words: that provider identity is the must-visit.
+                record_grounded_term(exact, term)
                 continue
 
-            already_matched = any(
-                _matches_must_visit(poi, [term.lower()]) for poi in candidate_pois
-            )
-            if already_matched:
-                continue
-
+            # No exact name, or several places share it (ambiguous): the
+            # provider's own targeted lookup decides. Nothing is tagged by name.
             response = prefetched.pop(term, None) or places.search_must_visit_place(term, destination_name)
-            if not response.data:
-                ungrounded_terms.append(term)
-                continue
-
-            for place in response.data:
+            grounded = False
+            for place in response.data or []:
                 place_dict = place.model_dump(mode="json")
                 place_id = place_dict.get("place_id")
-                normalized_name = _normalize_name(place_dict.get("name"))
-                if place_id in seen_place_ids or normalized_name in seen_names:
-                    # The grounded place is already in the pool under its
-                    # own name: carry the user's term onto that candidate.
-                    for poi in candidate_pois:
-                        if (place_id and poi.get("place_id") == place_id) or (
-                            normalized_name and _normalize_name(poi.get("name")) == normalized_name
-                        ):
-                            poi.setdefault("must_visit_term", term)
-                    continue
-
-                place_dict["must_visit_term"] = term
-                candidate_pois.append(place_dict)
-                if place_id:
-                    seen_place_ids.add(place_id)
-                if normalized_name:
-                    seen_names.add(normalized_name)
+                if not place_id:
+                    continue  # no provider identity to record the term on
+                target = next((poi for poi in candidate_pois if poi.get("place_id") == place_id), None)
+                if target is None:
+                    # A provider identity the pool does not hold: appended
+                    # once, as itself. It is never merged into another
+                    # candidate by name -- whether two provider records are
+                    # one real place is the entity-collision layer's call.
+                    candidate_pois.append(place_dict)
+                    target = place_dict
+                # A second user term that the provider resolves to an already
+                # grounded place joins it: one candidate, one slot, both terms.
+                record_grounded_term(target, term)
+                grounded = True
+                break
+            if not grounded:
+                ungrounded_terms.append(term)
 
         return candidate_pois, ungrounded_terms

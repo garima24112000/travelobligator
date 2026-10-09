@@ -365,7 +365,7 @@ def _run(args: argparse.Namespace, cache_hits: dict[str, int]) -> dict[str, Any]
     from app.services.entity_collisions import scheduled_unresolved_collisions
     from app.services.grounded_anchors import grounded_anchor_place_ids
     from app.services.interest_coverage import final_food_evidence, interest_coverage
-    from app.services.must_visit_matching import resolve_must_visits
+    from app.services.must_visit_matching import must_visit_place_ids, resolve_must_visits
     from app.services.planning_orchestrator import planning_orchestrator
     from app.services.route_burden import day_route_burdens
     from app.services.usefulness_contract import evaluate_usefulness, is_meaningful_stop
@@ -509,13 +509,9 @@ def _run(args: argparse.Namespace, cache_hits: dict[str, int]) -> dict[str, Any]
     }
 
     # -- top candidates -------------------------------------------------------------------
-    # A must-visit is either grounded by a targeted lookup (carries the user's
-    # term) or was already in the broad pool under a matching name.
-    must_visit_ids = {
-        poi.get("place_id")
-        for poi in pois
-        if poi.get("must_visit_term") or any(_norm(term) in _norm(poi.get("name")) for term in must_visit)
-    }
+    # The provider identities the pipeline grounded for the user's terms (the
+    # same resolution the validator and the repairs use; never a name match).
+    must_visit_ids = must_visit_place_ids(state)
     quality = state.candidate_quality_report
     scores = [*quality.attraction_scores, *quality.ai_directed_scores] if quality is not None else []
     ai_directed_ids = {score.candidate_id for score in quality.ai_directed_scores} if quality is not None else set()

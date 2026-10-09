@@ -63,7 +63,10 @@ def test_parks_gardens_reserves_and_significant_natural_attractions_remain_valid
 
 
 def test_an_isolated_tree_can_still_be_scheduled_when_it_is_a_must_visit() -> None:
-    score = _tier(TREE, must_visit_names=["thing"])
+    # Q1: the tree is a must-visit because the user's term was recorded on it, not by its name.
+    score = CandidateQualityService().score_attraction(
+        poi("x", "Thing", TREE, must_visit_term="thing"), must_visit_names=["thing"]
+    )
     assert score.quality_tier in (CandidateQualityTier.PRIMARY_ANCHOR, CandidateQualityTier.GOOD_CANDIDATE)
 
 

@@ -15,6 +15,8 @@ from app.models.candidate_quality import (
 from app.models.planning_state import PlanningState
 from app.models.providers import NormalizedPlace
 from app.services import place_taxonomy as taxonomy
+from app.services.must_visit_matching import is_tagged_must_visit
+from app.services.must_visit_matching import legacy_must_visit_place_ids as resolve_legacy_must_visit_place_ids
 
 # Deterministic candidate quality scoring (Step 156A,
 # docs/12_provider_architecture.md, docs/14_backend_architecture.md section
@@ -268,6 +270,7 @@ class CandidateQualityService:
         place: NormalizedPlace | dict[str, Any],
         user_interests: list[str] | None = None,
         must_visit_names: list[str] | None = None,
+        legacy_must_visit_place_ids: frozenset[str] | None = None,
     ) -> CandidateQualityScore:
         candidate_id, candidate_name = _candidate_identity(place, CandidateUseCase.ATTRACTION)
         category = str(_field(place, "category") or "")
@@ -443,10 +446,17 @@ class CandidateQualityService:
             category_score += _CATEGORY_SPECIFICITY_BOOST
             positive_signals.append("Provider classifies this as a specific type of place.")
 
-        must_visit_lower = [term.lower() for term in (must_visit_names or []) if term]
-        grounded_must_visit_term = str(_field(place, "must_visit_term") or "").lower()
-        is_must_visit = bool(must_visit_lower) and (
-            any(term in haystack for term in must_visit_lower) or grounded_must_visit_term in must_visit_lower
+        # Q1: a must-visit is the provider place the destination-context stage
+        # recorded the user's term on. This place's name, category and address
+        # are never compared with a term -- a related place that merely shares
+        # the words gets no must-visit treatment. `legacy_must_visit_place_ids`
+        # is empty except for a context stored before Q1 (resolved once, for the
+        # whole pool, by `must_visit_matching`).
+        must_visit_requested = [term for term in (must_visit_names or []) if term]
+        place_id = _field(place, "place_id")
+        is_must_visit = bool(must_visit_requested) and (
+            is_tagged_must_visit(place, must_visit_requested)
+            or bool(place_id and legacy_must_visit_place_ids and str(place_id) in legacy_must_visit_place_ids)
         )
         if is_must_visit:
             category_score = max(category_score, 0.9)
@@ -767,9 +777,15 @@ class CandidateQualityService:
             list(destination_context.candidate_accommodation_pois) if destination_context else []
         )
 
+        legacy_ids = resolve_legacy_must_visit_place_ids(planning_state)
         attraction_scores = _dedupe_scores(
             [
-                self.score_attraction(poi, user_interests=user_interests, must_visit_names=must_visit_names)
+                self.score_attraction(
+                    poi,
+                    user_interests=user_interests,
+                    must_visit_names=must_visit_names,
+                    legacy_must_visit_place_ids=legacy_ids,
+                )
                 for poi in candidate_pois
             ]
         )

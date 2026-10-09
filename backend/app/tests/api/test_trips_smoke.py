@@ -2564,6 +2564,8 @@ def test_must_visit_already_matched_does_not_trigger_targeted_lookup(
     # No duplicate was appended: still exactly the one general-search candidate.
     assert len(candidate_pois) == 1
     assert candidate_pois[0]["name"] == "City Museum"
+    # Q1: the one candidate the provider names exactly as the user did carries the term.
+    assert candidate_pois[0]["must_visit_terms"] == ["City Museum"]
 
 
 def test_missing_must_visit_is_added_through_targeted_lookup(
@@ -2616,8 +2618,10 @@ def test_missing_must_visit_is_added_through_targeted_lookup(
         "confidence",
         "provider_tags",  # Section 202B.2: structured tags (None for a fake provider)
         "must_visit_term",  # Section 203C.2B: the user's own term this place was grounded for
+        "must_visit_terms",  # Q1: every user term grounded to this provider place
     }
     assert added["must_visit_term"] == "Old Fort Tower"
+    assert added["must_visit_terms"] == ["Old Fort Tower"]
 
     # The scheduler naturally picks up the newly added candidate.
     experience_response = client.get(f"/trips/{trip_id}/experience-plan")
