@@ -6,6 +6,7 @@ from app.models.flight import FlightSearchResult, FlightSearchStatus
 from app.models.hotel_ratings import HotelRatingsStatus
 from app.models.planning_state import (
     DailyPlan,
+    InterestCoverageEntry,
     PlanningStage,
     PlanningState,
     ValidationIssue,
@@ -19,7 +20,7 @@ from app.models.routing import (
     TravelTimeBufferReport,
 )
 from app.core.errors import DESTINATION_UNRESOLVED_MESSAGE
-from app.services.plan_quality_findings import build_plan_quality_findings
+from app.services.plan_quality_findings import build_plan_quality_findings, interest_coverage_entries
 from app.services.entity_collisions import scheduled_unresolved_collisions
 from app.services.must_visit_matching import resolve_must_visits
 from app.services.day_order_heuristics import GEOGRAPHIC_SPREAD_THRESHOLD_KM, day_spread_km
@@ -713,6 +714,8 @@ class PlanValidatorService(PlanningStageService):
             review_code_classification=classification_for(
                 [*blocking_codes, *review_codes, *(issue.category for issue in (*critical_issues, *warnings))]
             ),
+            # Presentation only: the coverage facts the findings above were raised from.
+            interest_coverage=_interest_coverage_safely(planning_state),
         )
 
         planning_state.validation_report = validation_report
@@ -738,6 +741,16 @@ _DISPERSION_REASONS: dict[str, tuple[str, str]] = {
         "Request changes to group this day's stops closer together.",
     ),
 }
+
+
+def _interest_coverage_safely(planning_state: PlanningState) -> list[InterestCoverageEntry] | None:
+    """The per-interest coverage restatement for the report, or None (coverage
+    unknown) when it cannot be produced. Presentation only: a problem here
+    never affects validation, readiness or a code."""
+    try:
+        return interest_coverage_entries(planning_state)
+    except Exception:  # noqa: BLE001 - disclosure data never breaks validation
+        return None
 
 
 def _geographic_dispersion_issue(day_number: int, spread_km: float, cause: str) -> ValidationIssue:

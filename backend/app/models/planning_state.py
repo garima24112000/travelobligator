@@ -870,6 +870,28 @@ class ValidationIssue(BaseModel):
     claim_sources: list[ClaimSource] = Field(default_factory=list)
 
 
+class InterestCoverageEntry(BaseModel):
+    """Whether the FINAL itinerary covers one thing the traveller asked for
+    (V1 disclosure contract). A restatement of what the validator already
+    computes for its `interest_undercoverage` / `interest_supply_limited`
+    findings -- never a second coverage rule, and never an input to
+    readiness, a review code or the planner."""
+
+    # The canonical interest, or the traveller's own term when the taxonomy
+    # does not recognise it.
+    interest: str
+    # The traveller's own term(s) that mean this interest.
+    requested_as: list[str] = Field(default_factory=list)
+    # `covered`; `not_covered_supply_available` (the inventory that was
+    # searched held eligible verified places serving it, but none is
+    # scheduled -- not a statement that one can be fitted in);
+    # `not_covered_no_supply` (the searched inventory held no eligible
+    # verified place serving it -- not a statement that the destination has
+    # none); `not_tracked` (the term is not recognised, so coverage is
+    # unknown -- never reported as covered).
+    status: str
+
+
 class ValidationReport(BaseModel):
     validation_report_id: str = Field(default_factory=lambda: _new_id("validation_report"))
 
@@ -897,6 +919,11 @@ class ValidationReport(BaseModel):
     # changes `readiness_status` or a code; a client uses it to show material
     # findings prominently. Empty for a report stored before this field.
     review_code_classification: dict[str, str] = Field(default_factory=dict)
+    # V1 disclosure contract (presentation only): one entry per requested
+    # interest saying whether the final itinerary covers it. `None` means
+    # coverage is UNKNOWN (no plan to judge, or a report stored before this
+    # field) -- a client must never read that as "covered".
+    interest_coverage: list[InterestCoverageEntry] | None = None
 
     validated_at: datetime = Field(default_factory=_utc_now)
 

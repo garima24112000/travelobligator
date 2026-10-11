@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from app.models.candidate_quality import CandidateQualityScore, CandidateQualityTier
 from app.models.common import ValidationSeverity
-from app.models.planning_state import PlanningState, TripPace, ValidationIssue
+from app.models.planning_state import InterestCoverageEntry, PlanningState, TripPace, ValidationIssue
 from app.services import place_taxonomy as taxonomy
 from app.services.interest_coverage import interest_coverage
 
@@ -39,6 +39,54 @@ def _viable_scores(planning_state: PlanningState) -> list[CandidateQualityScore]
         for score in (*report.attraction_scores, *report.ai_directed_scores)
         if score.quality_tier in _VIABLE_TIERS
     ]
+
+
+INTEREST_COVERED = "covered"
+INTEREST_NOT_COVERED_SUPPLY_AVAILABLE = "not_covered_supply_available"
+INTEREST_NOT_COVERED_NO_SUPPLY = "not_covered_no_supply"
+INTEREST_NOT_TRACKED = "not_tracked"
+
+
+def interest_coverage_entries(planning_state: PlanningState) -> list[InterestCoverageEntry] | None:
+    """Per requested interest, whether the final itinerary covers it -- the
+    SAME facts the coverage findings below are raised from (the same
+    `interest_coverage` result and the same viable supply), restated so a
+    client can show them. `None` when there is no scheduled plan to judge:
+    coverage is then unknown, not absent. A term the taxonomy does not
+    recognise is `not_tracked`, never `covered`. Pure read; decides nothing."""
+    plan = planning_state.experience_plan
+    if plan is None or not any(day.experiences for day in plan.daily_plans):
+        return None
+    profile = planning_state.traveler_profile
+    terms = [term for term in (profile.interests if profile else planning_state.trip_request.interests) if term]
+    coverage = interest_coverage(planning_state)
+    viable = _viable_scores(planning_state)
+
+    requested_as: dict[str, list[str]] = {}
+    untracked: list[str] = []
+    for term in terms:
+        keys = taxonomy.canonical_interests([term])
+        if not keys and term not in untracked:
+            untracked.append(term)
+        for key in keys:
+            if term not in requested_as.setdefault(key, []):
+                requested_as[key].append(term)
+
+    entries: list[InterestCoverageEntry] = []
+    for interest in taxonomy.canonical_interests(terms):
+        if coverage.get(interest, False):
+            status = INTEREST_COVERED
+        elif any(interest in score.matched_interests for score in viable):
+            status = INTEREST_NOT_COVERED_SUPPLY_AVAILABLE
+        else:
+            status = INTEREST_NOT_COVERED_NO_SUPPLY
+        entries.append(
+            InterestCoverageEntry(interest=interest, requested_as=requested_as.get(interest, []), status=status)
+        )
+    entries.extend(
+        InterestCoverageEntry(interest=term, requested_as=[term], status=INTEREST_NOT_TRACKED) for term in untracked
+    )
+    return entries
 
 
 def build_plan_quality_findings(planning_state: PlanningState) -> tuple[list[ValidationIssue], list[str]]:

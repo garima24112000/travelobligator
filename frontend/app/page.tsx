@@ -72,6 +72,8 @@ import {
   reviewSeverity,
   travelerDayNotices,
   travelerDayRouteNotices,
+  travelerInterestCoverage,
+  type CoverageState,
   travelerLegLine,
   travelerReadiness,
   travelerReviewNotices,
@@ -568,6 +570,34 @@ function UnverifiedLegRow() {
     >
       {UNVERIFIED_LEG_LINE}
     </li>
+  );
+}
+
+/**
+ * What the traveler asked for that this itinerary does not cover (V1
+ * disclosure), from the backend's per-interest coverage entries. Shown above
+ * the itinerary whatever the readiness status; renders nothing when every
+ * requested interest is covered or there is nothing specific to say.
+ */
+function InterestCoverageNotice({ notices }: { notices: string[] }) {
+  if (notices.length === 0) return null;
+  return (
+    <section
+      id="interest-coverage-notice"
+      role="status"
+      aria-labelledby="interest-coverage-heading"
+      data-testid="interest-coverage-notice"
+      className="scroll-mt-6 rounded-2xl border border-amber-400/40 bg-amber-500/10 p-4 text-amber-100"
+    >
+      <h2 id="interest-coverage-heading" className="text-base font-semibold">
+        Not everything you asked for is covered
+      </h2>
+      <ul className="mt-1 list-disc break-words pl-5 text-sm leading-6">
+        {notices.map((notice) => (
+          <li key={notice}>{notice}</li>
+        ))}
+      </ul>
+    </section>
   );
 }
 
@@ -5920,6 +5950,7 @@ function UserModeReadinessBanner({
   notices,
   blockingReason,
   severity,
+  coverage,
 }: {
   validationStatus: string | null;
   notices: string[];
@@ -5929,8 +5960,11 @@ function UserModeReadinessBanner({
   // V1 disclosure: how strongly a `needs_review` plan is presented, from the
   // backend's own classification of its codes. Never changes the status.
   severity?: ReviewSeverity;
+  // What is known about requested-interest coverage, so the wording never
+  // says coverage is fine unless the backend said so.
+  coverage?: CoverageState;
 }) {
-  const readiness = travelerReadiness(validationStatus, severity);
+  const readiness = travelerReadiness(validationStatus, severity, coverage);
   const toneClassName =
     readiness.tone === "ok"
       ? "border-emerald-300/30 bg-emerald-400/10 text-emerald-100"
@@ -8966,6 +9000,7 @@ PY`}
                   validationStatus={result.summary.validation_status}
                   blockingReason={result.summary.main_blocking_reason}
                   severity={reviewSeverity(result.validationReport)}
+                  coverage={travelerInterestCoverage(result.validationReport).state}
                   notices={travelerReviewNotices(result.validationReport, {
                     weather: result.weatherContext,
                     holiday: result.holidayContext,
@@ -9213,6 +9248,12 @@ PY`}
                 <TravelerInventoryNotice
                   validationReport={result.validationReport}
                   inventoryReport={result.inventorySufficiencyReport}
+                />
+                {/* V1 disclosure: anything the traveler asked for that the
+                    itinerary does not cover is said here, above the
+                    itinerary, never inside a disclosure. */}
+                <InterestCoverageNotice
+                  notices={travelerInterestCoverage(result.validationReport).notices}
                 />
 
                 <div id="draft-itinerary" className="flex flex-col gap-6">

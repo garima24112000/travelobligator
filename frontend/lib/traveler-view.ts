@@ -270,14 +270,101 @@ export function reviewSeverity(
     : "informational";
 }
 
+// -- requested-interest coverage -----------------------------------------------------
+
+/**
+ * What is known about whether the itinerary covers what the traveler asked
+ * for: everything, not everything, or not known. "unknown" is never worded
+ * as covered.
+ */
+export type CoverageState = "all_covered" | "some_uncovered" | "unknown";
+
+export type TravelerInterestCoverage = { state: CoverageState; notices: string[] };
+
+export const COVERAGE_UNKNOWN_NOTICE =
+  "We couldn't confirm whether this itinerary covers everything you asked for.";
+
+// The two "not covered" sentences. Each says only what the evidence supports:
+//   - no supply: the places WE SEARCHED held none that fit -- not that the
+//     destination has none;
+//   - supply available: matching places were found -- not that one can be
+//     fitted into this schedule.
+function noSupplyNotice(label: string): string {
+  return `Nothing in this itinerary covers ${label}. The verified places we searched included none that fit it. That does not mean there are none in this destination.`;
+}
+
+function supplyAvailableNotice(label: string): string {
+  return `Nothing in this itinerary covers ${label}, although the places we searched included some that fit it. You can request a change, but one may not fit this schedule.`;
+}
+
+function interestLabel(entry: { interest: string; requested_as?: string[] | null }): string {
+  const terms = (entry.requested_as ?? []).filter((term) => typeof term === "string" && term.trim());
+  return terms.length > 0 ? terms.join(" / ") : entry.interest.replace(/_/g, " ");
+}
+
+/**
+ * The traveler's view of requested-interest coverage, from the backend's
+ * own per-interest entries (`ValidationReport.interest_coverage`). Nothing
+ * is decided here: an entry is restated, never re-judged.
+ *
+ *   - no supply:        no verified place for it was found at all;
+ *   - supply available: suitable places existed but none is scheduled;
+ *   - not tracked / an unrecognised status: coverage could not be checked.
+ *
+ * A report without the entries (stored before the field) is read from its
+ * coverage findings when it has any; otherwise coverage is UNKNOWN.
+ */
+export function travelerInterestCoverage(
+  validation: Pick<ValidationReport, "interest_coverage" | "warnings"> | null | undefined,
+): TravelerInterestCoverage {
+  const entries = validation?.interest_coverage;
+  if (Array.isArray(entries)) {
+    const notices: string[] = [];
+    let unknown = false;
+    for (const entry of entries) {
+      if (!entry || typeof entry.interest !== "string") {
+        unknown = true;
+        continue;
+      }
+      const label = interestLabel(entry);
+      if (entry.status === "covered") continue;
+      if (entry.status === "not_covered_no_supply") {
+        notices.push(noSupplyNotice(`"${label}"`));
+      } else if (entry.status === "not_covered_supply_available") {
+        notices.push(supplyAvailableNotice(`"${label}"`));
+      } else {
+        notices.push(`We couldn't check whether this itinerary covers "${label}".`);
+      }
+    }
+    if (notices.length > 0) return { state: "some_uncovered", notices };
+    return unknown ? { state: "unknown", notices: [COVERAGE_UNKNOWN_NOTICE] } : { state: "all_covered", notices: [] };
+  }
+
+  // A report stored before the entries existed: its findings are the evidence.
+  const notices: string[] = [];
+  for (const issue of validation?.warnings ?? []) {
+    const category = (issue.category ?? "").toLowerCase();
+    if (category !== "interest_supply_limited" && category !== "interest_undercoverage") continue;
+    const named = /interest '([^']+)'/.exec(issue.message ?? "");
+    const label = named ? `"${named[1]}"` : "something you asked for";
+    const notice = category === "interest_supply_limited" ? noSupplyNotice(label) : supplyAvailableNotice(label);
+    if (!notices.includes(notice)) notices.push(notice);
+  }
+  if (notices.length > 0) return { state: "some_uncovered", notices };
+  return { state: "unknown", notices: [] };
+}
+
 /**
  * Plain-language restatement of the backend's readiness status; never the
  * raw value. `severity` only changes how a `needs_review` plan is worded and
  * toned: it is still a plan that needs review, never "Checks passed".
+ * `coverage` keeps the informational wording honest: it says coverage is
+ * fine only when the backend said every requested interest is covered.
  */
 export function travelerReadiness(
   status: string | null | undefined,
   severity?: ReviewSeverity,
+  coverage?: CoverageState,
 ): TravelerReadiness {
   if (status === "ready") {
     return {
@@ -296,11 +383,28 @@ export function travelerReadiness(
     };
   }
   if (status === "needs_review" && severity === "informational") {
+    if (coverage === "some_uncovered") {
+      return {
+        tone: "review",
+        label: "Planning draft — not everything you asked for is covered",
+        message:
+          "No travel problem was flagged for this schedule, but it does not cover everything you asked for. What is missing is listed below.",
+      };
+    }
+    if (coverage === "all_covered") {
+      return {
+        tone: "review",
+        label: "Planning draft — some details not checked",
+        message:
+          "No travel or coverage problem was flagged for this schedule, but some supporting information has not been applied to it. Confirm those details yourself.",
+      };
+    }
+    // Coverage unknown: say nothing about coverage being fine.
     return {
       tone: "review",
       label: "Planning draft — some details not checked",
       message:
-        "No travel or coverage problem was flagged for this schedule, but some supporting information has not been applied to it. Confirm those details yourself.",
+        "No travel problem was flagged for this schedule. Whether it covers everything you asked for could not be confirmed, and some supporting information has not been applied to it.",
     };
   }
   if (status === "needs_review") {

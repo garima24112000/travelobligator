@@ -675,6 +675,21 @@ export type ValidationReport = {
   // owns it -- a code it does not know is "material" -- and this page never
   // keeps a list of its own. Absent on reports stored before the field.
   review_code_classification?: Record<string, "informational" | "material">;
+  // V1 disclosure contract (backend: InterestCoverageEntry): whether the
+  // final itinerary covers each thing the traveler asked for. `null` or
+  // absent means coverage is UNKNOWN (no plan judged, or a report stored
+  // before the field) -- never "everything is covered".
+  interest_coverage?: InterestCoverageEntry[] | null;
+};
+
+export type InterestCoverageEntry = {
+  // The canonical interest, or the traveler's own term when not tracked.
+  interest: string;
+  // The traveler's own term(s) for it.
+  requested_as: string[];
+  // "covered" | "not_covered_supply_available" | "not_covered_no_supply" |
+  // "not_tracked". Any other value is treated as unknown.
+  status: string;
 };
 
 // Section 203C.2B (backend: app.models.inventory_sufficiency). Whether the

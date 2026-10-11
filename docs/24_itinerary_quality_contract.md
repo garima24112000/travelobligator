@@ -756,6 +756,35 @@ for a benchmark outcome. The tooling does not read the classification and its po
 implementation terms. The ferry finding still states that no timetable, fare, ticket or availability
 is known, and now also that the time shown is a route estimate and not a ferry schedule.
 
+**Requested-interest coverage (added after the holdout).** The one-time holdout produced an
+itinerary that covered two of three requested interests, with nothing said to the traveller: no
+verified place serving the third had been retrieved, which the validator reports as a
+suggestion-level `interest_supply_limited` note, and the traveller page hides suggestions. The
+informational banner could also say that no coverage problem was flagged. The correction is
+presentation only:
+
+- Every validation report carries `interest_coverage`: one entry per requested interest with the
+  traveller's own term(s) and a status -- `covered`, `not_covered_supply_available` (verified places
+  serving it existed but none is scheduled), `not_covered_no_supply` (none was available) or
+  `not_tracked` (a term the taxonomy does not recognise). It restates what the existing coverage
+  findings are raised from (the same coverage result and the same viable supply). `None` means
+  coverage is unknown: no scheduled plan to judge, or a report stored before the field.
+- Neither finding changed: `interest_undercoverage` is still a warning and a review code,
+  `interest_supply_limited` is still a suggestion and not a review code. Readiness, the codes and
+  the benchmark acceptance are exactly as before.
+- The traveller page shows every uncovered interest above the itinerary, whatever the readiness
+  status, and words the two cases differently. "No supply" is about what was searched ("the
+  verified places we searched included none that fit it; that does not mean there are none in this
+  destination"), never a claim about the destination. "Supply available" says matching places were
+  found and that a change may be requested, without promising one fits the schedule. A term that
+  is not tracked, an unrecognised
+  status and a malformed entry are "we couldn't check", never covered.
+- The informational banner says coverage is fine only when the backend said every requested
+  interest is covered. With an uncovered interest it says so; with unknown coverage it says
+  coverage could not be confirmed.
+- A report without the entries is read from its own coverage findings when it has any; otherwise
+  coverage is unknown.
+
 **Known limits.** A walking-profile figure on a ferry leg is still what the provider returned; it is
-labelled, not corrected. Requested-interest coverage is still binary: a weak but provider-grounded
-place can cover an interest and no finding says so. Both are V1.1 items.
+labelled, not corrected. Coverage itself is still binary: a weak but provider-grounded place can
+cover an interest and nothing says so. Both are V1.1 items.
