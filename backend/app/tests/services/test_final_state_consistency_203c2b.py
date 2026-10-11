@@ -68,7 +68,10 @@ def _castle(key: str, name: str, point: GeoPoint, **extra: Any) -> dict[str, Any
 
 
 def _market(key: str, name: str, point: GeoPoint, **extra: Any) -> dict[str, Any]:
-    return _poi(key, name, point, category="marketplace", provider_tags={"amenity": "marketplace"}, **extra)
+    # a market the provider records a food trade for (the evidence that makes it a food experience)
+    return _poi(
+        key, name, point, category="marketplace", provider_tags={"amenity": "marketplace", "shop": "greengrocer"}, **extra
+    )
 
 
 def _state(pois: list[dict[str, Any]], days: int = 1, interests: list[str] | None = None, **trip: Any) -> PlanningState:

@@ -62,8 +62,34 @@ def final_food_evidence(planning_state: PlanningState) -> list[str]:
     ]
 
 
+def scheduled_food_experiences(planning_state: PlanningState) -> list[str]:
+    """Names of the scheduled stops that serve the food interest on the
+    provider's own evidence (a verified culinary place -- see the `food`
+    entry of `place_taxonomy.INTEREST_CATEGORIES`). A marketplace without
+    food evidence is not one."""
+    plan = planning_state.experience_plan
+    return [
+        stop.name
+        for day in (plan.daily_plans if plan else [])
+        for stop in day.experiences
+        if FOOD in stop.matched_interests
+    ]
+
+
+def food_coverage_evidence(planning_state: PlanningState) -> dict[str, list[str]]:
+    """What covers the food interest in the FINAL plan, by kind of evidence:
+    scheduled culinary stops, and nearby restaurant suggestions that are
+    actually on the itinerary. Either kind is enough; both empty means food
+    is not covered. Nothing here is inferred or invented."""
+    return {
+        "scheduled_culinary_stops": scheduled_food_experiences(planning_state),
+        "nearby_restaurant_suggestions": final_food_evidence(planning_state),
+    }
+
+
 def interest_coverage(planning_state: PlanningState) -> dict[str, bool]:
-    """`{canonical interest: covered}` for every requested interest."""
+    """`{canonical interest: covered}` for every requested interest. Food is
+    covered by either kind of `food_coverage_evidence`."""
     plan = planning_state.experience_plan
     scheduled = [stop for day in (plan.daily_plans if plan else []) for stop in day.experiences]
     coverage: dict[str, bool] = {}

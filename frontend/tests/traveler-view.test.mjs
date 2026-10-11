@@ -337,7 +337,7 @@ test("raw readiness values and outcome codes are never shown", () => {
   notices.forEach((notice) => assertNoInternalWording(notice));
 
   const banner = componentSource("UserModeReadinessBanner");
-  assert.match(banner, /travelerReadiness\(validationStatus\)/);
+  assert.match(banner, /travelerReadiness\(validationStatus, severity\)/);
   assert.doesNotMatch(banner, /\{validationStatus\}|review_codes|blocking_codes/);
   // Traveler view never prints the codes; the inventory notice keeps its own explanation
   assert.doesNotMatch(travelerBlock, /review_codes|blocking_codes|readiness_status/);

@@ -49,6 +49,7 @@ import {
 import {
   aggregateCaveats,
   humanizeIdentifier,
+  travelerDayFindings,
   travelerProse,
   travelerText,
   travelerWhyIncluded,
@@ -65,9 +66,16 @@ import {
   loadingStageLabel,
   travelerChangeRefusal,
   travelerErrorMessage,
+  UNVERIFIED_LEG_LINE,
+  legIncludesFerry,
+  legIsUnverified,
+  reviewSeverity,
+  travelerDayNotices,
+  travelerDayRouteNotices,
   travelerLegLine,
   travelerReadiness,
   travelerReviewNotices,
+  type ReviewSeverity,
   travelerRouteCoverageNote,
   tripSummarySourceNote,
 } from "@/lib/traveler-view";
@@ -516,19 +524,25 @@ function MovementRow({
   buffer,
   mode = "developer",
   travelerLine = null,
+  attention = false,
 }: {
   buffer: TravelTimeBuffer;
   mode?: "user" | "developer";
   // Section 2: Traveler view's own line ("Walk · 12 min · 0.9 km"), built
   // by `travelerLegLine` from the leg's stored mode and route figures.
   travelerLine?: string | null;
+  // V1 disclosure: a leg the traveler must look at (a ferry crossing).
+  attention?: boolean;
 }) {
   if (mode === "user") {
     if (!travelerLine) return null;
     return (
       <li
         data-testid="movement-row"
-        className="ml-3 break-words border-l border-white/10 pl-3 text-xs text-slate-300"
+        data-attention={attention ? "true" : undefined}
+        className={`ml-3 break-words border-l pl-3 text-xs ${
+          attention ? "border-amber-300/60 font-medium text-amber-200" : "border-white/10 text-slate-300"
+        }`}
       >
         {travelerLine}
       </li>
@@ -538,6 +552,46 @@ function MovementRow({
     <li className="ml-3 break-words border-l border-white/10 pl-3 text-[11px] text-slate-500">
       {formatMovementSummary(buffer)}
     </li>
+  );
+}
+
+/**
+ * Traveler view's row for a leg WITHOUT a verified route (V1 disclosure):
+ * says so between the two stops instead of leaving a silent gap. It states
+ * no mode, time or distance -- there is none to state.
+ */
+function UnverifiedLegRow() {
+  return (
+    <li
+      data-testid="unverified-leg-row"
+      className="ml-3 break-words border-l border-amber-300/60 pl-3 text-xs font-medium text-amber-200"
+    >
+      {UNVERIFIED_LEG_LINE}
+    </li>
+  );
+}
+
+/**
+ * What needs review on ONE day, on that day's card (V1 disclosure): the
+ * backend's material findings about the day plus the ferry / unverified
+ * travel notices its own legs call for. Renders nothing when there is none.
+ */
+function DayReviewNotices({ dayNumber, notices }: { dayNumber: number; notices: string[] }) {
+  if (notices.length === 0) return null;
+  return (
+    <div
+      role="note"
+      aria-label={`Needs review on day ${dayNumber}`}
+      data-testid="day-review-notices"
+      className="mt-2 rounded-lg border border-amber-300/40 bg-amber-400/10 p-3 text-xs leading-5 text-amber-100"
+    >
+      <p className="font-semibold">Needs your review</p>
+      <ul className="mt-1 list-disc break-words pl-5">
+        {notices.map((notice) => (
+          <li key={notice}>{notice}</li>
+        ))}
+      </ul>
+    </div>
   );
 }
 
@@ -5865,27 +5919,37 @@ function UserModeReadinessBanner({
   validationStatus,
   notices,
   blockingReason,
+  severity,
 }: {
   validationStatus: string | null;
   notices: string[];
   // The first critical finding, when the plan is not usable (Section 2B:
   // shown here, in the one readiness treatment, instead of in the header).
   blockingReason: string | null;
+  // V1 disclosure: how strongly a `needs_review` plan is presented, from the
+  // backend's own classification of its codes. Never changes the status.
+  severity?: ReviewSeverity;
 }) {
-  const readiness = travelerReadiness(validationStatus);
+  const readiness = travelerReadiness(validationStatus, severity);
   const toneClassName =
     readiness.tone === "ok"
       ? "border-emerald-300/30 bg-emerald-400/10 text-emerald-100"
       : readiness.tone === "blocked"
         ? "border-red-400/30 bg-red-400/10 text-red-100"
-        : "border-amber-300/30 bg-amber-400/10 text-amber-100";
+        : readiness.tone === "review_material"
+          ? "border-2 border-orange-400/70 bg-orange-500/15 text-orange-50"
+          : "border-amber-300/30 bg-amber-400/10 text-amber-100";
 
   return (
     <div
       className={`rounded-2xl border p-4 text-sm ${toneClassName}`}
       data-testid="traveler-readiness"
+      data-tone={readiness.tone}
+      role={readiness.tone === "review_material" || readiness.tone === "blocked" ? "alert" : "status"}
     >
-      <p className="font-semibold">{readiness.label}</p>
+      <p className={readiness.tone === "review_material" ? "text-base font-semibold" : "font-semibold"}>
+        {readiness.label}
+      </p>
       <p className="mt-1 leading-6">{readiness.message}</p>
       {blockingReason && (
         <p className="mt-1 break-words leading-6">{travelerText(blockingReason)}</p>
@@ -7884,6 +7948,22 @@ export default function Home() {
               mode={mode}
               factualSummary={day.goal ?? null}
             />
+            {mode === "user" && (
+              <DayReviewNotices
+                dayNumber={day.day_number}
+                notices={travelerDayNotices(
+                  travelerDayFindings(
+                    result.validationReport.warnings,
+                    day.day_number,
+                    result.validationReport.review_code_classification,
+                  ),
+                  travelerDayRouteNotices(
+                    day.experiences.map((experience) => experience.experience_id),
+                    result.routeFeasibilityReport,
+                  ),
+                )}
+              />
+            )}
             {day.experiences.length === 0 ? (
               mode === "developer" ? (
                 <p className="mt-1 text-sm text-slate-400">
@@ -7947,6 +8027,25 @@ export default function Home() {
                       mode === "developer"
                         ? shouldRenderMovementRow(movement)
                         : travelerLine !== null;
+                    // V1 disclosure: a leg without a verified route gets an
+                    // explicit row (never a silent gap), and a leg the
+                    // provider flagged as using a ferry is marked.
+                    const legUnverified =
+                      mode === "user" &&
+                      Boolean(nextExperience) &&
+                      travelerLine === null &&
+                      legIsUnverified(
+                        result.routeFeasibilityReport,
+                        experience.experience_id,
+                        nextExperience.experience_id,
+                      );
+                    const legHasFerry =
+                      Boolean(nextExperience) &&
+                      legIncludesFerry(
+                        result.routeFeasibilityReport,
+                        experience.experience_id,
+                        nextExperience.experience_id,
+                      );
                     return (
                       <Fragment key={experience.experience_id}>
                         <ScheduledExperienceCard
@@ -7980,8 +8079,10 @@ export default function Home() {
                             buffer={movement}
                             mode={mode}
                             travelerLine={travelerLine}
+                            attention={legHasFerry}
                           />
                         )}
+                        {legUnverified && <UnverifiedLegRow />}
                       </Fragment>
                     );
                   })}
@@ -8864,6 +8965,7 @@ PY`}
                 <UserModeReadinessBanner
                   validationStatus={result.summary.validation_status}
                   blockingReason={result.summary.main_blocking_reason}
+                  severity={reviewSeverity(result.validationReport)}
                   notices={travelerReviewNotices(result.validationReport, {
                     weather: result.weatherContext,
                     holiday: result.holidayContext,

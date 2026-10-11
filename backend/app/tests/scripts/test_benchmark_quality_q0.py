@@ -229,7 +229,12 @@ def test_single_city_canary_refuses_a_quality_holdout_city() -> None:
 
 def test_runner_records_the_three_contract_parts_separately(tmp_path: Path) -> None:
     scenarios = runner.scenarios_of(runner.load_data(), runner.SET_TUNING)[:2]
-    quality = {"interests": {"uncovered": []}}
+    quality = {"schema_version": 4, "interests": {"uncovered": []}}
+    # every record must say what produced it (see test_benchmark_quality_provenance.py)
+    provenance = {
+        "configuration": runner.run_provenance.capture_configuration(),
+        "source": {"git_head": "0" * 40, "fingerprint_sha256": "f" * 64},
+    }
 
     def run_scenario(scenario: dict[str, Any]) -> dict[str, Any]:
         if scenario["id"] == "Q-T2":
@@ -243,8 +248,8 @@ def test_runner_records_the_three_contract_parts_separately(tmp_path: Path) -> N
 
     summary = runner.run_benchmark(
         scenarios, which=runner.SET_TUNING, all_scenarios=scenarios, out_dir=tmp_path, start_date=date(2027, 3, 9),
-        run_scenario=run_scenario, render=lambda report: "detail", now=lambda: "2027-01-01T00:00:00Z",
-        sleep=lambda seconds: None, log=lambda line: None,
+        run_scenario=run_scenario, provenance=provenance, render=lambda report: "detail",
+        now=lambda: "2027-01-01T00:00:00Z", sleep=lambda seconds: None, log=lambda line: None,
     )
     assert summary["baseline_hard_correctness_passed"] == ["Q-T1"] and summary["technical_failures"] == ["Q-T2"]
     assert summary["baseline_hard_correctness_failed"] == []
@@ -267,7 +272,8 @@ def test_runner_records_the_three_contract_parts_separately(tmp_path: Path) -> N
     calls: list[str] = []
     runner.run_benchmark(
         scenarios, which=runner.SET_TUNING, all_scenarios=scenarios, out_dir=tmp_path, start_date=date(2027, 3, 9),
-        run_scenario=lambda scenario: calls.append(scenario["id"]) or {"technical_failure": "X"}, resume=True,
+        run_scenario=lambda scenario: calls.append(scenario["id"]) or {"technical_failure": "X"},
+        provenance=provenance, resume=True,
         render=lambda report: "detail", now=lambda: "2027-01-01T00:00:00Z", sleep=lambda seconds: None, log=lambda line: None,
     )
     assert calls == ["Q-T2"]

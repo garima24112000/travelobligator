@@ -218,18 +218,25 @@ def test_attractions_use_one_request_per_group_inside_the_destination_boundary(
     response = adapter.search_attractions("Fixtureville, Fixtureland", {"pool_size": 60})
 
     assert response.status == ProviderStatus.SUCCESS
-    assert len(network.requests["places"]) == len(ATTRACTION_GROUPS)
+    # Mixed local / broad discovery (quality tuning corrections): each group's share of the
+    # 60-place pool is requested as a BROAD request (no bias) and a LOCAL one (a proximity
+    # bias towards the destination point) -- two requests per group, the same total.
+    assert len(network.requests["places"]) == 2 * len(ATTRACTION_GROUPS)
     # Section 1B: the group requests are one concurrent batch, so they may
-    # ARRIVE in any order; one request per group is what is asserted (the
-    # order the results are APPLIED in is covered by the concurrency tests).
-    arrived = {request.url.params["categories"]: request.url.params for request in network.requests["places"]}
-    sent = [arrived[",".join(group.categories)] for group in ATTRACTION_GROUPS]
-    assert [params["categories"] for params in sent] == [",".join(group.categories) for group in ATTRACTION_GROUPS]
-    for params in sent:
-        assert params["filter"] == "place:dest01"  # the destination's real boundary
+    # ARRIVE in any order (the order the results are APPLIED in is covered by
+    # the concurrency tests).
+    broad = {r.url.params["categories"]: r.url.params for r in network.requests["places"] if "bias" not in r.url.params}
+    local = {r.url.params["categories"]: r.url.params for r in network.requests["places"] if "bias" in r.url.params}
+    keys = [",".join(group.categories) for group in ATTRACTION_GROUPS]
+    assert list(broad) and set(broad) == set(local) == set(keys)
+    for params in (*broad.values(), *local.values()):
+        assert params["filter"] == "place:dest01"  # the destination's real boundary, for both kinds
         assert params["conditions"] == "named"
         assert params["offset"] == "0"
-    assert [int(params["limit"]) for params in sent] == [21, 9, 18, 12]  # shares of the 60-place pool
+    assert [int(broad[key]["limit"]) for key in keys] == [14, 6, 6, 6]
+    assert [int(local[key]["limit"]) for key in keys] == [7, 3, 12, 6]
+    assert sum(int(p["limit"]) for p in (*broad.values(), *local.values())) == 60  # the pool is no larger
+    assert {params["bias"] for params in local.values()} == {"proximity:10.0,50.0"}  # lon,lat of the destination
     assert len(network.requests["geocode"]) == 1
 
     food = adapter.search_restaurants("Fixtureville, Fixtureland", {"pool_size": 30})
@@ -358,14 +365,15 @@ def test_positive_results_are_cached_and_a_cache_hit_costs_nothing(
     network = _Network(places=_by_category)
     first_context = _context()
     first = _adapter(monkeypatch, network, store).bound_to(first_context).search_attractions("Fixtureville, Fixtureland")
-    assert len(network.requests["places"]) == 4
-    # reserved 3 + 1 + 1 + 1, settled to what came back: (1 + 1) + 1 + 1 + 1
-    assert first_context.usage_tracker.credits_used("places") == 5
+    assert len(network.requests["places"]) == 8  # a broad and a local request per group
+    # Each request is billed by itself: eight requests of 20 places or fewer reserve and
+    # settle 1 credit each (before the split: 3 + 1 + 1 + 1 reserved, 5 settled).
+    assert first_context.usage_tracker.credits_used("places") == 8
     assert first_context.usage_tracker.credits_used("geocoding") == 1
 
     second_context = _context()
     second = _adapter(monkeypatch, network, store).bound_to(second_context).search_attractions("Fixtureville, Fixtureland")
-    assert len(network.requests["places"]) == 4 and len(network.requests["geocode"]) == 1  # nothing re-requested
+    assert len(network.requests["places"]) == 8 and len(network.requests["geocode"]) == 1  # nothing re-requested
     assert second_context.usage_tracker.credits_used() == 0  # cache hits charge zero
     assert second_context.usage_tracker.calls_made() == 0
     assert {place.data_status for place in second.data} == {DataStatus.CACHED}
@@ -379,18 +387,18 @@ def test_a_successful_empty_result_is_cached_briefly(
     network = _Network(places=lambda request: [])
     response = _adapter(monkeypatch, network, store).search_restaurants("Fixtureville, Fixtureland")
     assert response.status == ProviderStatus.UNAVAILABLE and response.failure_reason is None
-    assert len(network.requests["places"]) == 1
+    assert len(network.requests["places"]) == 2  # the food allowance: a broad and a local request
 
     again = _adapter(monkeypatch, network, store).search_restaurants("Fixtureville, Fixtureland")
     assert again.status == ProviderStatus.UNAVAILABLE
-    assert len(network.requests["places"]) == 1  # the empty answer was remembered
+    assert len(network.requests["places"]) == 2  # both empty answers were remembered
 
     import sqlite3
 
     rows = sqlite3.connect(tmp_path / "c.sqlite3").execute(
         "select fetched_at, expires_at from provider_cache where source = 'geoapify_places'"
     ).fetchall()
-    assert len(rows) == 1
+    assert len(rows) == 2  # one cache entry per request: the broad one and the local one are different requests
     from datetime import datetime
 
     ttl = (datetime.fromisoformat(rows[0][1]) - datetime.fromisoformat(rows[0][0])).total_seconds()
@@ -411,8 +419,9 @@ def _timeout(request: httpx.Request) -> httpx.Response:
         (_timeout, "timeout", 0),
         (lambda request: httpx.Response(200, text="<html>"), "malformed", 0),
         # a well-formed 200 with an unusable body was answered by the provider, so it stays
-        # charged at the reserved amount (conservative) -- but it is still never cached
-        (lambda request: httpx.Response(200, json={"results": []}), "malformed", 3),
+        # charged at the reserved amount (conservative) -- but it is still never cached. The
+        # 30-place food allowance is two requests of 15 (broad, local): 1 credit reserved each.
+        (lambda request: httpx.Response(200, json={"results": []}), "malformed", 2),
     ],
 )
 def test_a_failed_places_request_is_reported_as_a_places_failure_and_never_cached(
@@ -432,7 +441,7 @@ def test_a_failed_places_request_is_reported_as_a_places_failure_and_never_cache
     healthy = _Network(places=_by_category)
     recovered = _adapter(monkeypatch, healthy, store).search_restaurants("Fixtureville, Fixtureland")
     assert recovered.status in (ProviderStatus.SUCCESS, ProviderStatus.PARTIAL)
-    assert len(healthy.requests["places"]) == 1  # nothing had been cached for the failure
+    assert len(healthy.requests["places"]) == 2  # nothing had been cached for the failure (broad + local)
 
 
 # -- named places: pool identity, bounded details ------------------------------------------------------
@@ -551,7 +560,7 @@ def test_concurrent_generations_have_isolated_budgets(
     assert context_a.usage_tracker.snapshot()["refused_calls"] >= 1
     assert results["b"].status == ProviderStatus.SUCCESS
     assert context_b.usage_tracker.snapshot()["refused_calls"] == 0
-    assert context_b.usage_tracker.credits_used("places") == 5
+    assert context_b.usage_tracker.credits_used("places") == 8  # eight split requests, 1 credit each
     assert context_b.usage_tracker.credits_used("geocoding") == 1
     # the process-level adapters themselves carry no usage state
     assert shared_adapter_a._usage is None and shared_adapter_b._usage is None

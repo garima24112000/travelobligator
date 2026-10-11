@@ -296,11 +296,10 @@ class Settings(BaseSettings):
     # Section 193A (docs/14_backend_architecture.md section 141): bounds
     # how many `ItineraryCandidateReference` entries
     # `AIItineraryReasoningRequestBuilder.build_request` includes in one
-    # `AIItineraryReasoningRequest` -- selected deterministically by
-    # quality tier then score (never by AI proposal confidence, never
-    # arbitrary truncation). Contract-only in this step: nothing calls a
-    # live LLM #2 provider yet, so this setting has no runtime effect
-    # until Section 193B exists.
+    # `AIItineraryReasoningRequest` -- a hard cap, filled deterministically
+    # in the candidate-usefulness order (Q2, `candidate_usefulness`; never
+    # by AI proposal confidence, never arbitrary truncation). When the
+    # grounded must-visits alone exceed it the request is not sent.
     ai_itinerary_reasoning_max_candidates: int = Field(
         default=40,
         ge=1,
@@ -554,6 +553,13 @@ class Settings(BaseSettings):
     ai_day_spatial_regrouping_enabled: bool = Field(
         default=True, alias="AI_DAY_SPATIAL_REGROUPING_ENABLED"
     )
+    # Q3 (`services/day_composition`): one composition objective improves the
+    # complete multi-day assignment -- the deterministic selection and a plan
+    # the reasoning model chose alike -- and the bounded reasoning request
+    # carries opaque geographic area ids. A TEMPORARY rollback switch: off,
+    # the planner, the request and the prompts are exactly what they were
+    # before Q3 (the regrouping and spread passes above run instead).
+    day_composition_enabled: bool = Field(default=True, alias="DAY_COMPOSITION_ENABLED")
     # Route-burden quality thresholds (walking, from the routing provider's
     # own leg data; never an estimate). A day beyond its pace's total, or a
     # single leg beyond the leg limit, gets a long-travel warning and the
@@ -575,6 +581,19 @@ class Settings(BaseSettings):
     route_burden_repair_enabled: bool = Field(default=True, alias="ROUTE_BURDEN_REPAIR_ENABLED")
     route_burden_repair_min_improvement_ratio: float = Field(
         default=0.15, alias="ROUTE_BURDEN_REPAIR_MIN_IMPROVEMENT_RATIO", gt=0.0, lt=1.0
+    )
+    # Q4 (`services/route_recomposition_service.py`): a day whose VERIFIED
+    # provider legs are severe is recomposed -- reorder, move/swap between
+    # days, or replace a discretionary stop -- from a shortlist of at most
+    # three candidates, each verified with real routing. Off, the single
+    # attempt above runs exactly as before. `ROUTE_BURDEN_REPAIR_ENABLED`
+    # remains the master switch for both.
+    route_recomposition_enabled: bool = Field(default=True, alias="ROUTE_RECOMPOSITION_ENABLED")
+    # The most routing requests that stage may make in one generation. A
+    # SUB-CAP only: every one of them also draws on the generation's shared
+    # route-request allowance and provider-credit cap, which are unchanged.
+    route_recomposition_max_requests_per_generation: int = Field(
+        default=8, alias="ROUTE_RECOMPOSITION_MAX_REQUESTS_PER_GENERATION", ge=0, le=8
     )
     # Mixed-mode transfers (Section 203C.2B). A walking leg longer than
     # `ROUTE_BURDEN_MAX_LEG_SECONDS` gets ONE driving-route request for that

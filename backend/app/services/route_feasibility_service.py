@@ -5,6 +5,7 @@ import logging
 from datetime import date, datetime, timezone
 from datetime import time as time_of_day
 
+from app.core import generation_diagnostics
 from app.core.config import get_settings
 from app.models.common import GeoPoint, ProviderStatus
 from app.models.planning_state import ExperienceItem, PlanningState
@@ -177,6 +178,7 @@ def _walking_result_of(leg: RouteLegFeasibility) -> RouteResult:
         source=leg.provider,
         mode=leg.mode,
         failure_reason=leg.failure_reason,
+        includes_ferry=leg.includes_ferry,
     )
 
 
@@ -191,6 +193,8 @@ def build_route_report(
     final order itself and the service supports that; otherwise exactly the
     ordinary call (the report then already carries its adaptation, and the
     later `adapt_route_modes_safely` finds nothing left to do)."""
+    # Diagnostic only (a no-op unless the evaluation tooling is recording).
+    generation_diagnostics.route_checkpoint(generation_diagnostics.ROUTE_STAGE_BEGIN, planning_state, provider_context)
     kwargs = context_kwargs(provider_context)
     if defer_mode_adaptation and "adapt_modes" in inspect.signature(service.build_report).parameters:
         return service.build_report(planning_state, adapt_modes=False, **kwargs)
@@ -610,6 +614,7 @@ class RouteFeasibilityService:
             walking_distance_meters=walking.distance_meters if drive is not None else None,
             walking_duration_seconds=walking.duration_seconds if drive is not None else None,
             failure_reason=result.failure_reason if result.status != ProviderStatus.SUCCESS else None,
+            includes_ferry=result.includes_ferry if result.status == ProviderStatus.SUCCESS else None,
             from_experience_id=from_experience.experience_id,
             from_experience_name=from_experience.name,
             to_experience_id=to_experience.experience_id,

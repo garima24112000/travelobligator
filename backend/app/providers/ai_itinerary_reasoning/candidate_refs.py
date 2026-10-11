@@ -48,11 +48,26 @@ class UnknownCandidateReference(ValueError):
     """The model returned something that is not one of this request's references."""
 
 
+# Q3: an area id in model-written prose -- "(a3)", "area a3", "areas a1 and
+# a2", or a bare "a3". Like a candidate reference it is an internal handle of
+# one request and must not reach the traveller.
+_PROSE_AREA = re.compile(
+    r"\s*\((a\d+)\)|\b(areas?\s+a\d+(?:\s*(?:,|and|or|&)\s*a\d+)*)\b|\b(a\d+)\b", re.IGNORECASE
+)
+_AREA_ID = re.compile(r"a\d+", re.IGNORECASE)
+
+
 class CandidateRefMap:
-    def __init__(self, candidate_ids: Iterable[str], names: dict[str, str] | None = None) -> None:
+    def __init__(
+        self,
+        candidate_ids: Iterable[str],
+        names: dict[str, str] | None = None,
+        areas: Iterable[str] | None = None,
+    ) -> None:
         self._ref_by_id: dict[str, str] = {}
         self._id_by_ref: dict[str, str] = {}
         self._name_by_ref: dict[str, str] = {}
+        self._areas = frozenset(area.lower() for area in (areas or ()))
         for candidate_id in candidate_ids:
             if candidate_id in self._ref_by_id:
                 continue  # one reference per distinct identity, however often it is listed
@@ -68,7 +83,29 @@ class CandidateRefMap:
         return cls(
             (candidate.candidate_id for candidate in candidates),
             names={candidate.candidate_id: candidate.name for candidate in candidates},
+            areas={area for area in (getattr(candidate, "area", None) for candidate in candidates) if area},
         )
+
+    def _scrub_areas(self, text: str) -> str:
+        """Q3: a known area id is replaced by neutral wording ("one area",
+        "nearby areas"); a parenthesised one is dropped. Anything that is not
+        one of THIS request's area ids is left exactly as written."""
+
+        def known(fragment: str) -> bool:
+            ids = _AREA_ID.findall(fragment)
+            return bool(ids) and all(area.lower() in self._areas for area in ids)
+
+        def replace(match: re.Match[str]) -> str:
+            parenthesised, phrase, bare = match.group(1), match.group(2), match.group(3)
+            if parenthesised is not None:
+                return "" if known(parenthesised) else match.group(0)
+            if phrase is not None:
+                if not known(phrase):
+                    return match.group(0)
+                return "one area" if len(_AREA_ID.findall(phrase)) == 1 else "nearby areas"
+            return "one area" if known(bare) else match.group(0)
+
+        return _PROSE_AREA.sub(replace, text)
 
     def scrub_prose(self, text: Any) -> Any:
         """A reference is an internal handle; it must not reach the traveler
@@ -85,7 +122,8 @@ class CandidateRefMap:
                 return "" if parenthesised in self._id_by_ref else match.group(0)
             return self._name_by_ref.get(bare, match.group(0)) if bare in self._id_by_ref else match.group(0)
 
-        return _PROSE_REF.sub(replace, text)
+        scrubbed = _PROSE_REF.sub(replace, text)
+        return self._scrub_areas(scrubbed) if self._areas else scrubbed
 
     def __len__(self) -> int:
         return len(self._id_by_ref)

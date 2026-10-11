@@ -160,8 +160,11 @@ def test_interest_vocabulary_maps_only_recognised_terms() -> None:
 def test_matched_interests_come_only_from_provider_categories() -> None:
     park = tx.classify_place({"leisure": "park"})
     market = tx.classify_place({"amenity": "marketplace"})
+    food_market = tx.classify_place({"amenity": "marketplace", "shop": "greengrocer"})
     assert tx.matched_interests(park, ["outdoors", "food"]) == ["outdoors"]
-    assert tx.matched_interests(market, ["outdoors", "food"]) == ["food"]
+    # Quality tuning corrections: a marketplace serves food only on the provider's own food evidence.
+    assert tx.matched_interests(market, ["outdoors", "food", "shopping"]) == ["shopping"]
+    assert tx.matched_interests(food_market, ["outdoors", "food"]) == ["food"]
     assert tx.matched_interests(tx.classify_place({"amenity": "hospital"}), ["food", "outdoors"]) == []
 
 
@@ -245,7 +248,7 @@ def test_an_art_focused_request_may_use_many_galleries() -> None:
 
 
 def test_requested_interest_with_viable_supply_is_scheduled_even_if_lower_ranked() -> None:
-    market = poi("mk", "Market Hall", {"amenity": "marketplace"}, 0.03)
+    market = poi("mk", "Market Hall", {"amenity": "marketplace", "shop": "greengrocer"}, 0.03)
     pois = [museum(i, i * 0.001) for i in range(6)] + [market]
     days = plan(state(pois, days=2, pace=TripPace.RELAXED, interests=["food"]))  # capacity 4
     scheduled = [e for d in days for e in d]
@@ -253,7 +256,7 @@ def test_requested_interest_with_viable_supply_is_scheduled_even_if_lower_ranked
 
 
 def test_the_only_place_serving_a_requested_interest_is_never_swapped_out_as_an_outlier() -> None:
-    market = poi("mk", "Far Market", {"amenity": "marketplace"}, 0.0, 2.0)  # far from the cluster
+    market = poi("mk", "Far Market", {"amenity": "marketplace", "shop": "greengrocer"}, 0.0, 2.0)  # far from the cluster
     pois = [museum(i, 0.0, 0.0) for i in range(6)] + [market]
     days = plan(state(pois, days=2, pace=TripPace.RELAXED, interests=["food"]))
     assert "Far Market" in names(days)
@@ -366,7 +369,7 @@ def test_thin_day_is_flagged_only_when_viable_candidates_were_left_unscheduled()
 
 
 def test_interest_undercoverage_is_a_plan_finding_only_when_supply_existed() -> None:
-    st = state([museum(1), poi("mk", "Market", {"amenity": "marketplace"}, 0.2)], days=1, pace=TripPace.RELAXED,
+    st = state([museum(1), poi("mk", "Market", {"amenity": "marketplace", "shop": "greengrocer"}, 0.2)], days=1, pace=TripPace.RELAXED,
                interests=["food"])
     ExperiencePlannerService().run(st)
     covered = [e for d in st.experience_plan.daily_plans for e in d.experiences]

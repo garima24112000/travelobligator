@@ -460,13 +460,63 @@ export function hasDiagnosticWording(text: string): boolean {
   return DIAGNOSTIC_WORDING.some((pattern) => pattern.test(text));
 }
 
+// -- material findings (V1 disclosure contract) ------------------------------------
+//
+// WHICH findings are material is the backend's decision
+// (`ValidationReport.review_code_classification`); nothing here classifies a
+// code. A material warning is ALWAYS shown. The sentences below are wording
+// only: what is said when a material finding's own text is implementation
+// prose (a report stored before the backend wrote these for a traveler).
+
+/** The backend's class for every code of one report (may be absent on an old report). */
+export type ReviewClassification = Readonly<Record<string, string>> | null | undefined;
+
+export const GEOGRAPHIC_SPREAD_SENTENCE =
+  "This day's attractions are spread across a large area. Review the travel required before following this schedule.";
+export const FERRY_SENTENCE =
+  "Part of this day's travel involves a ferry crossing. Ferry schedules, waiting times, tickets and operating availability are not verified.";
+export const GENERIC_MATERIAL_SENTENCE =
+  "Something about this part of the itinerary needs your review before you follow it.";
+
+const MATERIAL_FALLBACK_SENTENCES: Record<string, string> = {
+  geographic_dispersion: GEOGRAPHIC_SPREAD_SENTENCE,
+  geographic_spread: GEOGRAPHIC_SPREAD_SENTENCE,
+  route_includes_ferry: FERRY_SENTENCE,
+};
+
+/**
+ * True when the backend classified this finding's code as material. A code
+ * missing from a classification the backend DID send is unknown to it and
+ * is treated as material (shown); with no classification at all (an old
+ * report) only the findings this file has a material sentence for are.
+ */
+export function isMaterialFinding(
+  issue: Pick<ValidationIssue, "category">,
+  classification?: ReviewClassification,
+): boolean {
+  const category = (issue.category ?? "").toLowerCase();
+  if (classification && Object.keys(classification).length > 0) {
+    return (classification[category.toUpperCase()] ?? "material") === "material";
+  }
+  return category in MATERIAL_FALLBACK_SENTENCES;
+}
+
+/** The day a finding is about ("experience_plan.daily_plans[3]" -> 3), or null. */
+export function affectedDayNumber(issue: Pick<ValidationIssue, "affected_section">): number | null {
+  const match = /daily_plans\[(\d+)\]/.exec(issue.affected_section ?? "");
+  return match ? Number(match[1]) : null;
+}
+
 /**
  * The finding as Traveler view shows it, or null when it is not shown.
- * Never changes severity.
+ * Never changes severity. A warning the backend classified as material is
+ * never hidden: when its own text is implementation prose a fixed traveler
+ * sentence stands in for it.
  */
 export function travelerFinding(
   issue: ValidationIssue,
   suggestionCategories: ReadonlySet<string> = TRAVELER_SUGGESTION_CATEGORIES,
+  classification?: ReviewClassification,
 ): ValidationIssue | null {
   const category = (issue.category ?? "").toLowerCase();
   if (issue.severity === "critical") return issue;
@@ -477,11 +527,41 @@ export function travelerFinding(
       : null;
   }
 
-  if (DIAGNOSTIC_CATEGORIES.has(category)) return null;
+  const material = isMaterialFinding(issue, classification);
+  if (DIAGNOSTIC_CATEGORIES.has(category) && !material) return null;
   const sentence = WARNING_CATEGORY_SENTENCES[category];
   if (sentence) return { ...issue, message: sentence, suggested_fix: null };
   if (TRAVELER_WARNING_CATEGORIES.has(category)) return issue;
-  return hasDiagnosticWording(travelerText(issue.message)) ? null : issue;
+  if (!hasDiagnosticWording(travelerText(issue.message))) return issue;
+  if (!material) return null;
+  const day = affectedDayNumber(issue);
+  return {
+    ...issue,
+    message: `${day !== null ? `Day ${day}: ` : ""}${MATERIAL_FALLBACK_SENTENCES[category] ?? GENERIC_MATERIAL_SENTENCE}`,
+    suggested_fix: null,
+  };
+}
+
+/**
+ * The material warnings about ONE day, as that day's card shows them: the
+ * same text `travelerFinding` gives, without the leading "Day N:" (the card
+ * already says which day it is). Each distinct sentence once.
+ */
+export function travelerDayFindings(
+  issues: ValidationIssue[],
+  dayNumber: number,
+  classification?: ReviewClassification,
+): string[] {
+  const sentences: string[] = [];
+  for (const issue of issues) {
+    if (issue.severity !== "warning" || affectedDayNumber(issue) !== dayNumber) continue;
+    if (!isMaterialFinding(issue, classification)) continue;
+    const shown = travelerFinding(issue, TRAVELER_SUGGESTION_CATEGORIES, classification);
+    if (!shown) continue;
+    const text = travelerText(shown.message).replace(/^Day \d+\s*:\s*/i, "");
+    if (text && !sentences.includes(text)) sentences.push(text);
+  }
+  return sentences;
 }
 
 /**
@@ -491,10 +571,11 @@ export function travelerFinding(
 export function travelerFindings(
   issues: ValidationIssue[],
   suggestionCategories: ReadonlySet<string> = TRAVELER_SUGGESTION_CATEGORIES,
+  classification?: ReviewClassification,
 ): AggregatedIssue[] {
   return aggregateIssues(
     issues
-      .map((issue) => travelerFinding(issue, suggestionCategories))
+      .map((issue) => travelerFinding(issue, suggestionCategories, classification))
       .filter((issue): issue is ValidationIssue => issue !== null),
   );
 }

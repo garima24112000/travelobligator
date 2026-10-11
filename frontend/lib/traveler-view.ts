@@ -93,13 +93,73 @@ export function travelerMovementLine(leg: {
   mode: string | null | undefined;
   durationSeconds: number | null | undefined;
   distanceMeters: number | null | undefined;
+  // True only when the routing provider's own route for the leg uses a ferry.
+  includesFerry?: boolean | null;
 }): string | null {
   const figures = [
     formatTravelDuration(leg.durationSeconds),
     formatTravelDistance(leg.distanceMeters),
   ].filter((part): part is string => part !== null);
   if (figures.length === 0) return null;
+  if (leg.includesFerry === true) {
+    // Never "Walk" alone, and never the figures as a ferry time: they are a
+    // route estimate that knows nothing of the crossing's schedule.
+    return [FERRY_LEG_LABEL, `route estimate ${figures.join(" · ")}`, FERRY_LEG_CAVEAT].join(" · ");
+  }
   return [movementModeLabel(leg.mode), ...figures].join(" · ");
+}
+
+export const FERRY_LEG_LABEL = "Includes a ferry crossing";
+export const FERRY_LEG_CAVEAT = "excludes waiting; ferry times, tickets and availability not verified";
+export const FERRY_DAY_NOTICE =
+  "Part of this day's travel involves a ferry crossing. Ferry schedules, waiting times, tickets and operating availability are not verified.";
+export const UNVERIFIED_LEG_LINE =
+  "Travel between these stops could not be verified. No route or travel time is shown.";
+export const UNVERIFIED_DAY_NOTICE =
+  "Travel between some of this day's stops could not be verified. Check how you would get between them.";
+
+/** True only for a leg the routing provider positively flagged as using a ferry. */
+export function legIncludesFerry(
+  report: RouteFeasibilityReport | null | undefined,
+  fromExperienceId: string,
+  toExperienceId: string,
+): boolean {
+  return findRouteLeg(report, fromExperienceId, toExperienceId)?.includes_ferry === true;
+}
+
+/**
+ * True when the leg between two scheduled stops has no verified route WHILE
+ * other legs of the trip do: the missing one is then a specific gap worth a
+ * row of its own. When the trip has no routed leg at all, the single
+ * trip-level note says so once and no row is repeated between every stop.
+ */
+export function legIsUnverified(
+  report: RouteFeasibilityReport | null | undefined,
+  fromExperienceId: string,
+  toExperienceId: string,
+): boolean {
+  const legs = report?.legs ?? [];
+  if (!legs.some((leg) => leg.status === "success")) return false;
+  const leg = findRouteLeg(report, fromExperienceId, toExperienceId);
+  return !leg || leg.status !== "success";
+}
+
+/**
+ * Day-level route notices for a day's stops in order: a ferry crossing the
+ * provider flagged, and travel that could not be verified. Derived only from
+ * the stored legs; an empty list when there is nothing to say.
+ */
+export function travelerDayRouteNotices(
+  experienceIds: string[],
+  report: RouteFeasibilityReport | null | undefined,
+): { ferry: boolean; unverified: boolean } {
+  let ferry = false;
+  let unverified = false;
+  for (let index = 0; index + 1 < experienceIds.length; index += 1) {
+    ferry = ferry || legIncludesFerry(report, experienceIds[index], experienceIds[index + 1]);
+    unverified = unverified || legIsUnverified(report, experienceIds[index], experienceIds[index + 1]);
+  }
+  return { ferry, unverified };
 }
 
 /** The Traveler movement row for one stored leg, or null when it has no successful route. */
@@ -115,6 +175,7 @@ export function travelerLegLine(
     mode: legMode(report, buffer.from_experience_id, buffer.to_experience_id),
     durationSeconds: buffer.route_duration_seconds,
     distanceMeters: buffer.route_distance_meters,
+    includesFerry: legIncludesFerry(report, buffer.from_experience_id, buffer.to_experience_id),
   });
 }
 
@@ -128,6 +189,22 @@ export function travelerRouteCoverageNote(
   }
   if (report.status === "success") return null;
   return "Travel times between stops are not available for this trip.";
+}
+
+/**
+ * Everything one day's card says needs review: the day's material findings
+ * (already worded for a traveler), then the ferry and unverified-travel
+ * notices its own legs call for. A ferry the findings already mention is not
+ * said twice.
+ */
+export function travelerDayNotices(
+  findingSentences: string[],
+  route: { ferry: boolean; unverified: boolean },
+): string[] {
+  const notices = [...findingSentences];
+  if (route.ferry && !notices.some((sentence) => /ferry/i.test(sentence))) notices.push(FERRY_DAY_NOTICE);
+  if (route.unverified) notices.push(UNVERIFIED_DAY_NOTICE);
+  return notices;
 }
 
 // -- getting around ---------------------------------------------------------------
@@ -166,18 +243,64 @@ export function tripSummarySourceNote(
 
 // -- readiness ----------------------------------------------------------------------
 
-export type ReadinessTone = "ok" | "review" | "blocked" | "unknown";
+export type ReadinessTone = "ok" | "review" | "review_material" | "blocked" | "unknown";
 
 export type TravelerReadiness = { tone: ReadinessTone; label: string; message: string };
 
-/** Plain-language restatement of the backend's readiness status; never the raw value. */
-export function travelerReadiness(status: string | null | undefined): TravelerReadiness {
+/** How strongly a `needs_review` plan is presented. Presentation only: the status is unchanged. */
+export type ReviewSeverity = "informational" | "material";
+
+/**
+ * Whether a report's review / blocking codes include a MATERIAL one,
+ * according to the backend's own classification. A code the classification
+ * does not list is unknown to the backend's list and counts as material; a
+ * report with codes but no classification at all (stored before the field)
+ * is presented as material too -- never played down on a guess.
+ */
+export function reviewSeverity(
+  validation:
+    | Pick<ValidationReport, "blocking_codes" | "review_codes" | "review_code_classification">
+    | null
+    | undefined,
+): ReviewSeverity {
+  const codes = [...(validation?.blocking_codes ?? []), ...(validation?.review_codes ?? [])];
+  const classification = validation?.review_code_classification ?? {};
+  return codes.some((code) => (classification[code] ?? "material") === "material")
+    ? "material"
+    : "informational";
+}
+
+/**
+ * Plain-language restatement of the backend's readiness status; never the
+ * raw value. `severity` only changes how a `needs_review` plan is worded and
+ * toned: it is still a plan that needs review, never "Checks passed".
+ */
+export function travelerReadiness(
+  status: string | null | undefined,
+  severity?: ReviewSeverity,
+): TravelerReadiness {
   if (status === "ready") {
     return {
       tone: "ok",
       label: "Checks passed",
       message:
         "This itinerary passed our automated checks. Still confirm opening hours, prices and bookings yourself before you travel.",
+    };
+  }
+  if (status === "needs_review" && severity === "material") {
+    return {
+      tone: "review_material",
+      label: "Review needed before you follow this",
+      message:
+        "Parts of this itinerary need your attention before you rely on it. The affected days are marked below.",
+    };
+  }
+  if (status === "needs_review" && severity === "informational") {
+    return {
+      tone: "review",
+      label: "Planning draft — some details not checked",
+      message:
+        "No travel or coverage problem was flagged for this schedule, but some supporting information has not been applied to it. Confirm those details yourself.",
     };
   }
   if (status === "needs_review") {
@@ -224,7 +347,18 @@ const REVIEW_CODE_NOTICES: Record<string, string> = {
   HOLIDAYS: HOLIDAY_NOT_APPLIED_NOTICE,
   LONG_TRAVEL_DAY: "At least one day involves a lot of travel between stops.",
   FEASIBILITY: "Travel between some stops could not be fully checked.",
+  MOVEMENT_DATA: "Travel times between some stops are not available.",
+  GEOGRAPHIC_DISPERSION: "At least one day's attractions are spread across a large area.",
+  GEOGRAPHIC_SPREAD: "At least one day's attractions are spread across a large area.",
+  ROUTE_INCLUDES_FERRY:
+    "At least one day involves a ferry crossing. Ferry schedules, waiting times and tickets are not verified.",
+  INTEREST_UNDERCOVERAGE: "Something you asked for is not covered by the scheduled places.",
 };
+
+// A material code without a sentence of its own (including one the backend
+// added after this page was built) is still announced.
+export const OTHER_MATERIAL_NOTICE =
+  "Something else in this itinerary needs your review. See Important limitations below.";
 
 const UNAVAILABLE_DATA_STATUSES = new Set(["unavailable", "not_connected", "failed"]);
 
@@ -235,7 +369,10 @@ const UNAVAILABLE_DATA_STATUSES = new Set(["unavailable", "not_connected", "fail
  * signals say.
  */
 export function travelerReviewNotices(
-  validation: Pick<ValidationReport, "blocking_codes" | "review_codes"> | null | undefined,
+  validation:
+    | Pick<ValidationReport, "blocking_codes" | "review_codes" | "review_code_classification">
+    | null
+    | undefined,
   context?: {
     weather?: Pick<WeatherContext, "daily_weather" | "data_status"> | null;
     holiday?: Pick<HolidayContext, "data_status"> | null;
@@ -263,7 +400,10 @@ export function travelerReviewNotices(
     // Never say "available" about data the page can see is absent.
     if (code === "WEATHER" && weatherAbsent) continue;
     if (code === "HOLIDAYS" && holidayAbsent) continue;
-    add(REVIEW_CODE_NOTICES[code]);
+    add(
+      REVIEW_CODE_NOTICES[code] ??
+        (validation?.review_code_classification?.[code] === "material" ? OTHER_MATERIAL_NOTICE : undefined),
+    );
   }
   if (weatherAbsent) add(WEATHER_NOTICE);
   if (holidayAbsent) add(HOLIDAY_NOTICE);

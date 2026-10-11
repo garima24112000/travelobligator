@@ -584,6 +584,10 @@ export type RouteFeasibilityReport = {
     to_experience_id: string;
     status: string;
     mode?: string | null;
+    // True only when the routing provider's own route for this leg uses a
+    // ferry; false when it said it does not; null / absent when it said
+    // nothing. Never inferred here.
+    includes_ferry?: boolean | null;
   }[];
 };
 
@@ -666,6 +670,11 @@ export type ValidationReport = {
   // stored before that section.
   blocking_codes?: string[];
   review_codes?: string[];
+  // V1 disclosure contract (backend: app.services.review_classification):
+  // the class of every code / finding category of this report. The backend
+  // owns it -- a code it does not know is "material" -- and this page never
+  // keeps a list of its own. Absent on reports stored before the field.
+  review_code_classification?: Record<string, "informational" | "material">;
 };
 
 // Section 203C.2B (backend: app.models.inventory_sufficiency). Whether the

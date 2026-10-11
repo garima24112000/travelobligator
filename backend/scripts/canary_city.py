@@ -55,6 +55,15 @@ _ACCEPTED_REVIEW_CODES = frozenset(
         "PROVIDER_COVERAGE",
     }
 )
+# Acceptance policy version. The list above is the Q0 list and is unchanged.
+#   1 -- Q0: only the standing data-coverage codes above are accepted.
+#   2 -- informational-policy clarification (quality tuning corrections): a review code of
+#        `_CONDITIONAL_INFORMATIONAL_CODES` is ALSO accepted, but only for a report in which
+#        its stated conditions hold (`_accepted_informational_codes`). No threshold changed,
+#        and results recorded under policy 1 are not re-judged: each stored report carries
+#        the policy version it was judged with.
+_ACCEPTANCE_POLICY_VERSION = 2
+_CONDITIONAL_INFORMATIONAL_CODES = frozenset({"ROUTE_INCLUDES_FERRY"})
 
 
 # Section 1A (measurement only): how the generation's performance report is
@@ -343,6 +352,311 @@ def _is_quality_holdout_city(city: str) -> bool:
     )
 
 
+def _ferry_disclosure(state: Any) -> dict[str, Any]:
+    """Facts for acceptance policy 2 (see `_ACCEPTANCE_POLICY_VERSION`): which days' FINAL legs
+    the routing provider positively identified a ferry on, and on which of those days the
+    stored validation report carries the traveller-facing ferry warning (the validation
+    report's warnings are rendered verbatim on the itinerary page). A leg the provider said
+    nothing about is counted as unknown -- neither a ferry nor the absence of one."""
+    plan = state.experience_plan
+    feasibility = state.route_feasibility_report
+    validation = state.validation_report
+    days = plan.daily_plans if plan is not None else []
+    legs = {(leg.from_experience_id, leg.to_experience_id): leg for leg in (feasibility.legs if feasibility else [])}
+    confirmed_days: list[int] = []
+    confirmed = unknown = 0
+    for day in days:
+        day_legs = [legs.get((a.experience_id, b.experience_id)) for a, b in zip(day.experiences, day.experiences[1:])]
+        routed = [leg for leg in day_legs if leg is not None and leg.distance_meters is not None]
+        ferries = sum(1 for leg in routed if leg.includes_ferry is True)
+        confirmed += ferries
+        unknown += sum(1 for leg in routed if leg.includes_ferry is None)
+        if ferries:
+            confirmed_days.append(day.day_number)
+    warnings = [
+        issue for issue in (validation.warnings if validation is not None else []) if issue.category == "route_includes_ferry"
+    ]
+    disclosed_days = [
+        day
+        for day in confirmed_days
+        if any(
+            issue.affected_section == f"experience_plan.daily_plans[{day}]" and "ferry" in issue.message.lower()
+            for issue in warnings
+        )
+    ]
+    return {
+        "provider_confirmed_ferry_legs": confirmed,
+        "legs_with_unknown_ferry_status": unknown,
+        "provider_confirmed_ferry_days": confirmed_days,
+        "days_with_traveller_facing_ferry_warning": disclosed_days,
+        # the warning states that no timetable, fare, ticket or availability is known
+        "warnings_state_nothing_about_the_service_is_verified": bool(warnings)
+        and all("no ferry timetable, fare, ticket or availability is known" in issue.message.lower() for issue in warnings),
+        "ferry_warnings_without_a_provider_confirmed_leg": len(
+            [
+                issue for issue in warnings
+                if not any(issue.affected_section == f"experience_plan.daily_plans[{day}]" for day in confirmed_days)
+            ]
+        ),
+    }
+
+
+_PROVIDER_CATEGORY_TAGS = ("category_path", "tourism", "historic", "amenity", "leisure", "natural", "man_made", "shop")
+
+
+def _routing_by_pass(trace: dict[str, Any], name: Any) -> dict[str, Any]:
+    """`generation_diagnostics.route_passes` with provider ids resolved to names, plus -- for a
+    pass whose routability repair ran out of the day-route allowance -- the arithmetic that
+    explains it. Reported only: no acceptance check and no planner decision reads it."""
+    from app.core import generation_diagnostics
+
+    summary = generation_diagnostics.route_passes(trace)
+    for item in summary["passes"]:
+        item["initial_failed_pairs"] = [[name(a), name(b)] for a, b in item["initial_failed_pairs"]]
+        for key in ("initial_failed_places_already_failing_in_an_earlier_pass", "suspects_already_identified_in_an_earlier_pass"):
+            item[key] = [name(place_id) for place_id in item[key]]
+        for attempt in item["routability_repair_attempts"]:
+            attempt["suspect_place"] = name(attempt["suspect_place_id"]) if attempt.get("suspect_place_id") else None
+        if item["repair_allowance_exhausted"]:
+            routes = item["requests_building_routes"].get("live", 0)
+            repair = item["requests_in_routability_repair"].get("live", 0)
+            item["why_the_repair_allowance_ran_out"] = {
+                "route_requests_left_when_the_pass_began": item["route_requests_left_before"],
+                "live_requests_building_this_pass_routes": routes,
+                "live_requests_made_by_the_repair_before_it_stopped": repair,
+                "failed_legs_left_unasked": item["failed_legs_left_unasked"],
+                "route_requests_already_used_by_earlier_passes": sum(
+                    earlier["route_requests_used"] or 0 for earlier in summary["passes"] if earlier["pass"] < item["pass"]
+                ),
+            }
+    return summary
+
+
+def _planning_diagnostics(recorder: Any, state: Any) -> dict[str, Any]:
+    """The generation's diagnostic trace (`app.core.generation_diagnostics`), made readable:
+    what each planner pass did to the schedule, what the day-composition stage did, where
+    each FINAL stop came from and what evidence it carries, and every leg the routing
+    provider did not route. Reported only -- `_acceptance` never reads it. Names are
+    resolved here, from the stored state; the trace itself holds provider ids only."""
+    from app.core import generation_diagnostics
+    from app.models.routing import leg_mode
+    from app.services.candidate_usefulness import usefulness_by_place_id
+    from app.services.must_visit_matching import must_visit_place_ids
+
+    trace = recorder.snapshot()
+    history = generation_diagnostics.stop_history(trace)
+    context = state.destination_context
+    pois = {str(poi.get("place_id")): poi for poi in (context.candidate_pois if context is not None else []) if poi.get("place_id")}
+    promotion = state.ai_candidate_promotion_report
+    promoted = {str(c.provider_place_id): c for c in (promotion.promoted_candidates if promotion is not None else []) if c.provider_place_id}
+    plan = state.experience_plan
+    days = plan.daily_plans if plan is not None else []
+    scheduled = {stop.provider_place_id: stop for day in days for stop in day.experiences if stop.provider_place_id}
+    names: dict[str, str] = {place_id: str(poi.get("name")) for place_id, poi in pois.items()}
+    names.update({place_id: candidate.name for place_id, candidate in promoted.items()})
+    names.update({place_id: stop.name for place_id, stop in scheduled.items()})
+
+    def name(place_id: str) -> str:
+        return names.get(place_id, "(unnamed candidate)")
+
+    # -- what each stage of the FINAL planner pass (and whatever ran after it) changed -----------
+    final_pass = history.get("final_pass")
+    start = next((index for index, item in enumerate(trace["schedule_snapshots"]) if item["pass"] == final_pass), 0)
+    timeline = trace["schedule_snapshots"][start:]
+    stages: list[dict[str, Any]] = []
+    previous: dict[str, int] | None = None
+    for item in timeline:
+        position = {place_id: index for index, day in enumerate(item["days"]) for place_id in day}
+        entry: dict[str, Any] = {"stage": item["stage"], "stops_per_day": [len(day) for day in item["days"]]}
+        if previous is not None:
+            entry["added"] = [name(p) for p in position if p not in previous]
+            entry["removed"] = [name(p) for p in previous if p not in position]
+            entry["moved_to_another_day"] = [name(p) for p in position if p in previous and previous[p] != position[p]]
+        stages.append(entry)
+        previous = position
+
+    # -- every final stop: who put it there, and the evidence it carries --------------------------
+    assessed = usefulness_by_place_id(state)
+    must_visit_ids = must_visit_place_ids(state)
+    final_stops: list[dict[str, Any]] = []
+    for day in days:
+        for stop in day.experiences:
+            place_id = stop.provider_place_id or ""
+            origin = history["stops"].get(place_id, {})
+            usefulness = assessed.get(place_id)
+            tags = (pois.get(place_id) or {}).get("provider_tags") or {}
+            final_stops.append(
+                {
+                    "day": day.day_number,
+                    "name": stop.name,
+                    "introduced_by": origin.get("introduced_by"),
+                    "last_moved_by": origin.get("last_moved_by"),
+                    "must_visit": place_id in must_visit_ids,
+                    "promoted_anchor": place_id in promoted,
+                    "in_broad_pool": place_id in pois,
+                    "usefulness_evidence_band": usefulness.evidence_band if usefulness is not None else None,
+                    "provider_evidence": list(usefulness.provider_evidence) if usefulness is not None else [],
+                    "internal_tier": _value(stop.quality_tier),
+                    "taxonomy_category": stop.normalized_category,
+                    "matched_interests": list(stop.matched_interests),
+                    # the provider's own classification of the place (fixed tag keys only)
+                    "provider_categories": {key: str(tags[key]) for key in _PROVIDER_CATEGORY_TAGS if tags.get(key)},
+                }
+            )
+
+    # -- legs the routing provider did not route -----------------------------------------------
+    by_experience = {stop.experience_id: stop for day in days for stop in day.experiences}
+    day_of_experience = {stop.experience_id: day.day_number for day in days for stop in day.experiences}
+    feasibility = state.route_feasibility_report
+
+    def endpoint(experience_id: str, lat: Any, lon: Any) -> dict[str, Any]:
+        stop = by_experience.get(experience_id)
+        place_id = (stop.provider_place_id if stop is not None else None) or ""
+        tags = (pois.get(place_id) or {}).get("provider_tags") or {}
+        return {
+            "name": stop.name if stop is not None else None,
+            "must_visit": place_id in must_visit_ids,
+            "promoted_anchor": place_id in promoted,
+            "in_broad_pool": place_id in pois,
+            "provider_category_path": tags.get("category_path"),
+            "coordinates": [round(lat, 5), round(lon, 5)] if lat is not None and lon is not None else None,
+        }
+
+    failed_legs = [
+        {
+            "day": day_of_experience.get(leg.from_experience_id),
+            "from": endpoint(leg.from_experience_id, leg.from_lat, leg.from_lon),
+            "to": endpoint(leg.to_experience_id, leg.to_lat, leg.to_lon),
+            "status": _value(leg.status),
+            "provider_failure_reason": leg.failure_reason,
+            # the configured (walking) mode is always the first attempt; a driving attempt is made
+            # only for a walking route that exists and is over the leg limit
+            "modes_attempted": ["walk", *(["drive"] if leg.mode_adaptation_attempted else [])],
+            "mode": leg_mode(leg.mode) if leg.distance_meters is not None else None,
+        }
+        for leg in (feasibility.legs if feasibility is not None else [])
+        if leg.distance_meters is None or leg.duration_seconds is None
+    ]
+    # -- requested interests the final plan does not cover: discovery vs. schedulability -------
+    # Where each interest's candidates are lost on the way to a slot: viable by the quality
+    # stage -> in the planner's scheduling universe -> inside the bounded reasoning request
+    # (recomputed on the final state; the request itself is not stored) -> what the planner's
+    # coverage pass recorded (final pass only).
+    from app.services import candidate_universe as universe
+    from app.services.ai_itinerary_reasoning_request_builder import AIItineraryReasoningRequestBuilder
+    from app.services.interest_coverage import interest_coverage as coverage_of
+    from app.services.usefulness_contract import _VIABLE_TIERS
+
+    quality = state.candidate_quality_report
+    scores = {}
+    for score in (*quality.attraction_scores, *quality.ai_directed_scores) if quality is not None else ():
+        scores.setdefault(score.candidate_id, score)
+    universe_ids = {str(poi.get("place_id")) for poi in universe.schedulable_broad_pois(state)}
+    universe_ids |= {str(c.provider_place_id) for c in universe.resolve_promoted_candidates(state).accepted}
+    try:
+        bounded_ids = {
+            c.provider_place_id for c in AIItineraryReasoningRequestBuilder().build_request(state).allowed_candidates
+        }
+    except Exception:  # the bound is a recomputation; without it the count is simply not reported
+        bounded_ids = None
+    coverage_records = [item for item in trace.get("interest_coverage", []) if item.get("pass") == final_pass]
+    uncovered_interests: list[dict[str, Any]] = []
+    for interest, covered in coverage_of(state).items():
+        if covered:
+            continue
+        viable = [
+            s.candidate_id for s in scores.values()
+            if interest in s.matched_interests and s.quality_tier in _VIABLE_TIERS and not s.low_value_object
+        ]
+        record = next((item for item in coverage_records if item["interest"] == interest), None)
+        uncovered_interests.append(
+            {
+                "interest": interest,
+                "viable_candidates": len(viable),
+                "of_those_in_scheduling_universe": sum(1 for place_id in viable if place_id in universe_ids),
+                "of_those_in_reasoning_request_bound": (
+                    sum(1 for place_id in viable if place_id in bounded_ids) if bounded_ids is not None else None
+                ),
+                # what the planner's own coverage pass counted and why no candidate took a slot;
+                # None when the pass did not run for this interest (e.g. food is never forced)
+                "coverage_pass": (
+                    {
+                        "outcome": record["outcome"],
+                        "counts": record["counts"],
+                        "strongest_rejected": [
+                            {**item, "name": name(item["place_id"])} for item in record["strongest_rejected"]
+                        ],
+                    }
+                    if record is not None
+                    else None
+                ),
+            }
+        )
+
+    # -- inventory discovery: what each Places request asked for and what became of it ------------
+    # The 60-place allocation is a REQUEST target, not a promise of 60 unique or viable places.
+    # Each place is attributed to the FIRST request that returned it (the order results are applied in).
+    requests_made = trace.get("discovery_requests") or []
+    first_source: dict[str, str] = {}
+    for item in requests_made:
+        if item["kind"].startswith("attractions"):
+            for place_id in item["place_ids"]:
+                first_source.setdefault(place_id, item["source"])
+    requested_interests = list(coverage_of(state))
+
+    def by_source(place_ids: Any) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        for place_id in place_ids:
+            source = first_source.get(place_id, "not_from_a_discovery_request")  # e.g. a targeted must-visit / anchor lookup
+            counts[source] = counts.get(source, 0) + 1
+        return dict(sorted(counts.items()))
+
+    viable_ids = [s.candidate_id for s in scores.values() if s.quality_tier in _VIABLE_TIERS and not s.low_value_object]
+    usage_report = state.provider_usage_report
+    discovery = {
+        "requests": [
+            {key: item[key] for key in ("kind", "source", "group", "requested", "offset", "returned", "failed")}
+            for item in requests_made
+        ],
+        "attraction_records_requested": sum(i["requested"] for i in requests_made if i["kind"].startswith("attractions")),
+        "attraction_records_returned": sum(i["returned"] for i in requests_made if i["kind"].startswith("attractions")),
+        "restaurant_records_requested": sum(i["requested"] for i in requests_made if i["kind"].startswith("restaurants")),
+        "restaurant_records_returned": sum(i["returned"] for i in requests_made if i["kind"].startswith("restaurants")),
+        "unique_attraction_identities_returned": len(first_source),
+        "attraction_candidates_in_pool": len(pois),
+        "pool_candidates_by_source": by_source(pois),
+        "viable_candidates_by_source": by_source(viable_ids),
+        "low_value_candidates_by_source": by_source(s.candidate_id for s in scores.values() if s.low_value_object),
+        "candidates_serving_a_requested_interest_by_source": by_source(
+            s.candidate_id for s in scores.values() if set(s.matched_interests) & set(requested_interests)
+        ),
+        "scheduled_stops_by_source": by_source(stop.provider_place_id for stop in scheduled.values()),
+        "places_credits": (usage_report.credits_by_api.get("places") if usage_report is not None else None),
+        "places_calls": (usage_report.calls_by_api.get("places") if usage_report is not None else None),
+    }
+
+    return {
+        "note": "diagnostic only; never an acceptance input and never shown to a traveller",
+        "discovery": discovery,
+        "uncovered_interests": uncovered_interests,
+        "planner_passes": trace["planner_passes"],
+        "final_pass": final_pass,
+        "final_pass_trigger": history.get("final_pass_trigger"),
+        "composition": trace["composition"],
+        "final_pass_stages": stages,
+        "final_stops": final_stops,
+        "removed_in_final_pass": [
+            {"name": name(item["place_id"]), "removed_by": item["removed_by"]} for item in history["removed"]
+        ],
+        "failed_legs": failed_legs,
+        # what each planner pass did with the routing allowance (place ids named where the pool knows them)
+        "routing_by_pass": _routing_by_pass(trace, name),
+        # routing allowances and credits left after each repair stage (the last entry is the final state)
+        "allowances": trace["allowances"],
+        "dropped_entries": trace["dropped_entries"],
+    }
+
+
 def _split_list(values: list[str] | None) -> list[str]:
     items: list[str] = []
     for value in values or []:
@@ -364,7 +678,7 @@ def _run(args: argparse.Namespace, cache_hits: dict[str, int]) -> dict[str, Any]
     from app.services import schedule_diversity as diversity
     from app.services.entity_collisions import scheduled_unresolved_collisions
     from app.services.grounded_anchors import grounded_anchor_place_ids
-    from app.services.interest_coverage import final_food_evidence, interest_coverage
+    from app.services.interest_coverage import final_food_evidence, food_coverage_evidence, interest_coverage
     from app.services.must_visit_matching import must_visit_place_ids, resolve_must_visits
     from app.services.planning_orchestrator import planning_orchestrator
     from app.services.route_burden import day_route_burdens
@@ -389,9 +703,15 @@ def _run(args: argparse.Namespace, cache_hits: dict[str, int]) -> dict[str, Any]
     # call, including the final commit (which the report stored with the plan
     # cannot contain).
     recorder = performance.started_recorder()
+    # Quality tuning corrections: the canary also owns the generation's
+    # diagnostic recorder (inactive everywhere else), so the report can say
+    # which planner pass put each stop on the plan.
+    from app.core import generation_diagnostics
+
+    diagnostics_recorder = generation_diagnostics.GenerationDiagnostics()
     started = time.monotonic()
     try:
-        with performance.activate(recorder):
+        with performance.activate(recorder), generation_diagnostics.activate(diagnostics_recorder):
             created = planning_orchestrator.create_trip(
                 TripRequest(
                     primary_destination=args.city,
@@ -602,6 +922,8 @@ def _run(args: argparse.Namespace, cache_hits: dict[str, int]) -> dict[str, Any]
         # the validator's own rule: final scheduled stops, and for food also the final nearby food
         "interest_coverage": interest_coverage(state),
         "food_interest_evidence": final_food_evidence(state),
+        # which kind of evidence covers the food interest (either is enough; both empty = not covered)
+        "food_coverage_evidence": food_coverage_evidence(state),
         "unrecognised_interests": [term for term in interests if not taxonomy.canonical_interests([term])],
         "usefulness_verdict": (
             "not_enforced (viable < R)" if not verdict.enforced else "pass" if verdict.passed else "underfilled"
@@ -629,6 +951,9 @@ def _run(args: argparse.Namespace, cache_hits: dict[str, int]) -> dict[str, Any]
         "sequencing_applied": bool(
             state.route_aware_sequencing_report and state.route_aware_sequencing_report.applied_to_itinerary
         ),
+        # Acceptance policy 2: what the provider said about ferries on the FINAL legs, and whether
+        # the plan itself tells the traveller (the validation warning the itinerary page shows).
+        "ferry_disclosure": _ferry_disclosure(state),
     }
 
     # -- daily travel burden (provider leg data only) -------------------------------------------
@@ -899,6 +1224,12 @@ def _run(args: argparse.Namespace, cache_hits: dict[str, int]) -> dict[str, Any]
         ),
     }
 
+    # -- planning diagnostics (reported only; never read by `_acceptance`) ---------------------
+    try:
+        report["planning_diagnostics"] = _planning_diagnostics(diagnostics_recorder, state)
+    except Exception as exc:  # a reporting extra can never fail a run; by TYPE only
+        report["planning_diagnostics"] = {"unavailable": type(exc).__name__}
+
     # -- itinerary quality (Phase Q0; docs/24_itinerary_quality_contract.md) -----------------
     # Reported only: computed from the stored state, and never read by `_acceptance`.
     try:
@@ -908,6 +1239,27 @@ def _run(args: argparse.Namespace, cache_hits: dict[str, int]) -> dict[str, Any]
 
     report["acceptance"] = _acceptance(report)
     return report
+
+
+def _accepted_informational_codes(report: dict[str, Any]) -> set[str]:
+    """Acceptance policy 2: the review codes that are accepted as INFORMATIONAL for this
+    report because their stated conditions hold. `ROUTE_INCLUDES_FERRY` only when the routing
+    provider positively identified a ferry on a final leg, every such day carries the
+    traveller-facing ferry warning, that warning says nothing about the service is verified,
+    and no ferry warning exists without a provider-confirmed leg. It accepts that one code
+    only: an unrouted leg, a long-travel day, a dispersed day or an uncovered interest keeps
+    its own code and still fails."""
+    ferry = (report.get("routing") or {}).get("ferry_disclosure") or {}
+    confirmed_days = ferry.get("provider_confirmed_ferry_days") or []
+    if (
+        ferry.get("provider_confirmed_ferry_legs", 0) > 0
+        and confirmed_days
+        and set(confirmed_days) <= set(ferry.get("days_with_traveller_facing_ferry_warning") or [])
+        and ferry.get("warnings_state_nothing_about_the_service_is_verified") is True
+        and ferry.get("ferry_warnings_without_a_provider_confirmed_leg", 0) == 0
+    ):
+        return set(_CONDITIONAL_INFORMATIONAL_CODES)
+    return set()
 
 
 def _acceptance(report: dict[str, Any]) -> dict[str, Any]:
@@ -950,7 +1302,8 @@ def _acceptance(report: dict[str, Any]) -> dict[str, Any]:
             "AI anchor proposal",
         )
     readiness = quality.get("readiness")
-    unaccepted = sorted(set(quality.get("review_codes") or []) - _ACCEPTED_REVIEW_CODES)
+    informational = _accepted_informational_codes(report)
+    unaccepted = sorted(set(quality.get("review_codes") or []) - _ACCEPTED_REVIEW_CODES - informational)
     viable_at_least_r_for_readiness = inventory["viable_meaningful_candidate_count"] >= inventory["R"]
     if viable_at_least_r_for_readiness:
         check(
@@ -1016,6 +1369,9 @@ def _acceptance(report: dict[str, Any]) -> dict[str, Any]:
 
     failed = [c for c in checks if not c["passed"]]
     return {
+        "policy_version": _ACCEPTANCE_POLICY_VERSION,
+        # informational codes this report carries AND whose conditions held (policy 2)
+        "informational_codes_accepted": sorted(informational & set(quality.get("review_codes") or [])),
         "viable_at_least_R": viable_at_least_r,
         "outcome": (
             "PASS" if not failed and viable_at_least_r
@@ -1372,6 +1728,120 @@ def _render(report: dict[str, Any]) -> str:
         lines.append("REDUNDANT WORK (identical requests repeated within this generation; counts only):")
         for item in performance["redundant_work"]:
             row(item["label"], f"{item['repeated']} of {item['total']}")
+
+    diagnostics = report.get("planning_diagnostics") or {}
+    if diagnostics:
+        section("PLANNING DIAGNOSTICS (diagnostic only; never an acceptance check)")
+        if "unavailable" in diagnostics:
+            row("unavailable", diagnostics["unavailable"])
+        else:
+            found = diagnostics.get("discovery") or {}
+            if found:
+                lines.append(
+                    f"- discovery: attraction records requested {found['attraction_records_requested']}, returned "
+                    f"{found['attraction_records_returned']}, unique identities {found['unique_attraction_identities_returned']}"
+                    f", candidates in pool {found['attraction_candidates_in_pool']} | Places calls {found['places_calls']}, "
+                    f"credits {found['places_credits']}"
+                )
+                lines.append(f"    pool by source: {found['pool_candidates_by_source']} | viable: {found['viable_candidates_by_source']}")
+                lines.append(
+                    f"    low-value: {found['low_value_candidates_by_source']} | serving a requested interest: "
+                    f"{found['candidates_serving_a_requested_interest_by_source']} | scheduled: {found['scheduled_stops_by_source']}"
+                )
+                lines.append(
+                    f"    restaurants: requested {found['restaurant_records_requested']}, returned {found['restaurant_records_returned']}"
+                )
+                for item in found["requests"]:
+                    lines.append(
+                        f"    {item['kind']} {item['source']} {item['group']}: asked {item['requested']} (offset {item['offset']})"
+                        f" -> {'FAILED' if item['failed'] else item['returned']}"
+                    )
+            row("planner passes", ", ".join(f"{p['pass']}: {p['trigger']}" for p in diagnostics["planner_passes"]) or "none")
+            for entry in diagnostics["composition"]:
+                lines.append(
+                    f"- day composition (pass {entry.get('pass')}): {entry.get('status')}"
+                    + (f" ({entry.get('declined')})" if entry.get("declined") else "")
+                    + f" | accepted moves: {entry.get('accepted_moves')} {entry.get('moves_by_kind') or ''}".rstrip()
+                    + f" | plans judged: {entry.get('evaluations')} | search budget exhausted: "
+                    f"{'yes' if entry.get('budget_exhausted') else 'no'}"
+                    f" | dispersed days before -> after: {entry.get('dispersed_days_before')} -> {entry.get('dispersed_days_after')}"
+                    f" | improving replacement existed: {'yes' if entry.get('improving_replacement_existed') else 'no'}"
+                )
+                if entry.get("counts"):
+                    lines.append(f"    search counts: {entry['counts']}")
+            for item in diagnostics.get("uncovered_interests") or []:
+                lines.append(
+                    f"- uncovered interest {item['interest']}: viable {item['viable_candidates']}"
+                    f" | in scheduling universe {item['of_those_in_scheduling_universe']}"
+                    f" | in reasoning bound {item['of_those_in_reasoning_request_bound']}"
+                    + (
+                        f" | coverage pass: {item['coverage_pass']['outcome']} {item['coverage_pass']['counts']}"
+                        if item.get("coverage_pass")
+                        else " | coverage pass: did not run for this interest"
+                    )
+                )
+                for rejected in (item.get("coverage_pass") or {}).get("strongest_rejected") or []:
+                    lines.append(
+                        f"    tried {rejected['name']}: tier rank {rejected['tier_rank']}"
+                        f" | nearest scheduled stop {rejected['nearest_day_km']} km (straight line)"
+                        f" | {rejected['reasons']}"
+                    )
+            for entry in diagnostics["final_pass_stages"]:
+                changes = [
+                    f"{label}: {', '.join(entry[key])}"
+                    for key, label in (("added", "added"), ("removed", "removed"), ("moved_to_another_day", "moved"))
+                    if entry.get(key)
+                ]
+                lines.append(f"- {entry['stage']}: stops per day {entry['stops_per_day']}" + (f" | {' | '.join(changes)}" if changes else ""))
+            for stop in diagnostics["final_stops"]:
+                source = "must-visit" if stop["must_visit"] else "promoted anchor" if stop["promoted_anchor"] else "broad pool"
+                lines.append(
+                    f"  day {stop['day']} {stop['name']}: introduced by {stop['introduced_by']}"
+                    + (f", last moved by {stop['last_moved_by']}" if stop.get("last_moved_by") else "")
+                    + f" | {source} | evidence band {stop['usefulness_evidence_band']} | tier {stop['internal_tier']}"
+                    f" | {stop['taxonomy_category']} | provider: {stop['provider_categories'] or 'none recorded'}"
+                )
+            for leg in diagnostics["failed_legs"]:
+                lines.append(
+                    f"- unrouted leg, day {leg['day']}: {leg['from']['name']} {leg['from']['coordinates']} -> "
+                    f"{leg['to']['name']} {leg['to']['coordinates']} | reason: {leg['provider_failure_reason']}"
+                    f" | modes attempted: {', '.join(leg['modes_attempted'])}"
+                )
+            routing = diagnostics.get("routing_by_pass") or {}
+            for item in routing.get("passes") or []:
+                lines.append(
+                    f"- routing, pass {item['pass']} ({item['trigger']}): day-route allowance "
+                    f"{item['route_requests_left_before']} -> {item['route_requests_left_after']} (used {item['route_requests_used']})"
+                    f" | building routes: {item['requests_building_routes'] or 'no request'}"
+                    f" | routability repair: {item['requests_in_routability_repair'] or 'no request'}"
+                    f" | burden repair: {item['requests_in_route_burden_repair'] or 'no request'}"
+                )
+                lines.append(
+                    f"    legs before repairs: {item['legs_before_repairs']} (coverage {item['coverage_before_repairs']})"
+                    f" | after: {item['legs_after_repairs']} (coverage {item['coverage_after_repairs']})"
+                    f" | an earlier pass ended more routable: {'yes' if item['an_earlier_pass_ended_more_routable'] else 'no'}"
+                )
+                for attempt in item["routability_repair_attempts"]:
+                    lines.append(
+                        f"    repair, day {attempt['day']}: {attempt['reason']} | failed legs {attempt['failed_legs_before']} -> "
+                        f"{attempt['failed_legs_after']} | asked one at a time: {attempt['relocalized_legs']} | verification requests: "
+                        f"{attempt['verification_attempts']} | suspect: {attempt.get('suspect_place') or 'none identified'}"
+                    )
+                if item["initial_failed_pairs_already_failed_in_an_earlier_pass"] or item["initial_failed_places_already_failing_in_an_earlier_pass"]:
+                    lines.append(
+                        f"    seen failing in an earlier pass: {item['initial_failed_pairs_already_failed_in_an_earlier_pass']} leg(s); places: "
+                        f"{'; '.join(item['initial_failed_places_already_failing_in_an_earlier_pass']) or 'none'}"
+                        f" | suspects identified before: {'; '.join(item['suspects_already_identified_in_an_earlier_pass']) or 'none'}"
+                    )
+                if item.get("why_the_repair_allowance_ran_out"):
+                    row("    why the repair allowance ran out", item["why_the_repair_allowance_ran_out"])
+            if routing.get("passes"):
+                lines.append(
+                    f"- routing requests answered: {routing['requests_by_answer']} | day-route allowance used before the final pass: "
+                    f"{routing['route_requests_used_before_the_final_pass']} of {routing['route_requests_used_by_all_passes']} used in all"
+                )
+            if diagnostics["allowances"]:
+                row("allowances left after the last repair stage", diagnostics["allowances"][-1])
 
     itinerary_quality = report.get("itinerary_quality") or {}
     if itinerary_quality:

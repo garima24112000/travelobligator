@@ -173,7 +173,8 @@ def test_geoapify_requests_in_flight_never_exceed_the_configured_bound_across_ap
     places.search_broad_inventory(_CITY, {"pool_size": 60}, {"pool_size": 30})
     routes.join()
 
-    assert len(network.requests["places"]) == 6 and len(network.requests["routing"]) == len(_DAYS)
+    # 4 broad + 4 local attraction requests, 2 food requests, 1 accommodation request
+    assert len(network.requests["places"]) == 11 and len(network.requests["routing"]) == len(_DAYS)
     assert network.peak_in_flight <= limit
     assert context.usage_tracker.request_limiter.peak == network.peak_in_flight == min(limit, 4 + 3)
 
@@ -247,7 +248,7 @@ def test_concurrent_places_results_are_applied_in_the_original_category_order(
     assert [place.place_id for place in context.place_pool] == [place.place_id for place in serial_context.place_pool]
     assert context.entity_merges == serial_context.entity_merges
     assert context.usage_tracker.snapshot() == serial_context.usage_tracker.snapshot()
-    assert len(network.requests["places"]) == len(serial_network.requests["places"]) == 6
+    assert len(network.requests["places"]) == len(serial_network.requests["places"]) == 11
     assert len(network.requests["geocode"]) == len(serial_network.requests["geocode"]) == 1
 
 
@@ -679,7 +680,9 @@ def test_the_final_state_is_identical_with_and_without_concurrency(
     concurrent = generate()
     report = concurrent.generation_performance_report
     assert report.concurrent_batches >= 2 and report.peak_geoapify_concurrency > 1
-    assert report.batch_sizes["places"] == [6] and report.batch_sizes["walk_routes"] == [3]
+    # the first Places batch (4 broad + 4 local + 2 food + 1 accommodation), then the must-visit
+    # follow-up batch (the held culture, parks and food shares)
+    assert report.batch_sizes["places"] == [11, 3] and report.batch_sizes["walk_routes"] == [3]
 
     # the same generation again, equally cold (fresh adapters, fresh cache),
     # with every batch forced serial
@@ -744,7 +747,7 @@ def test_the_canary_reports_concurrency_diagnostics_without_judging_them(
     section = report["performance"]
     assert section["concurrency"]["peak_geoapify_concurrency"] >= 1
     assert section["concurrency"]["concurrent_batches"] >= 2
-    assert section["concurrency"]["batch_sizes"]["places"] == [6]
+    assert section["concurrency"]["batch_sizes"]["places"] == [11, 3]  # first batch, then the must-visit follow-up
     text = canary._render(report)
     for label in (
         "CONCURRENCY", "- peak Geoapify concurrency (this generation):", "- peak Geoapify concurrency (whole process):",

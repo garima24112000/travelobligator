@@ -7,6 +7,7 @@ from datetime import timedelta
 from typing import Any
 
 from app.services.experience_identity import deterministic_experience_id
+from app.core import generation_diagnostics
 from app.core import performance
 from app.core.config import get_settings
 from app.models.ai_candidate_promotion import PromotedAICandidate
@@ -44,20 +45,28 @@ from app.models.planning_state import (
     TripPace,
 )
 from app.services import place_taxonomy as taxonomy
+from app.services import candidate_universe as universe
+from app.services import candidate_usefulness as usefulness
+from app.services import day_composition as composition
 from app.services import schedule_diversity as diversity
 from app.services.base import PlanningStageService
 from app.services.day_order_heuristics import (
     ALTERNATIVE_MAX_LENGTH_RATIO,
+    AS_WELL_PLACED_KM,
     GEOGRAPHIC_SPREAD_THRESHOLD_KM,
+    NEAR_DAY_STOPS_KM,
     balanced_day_sizes,
     balanced_spatial_clusters,
     centroid,
+    day_extent_km,
     day_spread_km,
     grouping_length_km,
+    keeps_day_within_spread,
 )
 from app.services.day_rationale import deterministic_day_summary, finalize_day_explanations
 from app.services.entity_collisions import SUSPECT_COLLISION_KEY
 from app.services.grounded_anchors import grounded_anchor_place_ids, low_anchor_utilization
+from app.services.pace_targets import pace_targets
 from app.services.must_visit_matching import is_tagged_must_visit, legacy_must_visit_place_ids
 from app.utils.geo import haversine_distance_km
 
@@ -213,13 +222,7 @@ _IMPLEMENTATION_GAPS_WHY_NEEDS_REVIEW = [
 # already-computed `quality_tier`/`total_score` -- never invents a place,
 # never mutates `candidate_quality_report`, and falls back to pre-156C
 # behavior whenever no report (or no matching score) is available.
-_QUALITY_TIER_RANK: dict[CandidateQualityTier, int] = {
-    CandidateQualityTier.PRIMARY_ANCHOR: 4,
-    CandidateQualityTier.GOOD_CANDIDATE: 3,
-    CandidateQualityTier.SECONDARY_CANDIDATE: 2,
-    CandidateQualityTier.LOW_PRIORITY: 1,
-    CandidateQualityTier.REJECTED: 0,
-}
+_QUALITY_TIER_RANK: dict[CandidateQualityTier, int] = usefulness.TIER_RANK
 # Trust-over-fullness (Step 156E, itinerary-generator-build-spec.md Stage
 # 8): only these tiers are eligible for attraction scheduling. `rejected`
 # and `low_priority` candidates are both excluded entirely -- never used
@@ -420,57 +423,38 @@ def _promoted_candidate_to_poi_dict(promoted: PromotedAICandidate) -> dict[str, 
     }
 
 
-def _build_promoted_candidate_pois(
-    planning_state: PlanningState,
-    candidate_pois: list[dict[str, Any]],
-) -> tuple[list[dict[str, Any]], list[str]]:
+def _build_promoted_candidate_pois(planning_state: PlanningState) -> tuple[list[dict[str, Any]], list[str]]:
     """Builds the list of promoted-AI-candidate dicts eligible to join the
     attraction scheduling pool (Step 170D), plus any honest skip warnings.
 
-    Only ever reads `planning_state.ai_candidate_promotion_report` (already
-    computed by `AICandidatePromotionService` -- this never calls it, never
-    calls a provider/LLM, and never mutates `planning_state`). Returns
-    `([], [])` whenever the report is absent or has zero promoted
-    candidates, so default behavior (no promotion report, or an empty one)
-    is byte-for-byte unchanged from before Step 170D.
+    Only ever reads `planning_state` (never calls a provider/LLM, never
+    mutates it). Returns `([], [])` whenever the promotion report is absent
+    or has zero promoted candidates.
 
-    Every promoted candidate missing required coordinates is skipped with
-    an explicit warning instead of being scheduled with a guessed
-    location. Every promoted candidate whose `provider_place_id`/name
-    already matches a real candidate already in `candidate_pois` is
-    skipped as a duplicate -- promotion never causes the same real place to
-    be scheduled twice.
+    WHICH promoted candidates join is decided by
+    `candidate_universe.resolve_promoted_candidates` -- the same decision
+    the bounded AI reasoning request reads, so the model is never offered a
+    candidate this planner would not schedule. A candidate without
+    coordinates is skipped with an explicit warning instead of being
+    scheduled with a guessed location; one that IS a place already in the
+    pool (same provider id, or the same entity or name close by) is skipped
+    so no real place is scheduled twice. A namesake elsewhere is a
+    different place and is kept.
     """
-    promotion_report = planning_state.ai_candidate_promotion_report
-    if promotion_report is None or not promotion_report.promoted_candidates:
-        return [], []
-
-    existing_keys: set[tuple[str, str]] = set()
-    for poi in candidate_pois:
-        existing_keys |= _candidate_identity_keys(poi)
-
-    promoted_pois: list[dict[str, Any]] = []
-    warnings: list[str] = []
-    seen_keys: set[tuple[str, str]] = set()
-
-    for promoted in promotion_report.promoted_candidates:
-        candidate_dict = _promoted_candidate_to_poi_dict(promoted)
-        if candidate_dict is None:
-            warnings.append(
-                _PROMOTED_CANDIDATE_MISSING_COORDINATES_WARNING_TEMPLATE.format(name=promoted.name)
-            )
-            continue
-
-        candidate_keys = _candidate_identity_keys(candidate_dict)
-        if candidate_keys & (existing_keys | seen_keys):
-            warnings.append(
-                _PROMOTED_CANDIDATE_DUPLICATE_WARNING_TEMPLATE.format(name=promoted.name)
-            )
-            continue
-        seen_keys |= candidate_keys
-
-        promoted_pois.append(candidate_dict)
-
+    resolution = universe.resolve_promoted_candidates(planning_state)
+    warnings = [
+        (
+            _PROMOTED_CANDIDATE_MISSING_COORDINATES_WARNING_TEMPLATE
+            if reason == universe.REASON_MISSING_COORDINATES
+            else _PROMOTED_CANDIDATE_DUPLICATE_WARNING_TEMPLATE
+        ).format(name=promoted.name)
+        for promoted, reason in resolution.left_out
+    ]
+    promoted_pois = [
+        candidate_dict
+        for candidate_dict in (_promoted_candidate_to_poi_dict(promoted) for promoted in resolution.accepted)
+        if candidate_dict is not None
+    ]
     return promoted_pois, warnings
 
 
@@ -703,9 +687,10 @@ class ExperiencePlannerService(PlanningStageService):
 
         num_days = (trip_request.end_date - trip_request.start_date).days + 1
 
-        scheduling_candidate_pois = _select_candidates_by_quality(
-            candidate_pois, attraction_quality_lookup
-        )
+        # The schedulable broad pool is `candidate_universe`'s (the same
+        # membership `_select_candidates_by_quality` gives; one definition,
+        # shared with the bounded AI reasoning request).
+        scheduling_candidate_pois = universe.schedulable_broad_pois(planning_state)
         # Trust-over-fullness (Step 156E): candidates excluded here are
         # low_priority/rejected by candidate quality, never a missing
         # provider result -- used below to explain a lighter-than-usual day
@@ -725,9 +710,7 @@ class ExperiencePlannerService(PlanningStageService):
         # nearest-neighbor fill naturally picks it. It never bumps an
         # already-scheduled real candidate out of a slot it would otherwise
         # have won.
-        promoted_pois, promoted_candidate_warnings = _build_promoted_candidate_pois(
-            planning_state, candidate_pois
-        )
+        promoted_pois, promoted_candidate_warnings = _build_promoted_candidate_pois(planning_state)
         scheduling_candidate_pois = scheduling_candidate_pois + promoted_pois
         has_any_attraction_candidates = bool(candidate_pois) or bool(promoted_pois)
 
@@ -762,10 +745,6 @@ class ExperiencePlannerService(PlanningStageService):
         # Section 3B: a promoted anchor is ranked on its OWN quality score
         # (computed when it was grounded), like every broad-pool candidate.
         profile_scores = {**attraction_quality_lookup, **_promoted_quality_scores(promoted_pois, quality_report)}
-        profiles = {
-            id(poi): _candidate_profile(poi, profile_scores.get(id(poi)), canonical_interests)
-            for poi in scheduling_candidate_pois
-        }
         # Grounded semantic anchors in the scheduling pool, whether they came
         # through a targeted lookup or were already in the broad pool.
         anchor_place_ids = grounded_anchor_place_ids(planning_state)
@@ -774,10 +753,34 @@ class ExperiencePlannerService(PlanningStageService):
             for poi in scheduling_candidate_pois
             if poi.get("promoted_from_ai") or str(poi.get("place_id") or "") in anchor_place_ids
         }
+        # Q2: each profile carries the candidate's usefulness -- the one
+        # ordering every limited-slot choice below reads.
+        profiles = {
+            id(poi): _candidate_profile(
+                poi,
+                profile_scores.get(id(poi)),
+                canonical_interests,
+                must_visit=id(poi) in must_visit_ids,
+                grounded_anchor=id(poi) in anchor_ids,
+            )
+            for poi in scheduling_candidate_pois
+        }
+        # Diagnostic only (`core/generation_diagnostics`; a no-op unless the
+        # evaluation tooling activated a recorder): which run of the planner
+        # this is, and after each pass below the places on each day.
+        generation_diagnostics.begin_planner_pass(
+            generation_diagnostics.PASS_USEFULNESS_FALLBACK
+            if planning_state.usefulness_fallback_applied
+            else generation_diagnostics.PASS_AFTER_AI_REPAIR
+            if planning_state.ai_itinerary_repair_attempt_count
+            else generation_diagnostics.PASS_INITIAL
+        )
         if ai_day_groups is not None:
+            _trace_schedule("ai_reasoning_selection", ai_day_groups)
             # Section 202B.2 (Task 22): a valid AI grouping may still leave
             # a day empty; fill only from unused quality-eligible candidates.
             day_groups = _fill_empty_days(ai_day_groups, scheduling_candidate_pois, profiles)
+            _trace_schedule("empty_day_fill", day_groups)
         else:
             # Section 202B.2: shared candidate-quality evidence drives the
             # deterministic fallback too -- interest coverage, diversity
@@ -810,6 +813,7 @@ class ExperiencePlannerService(PlanningStageService):
             # walking down the ranking one anchor at a time.
             with performance.stage("spatial_grouping"):
                 day_groups = _cluster_selected_into_days(selected, num_days, max_per_day)
+            _trace_schedule("deterministic_selection", day_groups)
 
         # Section 203C.2B (canary correction): the reasoning model chooses
         # WHICH places to visit; deterministic geography is authoritative for
@@ -817,12 +821,22 @@ class ExperiencePlannerService(PlanningStageService):
         # it is already geographically sound, and replaced by the spatial
         # grouping of the same places when that is clearly shorter.
         ai_order_kept = ai_day_groups is not None
-        if ai_day_groups is not None and get_settings().ai_day_spatial_regrouping_enabled:
+        # Q3: with day composition on, the shared composition objective
+        # (`services/day_composition`) decides both which of the chosen places
+        # share a day and whether a discretionary one gives way -- for the
+        # deterministic selection and for a plan the model chose alike. It
+        # then stands in for this regrouping and for the spread pass below.
+        # Off, or for a pool it cannot identify, both run exactly as before.
+        use_composition = get_settings().day_composition_enabled and _composable(
+            scheduling_candidate_pois, num_days * max_per_day
+        )
+        if ai_day_groups is not None and get_settings().ai_day_spatial_regrouping_enabled and not use_composition:
             with performance.stage("spatial_grouping"):
                 regrouped = _spatially_regroup_days(day_groups, profiles, must_visit_ids, num_days, max_per_day)
             if regrouped is not None:
                 day_groups = regrouped
                 ai_order_kept = False
+            _trace_schedule("spatial_regrouping", day_groups)
 
         # Section 203C.2B: deterministic fallback for an underfilled plan.
         # Only when the usefulness contract found the plan underfilled while
@@ -831,7 +845,14 @@ class ExperiencePlannerService(PlanningStageService):
         # unused quality-eligible candidates -- never a rejected, low-value
         # or duplicate place, and never an invented one.
         if planning_state.usefulness_fallback_applied:
-            day_groups = _top_up_underfilled_days(day_groups, scheduling_candidate_pois, profiles, max_per_day)
+            day_groups = _top_up_underfilled_days(
+                day_groups,
+                scheduling_candidate_pois,
+                profiles,
+                max_per_day,
+                minimum_stops=pace_targets(num_days, pace).minimum_useful,
+            )
+            _trace_schedule("fallback_top_up", day_groups)
 
         # Section 203C.2B (entity collisions): two candidates the provider's
         # evidence could neither merge nor tell apart (an unresolved suspected
@@ -839,6 +860,7 @@ class ExperiencePlannerService(PlanningStageService):
         day_groups, collision_separations = _separate_suspected_duplicates(
             day_groups, scheduling_candidate_pois, profiles, must_visit_ids
         )
+        _trace_schedule("duplicate_separation", day_groups)
 
         # A plan the reasoning model chose gets ONE prospective geographic
         # pass (the deterministic selection has its own outlier control): an
@@ -848,12 +870,50 @@ class ExperiencePlannerService(PlanningStageService):
         # verified inventory (viable >= T), never against a must-visit or a
         # grounded anchor, and an active user lock leaves the plan untouched.
         sufficiency = planning_state.inventory_sufficiency_report
-        if (
+        spread_pass_allowed = (
             used_ai_reasoning
             and sufficiency is not None
             and sufficiency.viable_candidates >= sufficiency.target_stops
             and not any(lock.is_active for lock in planning_state.user_locks)
-        ):
+        )
+        composed: composition.Composition | None = None
+        if use_composition:
+            # A plan the model chose keeps its places where feasible: the
+            # regrouping setting still decides whether stops may change days,
+            # a replacement needs what the spread pass needed (sufficient
+            # inventory, no active lock) and at most one per trip day. The
+            # deterministic selection is improved without those limits.
+            with performance.stage("spatial_grouping"):
+                composed = _compose_days(
+                    day_groups,
+                    scheduling_candidate_pois,
+                    profiles,
+                    must_visit_ids,
+                    canonical_interests,
+                    per_day=max_per_day,
+                    markets_requested=diversity.markets_explicitly_requested(interest_terms),
+                    justified=diversity.justified_classes(interest_terms),
+                    plan_class_cap=(
+                        (lambda coarse: diversity.plan_class_cap(
+                            coarse,
+                            diversity.markets_explicitly_requested(interest_terms),
+                            diversity.justified_classes(interest_terms),
+                            num_days,
+                        ))
+                        if not used_ai_reasoning and get_settings().schedule_diversity_enabled
+                        else None
+                    ),
+                    allow_regrouping=not used_ai_reasoning or get_settings().ai_day_spatial_regrouping_enabled,
+                    allow_replacement=spread_pass_allowed if used_ai_reasoning else True,
+                    max_replacements=num_days if used_ai_reasoning else None,
+                )
+        before_composition = day_groups
+        if composed is not None and composed.declined is None:
+            if composed.changed:
+                day_groups = _days_from_keys(composed.days, scheduling_candidate_pois)
+                ai_order_kept = False
+            _trace_schedule("day_composition", day_groups)
+        elif spread_pass_allowed:
             with performance.stage("spatial_grouping"):
                 day_groups = _limit_ai_day_spread(
                     day_groups,
@@ -865,6 +925,19 @@ class ExperiencePlannerService(PlanningStageService):
                     markets_requested=diversity.markets_explicitly_requested(interest_terms),
                     justified=diversity.justified_classes(interest_terms),
                 )
+            _trace_schedule("ai_spread_pass", day_groups)
+        _trace_composition(
+            composed,
+            before_composition,
+            day_groups,
+            enabled=get_settings().day_composition_enabled,
+            composable=use_composition,
+            used_ai_reasoning=used_ai_reasoning,
+            replacement_allowed=spread_pass_allowed if used_ai_reasoning else True,
+            regrouping_allowed=not used_ai_reasoning or get_settings().ai_day_spatial_regrouping_enabled,
+            unused_candidates=len(scheduling_candidate_pois) - sum(len(group) for group in before_composition),
+            active_user_lock=any(lock.is_active for lock in planning_state.user_locks),
+        )
 
         # Section 203C.2B: schedule diversity. Once the days are grouped --
         # whoever grouped them -- a day may not hold more markets than the
@@ -883,6 +956,7 @@ class ExperiencePlannerService(PlanningStageService):
                 justified=diversity.justified_classes(interest_terms),
                 enabled=get_settings().schedule_diversity_enabled,
             )
+        _trace_schedule("schedule_diversity", day_groups)
 
         # Section 3C.1: a plan the reasoning model chose is kept, but when it
         # clearly under-uses the grounded anchors a bounded number of ordinary
@@ -901,6 +975,7 @@ class ExperiencePlannerService(PlanningStageService):
                 markets_requested=diversity.markets_explicitly_requested(interest_terms),
                 justified=diversity.justified_classes(interest_terms),
             )
+            _trace_schedule("anchor_utilization", day_groups)
 
         # Section 3B: requested-interest coverage. Whoever chose the days, a
         # requested interest that no scheduled stop serves gets ONE bounded,
@@ -918,6 +993,7 @@ class ExperiencePlannerService(PlanningStageService):
             markets_requested=diversity.markets_explicitly_requested(interest_terms),
             justified=diversity.justified_classes(interest_terms),
         )
+        _trace_schedule("interest_coverage", day_groups)
 
         reasoning_result = planning_state.ai_itinerary_reasoning_result
         logger.info(
@@ -1101,6 +1177,7 @@ class ExperiencePlannerService(PlanningStageService):
         )
 
         planning_state.experience_plan = experience_plan
+        generation_diagnostics.schedule_from_state("planner_final", planning_state)
         finalize_day_explanations(planning_state)
         planning_state.touch()
         return planning_state
@@ -1360,7 +1437,6 @@ def _group_candidates_into_days(
 
 _LOW_VALUE_SHARE_OF_CAPACITY = 0.25  # soft cap for "diluted" categories in a general itinerary
 _ART_FOCUSED_LOW_VALUE_SHARE = 0.6
-_SAME_CATEGORY_REPEAT_PENALTY = 0.03
 _OUTLIER_MIN_KM = 8.0
 _OUTLIER_MEDIAN_FACTOR = 2.5
 _CLUSTER_CELL_DEGREES = 0.02  # ~2 km grid for structurally tagged sub-feature complexes
@@ -1430,12 +1506,46 @@ class _CandidateProfile:
     # Section 202C.1A
     object_kind: str | None = None
     notable_object: bool = False
+    # Q2: the candidate's place in the one usefulness ordering
+    # (`candidate_usefulness`). Read it through `_usefulness_of`.
+    usefulness: usefulness.CandidateUsefulness | None = None
+
+
+def _usefulness_of(poi: dict[str, Any], profiles: dict[int, _CandidateProfile]) -> usefulness.CandidateUsefulness:
+    """The candidate's usefulness. A profile built without one (no must-visit
+    or anchor knowledge) is assessed from its own quality facts alone."""
+    profile = profiles[id(poi)]
+    if profile.usefulness is not None:
+        return profile.usefulness
+    return usefulness.assess(
+        usefulness.QualityEvidence(
+            tier_rank=profile.tier_rank,
+            score=profile.score,
+            matched_interests=tuple(profile.matched_interests),
+            low_value_object=profile.low_value,
+            notable_object=profile.notable_object,
+            commercial_gallery=profile.commercial_gallery,
+        ),
+        must_visit=False,
+        grounded_anchor=False,
+        canonical_interests=profile.matched_interests,
+        name=str(poi.get("name") or ""),
+        place_id=str(poi.get("place_id") or ""),
+    )
+
+
+def _usefulness_key(profiles: dict[int, _CandidateProfile]) -> Any:
+    """Sort key: the canonical usefulness ordering, best first."""
+    return lambda poi: _usefulness_of(poi, profiles).sort_key
 
 
 def _candidate_profile(
     poi: dict[str, Any],
     score: CandidateQualityScore | None,
     canonical_interests: list[str],
+    *,
+    must_visit: bool = False,
+    grounded_anchor: bool = False,
 ) -> _CandidateProfile:
     classification = taxonomy.classify_candidate(poi)
     matched = taxonomy.matched_interests(classification, canonical_interests)
@@ -1452,7 +1562,30 @@ def _candidate_profile(
             str(poi["quality_tier"]), rank
         )
         total = 0.6
+    # Q2: the stored score's own evidence when there is one (what the bounded
+    # reasoning request reads too); the provider classification otherwise.
+    evidence = (
+        usefulness.evidence_from_score(score)
+        if score is not None
+        else usefulness.QualityEvidence(
+            tier_rank=rank,
+            score=total,
+            significance_signals=tuple(classification.significance_signals),
+            matched_interests=tuple(matched),
+            low_value_object=classification.low_value,
+            notable_object=classification.notable_object,
+            commercial_gallery=classification.commercial_gallery,
+        )
+    )
     return _CandidateProfile(
+        usefulness=usefulness.assess(
+            evidence,
+            must_visit=must_visit,
+            grounded_anchor=grounded_anchor,
+            canonical_interests=canonical_interests,
+            name=str(poi.get("name") or ""),
+            place_id=str(poi.get("place_id") or poi.get("provider_place_id") or ""),
+        ),
         score=total,
         tier_rank=rank,
         primary=classification.primary_category,
@@ -1512,23 +1645,23 @@ def _select_diverse_scheduling_set(
        least one eligible matching candidate, the best-ranked match (a
        requested interest with no eligible supply is simply skipped -- no
        place is ever fabricated for it);
-    3. remaining slots by quality, with diversity pressure: "diluted"
-       candidates (small memorial/sculpture objects, commercial galleries
-       for a non-art request, and repeated sub-features of one tagged
-       complex) may fill slots only up to a soft share of the capacity
-       while non-diluted alternatives remain, and a repeated primary
-       category pays a small penalty;
+    3. remaining slots by usefulness (Q2: `candidate_usefulness`, the one
+       ordering every step here picks by), with diversity pressure:
+       "diluted" candidates (small memorial/sculpture objects, commercial
+       galleries for a non-art request, and repeated sub-features of one
+       tagged complex) may fill slots only up to a soft share of the
+       capacity while non-diluted alternatives remain, and among candidates
+       of EQUAL usefulness preference the one repeating a category least
+       is taken first;
     4. an isolated geographic outlier is replaced by the best remaining
        non-diluted candidate when one exists.
     """
     if capacity <= 0 or not pool:
         return []
 
-    def base_key(poi: dict[str, Any]) -> tuple[int, float]:
-        profile = profiles[id(poi)]
-        return (profile.tier_rank, profile.score)
-
-    ranked = sorted(pool, key=base_key, reverse=True)  # stable: provider order breaks ties
+    # Q2: the canonical usefulness ordering. It is total, so neither provider
+    # result order nor list position decides anything.
+    ranked = sorted(pool, key=_usefulness_key(profiles))
     art_focused = "art" in canonical_interests
     diluted_cap = max(
         1,
@@ -1578,6 +1711,15 @@ def _select_diverse_scheduling_set(
     # outside the pool's own spread (the isolated-outlier rule, measured
     # against the whole pool) would force a long transfer and is not seeded.
     within_seed_reach = _pool_reach(ranked if anchor_seed_count > 0 and anchor_ids else [])
+    # Q2: the same reach is a selection-time guard for every candidate that
+    # is not a must-visit, anchor or not: a place located far outside the
+    # pool's own spread takes a slot only when nothing nearer is left (so a
+    # thin pool still uses it). A guard on WHICH places are chosen -- not a
+    # grouping of days, and no route is involved.
+    within_pool_reach = _pool_reach(ranked)
+
+    def beyond_reach(poi: dict[str, Any]) -> bool:
+        return _poi_coordinates(poi) is not None and not within_pool_reach(poi)
 
     seeds_taken = 0
     for poi in ranked:
@@ -1605,6 +1747,7 @@ def _select_diverse_scheduling_set(
         matches = [
             p for p in ranked if id(p) not in selected_ids and interest in profiles[id(p)].matched_interests
         ]
+        matches = [p for p in matches if not beyond_reach(p)] or matches
         # Prefer a non-diluted match; a diluted one only if nothing else serves the interest.
         chosen = next((p for p in matches if not is_diluted(p)), matches[0] if matches else None)
         if chosen is not None:
@@ -1653,18 +1796,22 @@ def _select_diverse_scheduling_set(
             pool_for_pick = non_diluted
         else:
             pool_for_pick = remaining
+        pool_for_pick = [p for p in pool_for_pick if not beyond_reach(p)] or pool_for_pick
 
-        def adjusted(p: dict[str, Any]) -> tuple[float, int]:
-            profile = profiles[id(p)]
-            repeats = sum(1 for q in selected if profiles[id(q)].primary == profile.primary)
-            penalty = _SAME_CATEGORY_REPEAT_PENALTY * repeats
-            if is_diluted(p):
-                penalty += 0.05
-            return (profile.tier_rank * 1.0 + profile.score - penalty, -ranked.index(p))
+        def refined(p: dict[str, Any]) -> tuple:
+            # Q2: usefulness preference decides. Diversity only refines the
+            # choice among candidates of EQUAL preference (fewest repeats of
+            # the same category, then a non-diluted place); it never lifts a
+            # candidate over one with a stronger preference.
+            candidate = _usefulness_of(p, profiles)
+            repeats = sum(1 for q in selected if profiles[id(q)].primary == profiles[id(p)].primary)
+            return (candidate.preference, repeats, is_diluted(p), candidate.tail)
 
-        take(max(pool_for_pick, key=adjusted))
+        take(min(pool_for_pick, key=refined))
 
-    return _replace_isolated_outliers(selected, ranked, selected_ids, profiles, is_diluted, canonical_interests)
+    return _replace_isolated_outliers(
+        selected, ranked, selected_ids, profiles, is_diluted, canonical_interests, must_visit_ids
+    )
 
 
 def _replace_isolated_outliers(
@@ -1674,6 +1821,7 @@ def _replace_isolated_outliers(
     profiles: dict[int, _CandidateProfile],
     is_diluted: Any,
     canonical_interests: list[str],
+    must_visit_ids: set[int] | frozenset[int] = frozenset(),
 ) -> list[dict[str, Any]]:
     points = [(poi, _poi_coordinates(poi)) for poi in selected]
     coords = [pt for _, pt in points if pt is not None]
@@ -1691,6 +1839,10 @@ def _replace_isolated_outliers(
     for poi in sorted(selected, key=lambda p: -distances.get(id(p), 0.0)):
         if distances.get(id(poi), 0.0) <= threshold:
             break
+        # Q2: a grounded must-visit is the traveller's own request and is
+        # never replaced for being far from the rest.
+        if id(poi) in must_visit_ids:
+            continue
         # Never drop the only selected place that serves a requested interest.
         sole_cover = any(
             interest in profiles[id(poi)].matched_interests
@@ -1772,17 +1924,35 @@ def _fill_empty_days(
     while eligible candidates remain. With no eligible candidate left the
     day stays empty (the validator then reports the real limitation)."""
     used = {id(p) for group in day_groups for p in group}
-    unused = sorted(
-        (p for p in pool if id(p) not in used),
-        key=lambda p: (profiles[id(p)].tier_rank, profiles[id(p)].score),
-        reverse=True,
-    )
+    unused = sorted((p for p in pool if id(p) not in used), key=_usefulness_key(profiles))
     filled = [list(group) for group in day_groups]
     for index, group in enumerate(filled):
         if group or not unused:
             continue
-        filled[index] = [unused.pop(0)]
+        filled[index] = [unused.pop(_empty_day_seed(unused, profiles))]
     return filled
+
+
+def _empty_day_seed(unused: list[dict[str, Any]], profiles: dict[int, _CandidateProfile]) -> int:
+    """The index, in usefulness-ordered `unused`, of the place an EMPTY day
+    starts from: the best-ranked one the day can be built around -- a grounded
+    must-visit, or a place with at least one other unused candidate inside
+    the validator's geographic boundary (`keeps_day_within_spread`; the same
+    path measure, no second threshold). A place that stands alone would leave
+    its day a single stop or send its companions across the region. When no
+    candidate qualifies the best-ranked one is used, as before: an empty day
+    is never left empty to keep the plan compact."""
+    points = [_poi_coordinates(poi) for poi in unused]
+    for index, poi in enumerate(unused):
+        if _usefulness_of(poi, profiles).must_visit or points[index] is None:
+            return index
+        if any(
+            other is not None and keeps_day_within_spread([points[index]], other)
+            for position, other in enumerate(points)
+            if position != index
+        ):
+            return index
+    return 0
 
 
 def _cluster_selected_into_days(
@@ -1834,13 +2004,37 @@ def _top_up_underfilled_days(
     pool: list[dict[str, Any]],
     profiles: dict[int, _CandidateProfile],
     max_per_day: int,
+    *,
+    minimum_stops: int | None = None,
 ) -> list[list[dict[str, Any]]]:
-    """Section 203C.2B deterministic fallback: fills each day up to the pace
-    cap from unused quality-eligible candidates, emptiest days first. A
-    candidate joins the day whose stops it is nearest to (best-ranked first
-    for a still-empty day). Low-value single objects and places without
-    coordinates are never used as filler; with nothing eligible left a day
-    simply stays as it is."""
+    """Section 203C.2B deterministic fallback: fills each day towards the
+    pace cap from unused quality-eligible candidates, emptiest days first.
+    The emptiest open day takes the MOST USEFUL candidate that keeps it
+    within the boundary (the one usefulness ordering; distance to the day
+    only breaks its ties -- nearest-first filled days with whatever stood
+    next door while better-evidenced compatible places went unused). See
+    `_empty_day_seed` for a still-empty day. Low-value single objects and
+    places without coordinates are never used as filler; with nothing
+    eligible left a day simply stays as it is.
+
+    Geographic safeguard (the validator's path-spread measure and boundary,
+    `keeps_day_within_spread`; never the day's extent). A candidate that
+    keeps some open day within the boundary is always used first, emptiest
+    day first. Only when no unused candidate keeps ANY open day within it
+    may a dispersing one be added, and then only:
+
+      * a grounded must-visit -- the traveller's explicit request, and the
+        only stored input that establishes a deliberately distant stop; or
+      * while the plan still holds fewer than `minimum_stops` meaningful
+        stops (the usefulness contract's R): the minimum comes first, and
+        the validator reports the day.
+
+    Stored usefulness evidence (the Q2 evidence band, a grounded anchor) is
+    NOT a reason: it says a place is worth a slot, not that the traveller
+    meant a regional excursion. The pace target is a target: a day is left
+    below it rather than filled with remote discretionary filler. Nothing
+    here bans a distant place -- it is simply not what a top-up reaches for
+    while something compatible is left."""
     used = {id(p) for group in day_groups for p in group}
     unused = sorted(
         (
@@ -1848,28 +2042,74 @@ def _top_up_underfilled_days(
             for p in pool
             if id(p) not in used and not profiles[id(p)].low_value and _poi_coordinates(p) is not None
         ),
-        key=lambda p: (profiles[id(p)].tier_rank, profiles[id(p)].score),
-        reverse=True,
+        key=_usefulness_key(profiles),
     )
     filled = [list(group) for group in day_groups]
+
+    def meaningful_stops() -> int:
+        return sum(1 for group in filled for p in group if not profiles[id(p)].low_value)
+
+    def nearest_first(day_index: int) -> list[int] | None:
+        """Indexes into `unused`, nearest to the day's stops first; None for a
+        day with no located stop (nothing to measure against)."""
+        anchors = [point for point in (_poi_coordinates(p) for p in filled[day_index]) if point is not None]
+        if not anchors:
+            return None
+        centre = GeoPoint(
+            lat=sum(point.lat for point in anchors) / len(anchors),
+            lng=sum(point.lng for point in anchors) / len(anchors),
+        )
+        return sorted(
+            range(len(unused)),
+            key=lambda index: haversine_distance_km(centre, _poi_coordinates(unused[index])) or float("inf"),
+        )
+
+    def by_usefulness(distance_rank: int, index: int) -> tuple:
+        """Among the candidates that keep a day within the boundary the most
+        USEFUL one is taken: the canonical ordering's `preference`, then its
+        quality score. Nearness to the day only separates candidates that
+        ordering holds equal, ahead of its neutral name / place-id
+        tie-break (which still settles what is left)."""
+        candidate = _usefulness_of(unused[index], profiles)
+        score, *neutral = candidate.tail
+        return (candidate.preference, score, distance_rank, *neutral)
+
     while unused:
-        open_days = [index for index, group in enumerate(filled) if len(group) < max_per_day]
+        # emptiest day first (the earlier day on a tie), as before
+        open_days = sorted(
+            (index for index, group in enumerate(filled) if len(group) < max_per_day),
+            key=lambda index: len(filled[index]),
+        )
         if not open_days:
             break
-        day_index = min(open_days, key=lambda index: len(filled[index]))
-        anchors = [point for point in (_poi_coordinates(p) for p in filled[day_index]) if point is not None]
-        if anchors:
-            centre = GeoPoint(
-                lat=sum(point.lat for point in anchors) / len(anchors),
-                lng=sum(point.lng for point in anchors) / len(anchors),
-            )
-            pick = min(
-                range(len(unused)),
-                key=lambda index: haversine_distance_km(centre, _poi_coordinates(unused[index])) or float("inf"),
-            )
-        else:
-            pick = 0
-        filled[day_index].append(unused.pop(pick))
+        chosen: tuple[int, int] | None = None
+        for day_index in open_days:
+            order = nearest_first(day_index)
+            if order is None:
+                chosen = (day_index, _empty_day_seed(unused, profiles) if not filled[day_index] else 0)
+                break
+            day_points = [_poi_coordinates(p) for p in filled[day_index]]
+            # `order` is nearest first, so a candidate's position in it is its
+            # distance rank for this day.
+            compatible = [
+                (rank, index)
+                for rank, index in enumerate(order)
+                if keeps_day_within_spread(day_points, _poi_coordinates(unused[index]))
+            ]
+            if compatible:
+                chosen = (day_index, min(compatible, key=lambda item: by_usefulness(*item))[1])
+                break
+        if chosen is None:
+            # No unused candidate keeps any open day within the boundary.
+            day_index = open_days[0]
+            order = nearest_first(day_index) or list(range(len(unused)))
+            pick = next((index for index in order if _usefulness_of(unused[index], profiles).must_visit), None)
+            if pick is None and minimum_stops is not None and meaningful_stops() < minimum_stops:
+                pick = order[0]  # the minimum comes first; the validator reports the day
+            if pick is None:
+                break  # the pace target is not reached with remote discretionary filler
+            chosen = (day_index, pick)
+        filled[chosen[0]].append(unused.pop(chosen[1]))
     return filled
 
 
@@ -1947,8 +2187,7 @@ def _raise_anchor_utilization(
 
     unused = sorted(
         (poi for poi in available if id(poi) not in scheduled_ids),
-        key=lambda poi: (profiles[id(poi)].tier_rank, profiles[id(poi)].score),
-        reverse=True,  # stable: pool order breaks ties
+        key=_usefulness_key(profiles),
     )
     changed_days: set[int] = set()
     for anchor in unused:
@@ -1989,7 +2228,9 @@ def _raise_anchor_utilization(
                 anchor_km = haversine_distance_km(centre, anchor_point) or 0.0
                 if anchor_km > max(_DIVERSITY_NEAR_KM, stop_km):
                     continue
-                options.append(((anchor_km - stop_km, stop_profile.tier_rank, stop_profile.score), day_index, stop_index))
+                options.append(
+                    ((anchor_km - stop_km, _usefulness_of(stop, profiles).weakness_key), day_index, stop_index)
+                )
         if not options:
             continue
         _, day_index, stop_index = min(options)
@@ -2045,6 +2286,7 @@ def _cover_requested_interests(
     def excess(classes: list[str]) -> int:
         return sum(diversity.relievable_excess(classes, markets_requested, justified).values())
 
+    tracing = generation_diagnostics.current() is not None
     for interest in canonical_interests:
         if interest == _FOOD_INTEREST:
             continue
@@ -2062,28 +2304,46 @@ def _cover_requested_interests(
                 and _poi_coordinates(poi) is not None
                 and not _suspected_duplicate_of_any(poi, current)
             ),
-            key=lambda poi: (profiles[id(poi)].tier_rank, profiles[id(poi)].score),
-            reverse=True,  # stable: pool order breaks ties
+            key=_usefulness_key(profiles),
         )[:_INTEREST_COVER_MAX_CANDIDATES]
 
+        # Diagnostic only (`core/generation_diagnostics`): counts of what this
+        # pass had to work with and why a candidate could not take a slot.
+        # `trace` is None unless the evaluation tooling is recording, and
+        # nothing below reads it to decide anything.
+        trace = _CoverageTrace(interest, pool, used, profiles, current) if tracing else None
+
+        replaced = False
         for candidate in candidates:
             candidate_profile = profiles[id(candidate)]
             candidate_point = _poi_coordinates(candidate)
             targets: list[tuple[tuple[int, float, float], int, int]] = []
+            if trace is not None:
+                trace.start(candidate, days)
             for day_index, day in enumerate(days):
                 for stop_index, stop in enumerate(day):
                     stop_profile = profiles[id(stop)]
                     if id(stop) in must_visit_ids or id(stop) in anchor_ids:
+                        if trace is not None:
+                            trace.reject(
+                                "stop_is_must_visit" if id(stop) in must_visit_ids else "stop_is_grounded_anchor"
+                            )
                         continue
                     if stop_profile.tier_rank > candidate_profile.tier_rank + _DIVERSITY_MAX_TIER_DROP:
+                        if trace is not None:
+                            trace.reject("candidate_tier_too_far_below_stop")
                         continue
                     others = [poi for poi in current if poi is not stop]
                     still_covered = {name for poi in others for name in profiles[id(poi)].matched_interests}
                     if set(stop_profile.matched_interests) - still_covered:
+                        if trace is not None:
+                            trace.reject("stop_is_only_cover_of_another_interest")
                         continue
                     rest = [poi for poi in day if poi is not stop]
                     rest_classes = [cls(poi) for poi in rest]
                     if excess([*rest_classes, cls(candidate)]) > excess([*rest_classes, cls(stop)]):
+                        if trace is not None:
+                            trace.reject("would_concentrate_day_class")
                         continue
                     points = [point for point in (_poi_coordinates(poi) for poi in rest) if point is not None]
                     if points:
@@ -2095,15 +2355,117 @@ def _cover_requested_interests(
                         stop_km = (haversine_distance_km(centre, stop_point) or 0.0) if stop_point else 0.0
                         candidate_km = haversine_distance_km(centre, candidate_point) or 0.0
                         if candidate_km > max(_DIVERSITY_NEAR_KM, _DIVERSITY_DISTANCE_FACTOR * stop_km):
+                            if trace is not None:
+                                trace.reject("candidate_too_far_from_day")
                             continue
                     else:
                         candidate_km = 0.0
-                    targets.append(((stop_profile.tier_rank, stop_profile.score, candidate_km), day_index, stop_index))
+                    if trace is not None:
+                        trace.reject("admissible_target")
+                    targets.append(
+                        ((_usefulness_of(stop, profiles).weakness_key, candidate_km), day_index, stop_index)
+                    )
             if targets:
                 _, day_index, stop_index = min(targets)
                 days[day_index][stop_index] = candidate
+                replaced = True
                 break
+        if trace is not None:
+            trace.finish(tried=len(candidates), replaced=replaced)
     return days
+
+
+def _never_raises(method: Any) -> Any:
+    """A diagnostic method that can never fail the pass it observes."""
+
+    def guarded(*args: Any, **kwargs: Any) -> None:
+        try:
+            method(*args, **kwargs)
+        except Exception:  # noqa: BLE001 - diagnostics never break a generation
+            pass
+
+    return guarded
+
+
+class _CoverageTrace:
+    """Diagnostic bookkeeping for ONE uncovered interest in
+    `_cover_requested_interests`: how many unused candidates serve it and
+    why they were left out before or during the attempt. Counts, provider
+    place ids, tier ranks and straight-line distances only. It observes the
+    pass; it never returns anything the pass acts on."""
+
+    def __init__(
+        self,
+        interest: str,
+        pool: list[dict[str, Any]],
+        used: set[int],
+        profiles: dict[int, _CandidateProfile],
+        current: list[dict[str, Any]],
+    ) -> None:
+        self.interest = interest
+        self.profiles = profiles
+        self.counts: dict[str, int] = {"eligible_candidates": 0}
+        self.candidates: list[dict[str, Any]] = []
+        try:
+            matching = [poi for poi in pool if id(poi) not in used and interest in profiles[id(poi)].matched_interests]
+            low_value = [poi for poi in matching if profiles[id(poi)].low_value]
+            unlocated = [poi for poi in matching if not profiles[id(poi)].low_value and _poi_coordinates(poi) is None]
+            located = [
+                poi for poi in matching if not profiles[id(poi)].low_value and _poi_coordinates(poi) is not None
+            ]
+            duplicates = [poi for poi in located if _suspected_duplicate_of_any(poi, current)]
+            self.counts = {
+                "unused_candidates_serving_interest": len(matching),
+                "excluded_low_value_object": len(low_value),
+                "excluded_unlocated": len(unlocated),
+                "excluded_suspected_duplicate_of_scheduled": len(duplicates),
+                "eligible_candidates": len(located) - len(duplicates),
+            }
+        except Exception:  # noqa: BLE001 - diagnostics never break a generation
+            pass
+
+    @_never_raises
+    def start(self, candidate: dict[str, Any], days: list[list[dict[str, Any]]]) -> None:
+        point = _poi_coordinates(candidate)
+        distances = [
+            haversine_distance_km(point, stop_point)
+            for day in days
+            for stop_point in (_poi_coordinates(stop) for stop in day)
+            if point is not None and stop_point is not None
+        ]
+        self.candidates.append(
+            {
+                "place_id": _composition_key(candidate),
+                "tier_rank": self.profiles[id(candidate)].tier_rank,
+                # straight-line distance to the nearest scheduled stop (a proxy, never a route)
+                "nearest_day_km": min((d for d in distances if d is not None), default=None),
+                "reasons": {},
+            }
+        )
+
+    @_never_raises
+    def reject(self, reason: str) -> None:
+        self.counts[f"pairs_{reason}"] = self.counts.get(f"pairs_{reason}", 0) + 1
+        reasons = self.candidates[-1]["reasons"]
+        reasons[reason] = reasons.get(reason, 0) + 1
+
+    @_never_raises
+    def finish(self, *, tried: int, replaced: bool) -> None:
+        self.counts["candidates_tried"] = tried
+        self.counts["eligible_not_tried_beyond_limit"] = max(0, self.counts["eligible_candidates"] - tried)
+        generation_diagnostics.interest_coverage(
+            interest=self.interest,
+            outcome=(
+                "replaced_a_stop"
+                if replaced
+                else "no_eligible_candidate"
+                if not tried
+                else "no_admissible_slot"
+            ),
+            counts=self.counts,
+            # the strongest candidates that were tried (usefulness order), with why each found no slot
+            strongest_rejected=[] if replaced else self.candidates,
+        )
 
 
 def _limit_ai_day_spread(
@@ -2219,16 +2581,222 @@ def _limit_ai_day_spread(
     return days
 
 
+# -- Q3: day composition (`services/day_composition`) ---------------------------------
+
+
+def _composition_key(poi: dict[str, Any]) -> str:
+    """A candidate's scheduling identity: its provider place id."""
+    return str(poi.get("place_id") or poi.get("provider_place_id") or "")
+
+
+def _composable(pool: list[dict[str, Any]], capacity: int) -> bool:
+    """Whether day composition can work on this pool: every candidate has a
+    provider identity of its own, and the plan fits the composition's
+    working-set bound. Otherwise the previous passes run unchanged -- a
+    candidate is never dropped, and never identified by name, to make it fit."""
+    keys = [_composition_key(poi) for poi in pool]
+    return all(keys) and len(set(keys)) == len(keys) and capacity <= composition.MAX_WORKING_SET
+
+
+def _trace_schedule(stage: str, day_groups: list[list[dict[str, Any]]]) -> None:
+    """Diagnostic only: the provider place ids on each day after `stage`
+    (`core/generation_diagnostics`; a no-op without an active recorder)."""
+    if generation_diagnostics.current() is None:
+        return
+    generation_diagnostics.schedule(stage, [[_composition_key(poi) for poi in group] for group in day_groups])
+
+
+def _trace_composition(
+    composed: composition.Composition | None,
+    before: list[list[dict[str, Any]]],
+    after: list[list[dict[str, Any]]],
+    *,
+    enabled: bool,
+    composable: bool,
+    used_ai_reasoning: bool,
+    replacement_allowed: bool,
+    regrouping_allowed: bool,
+    unused_candidates: int,
+    active_user_lock: bool = False,
+) -> None:
+    """Diagnostic only: what the day-composition stage did in this pass, as
+    fixed labels and counts. `unchanged_no_admissible_improvement` covers
+    every reason the search found nothing to do (hard rules, usefulness
+    guards, no alternative or no material gain) -- the search does not tell
+    them apart, and this record does not pretend to."""
+    if generation_diagnostics.current() is None:
+        return
+    try:
+        def bands(day_groups: list[list[dict[str, Any]]]) -> list[str]:
+            return [
+                composition.geographic_band(day_extent_km(points), day_spread_km(points))
+                for points in ([_poi_coordinates(poi) for poi in group] for group in day_groups)
+            ]
+
+        if not enabled:
+            status = "not_run_disabled"
+        elif not composable:
+            status = "not_run_not_composable"
+        elif composed is None:
+            status = "not_run_error"
+        elif composed.declined is not None:
+            status = "declined"
+        elif composed.changed:
+            status = "changed"
+        elif composed.budget_exhausted:
+            status = "unchanged_budget_exhausted"
+        else:
+            status = "unchanged_no_admissible_improvement"
+        moves: dict[str, int] = {}
+        for move in composed.moves if composed is not None else []:
+            moves[move.kind] = moves.get(move.kind, 0) + 1
+        before_bands, after_bands = bands(before), bands(after)
+        generation_diagnostics.composition(
+            ran=composed is not None and composed.declined is None,
+            changed=bool(composed is not None and composed.changed),
+            status=status,
+            declined=composed.declined if composed is not None else None,
+            accepted_moves=len(composed.moves) if composed is not None else 0,
+            moves_by_kind=moves,
+            evaluations=composed.evaluations if composed is not None else 0,
+            budget_exhausted=bool(composed is not None and composed.budget_exhausted),
+            working_set_size=composed.working_set_size if composed is not None else 0,
+            scheduled_stops=sum(len(group) for group in before),
+            unused_candidates=unused_candidates,
+            dispersed_days_before=before_bands.count(composition.DISPERSED),
+            dispersed_days_after=after_bands.count(composition.DISPERSED),
+            extended_days_before=before_bands.count(composition.EXTENDED),
+            extended_days_after=after_bands.count(composition.EXTENDED),
+            used_ai_reasoning=used_ai_reasoning,
+            replacement_allowed=replacement_allowed,
+            regrouping_allowed=regrouping_allowed,
+            active_user_lock=active_user_lock,
+            # the search judged at least one replacement that was an admissible improvement
+            improving_replacement_existed=bool(
+                composed is not None
+                and (composed.diagnostics.get("improving_replace", 0) or composed.diagnostics.get("improving_rebuild", 0))
+            ),
+            counts=dict(composed.diagnostics) if composed is not None else {},
+        )
+    except Exception:  # noqa: BLE001 - diagnostics never break a generation
+        pass
+
+
+def _days_from_keys(days: list[list[str]], pool: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
+    by_key = {_composition_key(poi): poi for poi in pool}
+    return [[by_key[key] for key in day] for day in days]
+
+
+def _compose_days(
+    day_groups: list[list[dict[str, Any]]],
+    pool: list[dict[str, Any]],
+    profiles: dict[int, _CandidateProfile],
+    must_visit_ids: set[int],
+    canonical_interests: list[str],
+    *,
+    per_day: int,
+    markets_requested: bool,
+    justified: frozenset[str],
+    plan_class_cap: Any,
+    allow_regrouping: bool,
+    allow_replacement: bool,
+    max_replacements: int | None,
+) -> composition.Composition | None:
+    """Improves `day_groups` against the shared composition objective. The
+    planner only translates: each candidate becomes a `composition.Stop`
+    from facts already computed here (its Q2 usefulness, coarse class,
+    requested interests, conflict groups and whether it may be brought in).
+    Returns None when composition could not run; the caller then keeps the
+    days it has -- timing or an unexpected error can never fail a plan."""
+    try:
+        art_focused = "art" in canonical_interests
+        requested = frozenset(canonical_interests)
+        within_reach = _pool_reach(pool)
+
+        def stop_of(poi: dict[str, Any]) -> composition.Stop:
+            profile = profiles[id(poi)]
+            assessed = _usefulness_of(poi, profiles)
+            conflicts = set()
+            if profile.sub_feature_cluster is not None:
+                conflicts.add(f"sub_feature:{profile.sub_feature_cluster}")
+            if poi.get(SUSPECT_COLLISION_KEY):
+                conflicts.add(f"suspected_duplicate:{poi[SUSPECT_COLLISION_KEY]}")
+            return composition.Stop(
+                key=_composition_key(poi),
+                point=_poi_coordinates(poi),
+                preference=assessed.preference,
+                tail=assessed.tail,
+                evidence_band=assessed.evidence_band,
+                tier_rank=profile.tier_rank,
+                must_visit=id(poi) in must_visit_ids,
+                coarse_class=diversity.coarse_class(profile.primary),
+                interests=frozenset(profile.matched_interests) & requested,
+                conflicts=frozenset(conflicts),
+                may_enter=(
+                    not profile.low_value
+                    and not (profile.commercial_gallery and not art_focused)
+                    and within_reach(poi)
+                ),
+            )
+
+        scheduled_ids = {id(poi) for group in day_groups for poi in group}
+        # Diagnostic only: why unused candidates may not enter a plan at all
+        # (the eligibility facts above, counted; nothing reads the counts).
+        unused_pois = [poi for poi in pool if id(poi) not in scheduled_ids]
+        eligibility = {
+            "unused_low_value": sum(1 for poi in unused_pois if profiles[id(poi)].low_value),
+            "unused_commercial_gallery": sum(
+                1 for poi in unused_pois if profiles[id(poi)].commercial_gallery and not art_focused
+            ),
+            "unused_unlocated": sum(1 for poi in unused_pois if _poi_coordinates(poi) is None),
+            "unused_beyond_pool_reach": sum(
+                1 for poi in unused_pois if _poi_coordinates(poi) is not None and not within_reach(poi)
+            ),
+        }
+        result = composition.compose(
+            [[stop_of(poi) for poi in group] for group in day_groups],
+            [stop_of(poi) for poi in pool if id(poi) not in scheduled_ids],
+            composition.Policy(
+                per_day=per_day,
+                requested_interests=requested,
+                # food is covered by real nearby food, never by scheduling a market
+                coverage_exempt=frozenset({_FOOD_INTEREST}),
+                markets_requested=markets_requested,
+                justified=justified,
+                plan_class_cap=plan_class_cap,
+                allow_regrouping=allow_regrouping,
+                allow_replacement=allow_replacement,
+                max_replacements=max_replacements,
+            ),
+        )
+        result.diagnostics.update(eligibility)
+    except Exception:
+        logger.warning("Day composition failed unexpectedly; the plan is left as it was.", exc_info=True)
+        return None
+    logger.info(
+        "ExperiencePlannerService composed days.",
+        extra={
+            "stage": "day_composition",
+            "status": result.declined or ("changed" if result.changed else "unchanged"),
+            "move_count": len(result.moves),
+            "evaluation_count": result.evaluations,
+            "budget_exhausted": result.budget_exhausted,
+            "candidate_count": result.working_set_size,
+        },
+    )
+    return result
+
+
 # Diversity repair bounds. A replacement may sit at most one quality tier
 # below the stop it replaces, and must stay near the rest of its day: within
 # `_DIVERSITY_NEAR_KM` of the day's other stops, or no more than
 # `_DIVERSITY_DISTANCE_FACTOR` times as far from them as the stop it replaces.
 _DIVERSITY_MAX_TIER_DROP = 1
-_DIVERSITY_NEAR_KM = 3.0
+_DIVERSITY_NEAR_KM = NEAR_DAY_STOPS_KM
 _DIVERSITY_DISTANCE_FACTOR = 1.5
 # A soft (preference-only) replacement must be as well placed as the stop it
 # replaces: no farther from the day's other stops, or within this distance.
-_DIVERSITY_SOFT_NEAR_KM = 1.0
+_DIVERSITY_SOFT_NEAR_KM = AS_WELL_PLACED_KM
 
 # Section 203C.2B (entity collisions): `SUSPECT_COLLISION_KEY` is set by the
 # destination-context stage on both candidates of an UNRESOLVED suspected
@@ -2808,7 +3376,7 @@ def unused_replacement_options(planning_state: PlanningState) -> list[Replacemen
     quality_lookup = _build_quality_lookup(
         candidate_pois, quality_report.attraction_scores if quality_report else None
     )
-    promoted_pois, _ = _build_promoted_candidate_pois(planning_state, candidate_pois)
+    promoted_pois, _ = _build_promoted_candidate_pois(planning_state)
     pool = _select_candidates_by_quality(candidate_pois, quality_lookup) + promoted_pois
     quality_lookup = {**quality_lookup, **_promoted_quality_scores(promoted_pois, quality_report)}
 

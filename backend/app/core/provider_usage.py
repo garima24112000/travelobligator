@@ -237,10 +237,21 @@ class GenerationProviderContext:
     # Broad factual pool fetched during this generation, so a grounded
     # named place that is already in it reuses the pool identity.
     place_pool: list = field(default_factory=list)
+    # Mixed local / broad discovery: the part of the local share the first
+    # Places batch HELD BACK for the grounded must-visit anchors, as
+    # `(kind, group key, held limit, local places already requested)`. Read
+    # once by the follow-up batch and then emptied; never an allowance of
+    # its own (every request still reserves its credits from the tracker).
+    held_place_requests: list = field(default_factory=list)
     # Alternate-mode (driving) route requests still allowed: one per long
     # walking leg, capped per generation. Separate from `route_requests_left`
     # so adapting a leg never uses up a day's own route request.
     alternate_mode_requests_left: int = 6
+    # Q4: routing requests the route-aware recomposition stage may still
+    # make. A sub-cap, not an allowance of its own: each of those requests is
+    # an ordinary routing request and ALSO takes one of `route_requests_left`
+    # and its provider credits. Nothing is added to either.
+    recomposition_requests_left: int = 8
     # Legs whose alternate-mode route was already asked for and did not
     # succeed, so a rebuilt route report never asks for the same leg twice.
     alternate_mode_failed_legs: set = field(default_factory=set)
@@ -275,6 +286,7 @@ class GenerationProviderContext:
             route_requests_left=route_request_allowance(trip_days),
             place_details_left=settings.geoapify_max_place_details_per_generation,
             alternate_mode_requests_left=settings.route_alternate_mode_max_requests_per_generation,
+            recomposition_requests_left=settings.route_recomposition_max_requests_per_generation,
             identity_lookups_left=settings.geoapify_max_identity_lookups_per_generation,
         )
         if generation_id is not None:

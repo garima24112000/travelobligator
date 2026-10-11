@@ -23,6 +23,15 @@ from app.services.plan_quality_findings import build_plan_quality_findings
 from app.services.entity_collisions import scheduled_unresolved_collisions
 from app.services.must_visit_matching import resolve_must_visits
 from app.services.day_order_heuristics import GEOGRAPHIC_SPREAD_THRESHOLD_KM, day_spread_km
+from app.services.review_classification import classification_for
+from app.services.geographic_dispersion import (
+    CATEGORY as GEOGRAPHIC_DISPERSION_CATEGORY,
+    CAUSE_DISCRETIONARY_DISPERSION,
+    CAUSE_LIMITED_COMPATIBLE_INVENTORY,
+    CAUSE_MANDATORY_DESTINATION,
+    CAUSE_UNVERIFIED,
+    dispersion_by_day,
+)
 from app.services.route_burden import day_route_burdens
 from app.services.usefulness_contract import evaluate_usefulness, usefulness_findings
 from app.services.experience_identity import experience_stable_key
@@ -319,10 +328,19 @@ class PlanValidatorService(PlanningStageService):
             # provider has verified EVERY leg of the day in its final mode
             # (walk or vehicle transfer) and the day's walking and transfer
             # burdens are within their limits, the factual route answers the
-            # question and raw separation alone is not a finding. The warning
-            # still stands when a leg is unrouted, or the routed day is itself
+            # question of FEASIBILITY: the `geographic_spread` finding (an
+            # unverified or over-limit day) is not raised. That finding still
+            # stands when a leg is unrouted, or the routed day is itself
             # unreasonable (it then accompanies LONG_TRAVEL_DAY).
+            #
+            # Quality tuning corrections: a verified, acceptable drive does not
+            # make a regional day a compact one. Such a day gets its own
+            # finding, `geographic_dispersion` -- about where the day's places
+            # lie, kept apart from route burden (`long_travel_day`) and from
+            # unverified feasibility (`geographic_spread`) -- with the reason
+            # the stored state supports (`services/geographic_dispersion`).
             burdens_by_day = {burden.day_number: burden for burden in day_route_burdens(planning_state)}
+            dispersion = dispersion_by_day(planning_state)
             for day in planning_state.experience_plan.daily_plans:
                 spread_km = _day_geographic_spread_km(day)
                 if (
@@ -336,6 +354,12 @@ class PlanValidatorService(PlanningStageService):
                         and burden.routed_legs == burden.required_legs
                     )
                     if fully_routed and not burden.long_route:
+                        found = dispersion.get(day.day_number)
+                        warnings.append(
+                            _geographic_dispersion_issue(
+                                day.day_number, spread_km, found.cause if found is not None else CAUSE_UNVERIFIED
+                            )
+                        )
                         continue
                     if fully_routed:
                         detail = (
@@ -449,6 +473,15 @@ class PlanValidatorService(PlanningStageService):
         # judged on WALK legs only, so a leg that became a reasonable vehicle
         # transfer no longer makes its day a long-travel day; a day whose
         # vehicle transfers are themselves unreasonable still is one.
+        # Q4: a long-travel day the recomposition stage could not change
+        # because only places the traveller asked for or locked are on its
+        # long legs says so, instead of suggesting a regrouping.
+        repair_report = planning_state.route_burden_repair_report
+        protected_long_days = {
+            attempt.day_number
+            for attempt in (repair_report.attempts if repair_report else [])
+            if attempt.reason == "protected_stops_only"
+        }
         for burden in day_route_burdens(planning_state):
             if not burden.long_route:
                 continue
@@ -476,9 +509,18 @@ class PlanValidatorService(PlanningStageService):
                     category="long_travel_day",
                     message=message,
                     affected_section=f"experience_plan.daily_plans[{burden.day_number}]",
-                    suggested_fix="Request changes to group this day's stops closer together.",
+                    suggested_fix=(
+                        _PROTECTED_LONG_TRAVEL_FIX
+                        if burden.day_number in protected_long_days
+                        else "Request changes to group this day's stops closer together."
+                    ),
                 )
             )
+
+        # Q4: the routing provider's own route for a leg includes a ferry.
+        # Only that fact is stated -- no timetable, fare, ticket or
+        # availability is known, and none is implied.
+        warnings.extend(_ferry_in_route_issues(planning_state))
 
         captured_constraints: list[str] = []
         for constraint in planning_state.trip_request.constraints:
@@ -667,11 +709,101 @@ class PlanValidatorService(PlanningStageService):
             unavailable_data_notes=unavailable_data_notes,
             blocking_codes=blocking_codes,
             review_codes=review_codes,
+            # Presentation only: computed AFTER readiness and the codes, from them.
+            review_code_classification=classification_for(
+                [*blocking_codes, *review_codes, *(issue.category for issue in (*critical_issues, *warnings))]
+            ),
         )
 
         planning_state.validation_report = validation_report
         planning_state.touch()
         return planning_state
+
+
+_DISPERSION_REASONS: dict[str, tuple[str, str]] = {
+    CAUSE_MANDATORY_DESTINATION: (
+        "The distance is between places you asked for, and they could not be given separate days.",
+        "Allow extra time for this day, or remove one of the places you asked for.",
+    ),
+    CAUSE_LIMITED_COMPATIBLE_INVENTORY: (
+        "No closer verified place was available for this day without leaving the plan too thin.",
+        "Request changes to this day, or accept a shorter day.",
+    ),
+    CAUSE_DISCRETIONARY_DISPERSION: (
+        "At least one stop of this day is optional and lies far from the others.",
+        "Request changes to group this day's stops closer together.",
+    ),
+    CAUSE_UNVERIFIED: (
+        "The plan does not record why these stops share a day.",
+        "Request changes to group this day's stops closer together.",
+    ),
+}
+
+
+def _geographic_dispersion_issue(day_number: int, spread_km: float, cause: str) -> ValidationIssue:
+    """A day whose routes are verified and within their limits, yet whose
+    places lie far apart. States the straight-line figure as what it is; it
+    never calls the day compact and never repeats a route figure. A day
+    dispersed only by a place the traveller asked for is a note, not a
+    review finding; every other cause is a warning."""
+    reason, suggested_fix = _DISPERSION_REASONS.get(cause, _DISPERSION_REASONS[CAUSE_UNVERIFIED])
+    return ValidationIssue(
+        severity=(
+            ValidationSeverity.SUGGESTION if cause == CAUSE_MANDATORY_DESTINATION else ValidationSeverity.WARNING
+        ),
+        category=GEOGRAPHIC_DISPERSION_CATEGORY,
+        # Traveller wording: no implementation terms (the page shows it as written).
+        message=(
+            f"Day {day_number}: this day's attractions are spread across a large area -- about "
+            f"{spread_km:.1f} km in a straight line between consecutive stops. Review the travel required "
+            "before following this schedule. Each transfer of the day has a checked route within the usual "
+            f"limits, so this is about how far apart the places are. {reason}"
+        ),
+        affected_section=f"experience_plan.daily_plans[{day_number}]",
+        suggested_fix=suggested_fix,
+    )
+
+
+_PROTECTED_LONG_TRAVEL_FIX = (
+    "The long transfer is between places you asked for or locked, so they were kept. "
+    "Move one of them to another day, or allow extra time for this transfer."
+)
+
+
+def _ferry_in_route_issues(planning_state: PlanningState) -> list[ValidationIssue]:
+    """One warning per day whose CURRENT legs include a ferry according to
+    the routing provider's own route (`RouteLegFeasibility.includes_ferry is
+    True`). A leg the provider said nothing about is not reported either way."""
+    plan = planning_state.experience_plan
+    report = planning_state.route_feasibility_report
+    if plan is None or report is None:
+        return []
+    legs = {(leg.from_experience_id, leg.to_experience_id): leg for leg in report.legs}
+    issues: list[ValidationIssue] = []
+    for day in plan.daily_plans:
+        crossings = [
+            f"{a.name} and {b.name}"
+            for a, b in zip(day.experiences, day.experiences[1:])
+            if (leg := legs.get((a.experience_id, b.experience_id))) is not None and leg.includes_ferry is True
+        ]
+        if not crossings:
+            continue
+        issues.append(
+            ValidationIssue(
+                severity=ValidationSeverity.WARNING,
+                category="route_includes_ferry",
+                # Traveller wording: no implementation terms (the page shows it as written).
+                message=(
+                    f"Day {day.day_number}: getting between {'; '.join(crossings)} involves a ferry crossing. "
+                    "No ferry timetable, fare, ticket or availability is known to this plan. The time shown for "
+                    "this leg is a route estimate only: it does not include waiting for or boarding the ferry "
+                    "and is not a verified ferry schedule."
+                ),
+                affected_section=f"experience_plan.daily_plans[{day.day_number}]",
+                suggested_fix="Check the crossing yourself before relying on this transfer.",
+            )
+        )
+    return issues
 
 
 def _format_budget_amount(value: float) -> str:

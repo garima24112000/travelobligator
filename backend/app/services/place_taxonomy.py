@@ -29,6 +29,11 @@ ARCHITECTURE = "architecture"
 PARK_NATURE = "park_nature"
 VIEWPOINT = "viewpoint"
 FOOD_MARKET = "food_market"
+# A scheduled attraction the provider's own evidence establishes as a food
+# experience (see the rule in `classify_place`). `FOOD_MARKET` above is the
+# historical name of the MARKETPLACE category -- any marketplace, whatever
+# it sells -- and by itself never serves the `food` interest.
+CULINARY = "culinary"
 RESTAURANT = "restaurant"
 NIGHTLIFE = "nightlife"
 SHOPPING = "shopping"
@@ -91,6 +96,17 @@ def filter_provider_tags(tags: dict[str, Any]) -> dict[str, str]:
 
 _TOURISM_ATTRACTION_LIKE = frozenset(
     {"attraction", "museum", "gallery", "viewpoint", "zoo", "theme_park", "aquarium"}
+)
+# `shop` values that name a food trade. On a marketplace they are the
+# provider's own statement that food is sold there -- the only evidence that
+# makes a market a culinary experience. Deliberately narrow: a value that is
+# not plainly a food trade is left out, and a marketplace the provider
+# records no trade for is not assumed to sell food.
+FOOD_TRADE_SHOP_VALUES = frozenset(
+    {
+        "bakery", "butcher", "cheese", "chocolate", "confectionery", "deli", "farm", "greengrocer",
+        "pastry", "seafood", "spices",
+    }
 )
 _UNSUITABLE_AMENITIES = frozenset(
     {
@@ -377,10 +393,21 @@ def classify_place(provider_tags: dict[str, Any] | None, category: str | None = 
         add(PARK_NATURE)
     if tourism == "viewpoint":
         add(VIEWPOINT)
-    if tags.get("leisure") == "marina" or tags.get("man_made") == "pier" or tags.get("natural") == "beach":
+    # Waterfront only on the provider's own evidence -- a marina, a pier, a
+    # beach or a managed beach -- never from a name, and never for a park.
+    if (
+        tags.get("leisure") in {"marina", "beach_resort"}
+        or tags.get("man_made") == "pier"
+        or tags.get("natural") == "beach"
+    ):
         add(WATERFRONT)
     if amenity in {"marketplace", "food_court"}:
         add(FOOD_MARKET)
+    # A culinary experience only on the provider's own food evidence: a food
+    # court, or a marketplace the provider also records a food trade for. A
+    # marketplace alone says nothing about food (it may sell flowers).
+    if amenity == "food_court" or (amenity == "marketplace" and tags.get("shop") in FOOD_TRADE_SHOP_VALUES):
+        add(CULINARY)
     if amenity in {"restaurant", "cafe", "fast_food", "food_court"}:
         add(RESTAURANT)
     if amenity in {"bar", "pub", "nightclub", "casino", "biergarten"}:
@@ -441,7 +468,12 @@ _INTEREST_WORDS: dict[str, frozenset[str]] = {
 }
 
 INTEREST_CATEGORIES: dict[str, frozenset[str]] = {
-    "food": frozenset({FOOD_MARKET, RESTAURANT}),
+    # One definition of food coverage for every stage: a scheduled place the
+    # provider's evidence establishes as a food experience (`CULINARY`), or a
+    # restaurant / cafe. A marketplace without food evidence does not serve
+    # it (it still serves `shopping`). Nearby restaurant suggestions are the
+    # other way to cover food: `interest_coverage.food_coverage_evidence`.
+    "food": frozenset({CULINARY, RESTAURANT}),
     # Section 202B.3 (Task 38): nightlife is claimed only for places whose
     # provider tags say nightlife (bar/pub/nightclub/casino/biergarten).
     # Theatres, cinemas, zoos and arts centres are `entertainment` -- a
@@ -462,6 +494,19 @@ INTEREST_CATEGORIES: dict[str, frozenset[str]] = {
     # garden or viewpoint does not serve `waterfront`.
     "waterfront": frozenset({WATERFRONT}),
 }
+
+
+# Requested interests the broad attraction search does not look for by
+# itself (its fixed category groups hold no category of theirs). A places
+# provider that can search by interest is told when one of these is
+# requested; which provider categories it then asks for is the provider's
+# own, verified knowledge. Generic interest keys only.
+INTEREST_DRIVEN_DISCOVERY: tuple[str, ...] = ("waterfront",)
+
+
+def discovery_interests(canonical: list[str]) -> list[str]:
+    """The requested canonical interests that need interest-driven discovery."""
+    return [interest for interest in INTEREST_DRIVEN_DISCOVERY if interest in canonical]
 
 
 def _stem(word: str) -> str:

@@ -15,6 +15,9 @@ from app.models.ai_itinerary_reasoning import (
     ItineraryReasoningDayPlan,
     ItineraryReasoningStrategy,
     ItineraryReasoningTimeWindow,
+    area_block_lines,
+    area_text,
+    planning_signals_text,
     validate_result_against_request,
 )
 from app.models.ai_itinerary_repair import (
@@ -168,7 +171,7 @@ def _format_candidate_line(candidate: Any, ref: str) -> str:
     matched = getattr(candidate, "matched_interests", None)
     if matched:
         line += f" matched_interests={list(matched)}"
-    return line
+    return line + area_text(candidate) + planning_signals_text(candidate)
 
 
 def _build_prompt(request: AIItineraryReasoningRequest, ref_map: CandidateRefMap | None = None) -> str:
@@ -206,6 +209,7 @@ def _build_prompt(request: AIItineraryReasoningRequest, ref_map: CandidateRefMap
         _format_candidate_line(candidate, ref_map.ref_for(candidate.candidate_id))
         for candidate in request.allowed_candidates
     )
+    lines.extend(area_block_lines(request.areas))
     return "\n".join(lines)
 
 
@@ -332,6 +336,7 @@ def _build_repair_prompt(request: AIItineraryRepairRequest, ref_map: CandidateRe
         _format_candidate_line(candidate, ref_map.ref_for(candidate.candidate_id))
         for candidate in request.allowed_candidates
     )
+    lines.extend(area_block_lines(request.areas))
     return "\n".join(lines)
 
 

@@ -43,6 +43,34 @@ class RouteBurdenRepairAttempt(BaseModel):
     # walking (a walk leg or the day's walking beyond the unchanged limits).
     # Such a day is improved, not resolved: it keeps its long-travel finding.
     hard_walking_violation_remains: bool = False
+    # -- Q4 route-aware recomposition (`services/route_recomposition_service`).
+    # All optional and defaulted: a report stored before Q4 loads unchanged.
+    # That stage uses the `reason` codes above with the same meanings, plus
+    # one of its own: protected_stops_only (only must-visits / locked stops
+    # are on the offending legs). An accepted change that left the day severe
+    # is `accepted` with `severity_after == "severe"`: materially better by
+    # the provider's own figures, NOT resolved, and the day keeps its
+    # long-travel finding.
+    # The change that was kept: reorder, relocate, swap or replace.
+    operation: str | None = None
+    # The other day a cross-day move or swap also changed.
+    other_day_number: int | None = None
+    # A stop that moved to another day (it stays in the plan).
+    moved_place: str | None = None
+    # The day's route severity (`route_burden.SEVERITY_*`) before and after.
+    severity_before: str | None = None
+    severity_after: str | None = None
+    # Required legs without a provider route, after the attempt. A day with
+    # any is never reported as fully verified, whatever was repaired.
+    unverified_legs_after: int = 0
+    # Shortlisted candidates, how many were verified with provider routes,
+    # and how many were skipped because the remaining request or credit
+    # allowance could not verify every changed leg (never verified in part).
+    candidates_shortlisted: int = 0
+    candidates_verified: int = 0
+    candidates_skipped_for_budget: int = 0
+    # Routing requests this attempt made (cached legs cost none).
+    routing_requests: int = 0
 
 
 class RoutabilityRepairAttempt(BaseModel):
@@ -90,3 +118,8 @@ class RoutabilityRepairReport(BaseModel):
 class RouteBurdenRepairReport(BaseModel):
     attempts: list[RouteBurdenRepairAttempt] = Field(default_factory=list)
     generated_at: datetime = Field(default_factory=_utc_now)
+    # Q4: routing requests the recomposition stage made in this generation,
+    # of the sub-cap it may use (every one also counted against the
+    # generation's shared route-request allowance). 0 / None before Q4.
+    recomposition_requests_used: int = 0
+    recomposition_requests_cap: int | None = None

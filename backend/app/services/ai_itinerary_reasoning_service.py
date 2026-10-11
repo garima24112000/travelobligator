@@ -64,6 +64,22 @@ def _disabled_result() -> AIItineraryReasoningResult:
     )
 
 
+MUST_VISIT_EXCEEDS_REASONING_BOUND = "MUST_VISIT_EXCEEDS_REASONING_BOUND"
+
+
+def _must_visit_overflow_result() -> AIItineraryReasoningResult:
+    return AIItineraryReasoningResult(
+        status=AIItineraryReasoningStatus.SKIPPED,
+        days=[],
+        guardrail_report=AIItineraryReasoningGuardrailReport(
+            passed=False,
+            blocked_reasons=[MUST_VISIT_EXCEEDS_REASONING_BOUND],
+            checked_fields=["allowed_candidates"],
+        ),
+        confidence=0.0,
+    )
+
+
 def _unexpected_failure_result(provider_name: str | None) -> AIItineraryReasoningResult:
     return AIItineraryReasoningResult(
         status=AIItineraryReasoningStatus.REJECTED,
@@ -124,6 +140,20 @@ class AIItineraryReasoningService:
         """
         if not get_settings().ai_itinerary_reasoning_enabled:
             return _disabled_result()
+
+        # Q2: a bounded request that cannot hold every grounded must-visit is
+        # never sent as if it were complete. No provider is called; the
+        # planner's deterministic path (which has no candidate cap) takes over.
+        overflow = self.request_builder.must_visit_overflow(planning_state)
+        if overflow > 0:
+            # The count is a plain number in the message: the structured-log
+            # allowlist has no field for it and silently drops unknown keys.
+            logger.warning(
+                "AIItineraryReasoningService.reason skipped: %d grounded must-visit(s) do not fit the candidate bound.",
+                overflow,
+                extra={"stage": _STAGE, "status": "skipped", "error_code": MUST_VISIT_EXCEEDS_REASONING_BOUND},
+            )
+            return _must_visit_overflow_result()
 
         provider = self._resolve_provider()
         provider_name = getattr(provider, "provider_name", "ai_itinerary_reasoning_provider")

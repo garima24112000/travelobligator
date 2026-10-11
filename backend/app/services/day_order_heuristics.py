@@ -19,11 +19,22 @@ from app.utils.geo import haversine_distance_km
 # fraction of the current order's.
 MIN_STOPS_FOR_ALTERNATIVE = 3
 ALTERNATIVE_MAX_LENGTH_RATIO = 0.85
+# The two straight-line proximity proxies the planner already used before
+# Q3, now named once. Neither is a neighbourhood definition, a walking
+# distance or a travel time:
+#   * `NEAR_DAY_STOPS_KM` -- a place this close to a day's other stops is
+#     still "near the day" (the diversity pass's hard-replacement bound, and
+#     the least distance at which a stop can count as misplaced);
+#   * `AS_WELL_PLACED_KM` -- a replacement within this distance is "just as
+#     well placed" as the stop it replaces (the diversity pass's soft bound).
+NEAR_DAY_STOPS_KM = 3.0
+AS_WELL_PLACED_KM = 1.0
+
 # A stop is flagged as belonging to another day when it is this many times
 # farther from its own day's centre than from the other day's (and at least
 # `MISPLACED_MIN_KM` away from its own).
 MISPLACED_DISTANCE_RATIO = 2.5
-MISPLACED_MIN_KM = 3.0
+MISPLACED_MIN_KM = NEAR_DAY_STOPS_KM
 
 # Geographic spread of ONE day: the straight-line length of its ordered,
 # located stops. Beyond this the plan validator reports the day
@@ -50,6 +61,19 @@ def day_spread_km(points: Sequence[GeoPoint | None]) -> float | None:
     return total_km
 
 
+def day_extent_km(points: Sequence[GeoPoint | None]) -> float | None:
+    """The largest straight-line distance between any two located stops of a
+    day -- order-independent, unlike `day_spread_km`. None with fewer than
+    two located stops (nothing to measure). A proxy for how far apart a
+    day's places lie; never a route length or a duration."""
+    located = [point for point in points if point is not None]
+    if len(located) < 2:
+        return None
+    return max(
+        haversine_distance_km(a, b) or 0.0 for index, a in enumerate(located) for b in located[index + 1 :]
+    )
+
+
 def _gap_km(a: GeoPoint | None, b: GeoPoint | None) -> float:
     distance = haversine_distance_km(a, b)
     return distance if distance is not None else float("inf")
@@ -71,6 +95,31 @@ def nearest_next_order(items: Sequence[T], points: Sequence[GeoPoint | None]) ->
         remaining.remove(nearest)
         order.append(nearest)
     return [items[index] for index in order]
+
+
+def prospective_day_spread_km(points: Sequence[GeoPoint | None]) -> float:
+    """`day_spread_km` of a set of places that has no final order yet: the
+    path length of their nearest-next order (first place first), which is
+    how a day is ordered before routing. 0.0 when it cannot be measured.
+
+    This is the SAME measure the validator's boundary is defined for -- a
+    straight-line PATH length through the day's stops, compared with
+    `GEOGRAPHIC_SPREAD_THRESHOLD_KM`. It is not the day's extent
+    (`day_extent_km`, the largest distance between two stops), and the
+    boundary is never applied to that."""
+    located = [point for point in points if point is not None]
+    return day_spread_km(nearest_next_order(located, located)) or 0.0
+
+
+def keeps_day_within_spread(day_points: Sequence[GeoPoint | None], candidate: GeoPoint | None) -> bool:
+    """Whether a day that also held a place at `candidate` would still be
+    within the validator's geographic-spread boundary (the prospective path
+    measure above). A place without coordinates cannot be judged and is not
+    refused here; a day that is already beyond the boundary is never said to
+    be kept within it."""
+    if candidate is None:
+        return True
+    return prospective_day_spread_km([*day_points, candidate]) <= GEOGRAPHIC_SPREAD_THRESHOLD_KM
 
 
 def clearly_shorter_alternative(items: Sequence[T], points: Sequence[GeoPoint | None]) -> list[T] | None:

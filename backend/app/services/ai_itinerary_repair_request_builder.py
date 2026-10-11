@@ -4,9 +4,14 @@ import re
 
 from pydantic import ValidationError
 
-from app.models.ai_itinerary_reasoning import AIItineraryReasoningStatus
+from app.models.ai_itinerary_reasoning import AREA_INSTRUCTION, AIItineraryReasoningStatus
 from app.services.usefulness_contract import evaluate_usefulness, is_meaningful_stop
-from app.models.ai_itinerary_repair import AIItineraryRepairIssue, AIItineraryRepairRequest, RepairableIssueType
+from app.models.ai_itinerary_repair import (
+    DEFAULT_ITINERARY_REPAIR_INSTRUCTIONS,
+    AIItineraryRepairIssue,
+    AIItineraryRepairRequest,
+    RepairableIssueType,
+)
 from app.models.common import ProviderStatus, ValidationSeverity
 from app.models.planning_state import PlanningState
 from app.models.routing import BufferSufficiencyStatus, RouteFeasibilityStatus
@@ -314,6 +319,12 @@ class AIItineraryRepairRequestBuilder:
                 trip_strategy_summary=reasoning_request.trip_strategy_summary,
                 factual_context=reasoning_request.factual_context,
                 allowed_candidates=reasoning_request.allowed_candidates,
+                # Q3: the same areas, and the instruction that explains them.
+                areas=reasoning_request.areas,
+                repair_instructions=[
+                    *DEFAULT_ITINERARY_REPAIR_INSTRUCTIONS,
+                    *([AREA_INSTRUCTION] if reasoning_request.areas else []),
+                ],
                 original_days=original_result.days,
                 affected_days=affected_days,
                 issues=issues,

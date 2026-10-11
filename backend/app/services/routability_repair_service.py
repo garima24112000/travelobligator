@@ -55,6 +55,7 @@ from __future__ import annotations
 import logging
 from typing import Callable
 
+from app.core import generation_diagnostics
 from app.core.provider_usage import GenerationProviderContext
 from app.models.common import GeoPoint, ProviderStatus
 from app.models.planning_state import DailyPlan, ExperienceItem, PlanningState
@@ -535,9 +536,20 @@ def apply_routability_repair_safely(
     planning_state.routability_repair_report = None
     if planning_state.experience_plan is None or planning_state.route_feasibility_report is None:
         return
+    # Diagnostic only (a no-op unless the evaluation tooling is recording).
+    generation_diagnostics.route_checkpoint(
+        generation_diagnostics.ROUTE_STAGE_ORDER_FINAL, planning_state, provider_context
+    )
     try:
         planning_state.routability_repair_report = RoutabilityRepairService(route_feasibility_service).repair(
             planning_state, provider_context
         )
     except Exception:
         logger.warning("Routability repair failed unexpectedly; leaving the plan unchanged.", exc_info=True)
+    finally:
+        # Diagnostic only (a no-op unless the evaluation tooling is recording).
+        generation_diagnostics.schedule_from_state("routability_repair", planning_state)
+        generation_diagnostics.allowances("routability_repair", provider_context)
+        generation_diagnostics.route_checkpoint(
+            generation_diagnostics.ROUTE_STAGE_ROUTABILITY_REPAIR, planning_state, provider_context
+        )

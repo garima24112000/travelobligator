@@ -12,8 +12,11 @@ from app.models.ai_itinerary_reasoning import (
     AIItineraryReasoningResult,
     AIItineraryReasoningStatus,
     FactualContextSummary,
+    ItineraryAreaSummary,
     ItineraryCandidateReference,
     ItineraryReasoningDayPlan,
+    MUST_VISIT_INSTRUCTION,
+    PLANNING_SIGNALS_INSTRUCTION,
     TravelerContextSummary,
     TripStrategySummary,
     validate_result_against_request,
@@ -184,6 +187,9 @@ DEFAULT_ITINERARY_REPAIR_INSTRUCTIONS: tuple[str, ...] = (
     "original reasoning did.",
     "Return structured repair output only: the revised day(s), a short repair summary, "
     "and which issue types you addressed.",
+    # Q2: the candidate lines are the reasoning call's own, signals included.
+    MUST_VISIT_INSTRUCTION,
+    PLANNING_SIGNALS_INSTRUCTION,
 )
 
 
@@ -208,6 +214,8 @@ class AIItineraryRepairRequest(BaseModel):
     trip_strategy_summary: TripStrategySummary | None = None
     factual_context: FactualContextSummary = Field(default_factory=FactualContextSummary)
     allowed_candidates: list[ItineraryCandidateReference] = Field(default_factory=list)
+    # Q3: the reasoning request's own areas, since its candidate lines carry them.
+    areas: list[ItineraryAreaSummary] = Field(default_factory=list)
 
     original_days: list[ItineraryReasoningDayPlan] = Field(min_length=1)
     affected_days: list[int] = Field(min_length=1)

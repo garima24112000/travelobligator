@@ -891,6 +891,12 @@ class ValidationReport(BaseModel):
     # UNDERFILLED_PLAN). Empty for every report stored before this section.
     blocking_codes: list[str] = Field(default_factory=list)
     review_codes: list[str] = Field(default_factory=list)
+    # V1 disclosure contract (presentation only): `{code: "informational" |
+    # "material"}` for every blocking / review code and every finding
+    # category of this report (`services/review_classification`). It never
+    # changes `readiness_status` or a code; a client uses it to show material
+    # findings prominently. Empty for a report stored before this field.
+    review_code_classification: dict[str, str] = Field(default_factory=dict)
 
     validated_at: datetime = Field(default_factory=_utc_now)
 
