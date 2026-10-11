@@ -33,6 +33,7 @@ from app.models.common import DataStatus, GeoPoint, ProviderStatus
 from app.models.providers import NormalizedPlace, ProviderResponse
 from app.providers.base import PlacesProvider
 from app.providers.gateway import provider_gateway
+from app.repositories.auth_attempt_repository import auth_attempt_repository
 from app.repositories.itinerary_lineage_repository import itinerary_lineage_repository
 from app.repositories.job_repository import job_repository
 from app.repositories.planning_state_repository import planning_state_repository
@@ -273,6 +274,8 @@ def _reset_in_memory_repositories(tmp_path: Path) -> None:
     itinerary_lineage_repository._store = test_store
     itinerary_lineage_repository._branches = {}
     itinerary_lineage_repository._revisions = {}
+    # P0: the Local JSON signup / sign-in attempt counters are process memory.
+    auth_attempt_repository.reset()
     yield
 
 
@@ -293,6 +296,18 @@ def _explicit_test_persistence_backend(request: pytest.FixtureRequest, monkeypat
     """
     if request.node.get_closest_marker("postgres_integration") is not None:
         monkeypatch.setenv("PERSISTENCE_BACKEND", "postgres")
+        # P0: every live-PostgreSQL test shares ONE database whose rows outlive the test that wrote
+        # them, so the deployment-wide limits (jobs per window, concurrent jobs, signups per window)
+        # would be reached by the suite's own leftovers. They are off here; a test of the limits sets
+        # the ones it exercises explicitly (tests/repositories/test_postgres_admission_p0_integration.py).
+        # Hermetic tests keep the production defaults: their store is new for every test.
+        for limit in (
+            "GENERATION_MAX_JOBS_PER_USER_PER_WINDOW",
+            "GENERATION_MAX_JOBS_GLOBAL_PER_WINDOW",
+            "GENERATION_MAX_CONCURRENT_JOBS",
+            "SIGNUP_MAX_PER_WINDOW_GLOBAL",
+        ):
+            monkeypatch.setenv(limit, "0")
     else:
         monkeypatch.setenv("PERSISTENCE_BACKEND", "local_json")
         monkeypatch.delenv("DATABASE_URL", raising=False)
@@ -329,6 +344,7 @@ def _reset_persistence_caches() -> None:
         _factory._postgres_user_repository,
         _factory._postgres_job_repository,
         _factory._postgres_lineage_repository,
+        _factory._postgres_auth_attempt_repository,
     ):
         cache.cache_clear()
 

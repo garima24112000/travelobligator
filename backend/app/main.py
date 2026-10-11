@@ -1,8 +1,9 @@
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.encoders import jsonable_encoder
+from fastapi.openapi.docs import get_redoc_html, get_swagger_ui_html
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -17,6 +18,7 @@ from app.core.logging_config import configure_logging
 from app.core.http_metrics_middleware import HttpMetricsMiddleware
 from app.core.no_store_middleware import NoStoreMiddleware
 from app.core.operational_config import cors_origins as configured_cors_origins
+from app.core.operational_config import is_production
 from app.core.request_id_middleware import RequestIdMiddleware
 from app.core.response import error_response
 from app.repositories.errors import ConcurrentStateUpdateError
@@ -133,7 +135,37 @@ app = FastAPI(
     version="0.1.0",
     debug=settings.app_debug,
     lifespan=lifespan,
+    # P0: the interactive documentation and the schema are served by the three routes below, which
+    # do not exist in production. FastAPI's own built-in routes are off so there is one decision.
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
 )
+
+_OPENAPI_PATH = "/openapi.json"
+
+
+def _development_only() -> None:
+    """404 -- exactly what an unknown path answers -- when `APP_ENV=production`. Read per request, like
+    every other setting, so the policy follows the configuration and not the import order."""
+    if is_production(get_settings()):
+        raise HTTPException(status_code=404)
+
+
+@app.get(_OPENAPI_PATH, include_in_schema=False, dependencies=[Depends(_development_only)])
+def openapi_schema() -> JSONResponse:
+    return JSONResponse(app.openapi())
+
+
+@app.get("/docs", include_in_schema=False, dependencies=[Depends(_development_only)])
+def swagger_ui():
+    return get_swagger_ui_html(openapi_url=_OPENAPI_PATH, title=f"{app.title} - Swagger UI")
+
+
+@app.get("/redoc", include_in_schema=False, dependencies=[Depends(_development_only)])
+def redoc_ui():
+    return get_redoc_html(openapi_url=_OPENAPI_PATH, title=f"{app.title} - ReDoc")
+
 
 # Explicit origins only (`validate_runtime_configuration` rejects a wildcard/credentialed/non-origin
 # entry at startup). CORS is not authentication: every route still checks the session itself.

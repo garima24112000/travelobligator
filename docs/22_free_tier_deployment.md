@@ -405,7 +405,8 @@ With `APP_ENV=production`, `validate_runtime_configuration` (`app/core/operation
 with fixed messages that never echo a value, for: Local JSON persistence; a missing or non-PostgreSQL
 `DATABASE_URL`; the SQLite provider cache; a malformed `REDIS_URL`; `APP_DEBUG=true`; a missing or short
 `SESSION_SECRET_KEY`; a non-`Secure`, non-`HttpOnly` or `SameSite=none` session cookie; a non-`https` CORS
-origin; a short `OPS_TOKEN`. A wildcard or credentialed CORS origin is rejected in every environment, and an
+origin; a short `OPS_TOKEN`; `ASYNC_GENERATION_ENABLED=false`; any of the abuse limits of section 13A that
+need no client address set to 0. A wildcard or credentialed CORS origin is rejected in every environment, and an
 unknown `PROVIDER_CACHE_BACKEND` / `PERSISTENCE_BACKEND` is rejected when settings load.
 
 Tests (no remote service needed): `backend/app/tests/core/test_production_config_203b.py`,
@@ -456,6 +457,103 @@ trickles in slowly could still run somewhat past the budget.
 The canary (`backend/scripts/canary_city.py`) prints, per run, the stage and provider wall time, the
 concurrent batches and both Geoapify concurrency peaks, and for each model stage its attempts, retries,
 whether its deadline was exceeded and how it ended. These are reported, never acceptance checks.
+
+## 13A. Abuse and cost limits (P0)
+
+Added after the V1 production-readiness audit. **Not yet deployed:** the verification record in section 14
+describes the system before these limits existed. Deploying them needs the migration `e52b7c1a9f04`
+(section 11-B) before the backend deploy.
+
+Nothing here changes how a trip is planned. Every limit is a validated setting with a documented default
+(`.env.example`); the production values are written out in `render.yaml`.
+
+**Trip request bounds** (checked when a trip is created; a stored trip always loads):
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `MAX_TRIP_DAYS` | `7` | Calendar days, counting the first and the last day. |
+| `TRIP_REQUEST_MAX_LIST_ITEMS` | `20` | Entries in each of interests, must-visit, must-avoid, constraints. |
+| `TRIP_REQUEST_MAX_ITEM_LENGTH` | `120` | Characters per entry. |
+| `MAX_TRIPS_PER_USER` | `20` | Saved trips one account may hold. |
+
+A request over a bound is HTTP 422 (`VALIDATION_ERROR`, naming the field); a 21st trip is HTTP 429
+(`TRIP_LIMIT_REACHED`). There is no way to delete a trip yet, so an account that reaches the trip limit
+stays there until deletion is added.
+
+**Generation admission** (first generations and regenerations alike):
+
+| Variable | Default | Refusal (HTTP 429) |
+|---|---|---|
+| `GENERATION_MAX_JOBS_PER_USER_PER_WINDOW` | `5` | `GENERATION_USER_LIMIT_REACHED` |
+| `GENERATION_MAX_JOBS_GLOBAL_PER_WINDOW` | `25` | `GENERATION_GLOBAL_LIMIT_REACHED` |
+| `GENERATION_MAX_CONCURRENT_JOBS` | `2` | `GENERATION_CAPACITY_REACHED` |
+| `GENERATION_LIMIT_WINDOW_SECONDS` | `86400` | the rolling window of the first two |
+
+- The decision is made in PostgreSQL when the job row is created: one transaction takes a
+  transaction-scoped advisory lock, counts, and inserts. Simultaneous requests, from any process, are
+  decided one at a time; the lock is released by the commit or rollback itself. Redis and process memory
+  are not involved.
+- A window counts every job admitted in it, whatever became of it (succeeded, failed, interrupted). A
+  refused request creates no job, starts no background task and calls no provider.
+- Before counting concurrent jobs, jobs whose owner is gone are closed across all trips: a running job whose
+  lease expired (`GENERATION_JOB_LEASE_SECONDS`, 120 s) and a queued job nobody claimed within
+  `GENERATION_JOB_STALE_AFTER_SECONDS` (3600 s). A healthy running job is never closed to make room.
+- The existing rule of one active job per trip (HTTP 409 `JOB_ALREADY_RUNNING`) is unchanged and is
+  checked first.
+- The limits are enforced where a job is created, so `APP_ENV=production` now requires
+  `ASYNC_GENERATION_ENABLED=true`. The synchronous development path creates no job and is not limited.
+- 25 generations a day at the 100-credit cap is at most 2,500 Geoapify credits, inside the free plan's
+  3,000 a day.
+
+**Signup and sign-in attempts:**
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `SIGNUP_MAX_PER_WINDOW_GLOBAL` | `30` | Accounts created by the whole deployment per `SIGNUP_LIMIT_WINDOW_SECONDS` (86400). 429 `SIGNUP_LIMIT_REACHED`. |
+| `LOGIN_MAX_FAILURES_PER_ACCOUNT` | `10` | Failed sign-ins for one email per `LOGIN_FAILURE_WINDOW_SECONDS` (900). 429 `TOO_MANY_ATTEMPTS`. |
+| `SIGNUP_MAX_PER_WINDOW_PER_IP` | `5` | Per client address; only with a trusted address. |
+| `LOGIN_MAX_FAILURES_PER_IP` | `50` | Per client address; only with a trusted address. |
+| `CLIENT_IP_TRUSTED_PROXY_HOPS` | `0` | Trusted proxies in front of the backend. |
+
+- Counters are rows in `auth_attempts` holding keyed hashes only: no email address, IP address or user id.
+  Rows older than the longest window are deleted when a new one is written.
+- The sign-in lock is keyed on the email as typed, whether or not an account exists, and is the same 429
+  for a right and a wrong password; an unknown email also costs one real password verification. Neither
+  the status, the body nor the timing says whether an account exists.
+- These checks are "count, then act", not a lock: a burst of simultaneous requests can pass a limit by the
+  number in flight. The generation limits are the atomic ones.
+
+**Client address.** `X-Forwarded-For` is read only when `CLIENT_IP_TRUSTED_PROXY_HOPS` is greater than 0,
+and then only the entry that many places from the right; anything further left is client-supplied. With
+`0` (the deployed value) no header is read, the socket peer is not used either (behind a proxy it is the
+proxy), and the two per-address limits do not apply. Before raising it, check what the backend actually
+receives through the Vercel rewrite and Render's proxy. Because the Render origin is also reachable
+directly, an entry written by the Vercel edge cannot be told apart from one a direct caller wrote: a hop
+count that reaches past Render's own entry is spoofable, and one that stops at it sees the Vercel edge, not
+the visitor. The per-address limits are therefore a secondary measure; the deployment-wide limits do not
+depend on any address.
+
+**What these limits do not do.**
+
+- There is no email verification, so one person can open several accounts (up to the signup limit). The
+  per-user generation limit is a fairness measure; the global limit is the cost control.
+- Anyone can use up the day's signups or generations for everyone else. That is a deliberate trade for a
+  free-tier deployment with a fixed provider allowance.
+- Signup still answers 409 for an email that is already registered, which reveals that it is.
+- An attacker who knows an email can keep it locked out of sign-in by failing on purpose.
+- A queued job orphaned by a hard kill between its creation and its first claim holds a concurrent slot for
+  up to `GENERATION_JOB_STALE_AFTER_SECONDS`.
+
+**Development-only endpoints.** With `APP_ENV=production`, `/docs`, `/redoc`, `/openapi.json` and
+`POST /trips/{id}/langgraph-shadow-run` answer the same 404 as an unknown path. The shadow run executes the
+whole planning graph inside the request and outside the admission limits; outside production it is
+unchanged.
+
+Tests (no remote service needed unless marked): `tests/api/test_trip_request_bounds_p0.py`,
+`tests/api/test_generation_admission_p0.py`, `tests/api/test_auth_abuse_p0.py`,
+`tests/api/test_public_exposure_203b.py`, `tests/core/test_production_config_203b.py`,
+`tests/db/test_migration_schema_admission_p0.py`, and against real PostgreSQL
+`tests/repositories/test_postgres_admission_p0_integration.py`.
 
 ## 14. Production verification record
 

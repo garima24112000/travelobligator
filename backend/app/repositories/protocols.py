@@ -19,11 +19,15 @@ from app.models.generation_job import GenerationJob
 from app.models.itinerary_lineage import ItineraryBranch, ItineraryRevision
 from app.models.planning_state import PlanningState
 from app.models.user import UserRecord
+from app.repositories.admission import AdmissionPolicy
 from app.repositories.trip_repository import TripRecord
 
 
 class TripRepositoryProtocol(Protocol):
     def create(self, trip_id: str, owner_id: str | None = None) -> TripRecord: ...
+
+    # P0: `create`, refused with `TripLimitReachedError` once the owner holds `max_trips` trips.
+    def create_within_owner_limit(self, trip_id: str, owner_id: str, max_trips: int) -> TripRecord: ...
 
     def get(self, trip_id: str) -> TripRecord | None: ...
 
@@ -75,6 +79,10 @@ class GenerationJobRepositoryProtocol(Protocol):
     """
 
     def create(self, job: GenerationJob) -> GenerationJob: ...
+
+    # P0 admission: store a new queued job only within `policy`, as one atomic decision
+    # (`app.repositories.admission`). Raises `AdmissionRefusedError` and stores nothing otherwise.
+    def admit(self, job: GenerationJob, policy: AdmissionPolicy, *, now: datetime) -> GenerationJob: ...
 
     def save(self, job: GenerationJob) -> GenerationJob: ...
 

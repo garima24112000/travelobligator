@@ -93,9 +93,14 @@ def record_transaction(scope: str, outcome: str, started: float, cause: str | No
 
 
 def rollback_cause(exc: BaseException) -> str:
+    from app.repositories.admission import AdmissionRefusedError, TripLimitReachedError
     from app.repositories.errors import ConcurrentStateUpdateError, JobAlreadyActiveError
 
-    if isinstance(exc, (ConcurrentStateUpdateError, JobAlreadyActiveError)):
+    # A job or trip refused by a limit is an expected business outcome, not a database failure.
+    if isinstance(
+        exc,
+        (ConcurrentStateUpdateError, JobAlreadyActiveError, AdmissionRefusedError, TripLimitReachedError),
+    ):
         return "conflict"
     return "error"
 

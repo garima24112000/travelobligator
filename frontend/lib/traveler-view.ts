@@ -729,6 +729,55 @@ export function travelerErrorMessage(input: TravelerErrorInput): TravelerError {
           'We couldn\'t find that destination with confidence, so no itinerary was planned. Try including the city and country, for example "Lisbon, Portugal".',
         retryable: false,
       };
+    // Limits (HTTP 429). Nothing was started; repeating at once cannot help, except when
+    // every slot was merely busy.
+    case "GENERATION_USER_LIMIT_REACHED":
+      return {
+        message: isSafeForTraveler(message)
+          ? message.trim()
+          : "You have reached the limit for new itineraries for now. Please try again later.",
+        retryable: false,
+      };
+    case "GENERATION_GLOBAL_LIMIT_REACHED":
+      return {
+        message:
+          "TravelObligator has reached its limit for new itineraries for now. Your trip is saved. Please try again later.",
+        retryable: false,
+      };
+    case "GENERATION_CAPACITY_REACHED":
+      return {
+        message:
+          "Other itineraries are being built right now. Your trip is saved. Please try again in a minute.",
+        retryable: true,
+      };
+    case "TRIP_LIMIT_REACHED":
+      return {
+        message: isSafeForTraveler(message)
+          ? message.trim()
+          : "You have reached the limit of saved trips for one account.",
+        retryable: false,
+      };
+    case "SIGNUP_LIMIT_REACHED":
+      return {
+        message: "New accounts cannot be created right now. Please try again later.",
+        retryable: false,
+      };
+    case "TOO_MANY_ATTEMPTS":
+      return {
+        message: "Too many sign-in attempts. Please wait a few minutes and try again.",
+        retryable: false,
+      };
+    case "VALIDATION_ERROR": {
+      // The backend words a rejected trip request for the traveller (a date or list-size
+      // problem); only its fixed "Value error, " prefix is not for display.
+      const detail = (message ?? "").replace(/^value error,\s*/i, "");
+      return {
+        message: isSafeForTraveler(detail)
+          ? detail.trim()
+          : "Some of the trip details could not be accepted. Please check the dates and lists and try again.",
+        retryable: false,
+      };
+    }
     default:
       break;
   }

@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import logging
 
-from app.auth.passwords import hash_password, verify_password
+from app.auth.passwords import hash_password, unknown_account_hash, verify_password
 from app.core.errors import email_already_registered_error, invalid_credentials_error
 from app.models.user import LoginRequest, PublicUser, SignupRequest, UserRecord
 from app.repositories.factory import get_user_repository
@@ -89,7 +89,12 @@ def login(
     repository = user_repository or get_user_repository()
     existing = repository.get_by_email(request.email)
 
-    if existing is None or not verify_password(request.password, existing.password_hash):
+    # An unknown email still does one real password verification (against a fixed hash that matches
+    # nothing), so the answer takes as long as for a registered one and timing does not reveal which.
+    password_ok = verify_password(
+        request.password, existing.password_hash if existing is not None else unknown_account_hash()
+    )
+    if existing is None or not password_ok:
         logger.warning(
             "Login rejected: invalid credentials.",
             extra={

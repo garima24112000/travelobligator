@@ -33,6 +33,11 @@ from app.models.generation_job import (
     GenerationJob,
     GenerationJobStatus,
 )
+from app.repositories.admission import (
+    ADMISSION_ADVISORY_LOCK_KEY,
+    AdmissionPolicy,
+    AdmissionRefusedError,
+)
 from app.repositories.errors import UNSET, JobAlreadyActiveError
 from app.models.targeted_regeneration_diff import TargetedRegenerationDiff
 
@@ -165,6 +170,43 @@ class PostgresJobRepository:
         try:
             with self._scope() as session:
                 session.execute(stmt)
+        except IntegrityError as exc:
+            constraint = getattr(getattr(getattr(exc, "orig", None), "diag", None), "constraint_name", None)
+            if constraint == _ACTIVE_JOB_INDEX:
+                record_conflict("job_active")
+                raise JobAlreadyActiveError(job.trip_id) from None
+            raise
+        return job
+
+    def admit(self, job: GenerationJob, policy: AdmissionPolicy, *, now: datetime) -> GenerationJob:
+        """Store a NEW queued job only if `policy` allows it (see `app.repositories.admission`).
+
+        One transaction: `pg_advisory_xact_lock` first, so admissions are decided one at a time
+        across every backend process; then the three counts; then the insert. The lock is released
+        by the transaction's own commit/rollback. A refusal raises `AdmissionRefusedError` and the
+        rollback leaves no row; a second active job for the trip is still `JobAlreadyActiveError`
+        (the unique index), also with no row. `now` is the caller's clock, the same one that stamped
+        `job.created_at`, so the window is measured consistently."""
+        window_start = policy.window_start(now)
+        in_window = GenerationJobRow.created_at > window_start
+        try:
+            with self._scope() as session:
+                session.execute(select(func.pg_advisory_xact_lock(ADMISSION_ADVISORY_LOCK_KEY)))
+                user_jobs, global_jobs, active_jobs = session.execute(
+                    select(
+                        func.count().filter(in_window, GenerationJobRow.owner_id == job.owner_id),
+                        func.count().filter(in_window),
+                        func.count().filter(GenerationJobRow.status.in_(set(_RUNNING_STATUSES))),
+                    ).select_from(GenerationJobRow)
+                ).one()
+                refusal = policy.refusal(
+                    user_jobs_in_window=user_jobs,
+                    global_jobs_in_window=global_jobs,
+                    active_jobs=active_jobs,
+                )
+                if refusal is not None:
+                    raise AdmissionRefusedError(refusal)
+                session.execute(pg_insert(GenerationJobRow.__table__).values(**_job_values(job)))
         except IntegrityError as exc:
             constraint = getattr(getattr(getattr(exc, "orig", None), "diag", None), "constraint_name", None)
             if constraint == _ACTIVE_JOB_INDEX:

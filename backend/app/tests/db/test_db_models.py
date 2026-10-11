@@ -11,8 +11,10 @@ import app.db.models  # noqa: F401  -- registers TripRow/PlanningStateRow/UserRo
 # never calls `Base.metadata.create_all`.
 
 
-def test_importing_models_registers_exactly_six_tables() -> None:
+def test_importing_models_registers_exactly_seven_tables() -> None:
     assert set(Base.metadata.tables.keys()) == {
+        # P0: counted signups / failed sign-ins (keyed hashes only).
+        "auth_attempts",
         "trips",
         "planning_states",
         "users",

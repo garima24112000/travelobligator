@@ -27,6 +27,9 @@ from __future__ import annotations
 from functools import lru_cache
 
 from app.core.config import get_settings
+from app.repositories.auth_attempt_repository import (
+    auth_attempt_repository as _local_auth_attempt_repository,
+)
 from app.repositories.itinerary_lineage_repository import (
     itinerary_lineage_repository as _local_lineage_repository,
 )
@@ -82,6 +85,21 @@ def _postgres_lineage_repository() -> ItineraryLineageRepositoryProtocol:
     )
 
     return PostgresItineraryLineageRepository()
+
+
+@lru_cache
+def _postgres_auth_attempt_repository():
+    from app.repositories.auth_attempt_repository import PostgresAuthAttemptRepository
+
+    return PostgresAuthAttemptRepository()
+
+
+def get_auth_attempt_repository():
+    """P0 signup / sign-in attempt counters. Same per-call resolution as every repository here: the
+    `auth_attempts` table with PostgreSQL, an in-process list with the explicit Local JSON backend."""
+    if get_settings().persistence_backend == "postgres":
+        return _postgres_auth_attempt_repository()
+    return _local_auth_attempt_repository
 
 
 def get_trip_repository() -> TripRepositoryProtocol:

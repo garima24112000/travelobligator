@@ -63,6 +63,23 @@ class UserRow(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class AuthAttemptRow(Base):
+    """One counted signup or failed sign-in (P0 abuse limits; `app/auth/abuse.py`).
+
+    Holds no personal data: `subject_hash` / `ip_hash` are keyed HMAC-SHA256 digests (the key is the
+    session secret), never an email address or an IP address, and no user id. Rows are only ever
+    counted inside a rolling window and are deleted once they are older than the longest window."""
+
+    __tablename__ = "auth_attempts"
+    __table_args__ = (Index("ix_auth_attempts_kind_created_at", "kind", "created_at"),)
+
+    attempt_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    kind: Mapped[str] = mapped_column(Text, nullable=False)
+    subject_hash: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ip_hash: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class TripRow(Base):
     """Mirrors `app.repositories.trip_repository.TripRecord`, plus
     `owner_id` (Step 184C -- nullable for backward compatibility with
@@ -154,6 +171,9 @@ class GenerationJobRow(Base):
         Index("ix_generation_jobs_owner_id", "owner_id"),
         Index("ix_generation_jobs_status", "status"),
         Index("ix_generation_jobs_trip_id_status", "trip_id", "status"),
+        # P0 admission limits: the rolling-window counts (all jobs / one owner's jobs).
+        Index("ix_generation_jobs_created_at", "created_at"),
+        Index("ix_generation_jobs_owner_id_created_at", "owner_id", "created_at"),
         # Section 200C: the DATABASE guarantees at most one active job per trip
         # (closes the read-then-create race in check_no_duplicate_running_job).
         Index(

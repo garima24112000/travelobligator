@@ -39,7 +39,11 @@ def test_chains_after_the_200a_head_and_is_the_single_head() -> None:
     assert (module.revision, module.down_revision) == (_NEW_HEAD, _PREVIOUS_HEAD)
     config = Config()
     config.set_main_option("script_location", str(_ALEMBIC_DIR))
-    assert ScriptDirectory.from_config(config).get_heads() == [_NEW_HEAD]
+    # Still one linear history. The head moved on with the P0 migration, which chains after this one
+    # (tests/db/test_migration_schema_admission_p0.py).
+    scripts = ScriptDirectory.from_config(config)
+    assert len(scripts.get_heads()) == 1
+    assert _NEW_HEAD in {revision.revision for revision in scripts.walk_revisions()}
 
 
 def test_adds_the_optimistic_concurrency_token_with_a_safe_default() -> None:

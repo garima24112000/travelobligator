@@ -311,6 +311,8 @@ _PRODUCTION = {
     # and keeps the inventory sufficiency gate on.
     "PLACES_PROVIDER": "geoapify",
     "INVENTORY_SUFFICIENCY_GATE_ENABLED": "true",
+    # P0: generation runs as jobs in production (the admission limits are enforced there)
+    "ASYNC_GENERATION_ENABLED": "true",
 }
 
 

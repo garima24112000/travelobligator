@@ -153,6 +153,40 @@ def production_configuration_problems(settings: Settings) -> list[str]:
         )
     if settings.ops_token is not None and len(settings.ops_token) < MIN_OPS_TOKEN_LENGTH:
         problems.append(f"OPS_TOKEN must be at least {MIN_OPS_TOKEN_LENGTH} characters when set.")
+    problems.extend(_production_abuse_limit_problems(settings))
+    return problems
+
+
+# P0: limits that a public deployment may not switch off (0 = off). The two per-address limits are not
+# listed: they apply only when a trusted client address exists (`CLIENT_IP_TRUSTED_PROXY_HOPS`).
+_REQUIRED_PRODUCTION_LIMITS = (
+    ("generation_max_jobs_per_user_per_window", "GENERATION_MAX_JOBS_PER_USER_PER_WINDOW"),
+    ("generation_max_jobs_global_per_window", "GENERATION_MAX_JOBS_GLOBAL_PER_WINDOW"),
+    ("generation_max_concurrent_jobs", "GENERATION_MAX_CONCURRENT_JOBS"),
+    ("max_trips_per_user", "MAX_TRIPS_PER_USER"),
+    ("signup_max_per_window_global", "SIGNUP_MAX_PER_WINDOW_GLOBAL"),
+    ("login_max_failures_per_account", "LOGIN_MAX_FAILURES_PER_ACCOUNT"),
+)
+
+
+def _production_abuse_limit_problems(settings: Settings) -> list[str]:
+    """The generation limits are enforced where a JOB is created, so production must run generation as
+    jobs; and none of the limits that need no client address may be disabled."""
+    problems: list[str] = []
+    if not settings.async_generation_enabled:
+        problems.append(
+            "APP_ENV=production requires ASYNC_GENERATION_ENABLED=true: the generation admission limits "
+            "are enforced when a generation job is created, and the synchronous path creates none."
+        )
+    disabled = [env for field, env in _REQUIRED_PRODUCTION_LIMITS if getattr(settings, field) <= 0]
+    if disabled:
+        problems.append(
+            "APP_ENV=production requires these limits to be greater than 0: " + ", ".join(disabled) + "."
+        )
+    if settings.generation_max_jobs_per_user_per_window > settings.generation_max_jobs_global_per_window > 0:
+        problems.append(
+            "GENERATION_MAX_JOBS_PER_USER_PER_WINDOW must not exceed GENERATION_MAX_JOBS_GLOBAL_PER_WINDOW."
+        )
     return problems
 
 

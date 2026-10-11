@@ -10,6 +10,9 @@ any route yet; foundation only, matching this codebase's established
 
 from __future__ import annotations
 
+import secrets
+from functools import lru_cache
+
 import bcrypt
 
 # bcrypt's own hard limit (bytes, not characters) -- `bcrypt.hashpw`/
@@ -32,6 +35,14 @@ def hash_password(plain_password: str) -> str:
         raise ValueError("Password exceeds the maximum supported length.")
     hashed = bcrypt.hashpw(encoded, bcrypt.gensalt())
     return hashed.decode("utf-8")
+
+
+@lru_cache(maxsize=1)
+def unknown_account_hash() -> str:
+    """A real bcrypt hash of a random value nobody knows, made once per process. Sign-in verifies
+    against it when no account exists for the email, so that case costs the same work as a wrong
+    password and its timing does not reveal whether the account exists. It can never match."""
+    return hash_password(secrets.token_urlsafe(32))
 
 
 def verify_password(plain_password: str, password_hash: str) -> bool:

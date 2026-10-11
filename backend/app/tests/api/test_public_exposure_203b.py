@@ -167,3 +167,116 @@ def test_cors_allows_only_the_configured_origin_and_never_a_wildcard(http: TestC
         )
         assert preflight.status_code == 400
         assert "access-control-allow-origin" not in preflight.headers
+
+
+# -- P0: development-only endpoints do not exist in production ------------------------------------------------------
+
+_DOCUMENTATION_PATHS = ("/docs", "/redoc", "/openapi.json")
+
+
+def test_the_api_documentation_is_served_outside_production(http: TestClient) -> None:
+    schema = http.get("/openapi.json")
+    assert schema.status_code == 200 and "/trips/{trip_id}/generate" in schema.json()["paths"]
+    for path in ("/docs", "/redoc"):
+        page = http.get(path)
+        assert page.status_code == 200 and "/openapi.json" in page.text
+    # the documentation routes do not list themselves
+    assert not set(_DOCUMENTATION_PATHS) & set(schema.json()["paths"])
+
+
+def test_production_serves_no_api_documentation(http: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    unknown = http.get("/no-such-path")
+    _env(monkeypatch, APP_ENV="production")
+    for path in _DOCUMENTATION_PATHS:
+        response = http.get(path)
+        # exactly what a path that does not exist answers: nothing to tell them apart
+        assert (response.status_code, response.json()) == (404, unknown.json()) == (404, {"detail": "Not Found"})
+        assert response.headers["cache-control"] == "no-store"
+
+
+def test_fastapi_serves_no_second_copy_of_the_documentation() -> None:
+    assert (app.docs_url, app.redoc_url, app.openapi_url) == (None, None, None)
+    served = [route.path for route in app.routes if getattr(route, "path", None) in _DOCUMENTATION_PATHS]
+    assert sorted(served) == sorted(_DOCUMENTATION_PATHS)  # each exactly once
+
+
+def _signed_in() -> tuple[TestClient, str]:
+    from app.tests.conftest import create_trip_payload, new_authenticated_client
+
+    owner = new_authenticated_client()
+    trip_id = owner.post("/trips", json=create_trip_payload()).json()["data"]["trip_id"]
+    return owner, trip_id
+
+
+def test_the_shadow_run_works_for_the_owner_outside_production() -> None:
+    owner, trip_id = _signed_in()
+    response = owner.post(f"/trips/{trip_id}/langgraph-shadow-run")
+    assert response.status_code == 200 and response.json()["data"]["persisted"] is False
+
+
+def test_the_shadow_run_does_not_exist_in_production(http: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.providers.gateway import provider_gateway
+    from app.services.langgraph_planning_service import LangGraphPlanningService
+
+    owner, trip_id = _signed_in()
+    runs: list[str] = []
+    monkeypatch.setattr(LangGraphPlanningService, "run", lambda self, *args, **kwargs: runs.append("ran"))
+    monkeypatch.setattr(
+        provider_gateway.places, "search_attractions", lambda *args, **kwargs: runs.append("provider")
+    )
+    _env(monkeypatch, APP_ENV="production")
+
+    for caller in (owner, http):  # the trip's owner, and a visitor with no session at all
+        for target in (trip_id, "trip_that_does_not_exist"):
+            response = caller.post(f"/trips/{target}/langgraph-shadow-run")
+            # the same 404 before the session or the trip is looked at -- never 401 / 403 / TRIP_NOT_FOUND
+            assert (response.status_code, response.json()) == (404, {"detail": "Not Found"})
+    assert runs == []  # the planning graph never ran and no provider was asked anything
+
+
+def test_only_known_routes_can_start_planning_work() -> None:
+    """P0 inventory. Every route handler that can reach a provider or a model does so through one of
+    these names. Exactly four handlers may: generate and regenerate (admitted as jobs in production,
+    where the synchronous branch is rejected at startup), the targeted-regeneration helper they share,
+    and the shadow run (404 in production). A new handler that plans anything fails this test until
+    it is put behind the job admission limits."""
+    import ast
+    import inspect
+
+    from app.api.routes import auth as auth_routes
+    from app.api.routes import ops as ops_routes
+    from app.api.routes import trips as trip_routes
+
+    planning_entry_points = {
+        "generate_full_plan",
+        "generate_full_plan_via_langgraph",
+        "rerun_affected_stages",
+        "apply_regeneration_mutation",
+        "targeted_regeneration_application_service",
+        "LangGraphPlanningService",
+        "start_generate_job",
+        "start_regenerate_job",
+        "start_targeted_regenerate_job",
+    }
+
+    def handlers_that_plan(module) -> set[str]:
+        found = set()
+        for node in ast.parse(inspect.getsource(module)).body:
+            if not isinstance(node, ast.FunctionDef):
+                continue
+            names = {n.id for n in ast.walk(node) if isinstance(n, ast.Name)}
+            names |= {n.attr for n in ast.walk(node) if isinstance(n, ast.Attribute)}
+            if names & planning_entry_points:
+                found.add(node.name)
+        return found
+
+    assert handlers_that_plan(trip_routes) == {
+        "generate_trip_plan",
+        "regenerate_trip_plan",
+        "_regenerate_targeted",
+        "run_langgraph_shadow",
+    }
+    assert handlers_that_plan(auth_routes) == set() and handlers_that_plan(ops_routes) == set()
+
+    shadow = next(route for route in app.routes if getattr(route, "path", "").endswith("/langgraph-shadow-run"))
+    assert [dependency.call.__name__ for dependency in shadow.dependant.dependencies][0] == "_development_only"

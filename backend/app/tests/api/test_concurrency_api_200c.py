@@ -64,7 +64,10 @@ def test_losing_the_database_race_for_the_active_job_is_the_existing_job_already
     monkeypatch.setenv("ASYNC_GENERATION_ENABLED", "true")
     get_settings.cache_clear()
     repo = get_job_repository()
-    monkeypatch.setattr(repo, "create", lambda job: (_ for _ in ()).throw(JobAlreadyActiveError(job.trip_id)))
+    # P0: a job is created through `admit` (the admission limits + the insert, one decision).
+    monkeypatch.setattr(
+        repo, "admit", lambda job, policy, now: (_ for _ in ()).throw(JobAlreadyActiveError(job.trip_id))
+    )
 
     response = client.post(f"/trips/{created_trip_id}/generate")
 

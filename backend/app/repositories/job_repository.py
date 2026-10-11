@@ -12,6 +12,7 @@ from app.models.generation_job import (
     GenerationJobStatus,
     mark_job_failed,
 )
+from app.repositories.admission import AdmissionPolicy, AdmissionRefusedError
 from app.repositories.errors import UNSET
 from app.storage.local_json_store import LocalJsonStore, get_local_json_store
 
@@ -65,6 +66,24 @@ class JobRepository:
     def create(self, job: GenerationJob) -> GenerationJob:
         self._jobs[job.job_id] = job
         self._persist()
+        return job
+
+    def admit(self, job: GenerationJob, policy: AdmissionPolicy, *, now: datetime) -> GenerationJob:
+        """Same contract as `PostgresJobRepository.admit`, decided under this repository's
+        in-process lock (development backend: no cross-process guarantee)."""
+        window_start = policy.window_start(now)
+        with self._lifecycle_lock:
+            jobs = list(self._jobs.values())
+            in_window = [existing for existing in jobs if existing.created_at > window_start]
+            refusal = policy.refusal(
+                user_jobs_in_window=sum(1 for existing in in_window if existing.owner_id == job.owner_id),
+                global_jobs_in_window=len(in_window),
+                active_jobs=sum(1 for existing in jobs if existing.status in _RUNNING_STATUSES),
+            )
+            if refusal is not None:
+                raise AdmissionRefusedError(refusal)
+            self._jobs[job.job_id] = job
+            self._persist()
         return job
 
     def save(self, job: GenerationJob) -> GenerationJob:

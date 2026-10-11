@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import threading
 from datetime import datetime, timezone
 
 from pydantic import BaseModel, Field
 
 from app.core.config import get_settings
+from app.repositories.admission import TripLimitReachedError
 from app.storage.local_json_store import LocalJsonStore, get_local_json_store
 
 _COLLECTION = "trips"
+_OWNER_LIMIT_LOCK = threading.Lock()
 
 
 class TripRecord(BaseModel):
@@ -71,6 +74,14 @@ class TripRepository:
         self._trips[trip_id] = record
         self._persist()
         return record
+
+    def create_within_owner_limit(self, trip_id: str, owner_id: str, max_trips: int) -> TripRecord:
+        """`create`, refused with `TripLimitReachedError` when `owner_id` already holds `max_trips`
+        trips (same contract as the PostgreSQL repository; in-process only)."""
+        with _OWNER_LIMIT_LOCK:
+            if len(self.list_by_owner_id(owner_id)) >= max_trips:
+                raise TripLimitReachedError(max_trips)
+            return self.create(trip_id, owner_id=owner_id)
 
     def get(self, trip_id: str) -> TripRecord | None:
         return self._trips.get(trip_id)

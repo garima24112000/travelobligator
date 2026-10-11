@@ -40,6 +40,7 @@ import {
 import BranchWorkspacePanel from "./BranchWorkspacePanel";
 import { readSelectedTripId, writeSelectedTripId } from "@/lib/trip-selection";
 import { defaultTripDates } from "@/lib/default-trip-dates";
+import { latestEndDate, tripRequestLimitProblem } from "@/lib/trip-request-limits";
 import { DisclosureSection, TravelerLimitationsSection } from "./TravelerSections";
 import {
   InventorySufficiencyPanel,
@@ -4390,6 +4391,10 @@ const REGENERATION_REASON_CODE_LABELS: Record<string, string> = {
   // Section 200C: a write was based on stale state; nothing was overwritten.
   CONCURRENT_UPDATE: "Changed by another request",
   DESTINATION_UNRESOLVED: "Destination not resolved",
+  // Admission limits (HTTP 429): no job was started and nothing changed.
+  GENERATION_USER_LIMIT_REACHED: "Your limit was reached",
+  GENERATION_GLOBAL_LIMIT_REACHED: "Service limit reached",
+  GENERATION_CAPACITY_REACHED: "Busy right now",
   UNKNOWN_ERROR: "Unknown error",
 };
 
@@ -7268,6 +7273,10 @@ export default function Home() {
   // submit (double click, Enter held down) before React re-renders the
   // disabled button can never start a second generation.
   const generationInFlightRef = useRef(false);
+  // The trip saved by the last submit whose itinerary was never built, with
+  // the exact request it was saved for. Submitting the same request again
+  // builds on that trip instead of creating another one.
+  const ungeneratedTripRef = useRef<{ tripId: string; requestKey: string } | null>(null);
   const [result, setResult] = useState<PlanResult | null>(null);
   // Section 199C: bumped after a branch activation so the two
   // RegenerationReadinessSection instances (whose success/summary state
@@ -7401,6 +7410,7 @@ export default function Home() {
     // Section 202B.3: an ended session forgets which trip was open, so a
     // later sign-in (possibly another person) never reopens it.
     writeSelectedTripId(null);
+    ungeneratedTripRef.current = null;
     restoreAttemptedRef.current = false;
     setWorkspaceEpoch(0);
     setIsRegenerationRunning(false);
@@ -7513,6 +7523,7 @@ export default function Home() {
     // UI -- unmounted with the result subtree -- regeneration status, the
     // half-filled create form) is visible to whoever signs in next.
     writeSelectedTripId(null);
+    ungeneratedTripRef.current = null;
     restoreAttemptedRef.current = false;
     setWorkspaceEpoch(0);
     setIsRegenerationRunning(false);
@@ -7740,6 +7751,21 @@ export default function Home() {
     // One generation at a time: a submit that arrives while one is already
     // running (or while a saved trip is loading) is ignored.
     if (generationInFlightRef.current || isLoading || isLoadingExisting) return;
+    const requestBody: TripRequestInput = {
+      ...form,
+      interests: parseCommaList(interestsText),
+      must_visit: parseCommaList(mustVisitText),
+      constraints: parseCommaList(constraintsText),
+    };
+    // A request over a size limit (trip length, list sizes) is never sent:
+    // the traveller is told what to change, and there is nothing to retry.
+    const limitProblem = tripRequestLimitProblem(requestBody);
+    if (limitProblem) {
+      setError(limitProblem);
+      setRetryAction(null);
+      return;
+    }
+    const requestKey = JSON.stringify(requestBody);
     generationInFlightRef.current = true;
     setIsLoading(true);
     setError(null);
@@ -7776,13 +7802,18 @@ export default function Home() {
     }
 
     try {
-      const requestBody: TripRequestInput = {
-        ...form,
-        interests: parseCommaList(interestsText),
-        must_visit: parseCommaList(mustVisitText),
-        constraints: parseCommaList(constraintsText),
-      };
-      const { trip_id: tripId } = await createTrip(requestBody);
+      // A trip that was saved but whose itinerary was never built (the
+      // generation was refused by a limit, failed or was interrupted) is
+      // reused when the same request is submitted again, so "Try again"
+      // does not leave a second, empty trip behind.
+      const saved = ungeneratedTripRef.current;
+      let tripId: string;
+      if (saved !== null && saved.requestKey === requestKey) {
+        tripId = saved.tripId;
+      } else {
+        tripId = (await createTrip(requestBody)).trip_id;
+        ungeneratedTripRef.current = { tripId, requestKey };
+      }
       // A reload while generating reopens this trip (and, in async mode,
       // resumes its job) instead of dropping back to an empty home page.
       writeSelectedTripId(tripId);
@@ -7840,6 +7871,7 @@ export default function Home() {
       }
       await new Promise((resolve) => setTimeout(resolve, 500));
 
+      ungeneratedTripRef.current = null;
       setResult(await loadPlanResult(tripId));
       void refreshMyTrips();
       clearJob();
@@ -7852,6 +7884,13 @@ export default function Home() {
       // Nothing was generated, so there is nothing for a reload to reopen;
       // the trip itself still exists and is listed under My trips.
       writeSelectedTripId(null);
+      // A saved trip that can no longer be used is never tried again.
+      if (
+        err instanceof ApiRequestError &&
+        (err.code === "TRIP_NOT_FOUND" || err.code === "FORBIDDEN")
+      ) {
+        ungeneratedTripRef.current = null;
+      }
       void refreshMyTrips();
       const failure = tripApiErrorView(
           err,
@@ -8627,6 +8666,7 @@ PY`}
               type="date"
               required
               min={form.start_date || undefined}
+              max={latestEndDate(form.start_date)}
               className="rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-slate-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/50"
               value={form.end_date}
               onChange={(event) =>

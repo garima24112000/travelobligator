@@ -1330,6 +1330,79 @@ class Settings(BaseSettings):
         default=120, alias="GENERATION_JOB_LEASE_SECONDS", ge=3
     )
 
+    # Generation admission limits (P0 abuse / cost control). Decided in PostgreSQL when a job is
+    # CREATED (`JobRepository.admit`): the counts and the insert share one transaction under an advisory
+    # lock, so simultaneous requests cannot both take the last slot. Never Redis, never process memory.
+    # A window counts every job admitted in it -- first generations and regenerations alike, whatever
+    # became of them (succeeded, failed, interrupted); a refused request creates no job and counts for
+    # nothing. They apply to the job path (`ASYNC_GENERATION_ENABLED=true`, required in production); the
+    # synchronous development path creates no job and is not limited. `0` switches one limit off, which
+    # production rejects at startup.
+    generation_max_jobs_per_user_per_window: int = Field(
+        default=5, alias="GENERATION_MAX_JOBS_PER_USER_PER_WINDOW", ge=0, le=1000
+    )
+    generation_max_jobs_global_per_window: int = Field(
+        default=25, alias="GENERATION_MAX_JOBS_GLOBAL_PER_WINDOW", ge=0, le=100000
+    )
+    # Queued + running jobs across every trip and user of the deployment.
+    generation_max_concurrent_jobs: int = Field(
+        default=2, alias="GENERATION_MAX_CONCURRENT_JOBS", ge=0, le=100
+    )
+    # The rolling window of the two limits above.
+    generation_limit_window_seconds: int = Field(
+        default=86400, alias="GENERATION_LIMIT_WINDOW_SECONDS", ge=60, le=2592000
+    )
+    # Saved trips one account may hold (`POST /trips`). `0` switches it off (rejected in production).
+    max_trips_per_user: int = Field(default=20, alias="MAX_TRIPS_PER_USER", ge=0, le=10000)
+
+    # Trip request bounds, enforced at the request boundary only (`schemas.trips.TripCreateRequest`) so a
+    # stored trip always loads. Days are calendar days INCLUDING the start and the end date.
+    max_trip_days: int = Field(default=7, alias="MAX_TRIP_DAYS", ge=1, le=60)
+    trip_request_max_list_items: int = Field(
+        default=20, alias="TRIP_REQUEST_MAX_LIST_ITEMS", ge=1, le=200
+    )
+    trip_request_max_item_length: int = Field(
+        default=120, alias="TRIP_REQUEST_MAX_ITEM_LENGTH", ge=1, le=1000
+    )
+
+    # Signup / sign-in attempt limits (P0 abuse control; `app/auth/abuse.py`). Counted in the
+    # authoritative store from a small attempts table that holds keyed hashes only -- never an email
+    # address or an IP address. `0` switches one limit off (production rejects that for the two that
+    # need no client address).
+    #   * new accounts, whole deployment, per `SIGNUP_LIMIT_WINDOW_SECONDS`;
+    #   * failed sign-ins for ONE email, per `LOGIN_FAILURE_WINDOW_SECONDS` (applies whether or not the
+    #     account exists, so the answer never reveals that);
+    #   * the two per-address limits apply only when a client address can be trusted (see below) and
+    #     are deliberately generous: a shared address (office, campus, mobile carrier) must not lock
+    #     out unrelated people.
+    signup_max_per_window_global: int = Field(
+        default=30, alias="SIGNUP_MAX_PER_WINDOW_GLOBAL", ge=0, le=100000
+    )
+    signup_max_per_window_per_ip: int = Field(
+        default=5, alias="SIGNUP_MAX_PER_WINDOW_PER_IP", ge=0, le=100000
+    )
+    signup_limit_window_seconds: int = Field(
+        default=86400, alias="SIGNUP_LIMIT_WINDOW_SECONDS", ge=60, le=2592000
+    )
+    login_max_failures_per_account: int = Field(
+        default=10, alias="LOGIN_MAX_FAILURES_PER_ACCOUNT", ge=0, le=100000
+    )
+    login_max_failures_per_ip: int = Field(
+        default=50, alias="LOGIN_MAX_FAILURES_PER_IP", ge=0, le=100000
+    )
+    login_failure_window_seconds: int = Field(
+        default=900, alias="LOGIN_FAILURE_WINDOW_SECONDS", ge=60, le=86400
+    )
+    # How many trusted reverse proxies stand between the client and this process, each APPENDING the
+    # address it received the request from to `X-Forwarded-For`. `0` (default): the header is never
+    # read and NO per-address limit applies -- behind a proxy the socket peer is the proxy, shared by
+    # everyone. `N > 0`: the client address is the Nth entry from the RIGHT of the header; entries
+    # further left are client-supplied and never trusted. A request with fewer than N entries has no
+    # trusted address. Set it only to what the deployment really has in front of it.
+    client_ip_trusted_proxy_hops: int = Field(
+        default=0, alias="CLIENT_IP_TRUSTED_PROXY_HOPS", ge=0, le=5
+    )
+
     # Section 200D: operational observability / readiness.
     # `GET /metrics` (Prometheus text, low-cardinality, no user content). No authentication exists in
     # this app, so deployments should keep /metrics on a private network (see docs section 163).

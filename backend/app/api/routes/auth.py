@@ -11,16 +11,18 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Depends, Response, status
+from fastapi import APIRouter, Depends, Request, Response, status
 
+from app.auth import abuse
 from app.auth.dependencies import get_current_user
 from app.auth.service import login, signup
 from app.auth.sessions import clear_session_cookie, create_session_token, set_session_cookie
 from app.core.config import Settings, get_settings
-from app.core.errors import auth_not_configured_error
+from app.core.errors import AppError, auth_not_configured_error
 from app.core.response import success_response
 from app.models.user import AuthResponse, LoginRequest, PublicUser, SignupRequest
 from app.schemas.api_responses import ApiResponse
+from app.schemas.errors import ErrorCode
 
 logger = logging.getLogger(__name__)
 
@@ -41,11 +43,19 @@ def _require_auth_configured(settings: Settings) -> None:
     response_model=ApiResponse[AuthResponse],
     status_code=status.HTTP_201_CREATED,
 )
-def signup_route(payload: SignupRequest, response: Response) -> ApiResponse[AuthResponse]:
+def signup_route(
+    payload: SignupRequest, request: Request, response: Response
+) -> ApiResponse[AuthResponse]:
     settings = get_settings()
     _require_auth_configured(settings)
 
+    # P0: the signup limits are checked before the email is looked at (429 `SIGNUP_LIMIT_REACHED`
+    # says nothing about the address), and only a CREATED account is counted.
+    client_address = abuse.trusted_client_address(request, settings)
+    abuse.ensure_signup_allowed(client_address)
+
     public_user = signup(payload)
+    abuse.record_signup(client_address)
 
     token = create_session_token(public_user.user_id, settings)
     set_session_cookie(response, token, settings)
@@ -54,11 +64,23 @@ def signup_route(payload: SignupRequest, response: Response) -> ApiResponse[Auth
 
 
 @router.post("/login", response_model=ApiResponse[AuthResponse])
-def login_route(payload: LoginRequest, response: Response) -> ApiResponse[AuthResponse]:
+def login_route(
+    payload: LoginRequest, request: Request, response: Response
+) -> ApiResponse[AuthResponse]:
     settings = get_settings()
     _require_auth_configured(settings)
 
-    public_user = login(payload)
+    # P0: too many recent failures for this email (registered or not) is the same 429 whatever the
+    # password, decided before any password work. A failure is counted; a success ends the streak.
+    client_address = abuse.trusted_client_address(request, settings)
+    abuse.ensure_login_allowed(payload.email, client_address)
+    try:
+        public_user = login(payload)
+    except AppError as error:
+        if error.code == ErrorCode.INVALID_CREDENTIALS:
+            abuse.record_login_failure(payload.email, client_address)
+        raise
+    abuse.clear_login_failures(payload.email)
 
     token = create_session_token(public_user.user_id, settings)
     set_session_cookie(response, token, settings)

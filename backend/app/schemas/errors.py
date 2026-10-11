@@ -69,6 +69,13 @@ class ErrorCode(str, Enum):
     BRANCH_STATE_CONFLICT = "BRANCH_STATE_CONFLICT"
     # Section 200C: a write was based on stale state (another request committed first).
     CONCURRENT_UPDATE = "CONCURRENT_UPDATE"
+    # P0 admission / abuse limits (HTTP 429). Nothing was started or stored when one is returned.
+    GENERATION_USER_LIMIT_REACHED = "GENERATION_USER_LIMIT_REACHED"
+    GENERATION_GLOBAL_LIMIT_REACHED = "GENERATION_GLOBAL_LIMIT_REACHED"
+    GENERATION_CAPACITY_REACHED = "GENERATION_CAPACITY_REACHED"
+    TRIP_LIMIT_REACHED = "TRIP_LIMIT_REACHED"
+    SIGNUP_LIMIT_REACHED = "SIGNUP_LIMIT_REACHED"
+    TOO_MANY_ATTEMPTS = "TOO_MANY_ATTEMPTS"
 
 
 class ApiError(BaseModel):
