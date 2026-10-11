@@ -15,14 +15,31 @@ from fastapi import APIRouter, Depends, Request, Response, status
 
 from app.auth import abuse
 from app.auth.dependencies import get_current_user
+from app.auth.passwords import verify_password
 from app.auth.service import login, signup
 from app.auth.sessions import clear_session_cookie, create_session_token, set_session_cookie
 from app.core.config import Settings, get_settings
-from app.core.errors import AppError, auth_not_configured_error
+from app.core.errors import (
+    AppError,
+    account_deletion_blocked_error,
+    auth_not_configured_error,
+    authentication_required_error,
+    invalid_credentials_error,
+)
 from app.core.response import success_response
-from app.models.user import AuthResponse, LoginRequest, PublicUser, SignupRequest
+from app.models.user import (
+    AccountDeletedResponseData,
+    AuthResponse,
+    DeleteAccountRequest,
+    LoginRequest,
+    PublicUser,
+    SignupRequest,
+)
+from app.repositories.errors import GenerationInProgressError, NothingToDeleteError
+from app.repositories.factory import get_user_repository
 from app.schemas.api_responses import ApiResponse
 from app.schemas.errors import ErrorCode
+from app.services import data_deletion_service
 
 logger = logging.getLogger(__name__)
 
@@ -105,6 +122,63 @@ def logout_route(response: Response) -> ApiResponse[None]:
         extra={"auth_event": "logout", "status": "succeeded"},
     )
     return success_response(None, message="Logged out.")
+
+
+@router.post("/delete-account", response_model=ApiResponse[AccountDeletedResponseData])
+def delete_account_route(
+    payload: DeleteAccountRequest,
+    request: Request,
+    response: Response,
+    current_user: PublicUser = Depends(get_current_user),
+) -> ApiResponse[AccountDeletedResponseData]:
+    """P1-A: permanently delete the signed-in account and everything it owns.
+
+    A valid session is not enough: the request must carry the account's CURRENT password (there is no
+    other proof of identity in this app -- no email verification, no second factor) and `confirm: true`.
+    A wrong password is the ordinary 401 `INVALID_CREDENTIALS`, counted by the same sign-in attempt limit
+    as a failed login (429 `TOO_MANY_ATTEMPTS`), and deletes nothing.
+
+    Then, in one transaction (`services.data_deletion_service`): every trip the account owns with its
+    plan, feedback, locks, versions, branches, revisions and jobs; the account's failed sign-in
+    counters; the account itself. If any of its trips has a queued or running job the request is refused
+    with 409 `ACCOUNT_DELETION_BLOCKED` and nothing is deleted. On success the session cookie is cleared;
+    any other copy of the session stops working because its user no longer exists. POST, not DELETE:
+    the password travels in the body.
+    """
+    settings = get_settings()
+    client_address = abuse.trusted_client_address(request, settings)
+    abuse.ensure_login_allowed(current_user.email, client_address)
+
+    stored = get_user_repository().get_by_user_id(current_user.user_id)
+    if stored is None or not verify_password(payload.password, stored.password_hash):
+        abuse.record_login_failure(current_user.email, client_address)
+        logger.warning(
+            "Account deletion rejected: the password did not match.",
+            extra={
+                "auth_event": "account_delete",
+                "status": "rejected",
+                "error_code": "INVALID_CREDENTIALS",
+                "user_id": current_user.user_id,
+            },
+        )
+        raise invalid_credentials_error()
+
+    try:
+        summary = data_deletion_service.delete_account(
+            current_user.user_id, email_digest=abuse.login_failure_key(current_user.email)
+        )
+    except GenerationInProgressError:
+        raise account_deletion_blocked_error() from None
+    except NothingToDeleteError:
+        # Deleted by a simultaneous request: the session no longer belongs to anyone (every later
+        # request with it is the same 401).
+        raise authentication_required_error() from None
+
+    clear_session_cookie(response, settings)
+    return success_response(
+        AccountDeletedResponseData(trips_deleted=summary.trips),
+        message="Your account and trips were deleted.",
+    )
 
 
 @router.get("/me", response_model=ApiResponse[AuthResponse])

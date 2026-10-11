@@ -767,6 +767,27 @@ export function travelerErrorMessage(input: TravelerErrorInput): TravelerError {
         message: "Too many sign-in attempts. Please wait a few minutes and try again.",
         retryable: false,
       };
+    // Deletion (P1-A). Nothing was removed when one of these is returned.
+    case "TRIP_DELETION_BLOCKED":
+      return {
+        message:
+          "This trip's itinerary is being built right now, so it cannot be deleted yet. Please try again when it has finished.",
+        retryable: true,
+      };
+    case "ACCOUNT_DELETION_BLOCKED":
+      return {
+        message:
+          "One of your itineraries is being built right now, so your account cannot be deleted yet. Nothing was deleted. Please try again when it has finished.",
+        retryable: true,
+      };
+    case "INVALID_CREDENTIALS":
+      return {
+        message:
+          operation === "delete_account"
+            ? "That password is not correct. Nothing was deleted."
+            : "Invalid email or password.",
+        retryable: false,
+      };
     case "VALIDATION_ERROR": {
       // The backend words a rejected trip request for the traveller (a date or list-size
       // problem); only its fixed "Value error, " prefix is not for display.

@@ -468,6 +468,34 @@ def too_many_attempts_error() -> AppError:
     )
 
 
+# P1-A deletion. A queued or running job is never cancelled to make a deletion possible (a running job
+# cannot be stopped safely); the request is refused and nothing is deleted.
+
+
+def trip_deletion_blocked_error() -> AppError:
+    """409 -- the trip has an itinerary being built right now."""
+    return AppError(
+        code=ErrorCode.TRIP_DELETION_BLOCKED,
+        message=(
+            "This trip's itinerary is being built right now, so it cannot be deleted yet. "
+            "Please try again when it has finished."
+        ),
+        status_code=status.HTTP_409_CONFLICT,
+    )
+
+
+def account_deletion_blocked_error() -> AppError:
+    """409 -- one of the account's trips has an itinerary being built right now."""
+    return AppError(
+        code=ErrorCode.ACCOUNT_DELETION_BLOCKED,
+        message=(
+            "One of your itineraries is being built right now, so your account cannot be deleted yet. "
+            "Please try again when it has finished. Nothing was deleted."
+        ),
+        status_code=status.HTTP_409_CONFLICT,
+    )
+
+
 def job_already_running_error(trip_id: str) -> AppError:
     """409 -- a new generate/regenerate job was requested for `trip_id`
     while `Settings.generation_job_max_running_per_trip` genuinely active

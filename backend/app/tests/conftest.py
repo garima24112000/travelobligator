@@ -268,6 +268,7 @@ def _reset_in_memory_repositories(tmp_path: Path) -> None:
     # "jobs" collection -- reset here for the same isolation reason.
     job_repository._store = test_store
     job_repository._jobs = {}
+    job_repository._deleted_usage = []  # P1-A: usage of deleted jobs (process memory)
     # Section 199A: itinerary_lineage_repository (branches/revisions)
     # shares the same underlying file as the other four, under its own
     # two new collections -- reset here for the same isolation reason.

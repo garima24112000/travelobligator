@@ -157,6 +157,11 @@ def record_login_failure(email: str, client_address: str | None) -> None:
     )
 
 
+def login_failure_key(email: str) -> str:
+    """The keyed hash this email's failed sign-ins are stored under -- what account deletion removes."""
+    return _digest("email", email, get_settings())
+
+
 def clear_login_failures(email: str) -> None:
     """A successful sign-in ends that email's failure streak."""
     settings = get_settings()

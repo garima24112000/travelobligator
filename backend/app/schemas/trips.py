@@ -73,6 +73,13 @@ class TripResponseData(BaseModel):
     planning_state: PlanningState
 
 
+class TripDeletedResponseData(BaseModel):
+    """`DELETE /trips/{trip_id}` (P1-A): the trip and everything stored for it are gone."""
+
+    trip_id: str
+    deleted: bool = True
+
+
 class TripListItem(BaseModel):
     """One row of `GET /trips`'s "My Trips" list (Step 184D) --
     deliberately small: never the full `PlanningState` (that stays behind

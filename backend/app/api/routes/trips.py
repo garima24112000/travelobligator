@@ -34,6 +34,7 @@ from app.core.errors import (
     regeneration_provider_unavailable_error,
     revision_not_found_error,
     revision_snapshot_unavailable_error,
+    trip_deletion_blocked_error,
     trip_limit_error,
     trip_not_found_error,
 )
@@ -46,6 +47,7 @@ from app.models.planning_state import GenerationProgress
 from app.models.targeted_regeneration_runtime import TargetedRegenerationRuntimeStatus
 from app.models.user import PublicUser
 from app.repositories.admission import TripLimitReachedError
+from app.repositories.errors import GenerationInProgressError, NothingToDeleteError
 from app.repositories.factory import (
     get_lineage_repository,
     get_planning_state_repository,
@@ -82,12 +84,13 @@ from app.schemas.trips import (
     LockRequest,
     RegenerateRequest,
     TripCreateRequest,
+    TripDeletedResponseData,
     TripListItem,
     TripListResponseData,
     TripResponseData,
 )
 from app.schemas.validation_report import ValidationReportResponseData
-from app.services import generation_job_service
+from app.services import data_deletion_service, generation_job_service
 from app.services.ai_candidate_promotion_service import ai_candidate_promotion_service
 from app.services.ai_candidate_review_service import ai_candidate_review_service
 from app.services.feedback_service import derive_pending_affected_stages, pending_feedback_events
@@ -288,6 +291,32 @@ def get_trip(
 
     data = TripResponseData(trip_id=trip_id, planning_state=planning_state)
     return success_response(data)
+
+
+@router.delete(
+    "/{trip_id}",
+    response_model=ApiResponse[TripDeletedResponseData],
+)
+def delete_trip(
+    trip_id: str, current_user: PublicUser = Depends(require_trip_owner)
+) -> ApiResponse[TripDeletedResponseData]:
+    """P1-A: delete one of the caller's trips and everything stored for it (plan, feedback, locks,
+    versions, branches, revisions, jobs) in one transaction -- `services.data_deletion_service`.
+
+    Same access rules as every trip route (`require_trip_owner`): 401 without a session, 404 for an
+    unknown trip, the generic 403 for someone else's -- which never says anything about the trip. A
+    trip whose itinerary is being built (a queued or running job) is refused with 409
+    `TRIP_DELETION_BLOCKED` and nothing is deleted; no job is cancelled. Deleting frees one place of the
+    saved-trip limit; it does not hand back generation allowance. Deleting twice is 404 the second time.
+    """
+    try:
+        data_deletion_service.delete_trip(trip_id, owner_id=current_user.user_id)
+    except GenerationInProgressError:
+        raise trip_deletion_blocked_error() from None
+    except NothingToDeleteError:
+        # Deleted by a simultaneous request between the ownership check and the transaction.
+        raise trip_not_found_error(trip_id) from None
+    return success_response(TripDeletedResponseData(trip_id=trip_id), message="Trip deleted.")
 
 
 @router.post(

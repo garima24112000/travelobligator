@@ -23,6 +23,7 @@ from app.core.errors import (
     generation_global_limit_error,
     generation_user_limit_error,
     job_already_running_error,
+    trip_not_found_error,
 )
 from app.models.generation_job import (
     GenerationJob,
@@ -36,7 +37,11 @@ from app.models.generation_job import (
 from app.models.planning_state import PlanningStage
 from app.models.targeted_regeneration_runtime import TargetedRegenerationRuntimeStatus
 from app.repositories.admission import AdmissionPolicy, AdmissionRefusal, AdmissionRefusedError
-from app.repositories.errors import ConcurrentStateUpdateError, JobAlreadyActiveError
+from app.repositories.errors import (
+    ConcurrentStateUpdateError,
+    JobAlreadyActiveError,
+    TripNoLongerExistsError,
+)
 from app.repositories.factory import get_job_repository, get_planning_state_repository
 from app.schemas.errors import ErrorCode
 from app.services.planning_orchestrator import planning_orchestrator
@@ -482,6 +487,17 @@ def _create_job_or_conflict(job: GenerationJob) -> None:
     except JobAlreadyActiveError:
         _count_job(_job_type_of(job), ops_events.JOB_CREATE_CONFLICT)
         raise job_already_running_error(job.trip_id) from None
+    except TripNoLongerExistsError:
+        # P1-A: the trip (or the whole account) was deleted between this request's ownership check
+        # and the admission. An expected race: the ordinary 404 for a trip that does not exist --
+        # the caller had just been verified as its owner, so this says nothing they did not know --
+        # never a 409 (nothing conflicts any more) and never a 503 (the database is fine). No job
+        # was written and no background task is scheduled.
+        logger.info(
+            "No job was created: the trip was deleted while the request was being admitted.",
+            extra={"trip_id": job.trip_id, "owner_id": job.owner_id, "error_code": "TRIP_NOT_FOUND"},
+        )
+        raise trip_not_found_error(job.trip_id) from None
     except AdmissionRefusedError as refused:
         error = _admission_refused_error(refused.reason, policy)
         _count_job(_job_type_of(job), ops_events.JOB_ADMISSION_REFUSED)

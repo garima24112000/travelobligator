@@ -67,6 +67,7 @@ def test_redis_is_never_a_correctness_lock() -> None:
         ("services", "revision_lineage_service.py"),
         ("services", "targeted_regeneration_application_service.py"),
         ("services", "planning_orchestrator.py"),
+        ("services", "data_deletion_service.py"),
         ("repositories", "unit_of_work.py"),
         ("repositories", "postgres_job_repository.py"),
         ("repositories", "postgres_planning_state_repository.py"),
@@ -102,7 +103,12 @@ def test_run_atomic_is_only_used_by_the_known_transition_owners() -> None:
         for p in _APP.rglob("*.py")
         if "tests" not in p.parts and "run_atomic(" in p.read_text(encoding="utf-8") and p.name != "unit_of_work.py"
     )
-    assert users == ["services/planning_orchestrator.py", "services/revision_lineage_service.py"]
+    assert users == [
+        # P1-A: deleting a trip or an account is one transaction (pure database; no provider call).
+        "services/data_deletion_service.py",
+        "services/planning_orchestrator.py",
+        "services/revision_lineage_service.py",
+    ]
 
 
 def test_only_the_commit_helper_writes_state_and_revision_together() -> None:

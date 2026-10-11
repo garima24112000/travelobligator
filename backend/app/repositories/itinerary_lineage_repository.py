@@ -59,6 +59,21 @@ class ItineraryLineageRepository:
             },
         )
 
+    def delete_for_trips(self, trip_ids: set[str]) -> tuple[int, int]:
+        """P1-A deletion (development backend): every branch and revision of `trip_ids`. Returns
+        (branches removed, revisions removed)."""
+        revisions = [rid for rid, revision in self._revisions.items() if revision.trip_id in trip_ids]
+        branches = [bid for bid, branch in self._branches.items() if branch.trip_id in trip_ids]
+        for revision_id in revisions:
+            del self._revisions[revision_id]
+        for branch_id in branches:
+            del self._branches[branch_id]
+        if revisions:
+            self._persist_revisions()
+        if branches:
+            self._persist_branches()
+        return len(branches), len(revisions)
+
     # -- branches -------------------------------------------------------
 
     def create_branch(self, branch: ItineraryBranch) -> ItineraryBranch:

@@ -555,6 +555,80 @@ Tests (no remote service needed unless marked): `tests/api/test_trip_request_bou
 `tests/db/test_migration_schema_admission_p0.py`, and against real PostgreSQL
 `tests/repositories/test_postgres_admission_p0_integration.py`.
 
+## 13B. Deleting a trip or an account (P1-A)
+
+**Not yet deployed.** Needs the migration `a94c0e7d2b61` (section 11-B) before the backend deploy.
+
+**Endpoints.**
+
+| Endpoint | Success | Refusals |
+|---|---|---|
+| `DELETE /trips/{trip_id}` | 200 `{trip_id, deleted: true}` | 401 no session; 404 unknown trip; 403 not the owner (says nothing about the trip); 409 `TRIP_DELETION_BLOCKED` |
+| `POST /auth/delete-account` with `{password, confirm: true}` | 200 `{deleted: true, trips_deleted}`; the session cookie is cleared | 401 no session; 422 without both fields; 401 `INVALID_CREDENTIALS` wrong password; 429 `TOO_MANY_ATTEMPTS`; 409 `ACCOUNT_DELETION_BLOCKED` |
+
+Account deletion needs the current password as well as a session: there is no email verification or
+second factor, so the password is the only proof of identity the application has. A wrong password counts
+towards the sign-in attempt limit of section 13A.
+
+**What is deleted** (`services/data_deletion_service.py`), in one PostgreSQL transaction:
+
+| Table | Trip deletion | Account deletion |
+|---|---|---|
+| `itinerary_revisions`, `itinerary_branches` | the trip's rows | all rows of the account's trips |
+| `generation_jobs` | the trip's rows | all rows of the account |
+| `planning_states` | the trip's plan (request, itinerary, feedback text, locks, versions) | all of the account's plans |
+| `trips` | the row | all of the account's rows |
+| `auth_attempts` | — | the failed sign-in rows stored under the hash of the account's email |
+| `users` | — | the row |
+
+Every table is deleted explicitly. The foreign keys would cascade from `trips` to the four tables under it,
+but `trips.owner_id` is `ON DELETE SET NULL`: deleting only the user would leave every trip in place,
+ownerless. A database failure at any step rolls the whole deletion back.
+
+**Generation in progress.** A trip with a queued or running job is not deleted, and neither is an account
+that has one; no job is cancelled. The transaction first takes the advisory lock that every job admission
+takes (section 13A), so a job cannot be created for a trip while it is being deleted. Jobs whose owner is
+gone (expired lease, never claimed) are closed first, so an abandoned job does not block deletion.
+
+The opposite order -- a generation or regeneration request that passed its ownership check and then lost
+to a deletion of the trip or of the whole account -- is answered 404 `TRIP_NOT_FOUND`. Job admission checks,
+under the same lock, that the trip still exists before it counts or inserts anything; the job's own foreign
+keys are a second line behind that check. It is not a 409 (nothing conflicts once the trip is gone) and not
+a 503: a second job for a live trip is still 409 `JOB_ALREADY_RUNNING`, a limit is still 429, and a real
+database failure is still 503. No job row, usage row or background task results from it.
+
+**Limits.** Deleting a trip frees one place of `MAX_TRIPS_PER_USER`. It does not hand back generation
+allowance: a deleted job that is still inside `GENERATION_LIMIT_WINDOW_SECONDS` leaves a row in
+`deleted_job_usage` holding its admission time and, while the account exists, the account id. When the
+account is deleted the id is cleared, so the row counts only towards the deployment-wide limit and refers
+to nobody. These rows are removed once they are older than the window. Signup counters carry no reference
+to an account and are not changed by a deletion.
+
+**What deletion does not reach.**
+
+- Anything already sent to the external travel-data and AI providers.
+- Logs. The application's own structured logs record account and trip identifiers and are designed (field
+  allowlist plus redaction, checked in code and tests) to leave out emails, passwords and trip text; that has
+  not been confirmed by inspecting production logs, and an error traceback could still carry fragments of a
+  request. The hosting platforms keep their own request logs (typically IP addresses and requested paths,
+  which contain trip identifiers); what they record and for how long has not been independently verified.
+- Any backups the hosting providers keep. This project has set no retention period for logs or backups and
+  has not verified theirs.
+- The Redis provider cache, which holds provider answers keyed by the query (a destination or a place), not
+  by account or trip. Entries expire by TTL.
+- A copy of the session cookie held elsewhere is not revoked individually; it stops working because its
+  user no longer exists.
+- The synchronous development path (`ASYNC_GENERATION_ENABLED=false`) creates no job, so a generation
+  running there does not block a deletion. Production cannot run that path.
+
+The privacy notice shown in the application is `frontend/lib/privacy-notice.ts`; change it only together
+with the behaviour described here. Password reset is not implemented: an account whose password is
+forgotten cannot be signed in to, and so cannot be deleted by its owner.
+
+Tests: `tests/api/test_data_deletion_p1a.py`, `tests/db/test_migration_schema_deletion_p1a.py`,
+`frontend/tests/data-deletion.test.mjs`, and against real PostgreSQL
+`tests/repositories/test_postgres_data_deletion_p1a_integration.py`.
+
 ## 14. Production verification record
 
 Checks performed against the deployed system for Sections 203C and 203D. No credential, connection string,

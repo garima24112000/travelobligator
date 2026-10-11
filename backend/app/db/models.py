@@ -80,6 +80,20 @@ class AuthAttemptRow(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class DeletedJobUsageRow(Base):
+    """What the generation admission limits still need from a job whose trip or account was deleted
+    (P1-A): when it had been admitted and, while the account exists, whose it was. Nothing else -- no
+    trip, job, destination or text. `owner_id` is deliberately not a foreign key and is set to NULL when
+    the account is deleted, so the row then counts only towards the deployment-wide limit."""
+
+    __tablename__ = "deleted_job_usage"
+    __table_args__ = (Index("ix_deleted_job_usage_created_at", "created_at"),)
+
+    usage_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    owner_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class TripRow(Base):
     """Mirrors `app.repositories.trip_repository.TripRecord`, plus
     `owner_id` (Step 184C -- nullable for backward compatibility with

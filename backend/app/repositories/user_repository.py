@@ -51,6 +51,13 @@ class UserRepository:
         self._persist()
         return user
 
+    def delete_user(self, user_id: str) -> bool:
+        """P1-A deletion (development backend). Returns whether an account was removed."""
+        if self._users.pop(user_id, None) is None:
+            return False
+        self._persist()
+        return True
+
     def get_by_user_id(self, user_id: str) -> UserRecord | None:
         return self._users.get(user_id)
 

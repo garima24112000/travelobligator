@@ -49,6 +49,9 @@ class JobRepository:
 
     def __init__(self, store: LocalJsonStore | None = None) -> None:
         self._lifecycle_lock = threading.RLock()
+        # (owner_id | None, created_at) of jobs removed with their trip or account. Process memory
+        # only: this development backend makes no durability promise for the admission limits.
+        self._deleted_usage: list[tuple[str | None, datetime]] = []
         self._store = store or get_local_json_store(
             get_settings().resolved_local_storage_path()
         )
@@ -75,9 +78,12 @@ class JobRepository:
         with self._lifecycle_lock:
             jobs = list(self._jobs.values())
             in_window = [existing for existing in jobs if existing.created_at > window_start]
+            # Jobs whose trip or account was deleted still count in their window (P1-A).
+            deleted = [usage for usage in self._deleted_usage if usage[1] > window_start]
             refusal = policy.refusal(
-                user_jobs_in_window=sum(1 for existing in in_window if existing.owner_id == job.owner_id),
-                global_jobs_in_window=len(in_window),
+                user_jobs_in_window=sum(1 for existing in in_window if existing.owner_id == job.owner_id)
+                + sum(1 for owner_id, _ in deleted if owner_id == job.owner_id),
+                global_jobs_in_window=len(in_window) + len(deleted),
                 active_jobs=sum(1 for existing in jobs if existing.status in _RUNNING_STATUSES),
             )
             if refusal is not None:
@@ -85,6 +91,33 @@ class JobRepository:
             self._jobs[job.job_id] = job
             self._persist()
         return job
+
+    # -- P1-A: deletion (development backend; the PostgreSQL path is `data_deletion_service`) --------
+
+    def delete_for_trips(
+        self, trip_ids: set[str], *, usage_since: datetime, keep_owner: bool
+    ) -> int:
+        """Remove every job of `trip_ids`. A job admitted after `usage_since` leaves a usage record
+        (its `created_at`, and its owner only when `keep_owner`) so the admission limits still count
+        it. Returns the number of jobs removed."""
+        with self._lifecycle_lock:
+            removed = [job for job in self._jobs.values() if job.trip_id in trip_ids]
+            for job in removed:
+                if job.created_at > usage_since:
+                    self._deleted_usage.append((job.owner_id if keep_owner else None, job.created_at))
+                del self._jobs[job.job_id]
+            self._deleted_usage = [usage for usage in self._deleted_usage if usage[1] > usage_since]
+            if removed:
+                self._persist()
+            return len(removed)
+
+    def anonymize_deleted_usage(self, owner_id: str) -> None:
+        """An account was deleted: its usage records keep counting for the deployment, for nobody."""
+        with self._lifecycle_lock:
+            self._deleted_usage = [
+                (None if owner == owner_id else owner, created_at)
+                for owner, created_at in self._deleted_usage
+            ]
 
     def save(self, job: GenerationJob) -> GenerationJob:
         """Replaces whatever job already exists for `job.job_id` (or

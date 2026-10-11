@@ -14,6 +14,7 @@ import {
   BACKEND_UNREACHABLE_CODE,
   createTrip,
   createTripLock,
+  deleteTrip,
   deleteTripLock,
   generatePlan,
   getAiCandidateReview,
@@ -41,6 +42,13 @@ import BranchWorkspacePanel from "./BranchWorkspacePanel";
 import { readSelectedTripId, writeSelectedTripId } from "@/lib/trip-selection";
 import { defaultTripDates } from "@/lib/default-trip-dates";
 import { latestEndDate, tripRequestLimitProblem } from "@/lib/trip-request-limits";
+import {
+  ACCOUNT_DELETED_MESSAGE,
+  TRIP_DELETED_MESSAGE,
+  TRIP_DELETE_FAILED_MESSAGE,
+  tripDeletionQuestion,
+} from "@/lib/privacy-notice";
+import { DeleteAccountSection, PrivacyNotice } from "./AccountDataPanel";
 import { DisclosureSection, TravelerLimitationsSection } from "./TravelerSections";
 import {
   InventorySufficiencyPanel,
@@ -7327,6 +7335,16 @@ export default function Home() {
   // lets that one row say "Loading…" instead of every row just going
   // uniformly disabled with no indication of which one was clicked.
   const [loadingTripId, setLoadingTripId] = useState<string | null>(null);
+  // P1-A: which trip's "delete?" confirmation is open, which deletion is in
+  // flight, and the last outcome (announced under the list).
+  const [pendingDeleteTripId, setPendingDeleteTripId] = useState<string | null>(null);
+  const [deletingTripId, setDeletingTripId] = useState<string | null>(null);
+  const [tripDeleteError, setTripDeleteError] = useState<
+    { tripId: string; message: string } | null
+  >(null);
+  const [tripDeleteNotice, setTripDeleteNotice] = useState<string | null>(null);
+  // A neutral message on the sign-in screen (e.g. after deleting the account).
+  const [authNotice, setAuthNotice] = useState<string | null>(null);
 
   const refreshMyTrips = useCallback(async () => {
     setMyTripsLoading(true);
@@ -7465,6 +7483,7 @@ export default function Home() {
 
   async function handleAuthSubmit() {
     setAuthError(null);
+    setAuthNotice(null);
 
     const email = authEmail.trim();
     if (!email || !authPassword) {
@@ -7514,6 +7533,9 @@ export default function Home() {
     setMyTrips([]);
     setMyTripsError(null);
     setLoadingTripId(null);
+    setPendingDeleteTripId(null);
+    setTripDeleteError(null);
+    setTripDeleteNotice(null);
     setResult(null);
     setExistingTripId("");
     setError(null);
@@ -7568,6 +7590,69 @@ export default function Home() {
     if (newestJob.status === "queued" || newestJob.status === "running") {
       await waitForJob(tripId, newestJob.job_id);
     }
+  }
+
+  // P1-A: deleting a trip. Two steps on purpose -- "Delete" only asks
+  // (`pendingDeleteTripId`), "Delete trip" in the confirmation sends the
+  // request. One deletion at a time.
+  async function handleDeleteTrip(tripId: string) {
+    if (deletingTripId !== null) return;
+    setDeletingTripId(tripId);
+    setTripDeleteError(null);
+    setTripDeleteNotice(null);
+    try {
+      await deleteTrip(tripId);
+      // The deleted trip may be the one on screen, or the one a retry would
+      // reuse: drop every reference to it before anything can fetch it again.
+      if (openTripId === tripId || readSelectedTripId() === tripId) {
+        setResult(null);
+        writeSelectedTripId(null);
+        clearJob();
+        resetFeedbackPanelState();
+        setWorkspaceEpoch(0);
+        setIsRegenerationRunning(false);
+        setError(null);
+        setRetryAction(null);
+      }
+      if (ungeneratedTripRef.current?.tripId === tripId) ungeneratedTripRef.current = null;
+      if (existingTripId === tripId) setExistingTripId("");
+      setMyTrips((trips) => trips.filter((trip) => trip.trip_id !== tripId));
+      setPendingDeleteTripId(null);
+      setTripDeleteNotice(TRIP_DELETED_MESSAGE);
+      void refreshMyTrips();
+    } catch (err) {
+      recordApiError("delete_trip", err);
+      if (err instanceof ApiRequestError && err.code === "AUTHENTICATION_REQUIRED") {
+        handleAuthenticationRequired();
+        return;
+      }
+      if (err instanceof ApiRequestError && err.code === "TRIP_NOT_FOUND") {
+        // Already gone (deleted in another tab): the list is simply out of date.
+        setPendingDeleteTripId(null);
+        void refreshMyTrips();
+      }
+      setTripDeleteError({
+        tripId,
+        message:
+          err instanceof ApiRequestError
+            ? travelerErrorMessage({
+                code: err.code,
+                status: err.status,
+                message: err.message,
+                operation: "delete_trip",
+              }).message
+            : TRIP_DELETE_FAILED_MESSAGE,
+      });
+    } finally {
+      setDeletingTripId(null);
+    }
+  }
+
+  // P1-A: the account is gone and the backend cleared the session cookie.
+  // Drop exactly what logging out drops, then say what happened.
+  async function handleAccountDeleted() {
+    await handleLogout();
+    setAuthNotice(ACCOUNT_DELETED_MESSAGE);
   }
 
   async function handleSelectMyTrip(tripId: string) {
@@ -8469,6 +8554,16 @@ PY`}
               </div>
             )}
 
+            {authNotice && !authError && (
+              <p
+                role="status"
+                aria-live="polite"
+                className="rounded-lg border border-emerald-400/30 bg-emerald-400/10 px-3 py-2 text-sm text-emerald-200"
+              >
+                {authNotice}
+              </p>
+            )}
+
             {authError && !passwordMismatch && (
               <p
                 role="alert"
@@ -8493,6 +8588,7 @@ PY`}
                   : "Log in"}
             </button>
           </form>
+          <PrivacyNotice className="mt-6" />
         </section>
       </main>
     );
@@ -8570,14 +8666,18 @@ PY`}
               {myTrips.map((trip) => {
                 const isThisTripLoading =
                   isLoadingExisting && loadingTripId === trip.trip_id;
+                const tripName = trip.primary_destination ?? "Untitled destination";
+                const isConfirmingDelete = pendingDeleteTripId === trip.trip_id;
+                const isThisTripDeleting = deletingTripId === trip.trip_id;
                 return (
                   <li key={trip.trip_id}>
+                    <div className="flex items-stretch gap-2">
                     <button
                       type="button"
                       onClick={() => void handleSelectMyTrip(trip.trip_id)}
-                      disabled={isLoading || isLoadingExisting}
+                      disabled={isLoading || isLoadingExisting || deletingTripId !== null}
                       aria-busy={isThisTripLoading}
-                      className={`w-full rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-left text-sm text-slate-200 transition hover:border-cyan-300/40 hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50 ${FOCUS_RING_CLASSNAME}`}
+                      className={`min-w-0 flex-1 rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-left text-sm text-slate-200 transition hover:border-cyan-300/40 hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50 ${FOCUS_RING_CLASSNAME}`}
                     >
                       <p className="break-words font-semibold text-cyan-200">
                         {trip.primary_destination ?? "Untitled destination"}
@@ -8593,11 +8693,77 @@ PY`}
                         </p>
                       )}
                     </button>
+                    <button
+                      type="button"
+                      aria-label={`Delete trip: ${tripName}`}
+                      aria-expanded={isConfirmingDelete}
+                      onClick={() => {
+                        setTripDeleteError(null);
+                        setTripDeleteNotice(null);
+                        setPendingDeleteTripId(isConfirmingDelete ? null : trip.trip_id);
+                      }}
+                      disabled={isLoading || isLoadingExisting || deletingTripId !== null}
+                      className={`shrink-0 rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-xs font-semibold text-slate-300 transition hover:border-rose-300/40 hover:text-rose-200 disabled:cursor-not-allowed disabled:opacity-50 ${FOCUS_RING_CLASSNAME}`}
+                    >
+                      Delete
+                    </button>
+                    </div>
+                    {isConfirmingDelete && (
+                      <div
+                        role="group"
+                        aria-label={`Confirm deleting ${tripName}`}
+                        className="mt-2 rounded-lg border border-rose-300/30 bg-rose-400/[0.05] p-3 text-sm"
+                      >
+                        <p className="break-words text-slate-200">
+                          {tripDeletionQuestion(trip.primary_destination)}
+                        </p>
+                        <div className="mt-2 flex flex-wrap gap-2">
+                          <button
+                            type="button"
+                            onClick={() => void handleDeleteTrip(trip.trip_id)}
+                            disabled={deletingTripId !== null}
+                            aria-busy={isThisTripDeleting}
+                            className={`rounded-lg bg-rose-500 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-rose-400 disabled:cursor-not-allowed disabled:opacity-50 ${FOCUS_RING_CLASSNAME}`}
+                          >
+                            {isThisTripDeleting ? "Deleting…" : "Delete trip"}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setPendingDeleteTripId(null);
+                              setTripDeleteError(null);
+                            }}
+                            disabled={deletingTripId !== null}
+                            className={`rounded-lg border border-white/20 bg-slate-900 px-3 py-1.5 text-xs font-semibold text-slate-200 transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50 ${FOCUS_RING_CLASSNAME}`}
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                    {tripDeleteError?.tripId === trip.trip_id && (
+                      <p role="alert" className="mt-2 break-words text-sm text-rose-300">
+                        {tripDeleteError.message}
+                      </p>
+                    )}
                   </li>
                 );
               })}
             </ul>
           )}
+          <div aria-live="polite">
+            {tripDeleteNotice && (
+              <p role="status" className="mt-2 text-sm text-emerald-300">
+                {tripDeleteNotice}
+              </p>
+            )}
+            {tripDeleteError &&
+              !myTrips.some((trip) => trip.trip_id === tripDeleteError.tripId) && (
+                <p role="alert" className="mt-2 break-words text-sm text-rose-300">
+                  {tripDeleteError.message}
+                </p>
+              )}
+          </div>
         </div>
 
         <div className="mt-8">
@@ -9399,6 +9565,18 @@ PY`}
             )}
           </div>
         )}
+
+        <div className="mt-10 flex flex-col gap-4 border-t border-white/10 pt-6">
+          <h2 className="text-xs font-semibold uppercase tracking-wide text-cyan-300/80">
+            Your account and data
+          </h2>
+          <PrivacyNotice />
+          <DeleteAccountSection
+            email={currentUser.email}
+            onDeleted={() => void handleAccountDeleted()}
+            onAuthenticationRequired={handleAuthenticationRequired}
+          />
+        </div>
       </section>
     </main>
   );

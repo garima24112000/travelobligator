@@ -83,6 +83,15 @@ class TripRepository:
                 raise TripLimitReachedError(max_trips)
             return self.create(trip_id, owner_id=owner_id)
 
+    def delete_many(self, trip_ids: set[str]) -> int:
+        """P1-A deletion (development backend). Returns the number of trips removed."""
+        removed = [trip_id for trip_id in self._trips if trip_id in trip_ids]
+        for trip_id in removed:
+            del self._trips[trip_id]
+        if removed:
+            self._persist()
+        return len(removed)
+
     def get(self, trip_id: str) -> TripRecord | None:
         return self._trips.get(trip_id)
 

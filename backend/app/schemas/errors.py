@@ -76,6 +76,9 @@ class ErrorCode(str, Enum):
     TRIP_LIMIT_REACHED = "TRIP_LIMIT_REACHED"
     SIGNUP_LIMIT_REACHED = "SIGNUP_LIMIT_REACHED"
     TOO_MANY_ATTEMPTS = "TOO_MANY_ATTEMPTS"
+    # P1-A deletion (HTTP 409): an itinerary is being built right now, so nothing was deleted.
+    TRIP_DELETION_BLOCKED = "TRIP_DELETION_BLOCKED"
+    ACCOUNT_DELETION_BLOCKED = "ACCOUNT_DELETION_BLOCKED"
 
 
 class ApiError(BaseModel):

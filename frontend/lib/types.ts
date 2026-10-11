@@ -46,6 +46,18 @@ export type AuthResponse = {
   user: PublicUser;
 };
 
+// P1-A deletion (backend: app.schemas.trips.TripDeletedResponseData /
+// app.models.user.AccountDeletedResponseData).
+export type TripDeletedData = {
+  trip_id: string;
+  deleted: boolean;
+};
+
+export type AccountDeletedData = {
+  deleted: boolean;
+  trips_deleted: number;
+};
+
 // One row of `GET /trips`'s "My Trips" list (Step 184D backend, Step 184E
 // frontend; backend: app.schemas.trips.TripListItem). Deliberately small --
 // never the full PlanningState (that stays behind `GET /trips/{trip_id}`).

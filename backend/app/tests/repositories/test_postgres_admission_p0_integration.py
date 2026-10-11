@@ -243,7 +243,9 @@ def test_RACE_all_three_limits_together_never_exceed_any(no_active_jobs: None) -
 def test_RACE_same_trip_keeps_the_one_active_job_rule(no_active_jobs: None) -> None:
     now = datetime.now(timezone.utc)
     trip_id, owner_id = _seed_trip()
-    policy = _policy(user=50, total=500, concurrent=50)
+    # No window or concurrent limit: this is about the per-trip rule alone, and must not depend on how
+    # many jobs other tests (or earlier runs against the same database) left inside the real window.
+    policy = _policy()
 
     outcomes = _race(lambda i: PostgresJobRepository().admit(_job(trip_id, owner_id, now), policy, now=now))
 
