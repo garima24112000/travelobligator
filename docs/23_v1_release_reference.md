@@ -346,6 +346,23 @@ GitHub checks passing on the release commit:
 CI runs on Python 3.11, Node 22, PostgreSQL 16 and Redis 7.4. It has no deploy step, no registry push and no
 secret.
 
+**Since the release commit** the workflow has six jobs. The table above is the record of the release commit
+and is left as it was; the sixth job was added on the `v1-itinerary-quality-disclosures` branch:
+
+| Check | What it proves |
+| --- | --- |
+| `Browser / E2E` | The production frontend build, behind the same-origin `/api` proxy, driven in Chromium by Playwright against the real backend running offline (stand-in providers, no model stage, a throwaway store): sign-up and sign-in, trip creation and its limits, saved trips, account deletion, itinerary presentation, security headers and the Report-Only policy, axe-core scans and layout at 1440, 375 and 320 px and at 200 % zoom. No test may be skipped |
+
+`Backend / Integration` now also runs the backup, restore and rollback drill of
+[docs/25_operations_runbook.md](25_operations_runbook.md) on throwaway databases, and `Frontend / Build` also
+checks the production response headers.
+
+What the browser job does not establish: conformance with WCAG (an automated scan finds only part of the
+problems), behaviour with a screen reader, on a real phone, in Safari or Firefox, with real map tiles, at
+400 % zoom or in forced-colours mode. Those remain manual checks (`frontend/e2e/README.md`).
+
+To run it locally: `cd frontend && npx playwright install chromium && npm run e2e`.
+
 ## 12. Production acceptance evidence
 
 All checks below were performed against the deployed system.

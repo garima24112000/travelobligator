@@ -325,7 +325,10 @@ method.
 ## 11. Deployment checklist (executed in 203C)
 
 This checklist was carried out for the V1 release and is kept as the procedure for a fresh deployment or a
-redeploy. Step G.7 (cold-start recovery) is the one item still pending. Order matters: the backend needs the database migrated first, the frontend build needs the backend origin, and
+redeploy. **For a redeploy of the existing system** (backup first, then migrations, backend, frontend, smoke
+test), for rolling one back and for restoring data, follow
+[docs/25_operations_runbook.md](25_operations_runbook.md); this section stays the record of how the system
+was first set up. Step G.7 (cold-start recovery) is the one item still pending. Order matters: the backend needs the database migrated first, the frontend build needs the backend origin, and
 the backend's CORS value needs the frontend origin.
 
 **A. Neon**

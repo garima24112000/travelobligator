@@ -136,6 +136,24 @@ jobs:
           alembic upgrade head
           alembic current | grep -q "(head)"
 
+      # P1-D: the backup / restore / rollback drill (tests/scripts/test_backup_restore_drill_p1d_integration.py)
+      # runs pg_dump and pg_restore. They must exist and be at least as new as the PostgreSQL 16 service; fail
+      # here, with a clear message, rather than inside a test.
+      - name: PostgreSQL client tools for the restore drill
+        run: |
+          set -euo pipefail
+          if ! command -v pg_dump >/dev/null || ! command -v pg_restore >/dev/null; then
+            sudo apt-get update -y
+            sudo apt-get install -y --no-install-recommends postgresql-client
+          fi
+          pg_dump --version
+          pg_restore --version
+          major="$(pg_dump --version | grep -oE '[0-9]+' | head -n1)"
+          if [ "${major}" -lt 16 ]; then
+            echo "pg_dump ${major} is older than the PostgreSQL 16 service."
+            exit 1
+          fi
+
       # The full suite with BOTH gates on (the established command). A marker expression is not used because some
       # gated tests are skipif-gated without a marker; zero skips below proves every gated test really executed.
       - name: Run tests (PostgreSQL + Redis gates on)
