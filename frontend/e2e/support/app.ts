@@ -227,10 +227,40 @@ export function submitTripButton(page: Page) {
   return page.getByRole("form", { name: "Create a new trip" }).locator('button[type="submit"]');
 }
 
+/** The names listed under My trips AT THIS INSTANT. The list is fetched in the background (after sign-in,
+ * a reload, a creation, a deletion), so one read can land before the response does: assert on it with
+ * `expectTripRows`, which waits, and use this directly only for a value that is not asserted. */
 export async function myTripRows(page: Page): Promise<string[]> {
   const list = page.locator('ul:has(button[aria-label^="Delete trip:"])');
   if ((await list.count()) === 0) return [];
   return list.locator("li p.font-semibold").allInnerTexts();
+}
+
+/** How long My trips may take to show what the backend holds, before the assertion fails. */
+const TRIP_LIST_TIMEOUT_MS = 15_000;
+
+/**
+ * My trips shows exactly these trips, in this order (with `{ inAnyOrder }`, exactly these in any order;
+ * with `{ count }`, exactly that many).
+ *
+ * The comparison is the same strict one a single read would make; what changes is WHEN it is made: only
+ * while the page is not fetching the list (its "Refresh trips" button is disabled for the length of every
+ * fetch), and again until it holds or the time is up. A list that never becomes the expected one still
+ * fails, with the last list that was seen in the message.
+ */
+export async function expectTripRows(page: Page, expected: string[] | { inAnyOrder: string[] } | { count: number }): Promise<void> {
+  const refresh = page.getByRole("button", { name: "Refresh trips" });
+  await expect(async () => {
+    await expect(refresh, "My trips is still being fetched").toBeEnabled({ timeout: 1_000 });
+    const rows = await myTripRows(page);
+    if (Array.isArray(expected)) {
+      expect(rows, "the trips listed under My trips").toEqual(expected);
+    } else if ("inAnyOrder" in expected) {
+      expect([...rows].sort(), "the trips listed under My trips, in any order").toEqual([...expected.inAnyOrder].sort());
+    } else {
+      expect(rows, "the number of trips listed under My trips").toHaveLength(expected.count);
+    }
+  }, "My trips did not show the expected trips in time").toPass({ timeout: TRIP_LIST_TIMEOUT_MS });
 }
 
 // -- shaping what the page is shown ------------------------------------------------------------------

@@ -1,4 +1,4 @@
-import { PASSWORD, createTripViaApi, expect, generateViaApi, logIn, myTripRows, signUp, signUpViaApi, test } from "./support/app";
+import { PASSWORD, createTripViaApi, expect, expectTripRows, generateViaApi, logIn, signUp, signUpViaApi, test } from "./support/app";
 
 // D. Account data: the privacy notice and deleting the account.
 
@@ -90,7 +90,7 @@ test("a wrong password deletes nothing and leaves the visitor signed in", async 
   expect(requests).toEqual([401]);
   await expect(section.getByLabel("Your password")).toHaveValue(""); // the wrong password is not kept
   await expect(page.getByRole("heading", { name: "My trips" })).toBeVisible();
-  expect(await myTripRows(page)).toEqual(["Safeville, Testland"]);
+  await expectTripRows(page, ["Safeville, Testland"]);
   expect((await page.request.get("/api/auth/me")).status()).toBe(200);
   expect((await page.request.get(`/api/trips/${tripId}`)).status()).toBe(200);
 });
@@ -163,6 +163,6 @@ test("deleting one account leaves another person's account and trips alone", asy
   expect((await other.request.get(`/api/trips/${otherTrip}`)).status()).toBe(200);
   await other.goto("/");
   await expect(other.getByText(otherEmail)).toBeVisible();
-  expect(await myTripRows(other)).toEqual(["Bystander, Testland"]);
+  await expectTripRows(other, ["Bystander, Testland"]);
   await otherContext.close();
 });

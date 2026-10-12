@@ -2,7 +2,7 @@ import {
   createTripViaApi,
   expect,
   generateViaApi,
-  myTripRows,
+  expectTripRows,
   openGeneratedTrip,
   signUpViaApi,
   test,
@@ -30,7 +30,7 @@ test("My trips lists every saved trip and reopens the one that is chosen", async
   await page.goto("/");
   await expect(page.getByRole("button", { name: "Delete trip: Alphaville, Testland" })).toBeVisible();
 
-  expect((await myTripRows(page)).sort()).toEqual(["Alphaville, Testland", "Betaville, Testland"]);
+  await expectTripRows(page, { inAnyOrder: ["Alphaville, Testland", "Betaville, Testland"] });
   const list = page.locator('ul:has(button[aria-label^="Delete trip:"])');
   await expect(list.getByText("From Home City · 2027-04-01 → 2027-04-02")).toBeVisible();
 
@@ -77,7 +77,7 @@ test("a link to someone else's trip shows nothing of it", async ({ page, browser
   await expect(page.getByRole("alert").filter({ hasText: "You do not have access to this trip." })).toBeVisible();
   await expect(page.getByText("Privateville")).toHaveCount(0);
   await expect(page.getByRole("heading", ITINERARY)).toHaveCount(0);
-  expect(await myTripRows(page)).toEqual([]);
+  await expectTripRows(page, []);
   // the dead link is forgotten rather than retried on every reload
   await page.reload();
   await expect(page.getByRole("heading", { name: "My trips" })).toBeVisible();
@@ -101,7 +101,7 @@ test("deleting a trip asks first, and Cancel leaves everything as it was", async
 
   await expect(confirmation).toHaveCount(0);
   expect(deletes).toEqual([]);
-  expect(await myTripRows(page)).toEqual(["Keepville, Testland"]);
+  await expectTripRows(page, ["Keepville, Testland"]);
   await expect(page.getByRole("heading", ITINERARY)).toBeVisible(); // the open itinerary is untouched
   // the Delete button toggles: a second click closes the question again
   await page.getByRole("button", { name: "Delete trip: Keepville, Testland" }).click();
@@ -123,7 +123,7 @@ test("confirming deletes the trip, closes it if it was open, and frees its place
   await page.getByRole("group", { name: "Confirm deleting Goneville, Testland" }).getByRole("button", { name: "Delete trip" }).click();
 
   await expect(page.getByRole("status").filter({ hasText: "Trip deleted." })).toBeVisible();
-  expect(await myTripRows(page)).toEqual(["Staysville, Testland"]);
+  await expectTripRows(page, ["Staysville, Testland"]);
   expect(deletes).toEqual([`/api/trips/${removed}`]);
   // the deleted trip was the one on screen: it is closed, and a reload does not try to reopen it
   await expect(page.getByRole("heading", { level: 2, name: "Goneville, Testland" })).toHaveCount(0);
@@ -131,7 +131,7 @@ test("confirming deletes the trip, closes it if it was open, and frees its place
   expect(new URL(page.url()).searchParams.get("trip")).toBeNull();
   await page.reload();
   await expect(page.getByRole("heading", { name: "My trips" })).toBeVisible();
-  expect(await myTripRows(page)).toEqual(["Staysville, Testland"]);
+  await expectTripRows(page, ["Staysville, Testland"]);
   await expect(page.getByRole("alert").filter({ hasText: /\S/ })).toHaveCount(0);
   // gone on the server too, and the other trip is intact
   expect((await page.request.get(`/api/trips/${removed}`)).status()).toBe(404);
@@ -170,7 +170,7 @@ test("a trip whose itinerary is being built cannot be deleted until it has finis
   const refusal = page.getByRole("alert").filter({ hasText: "This trip's itinerary is being built right now, so it cannot be deleted yet." });
   await expect(refusal).toBeVisible();
   await expect(refusal).not.toContainText(/TRIP_DELETION_BLOCKED|409/);
-  expect(await myTripRows(page)).toEqual(["Slowville, Testland"]); // still there
+  await expectTripRows(page, ["Slowville, Testland"]); // still there
   expect((await page.request.get(`/api/trips/${tripId}`)).status()).toBe(200);
 
   // once the job has finished, the same confirmation deletes it
@@ -179,7 +179,7 @@ test("a trip whose itinerary is being built cannot be deleted until it has finis
     .toBe("succeeded");
   await confirmation.getByRole("button", { name: "Delete trip" }).click();
   await expect(page.getByRole("status").filter({ hasText: "Trip deleted." })).toBeVisible();
-  expect(await myTripRows(page)).toEqual([]);
+  await expectTripRows(page, []);
 });
 
 test("a deletion that fails on the server keeps the trip and says nothing was removed", async ({ page, watch }) => {
@@ -205,7 +205,7 @@ test("a deletion that fails on the server keeps the trip and says nothing was re
   await page.getByRole("group", { name: "Confirm deleting Sturdyville, Testland" }).getByRole("button", { name: "Delete trip" }).click();
 
   await expect(page.getByRole("alert").filter({ hasText: /try again/i }).first()).toBeVisible();
-  expect(await myTripRows(page)).toEqual(["Sturdyville, Testland"]);
+  await expectTripRows(page, ["Sturdyville, Testland"]);
   await expect(page.getByRole("heading", ITINERARY)).toBeVisible();
   await expect(page.getByRole("status").filter({ hasText: "Trip deleted." })).toHaveCount(0);
 });
@@ -225,7 +225,7 @@ test("the place a deleted trip took can be used again", async ({ page }) => {
   await page.getByRole("group", { name: "Confirm deleting Quota 7, Testland" }).getByRole("button", { name: "Delete trip" }).click();
   await expect(page.getByRole("status").filter({ hasText: "Trip deleted." })).toBeVisible();
 
-  expect(await myTripRows(page)).toHaveLength(19);
+  await expectTripRows(page, { count: 19 });
   const accepted = await page.request.post("/api/trips", {
     data: { primary_destination: "Fits Again", start_date: "2027-03-01", end_date: "2027-03-02", travelers_count: 1, travel_group_type: "solo" },
   });

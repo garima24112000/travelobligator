@@ -1,4 +1,4 @@
-import { DEFAULT_TRIP, PASSWORD, expect, expectNoHorizontalScroll, fillTripForm, logIn, myTripRows, signUp, submitTripButton, test } from "./support/app";
+import { DEFAULT_TRIP, PASSWORD, expect, expectNoHorizontalScroll, expectTripRows, fillTripForm, logIn, signUp, submitTripButton, test } from "./support/app";
 
 // One person's whole visit, start to finish, through the user interface only. Runs on the desktop and the
 // 375 px phone viewport: it is the test that says "the product works on a phone", where the other journey
@@ -21,7 +21,7 @@ test("sign up, plan a trip, read it, come back to it, delete it, delete the acco
   await maps.first().scrollIntoViewIfNeeded();
   await expect(maps.first().locator(".leaflet-marker-icon")).toHaveCount(3);
   await expectNoHorizontalScroll(page);
-  expect(await myTripRows(page)).toEqual([DEFAULT_TRIP.destination]);
+  await expectTripRows(page, [DEFAULT_TRIP.destination]);
 
   // -- come back later: a reload, then a fresh log-in ------------------------------------------------
   await page.reload();
@@ -31,13 +31,13 @@ test("sign up, plan a trip, read it, come back to it, delete it, delete the acco
   await logIn(page, email, PASSWORD);
   await expect(page.getByRole("heading", { name: "My trips" })).toBeVisible();
   await expect(page.getByRole("button", { name: /^Delete trip: / })).toBeVisible();
-  expect(await myTripRows(page)).toEqual([DEFAULT_TRIP.destination]);
+  await expectTripRows(page, [DEFAULT_TRIP.destination]);
 
   // -- delete the trip -------------------------------------------------------------------------------
   await page.getByRole("button", { name: `Delete trip: ${DEFAULT_TRIP.destination}` }).click();
   await page.getByRole("group", { name: `Confirm deleting ${DEFAULT_TRIP.destination}` }).getByRole("button", { name: "Delete trip" }).click();
   await expect(page.getByRole("status").filter({ hasText: "Trip deleted." })).toBeVisible();
-  expect(await myTripRows(page)).toEqual([]);
+  await expectTripRows(page, []);
 
   // -- delete the account ----------------------------------------------------------------------------
   const account = page.getByRole("region", { name: "Delete account" });

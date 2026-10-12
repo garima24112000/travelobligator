@@ -4,7 +4,7 @@ import {
   expect,
   fillTripForm,
   generateViaApi,
-  myTripRows,
+  expectTripRows,
   signUp,
   signUpViaApi,
   submitTripButton,
@@ -44,7 +44,7 @@ test("a full trip request is submitted and its itinerary is shown", async ({ pag
   await expect(page.getByText("Interests: food, art")).toBeVisible();
   await expect(dayHeadings(page)).toHaveText([/^Day 1 · 2027-03-01/, /^Day 2 · 2027-03-02/, /^Day 3 · 2027-03-03/]);
   // the trip is saved under My trips, once
-  expect(await myTripRows(page)).toEqual([DEFAULT_TRIP.destination]);
+  await expectTripRows(page, [DEFAULT_TRIP.destination]);
   // the form is usable again
   await expect(submitTripButton(page)).toBeEnabled();
   await expect(submitTripButton(page)).toHaveText("Create trip and generate plan");
@@ -83,7 +83,7 @@ test("submitting twice, by double click and by Enter, creates one trip and one j
 
   await expect(page.getByRole("heading", ITINERARY)).toBeVisible({ timeout: 40_000 });
   expect(seen).toEqual({ createTrip: 1, generate: 1 });
-  expect(await myTripRows(page)).toEqual(["Slowville, Testland"]);
+  await expectTripRows(page, ["Slowville, Testland"]);
   const listed = (await (await page.request.get("/api/trips")).json()).data.trips;
   expect(listed).toHaveLength(1);
 });
@@ -166,7 +166,7 @@ test("a 422 from the server is shown in plain words, without the technical prefi
   await expect(alert).toBeVisible();
   await expect(alert).not.toContainText(/Value error|end_date|VALIDATION_ERROR|422/);
   await expect(page.getByRole("button", { name: "Try again" })).toHaveCount(0);
-  expect(await myTripRows(page)).toEqual([]); // nothing was stored
+  await expectTripRows(page, []); // nothing was stored
 });
 
 test("the real per-account limit is explained, and offers no pointless retry", async ({ page }) => {
@@ -219,7 +219,7 @@ test("when every slot is busy the visitor can try again, and the same trip is re
   await submitTripButton(page).click();
   await expect(page.getByRole("alert").filter({ hasText: "Other itineraries are being built right now." })).toBeVisible();
   // the trip was saved (the list is refreshed in the background, so it is awaited, not read once)
-  await expect.poll(() => myTripRows(page)).toEqual([DEFAULT_TRIP.destination]);
+  await expectTripRows(page, [DEFAULT_TRIP.destination]);
 
   refuse = false;
   await page.getByRole("button", { name: "Try again" }).click();
@@ -227,7 +227,7 @@ test("when every slot is busy the visitor can try again, and the same trip is re
   await expect(page.getByRole("heading", ITINERARY)).toBeVisible({ timeout: 30_000 });
   // one trip, generated on the second attempt -- not a second, empty trip
   expect(seen).toEqual({ createTrip: 1, generate: 2 });
-  expect(await myTripRows(page)).toEqual([DEFAULT_TRIP.destination]);
+  await expectTripRows(page, [DEFAULT_TRIP.destination]);
 });
 
 test("a 503 while starting is reported as temporary and can be retried", async ({ page, watch }) => {
@@ -309,7 +309,7 @@ test("a job that ends failed is reported in plain words, with a retry on the sam
   await expect(page.getByRole("heading", ITINERARY)).toHaveCount(0);
   // the backend's developer-facing message never reaches Traveler view
   await expect(page.getByText(/generation-progress|STAGE_FAILED|GET \/trips/)).toHaveCount(0);
-  expect(await myTripRows(page)).toEqual([DEFAULT_TRIP.destination]);
+  await expectTripRows(page, [DEFAULT_TRIP.destination]);
   await expect(submitTripButton(page)).toBeEnabled();
   expect(seen.createTrip).toBe(1);
 });
@@ -334,7 +334,7 @@ test("when the places lookup itself fails nothing is shown as an itinerary and n
   await expect(page.getByRole("alert").filter({ hasText: /\S/ }).first()).toBeVisible({ timeout: 30_000 });
   await expect(page.getByRole("heading", ITINERARY)).toHaveCount(0);
   await expect(page.getByText(/RuntimeError|Traceback|simulated provider failure|destination_context/)).toHaveCount(0);
-  expect(await myTripRows(page)).toEqual(["Failville, Testland"]);
+  await expectTripRows(page, ["Failville, Testland"]);
   await expect(submitTripButton(page)).toBeEnabled();
 });
 
@@ -375,7 +375,7 @@ test("P1C-2: a generation whose first stage failed is not announced as ready or 
   await page.getByRole("button", { name: "Try again" }).click();
   await expect(alert).toBeVisible({ timeout: 30_000 });
   expect(seen).toEqual({ createTrip: 1, generate: 2 });
-  expect(await myTripRows(page)).toEqual(["Failville, Testland"]);
+  await expectTripRows(page, ["Failville, Testland"]);
 
   // reopening it from My trips says the same thing, without a retry that could only reload it
   await page.reload();
