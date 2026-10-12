@@ -17,6 +17,8 @@ _DB_SECRET = "SENTINEL_203B_DB_PASSWORD_6610"
 _REDIS_SECRET = "SENTINEL_203B_REDIS_PASSWORD_2284"
 _SESSION_SECRET = "SENTINEL_203B_SESSION_SECRET_" + "x" * 24
 _OPS_SECRET = "SENTINEL_203B_OPS_TOKEN_" + "y" * 16
+_GROQ_SECRET = "SENTINEL_P1B_GROQ_KEY_7731"
+_GEMINI_SECRET = "SENTINEL_P1B_GEMINI_KEY_4410"
 
 _PRODUCTION = {
     "APP_ENV": "production",
@@ -41,6 +43,18 @@ _PRODUCTION = {
     "INVENTORY_SUFFICIENCY_GATE_ENABLED": "true",
     # P0: generation runs as jobs in production (the admission limits are enforced there)
     "ASYNC_GENERATION_ENABLED": "true",
+    # P1-B: the release's model stages, as written in render.yaml, with both failover providers configured
+    "AI_CANDIDATE_PROPOSAL_PROVIDER": "groq",
+    "AI_CANDIDATE_DISCOVERY_ENABLED": "true",
+    "AI_ITINERARY_REASONING_ENABLED": "true",
+    "AI_ITINERARY_REASONING_PROVIDER": "groq",
+    "AI_ITINERARY_REPAIR_ENABLED": "true",
+    "ITINERARY_NARRATOR_ENABLED": "true",
+    "ITINERARY_NARRATOR_PROVIDER": "groq",
+    "LLM_FAILOVER_ENABLED": "true",
+    "GROQ_API_KEY": _GROQ_SECRET,
+    "GEMINI_API_KEY": _GEMINI_SECRET,
+    "GEMINI_MODEL": "gemini-test-model",
 }
 
 
@@ -52,7 +66,7 @@ def _rejected(**overrides: object) -> str:
     with pytest.raises(OperationalConfigurationError) as excinfo:
         validate_runtime_configuration(_settings(**overrides))
     message = str(excinfo.value)
-    for secret in (_DB_SECRET, _REDIS_SECRET, _SESSION_SECRET, _OPS_SECRET):
+    for secret in (_DB_SECRET, _REDIS_SECRET, _SESSION_SECRET, _OPS_SECRET, _GROQ_SECRET, _GEMINI_SECRET):
         assert secret not in message
     return message
 

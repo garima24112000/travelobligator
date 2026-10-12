@@ -195,6 +195,14 @@ class Settings(BaseSettings):
     llm_secondary_provider: str = Field(default="gemini", alias="LLM_SECONDARY_PROVIDER")
     # False = every stage uses exactly its selected provider, as before.
     llm_failover_enabled: bool = Field(default=True, alias="LLM_FAILOVER_ENABLED")
+    # P1-B: with `APP_ENV=production` the four generation-time model stages of the release (anchor
+    # discovery, itinerary reasoning, itinerary repair, narrator) must be switched on with a connected
+    # provider, so a rebuilt service cannot come up quietly planning without them. `true` is the explicit,
+    # deliberate way to run production with a stage off (its deterministic fallback then plans). It only
+    # relaxes that startup check: it changes nothing about how any stage behaves.
+    production_allow_ai_stages_disabled: bool = Field(
+        default=False, alias="PRODUCTION_ALLOW_AI_STAGES_DISABLED"
+    )
     # A provider whose known remaining quota is at or under this share of its
     # limit is DRAINING: later stages prefer the other provider.
     llm_quota_reserve_ratio: float = Field(default=0.10, alias="LLM_QUOTA_RESERVE_RATIO", ge=0.0, lt=1.0)

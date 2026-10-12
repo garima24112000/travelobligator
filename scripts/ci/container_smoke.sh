@@ -139,6 +139,45 @@ denied="$(curl -s -o /dev/null -D - --max-time 10 -X OPTIONS "${BACKEND_URL}/aut
 [ -z "${denied}" ] || fail "backend CORS allowed an unconfigured origin"
 echo "frontend / 200 with runtime API URL; CORS allows only the frontend origin"
 
+step "2c. Security headers on the real images (P1-B)"
+# header_of <url> <header>: the value of one response header (lower-cased name match), CR stripped.
+header_of() {
+  curl -s -o /dev/null -D - --max-time 10 "$1" | tr -d '\r' \
+    | awk -v name="$(printf '%s' "$2" | tr '[:upper:]' '[:lower:]'):" 'tolower($1)==name { $1=""; sub(/^ /, ""); print; exit }'
+}
+expect_header() {
+  actual="$(header_of "$1" "$2")"
+  [ "${actual}" = "$3" ] || fail "$1: expected $2: '$3', got '${actual}'"
+}
+# Frontend: enforced headers on a page and on an error page; the page policy is Report-Only (never enforcing).
+for page in "${FRONTEND_URL}/" "${FRONTEND_URL}/no-such-page"; do
+  expect_header "${page}" "X-Content-Type-Options" "nosniff"
+  expect_header "${page}" "X-Frame-Options" "DENY"
+  expect_header "${page}" "Referrer-Policy" "strict-origin-when-cross-origin"
+  header_of "${page}" "Permissions-Policy" | grep -q 'camera=()' || fail "${page}: Permissions-Policy missing"
+  policy="$(header_of "${page}" "Content-Security-Policy-Report-Only")"
+  case "${policy}" in
+    *"script-src 'self' 'nonce-"*"'strict-dynamic'"*) ;;
+    *) fail "${page}: no nonce-based Content-Security-Policy-Report-Only" ;;
+  esac
+  case "${policy}" in *unsafe-eval*) fail "${page}: the production policy allows unsafe-eval" ;; esac
+  # the browser calls the backend directly in this stack, so its origin must be allowed to be connected to
+  case "${policy}" in *"connect-src 'self' ${PUBLIC_API_URL}"*) ;; *) fail "${page}: policy does not allow the API origin" ;; esac
+  [ -z "$(header_of "${page}" "Content-Security-Policy")" ] || fail "${page}: an ENFORCING page policy is being sent"
+  [ -z "$(header_of "${page}" "Strict-Transport-Security")" ] || fail "${page}: HSTS sent without opting in (plain HTTP stack)"
+done
+grep -q '<script nonce="[^"]\{16,\}">window.__TRAVELOBLIGATOR_RUNTIME__=' "${WORK}/index.html" \
+  || fail "the runtime-config script carries no CSP nonce"
+# Backend: its own headers on every response, success and error alike.
+for api in "${BACKEND_URL}/health" "${BACKEND_URL}/auth/me" "${BACKEND_URL}/no-such-route"; do
+  expect_header "${api}" "X-Content-Type-Options" "nosniff"
+  expect_header "${api}" "X-Frame-Options" "DENY"
+  expect_header "${api}" "Referrer-Policy" "no-referrer"
+  expect_header "${api}" "Content-Security-Policy" "default-src 'none'; frame-ancestors 'none'"
+  expect_header "${api}" "Cache-Control" "no-store"
+done
+echo "frontend pages: enforced headers + Report-Only CSP with a nonce; backend: its own headers on 200/401/404"
+
 # ---------------------------------------------------------------- 3. deterministic application path
 step "3. Signup, session, login, trip create (no external provider)"
 JAR="${WORK}/cookies.txt"

@@ -200,6 +200,12 @@ jobs:
       - name: Build
         run: npm run build
 
+      # P1-B: builds once more with a rewrite to a local stub backend and placeholder secrets in the
+      # environment, starts the real production server, and checks the response headers (pages, error page,
+      # static asset, proxied API responses) and that nothing secret is in the browser assets. No network.
+      - name: Production headers check
+        run: npm run check:headers
+
   containers:
     name: Containers / Build & Smoke
     runs-on: ubuntu-24.04

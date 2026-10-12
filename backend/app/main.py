@@ -21,6 +21,7 @@ from app.core.operational_config import cors_origins as configured_cors_origins
 from app.core.operational_config import is_production
 from app.core.request_id_middleware import RequestIdMiddleware
 from app.core.response import error_response
+from app.core.security_headers_middleware import SecurityHeadersMiddleware
 from app.repositories.errors import ConcurrentStateUpdateError
 from app.schemas.errors import ApiError, ErrorCode
 from app.services import generation_job_service
@@ -203,6 +204,9 @@ app.add_middleware(RequestIdMiddleware)
 # Section 203B: outermost, so EVERY response (routes, error handlers, CORS preflights) is `no-store` --
 # the production browser path is a CDN rewrite (Vercel -> this service) and nothing here is cacheable.
 app.add_middleware(NoStoreMiddleware)
+# P1-B: likewise outermost -- every response carries its own security headers, because a proxy in front
+# of this service cannot be relied on to add them to what it forwards.
+app.add_middleware(SecurityHeadersMiddleware)
 
 
 @app.exception_handler(AppError)

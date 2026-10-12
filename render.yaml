@@ -104,6 +104,33 @@ services:
         value: "16"
       - key: AI_DIRECTED_PROVIDER_DISCOVERY_MAX_EXTRA_SEARCHES
         value: "4"
+      # P1-B: the rest of the release's model configuration, written out so a service rebuilt from this file
+      # plans exactly as the evaluated system did (docs/22_free_tier_deployment.md section 13C). These are the
+      # values the quality evaluation ran with; none is a secret. Production refuses to start when one of the
+      # four generation stages is off, has no provider, or lacks its credential -- it never comes up quietly
+      # without them.
+      - key: AI_ITINERARY_REASONING_ENABLED
+        value: "true"
+      - key: AI_ITINERARY_REASONING_PROVIDER
+        value: groq
+      - key: AI_ITINERARY_REPAIR_ENABLED
+        value: "true"
+      - key: ITINERARY_NARRATOR_ENABLED
+        value: "true"
+      - key: ITINERARY_NARRATOR_PROVIDER
+        value: groq
+      - key: GROQ_MODEL
+        value: openai/gpt-oss-20b
+      # Groq first, Gemini second, then each stage's deterministic fallback. Both providers must be configured
+      # while failover is on.
+      - key: LLM_FAILOVER_ENABLED
+        value: "true"
+      - key: LLM_PRIMARY_PROVIDER
+        value: groq
+      - key: LLM_SECONDARY_PROVIDER
+        value: gemini
+      - key: GEMINI_MODEL
+        value: gemini-3.5-flash-lite
       # ---- secrets (dashboard only)
       - key: DATABASE_URL
         sync: false
@@ -111,6 +138,8 @@ services:
         sync: false
       # ---- provider credential (dashboard only)
       - key: GROQ_API_KEY
+        sync: false
+      - key: GEMINI_API_KEY
         sync: false
       - key: GEOAPIFY_API_KEY
         sync: false

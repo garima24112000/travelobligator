@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { headers } from "next/headers";
 import { connection } from "next/server";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
@@ -30,6 +31,10 @@ export default async function RootLayout({
   // browser without a rebuild. Only a validated absolute http(s) URL is ever serialised; `<` is escaped so the
   // inline script can never be broken out of.
   await connection();
+  // P1-B: the per-response CSP nonce set by proxy.ts. Next.js puts it on its own scripts by itself; the
+  // one inline script below is this application's, so it carries the nonce explicitly. Absent (no
+  // attribute at all) when the request did not go through proxy.ts.
+  const nonce = (await headers()).get("x-nonce") ?? undefined;
   const apiBaseUrl = sanitizeApiBaseUrl(process.env.API_BASE_URL);
   const runtimeConfig = JSON.stringify({ apiBaseUrl }).replace(/</g, "\\u003c");
 
@@ -40,6 +45,7 @@ export default async function RootLayout({
     >
       <head>
         <script
+          nonce={nonce}
           dangerouslySetInnerHTML={{
             __html: `window.__TRAVELOBLIGATOR_RUNTIME__=${runtimeConfig};`,
           }}
