@@ -67,12 +67,15 @@ import {
   GETTING_AROUND_DISCLAIMER,
   GETTING_AROUND_HEADING,
   LOADING_DEFAULT_MESSAGE,
+  PLAN_INCOMPLETE,
   PLAN_NOT_GENERATED,
+  PLAN_UNUSABLE,
   SESSION_ENDED_MESSAGE,
   genericLoadingStep,
   gettingAroundAdvisory,
   loadingPatienceNote,
   loadingStageLabel,
+  planAvailability,
   travelerChangeRefusal,
   travelerErrorMessage,
   UNVERIFIED_LEG_LINE,
@@ -1739,6 +1742,7 @@ function DayMapPreview({
 
     const container = containerRef.current;
     let isCancelled = false;
+    let dispose: (() => void) | null = null;
 
     void (async () => {
       const L = await import("leaflet");
@@ -1746,8 +1750,52 @@ function DayMapPreview({
         return;
       }
 
-      const map = L.map(container);
+      // P1C-3: the map lives in an element this effect owns, inside React's
+      // container, so the container is free for the next map the moment
+      // this one is disposed -- even when Leaflet itself has to be removed
+      // a little later (below). One effect run = one host = one map.
+      const host = document.createElement("div");
+      host.className = "h-full w-full";
+      container.appendChild(host);
+      const map = L.map(host);
       mapRef.current = map;
+
+      // Leaflet 1.9 ends an animated zoom from a plain timer that
+      // `map.remove()` does not cancel (`remove()` / `stop()` only stop pan
+      // and fly animations). Removing the map while that timer is pending
+      // makes its callback run on a torn-down map and throw. So: know, from
+      // Leaflet's own events, whether a zoom is in flight, and if one is,
+      // let it finish before removing.
+      let zoomInFlight = false;
+      map.on("zoomanim", () => {
+        zoomInFlight = true;
+      });
+      map.on("zoomend", () => {
+        zoomInFlight = false;
+      });
+      dispose = () => {
+        host.remove();
+        if (!zoomInFlight) {
+          map.remove();
+          return;
+        }
+        // Nothing of the discarded map should load or draw meanwhile.
+        map.eachLayer((layer) => {
+          map.removeLayer(layer);
+        });
+        let removed = false;
+        const finish = () => {
+          if (removed) return;
+          removed = true;
+          window.clearTimeout(fallback);
+          map.remove();
+        };
+        // `zoomend` always follows; the timer is only a backstop so a map
+        // can never be left behind. `remove()` runs after Leaflet's own
+        // end-of-zoom code has returned, never inside it.
+        const fallback = window.setTimeout(finish, 1000);
+        map.once("zoomend", () => window.setTimeout(finish, 0));
+      };
 
       L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
         attribution:
@@ -1839,7 +1887,8 @@ function DayMapPreview({
 
     return () => {
       isCancelled = true;
-      mapRef.current?.remove();
+      dispose?.();
+      dispose = null;
       mapRef.current = null;
     };
   }, [experiences, travelTimeBufferReport, coordinateBackedCount]);
@@ -6352,16 +6401,27 @@ function UserModeFlightSummary({
 async function loadPlanResult(tripId: string): Promise<PlanResult> {
   const summary = await getTripSummary(tripId);
 
-  if (
-    !summary.destination_context_generated ||
-    !summary.experience_plan_generated ||
-    !summary.validation_report_generated
-  ) {
+  // P1C-2: the summary's own status decides what can be shown. A finished
+  // generation that scheduled nothing is "no usable itinerary", never "not
+  // generated yet"; a blocked or review-needed plan that CAN be rendered is
+  // still rendered below, under its validation banner.
+  const availability = planAvailability(summary);
+  if (availability === "not_generated") {
     throw new ApiRequestError(
       `Trip '${tripId}' exists, but its plan has not been generated yet. ` +
         "Generate the plan first, then load this trip again.",
       409,
       PLAN_NOT_GENERATED,
+    );
+  }
+  if (availability !== "displayable") {
+    throw new ApiRequestError(
+      `Trip '${tripId}' finished generating without a plan that can be shown ` +
+        `(validation_status=${summary.validation_status ?? "none"}, ` +
+        `scheduled_experiences_count=${summary.scheduled_experiences_count}, ` +
+        `destination_context_generated=${summary.destination_context_generated}).`,
+      409,
+      availability === "no_usable_itinerary" ? PLAN_UNUSABLE : PLAN_INCOMPLETE,
     );
   }
 
@@ -6729,7 +6789,8 @@ function TravelGenerationLoading({
   // under way.
   const reportedStageLabel = loadingStageLabel(stageKey);
   const displayMessage = isCompleted
-    ? "Itinerary ready. Opening it now."
+    ? // P1C-2: "finished", not "ready" -- what was produced is not known yet.
+      "Finished. Opening the result."
     : reportedStageLabel ||
       (mode === "developer" ? stageLabel || progressMessage : undefined) ||
       LOADING_DEFAULT_MESSAGE;
@@ -7129,7 +7190,12 @@ function JobStatusCard({
   const travelerHeadline =
     job.status === "succeeded"
       ? job.job_type === "generate"
-        ? "Your itinerary is ready"
+        ? // P1C-2: a finished job says nothing about the plan it produced --
+          // it may need review, be blocked, or hold no itinerary at all. Only
+          // the validation banner of the loaded result says which. (The card
+          // also stays up when a trip is reopened, so it must not say
+          // "loading" either.)
+          "Itinerary generation finished"
         : "Your changes were applied"
       : job.status === "failed"
         ? job.job_type === "generate"
@@ -7434,6 +7500,11 @@ export default function Home() {
     setIsRegenerationRunning(false);
     clearJob();
     // Section 2: the login screen that now replaces the app says why.
+    // P1C-1: and it is the LOG-IN form, whichever form this tab last used --
+    // the message asks the person to log in again, and their account exists.
+    setAuthMode("login");
+    setAuthPassword("");
+    setAuthConfirmPassword("");
     setAuthError(SESSION_ENDED_MESSAGE);
     setError(null);
     setRetryAction(null);
@@ -7877,6 +7948,7 @@ export default function Home() {
     // message in the job status card, so the generic error box below is
     // not repeated for it.
     let failureShownByJobCard = false;
+    let jobFinished = false;
 
     function stopPolling() {
       pollingStopped = true;
@@ -7943,6 +8015,7 @@ export default function Home() {
         }
       }
 
+      jobFinished = true;
       stopPolling();
       setGenerationPhase("loading_itinerary");
 
@@ -7956,11 +8029,19 @@ export default function Home() {
       }
       await new Promise((resolve) => setTimeout(resolve, 500));
 
+      // P1C-2: only a plan that can actually be shown ends the "not built
+      // yet" state. If the finished generation left nothing usable, the
+      // trip stays the one a "Try again" rebuilds (never a second trip).
+      const loaded = await loadPlanResult(tripId);
       ungeneratedTripRef.current = null;
-      setResult(await loadPlanResult(tripId));
+      setResult(loaded);
       void refreshMyTrips();
       clearJob();
     } catch (err) {
+      // P1C-2: the job finished, but there is nothing to show for it. The
+      // error below is the whole message; a "finished" card beside it
+      // would contradict it.
+      if (jobFinished) clearJob();
       if (err instanceof JobPollingCancelledError) {
         // Abandoned (unmount/logout) -- nothing to show, state is already
         // being cleared by whatever triggered the cancellation.
@@ -8509,7 +8590,9 @@ PY`}
                 onChange={(event) => setAuthPassword(event.target.value)}
               />
               {authMode === "signup" && (
-                <span id="password-hint" className="text-xs text-slate-500">
+                // P1C-4: slate-400, not slate-500 -- at this size on this
+                // card slate-500 measures 3.89:1, under the 4.5:1 minimum.
+                <span id="password-hint" className="text-xs text-slate-400">
                   At least 8 characters.
                 </span>
               )}
@@ -8588,7 +8671,8 @@ PY`}
                   : "Log in"}
             </button>
           </form>
-          <PrivacyNotice className="mt-6" />
+          {/* P1C-5: directly under this screen's h1, so its sections are h2 */}
+          <PrivacyNotice sectionHeadingLevel={2} className="mt-6" />
         </section>
       </main>
     );
@@ -9570,7 +9654,7 @@ PY`}
           <h2 className="text-xs font-semibold uppercase tracking-wide text-cyan-300/80">
             Your account and data
           </h2>
-          <PrivacyNotice />
+          <PrivacyNotice sectionHeadingLevel={3} />
           <DeleteAccountSection
             email={currentUser.email}
             onDeleted={() => void handleAccountDeleted()}

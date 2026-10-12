@@ -12,6 +12,8 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Browser E2E output (Playwright's HTML report bundles its own scripts):
+    "e2e-results/**",
   ]),
 ]);
 

@@ -34,6 +34,9 @@ import {
   loadingPatienceNote,
   loadingStageLabel,
   movementModeLabel,
+  PLAN_INCOMPLETE,
+  PLAN_UNUSABLE,
+  planAvailability,
   travelerErrorMessage,
   travelerLegLine,
   travelerMovementLine,
@@ -481,6 +484,63 @@ test("request errors are actionable and free of internal detail", () => {
     travelerErrorMessage({ code: "DESTINATION_UNRESOLVED", status: 500, message: "x", operation: "generate" }).message,
     /city and country/,
   );
+});
+
+// P1C-2: what a finished generation left behind is read from the summary's own status fields.
+test("a finished generation with nothing to follow is never worded as not generated, in progress or ready", () => {
+  const summary = (fields) => ({
+    destination_context_generated: true,
+    experience_plan_generated: true,
+    validation_report_generated: true,
+    scheduled_experiences_count: 9,
+    validation_status: "needs_review",
+    ...fields,
+  });
+  // nothing judged yet: never generated, or still being built
+  assert.equal(planAvailability(summary({ experience_plan_generated: false, validation_report_generated: false })), "not_generated");
+  assert.equal(planAvailability(summary({ validation_report_generated: false })), "not_generated");
+  // every plan that can be rendered is rendered; its banner, not this function, states its readiness
+  for (const validation_status of ["ready", "needs_review", "blocked"]) {
+    assert.equal(planAvailability(summary({ validation_status })), "displayable");
+  }
+  // a blocked plan WITH destination information is still shown (its banner explains it), even with no stop
+  assert.equal(planAvailability(summary({ validation_status: "blocked", scheduled_experiences_count: 0 })), "displayable");
+  // finished, blocked, nothing scheduled, nothing to render: no usable itinerary
+  assert.equal(
+    planAvailability(summary({ destination_context_generated: false, validation_status: "blocked", scheduled_experiences_count: 0 })),
+    "no_usable_itinerary",
+  );
+  // missing destination information alone is not read as "no itinerary": the status must say so too
+  assert.equal(planAvailability(summary({ destination_context_generated: false })), "incomplete");
+  assert.equal(
+    planAvailability(summary({ destination_context_generated: false, validation_status: "blocked", scheduled_experiences_count: 2 })),
+    "incomplete",
+  );
+
+  const afterGenerating = travelerErrorMessage({ code: PLAN_UNUSABLE, status: 409, message: "validation_status=blocked", operation: "generate" });
+  const onReopening = travelerErrorMessage({ code: PLAN_UNUSABLE, status: 409, message: "validation_status=blocked", operation: "load" });
+  const incomplete = travelerErrorMessage({ code: PLAN_INCOMPLETE, status: 409, message: "destination_context_generated=false", operation: "load" });
+  for (const { message } of [afterGenerating, onReopening, incomplete]) {
+    assert.ok(message.length > 0 && message.length < 240);
+    assert.doesNotMatch(message, /ready|in progress|not been generated|blocked|validation|provider|inventory|configured/i);
+    assert.doesNotMatch(message, /[A-Z]{3,}_[A-Z_]+|[a-z]+_[a-z_]+/);
+  }
+  // a retry is offered right after generating, and promised nothing
+  assert.equal(afterGenerating.retryable, true);
+  assert.match(afterGenerating.message, /try again, but it may not work/);
+  assert.match(afterGenerating.message, /Your trip is saved/);
+  // reopening cannot change the outcome, so no retry is offered there
+  assert.equal(onReopening.retryable, false);
+  assert.equal(incomplete.retryable, false);
+
+  // the page reads the status through this one function, and no longer claims "ready" for a finished job
+  assert.match(page, /const availability = planAvailability\(summary\);/);
+  assert.doesNotMatch(page, /"Your itinerary is ready"|"Itinerary ready\. Opening it now\."/);
+  // a finished job whose result cannot be shown does not leave its "finished" card beside the error
+  assert.match(page, /if \(jobFinished\) clearJob\(\);/);
+  // and the trip is only forgotten as "not built yet" once its plan has actually loaded
+  const load = page.indexOf("const loaded = await loadPlanResult(tripId);");
+  assert.ok(load > 0 && page.indexOf("ungeneratedTripRef.current = null;", load) > load);
 });
 
 test("the trip error box is announced, retryable where safe, and reload shows a loading state", () => {

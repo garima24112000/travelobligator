@@ -649,6 +649,38 @@ export const SESSION_ENDED_MESSAGE = "Your session has ended. Please log in agai
 // Frontend-only codes (never sent by the backend).
 export const BACKEND_UNREACHABLE = "BACKEND_UNREACHABLE";
 export const PLAN_NOT_GENERATED = "PLAN_NOT_GENERATED";
+export const PLAN_UNUSABLE = "PLAN_UNUSABLE";
+export const PLAN_INCOMPLETE = "PLAN_INCOMPLETE";
+
+/**
+ * What a trip's summary says can be shown for it (P1C-2). Read from the backend's own fields only:
+ *
+ *   not_generated         no plan was judged yet (never generated, or still being built)
+ *   displayable           a plan exists and can be rendered -- ready, needing review or blocked alike; the
+ *                         validation banner, not this function, says which
+ *   no_usable_itinerary   generation finished, the validation report says `blocked`, nothing was scheduled
+ *                         and there is no destination information to render: there is no itinerary at all
+ *   incomplete            generation finished but the destination information is missing although the
+ *                         report does not say the plan is empty: it cannot be rendered, and nothing here
+ *                         claims to know why
+ *
+ * A finished generation is never worded as "not generated yet / may still be in progress".
+ */
+export type PlanAvailability = "not_generated" | "displayable" | "no_usable_itinerary" | "incomplete";
+
+export function planAvailability(summary: {
+  destination_context_generated: boolean;
+  experience_plan_generated: boolean;
+  validation_report_generated: boolean;
+  scheduled_experiences_count: number;
+  validation_status: string | null;
+}): PlanAvailability {
+  if (!summary.experience_plan_generated || !summary.validation_report_generated) return "not_generated";
+  if (summary.destination_context_generated) return "displayable";
+  return summary.validation_status === "blocked" && summary.scheduled_experiences_count === 0
+    ? "no_usable_itinerary"
+    : "incomplete";
+}
 
 const GENERATION_FAILED_MESSAGE =
   "We couldn't finish building this itinerary. Please try again in a moment.";
@@ -705,6 +737,26 @@ export function travelerErrorMessage(input: TravelerErrorInput): TravelerError {
         message:
           "This trip doesn't have an itinerary yet. If you just created it, it may still be in progress. Open it from My trips in a minute.",
         retryable: true,
+      };
+    // Generation finished, and there is no itinerary to follow. Building it again may or may not work,
+    // so a retry is offered right after a generation and never promised; reopening cannot change it.
+    case PLAN_UNUSABLE:
+      return operation === "generate"
+        ? {
+            message:
+              "We couldn't build an itinerary for this trip: no places could be scheduled, so there is no plan to follow. Your trip is saved. You can try again, but it may not work if place information is unavailable right now.",
+            retryable: true,
+          }
+        : {
+            message:
+              "This trip has no usable itinerary: when it was built, no places could be scheduled. You can delete it under My trips and create it again.",
+            retryable: false,
+          };
+    case PLAN_INCOMPLETE:
+      return {
+        message:
+          "This trip's itinerary is incomplete and can't be shown. Your trip is saved. You can delete it under My trips and create it again.",
+        retryable: false,
       };
     case "JOB_ALREADY_RUNNING":
       return {

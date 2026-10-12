@@ -25,7 +25,20 @@ const FOCUS_RING_CLASSNAME =
  * The privacy notice, collapsed by default behind a real `<details>` so it is
  * keyboard- and screen-reader-operable without script.
  */
-export function PrivacyNotice({ className = "" }: { className?: string }) {
+export function PrivacyNotice({
+  sectionHeadingLevel,
+  className = "",
+}: {
+  /**
+   * The level of the notice's section headings, one below the heading the
+   * notice sits under where it is used: 2 on the sign-in screen (directly
+   * under the page's h1), 3 inside "Your account and data" (an h2). Only the
+   * element changes; the text and its appearance are the same in both places.
+   */
+  sectionHeadingLevel: 2 | 3;
+  className?: string;
+}) {
+  const SectionHeading = sectionHeadingLevel === 2 ? "h2" : "h3";
   return (
     <details className={`rounded-2xl border border-white/10 bg-white/5 p-4 text-sm ${className}`}>
       <summary
@@ -36,9 +49,9 @@ export function PrivacyNotice({ className = "" }: { className?: string }) {
       <p className="mt-3 text-slate-300">{PRIVACY_NOTICE_INTRO}</p>
       {PRIVACY_NOTICE.map((section) => (
         <section key={section.heading} className="mt-4">
-          <h3 className="text-xs font-semibold uppercase tracking-wide text-cyan-300/80">
+          <SectionHeading className="text-xs font-semibold uppercase tracking-wide text-cyan-300/80">
             {section.heading}
-          </h3>
+          </SectionHeading>
           <ul className="mt-2 list-disc space-y-1.5 pl-5 text-slate-300">
             {section.points.map((point) => (
               <li key={point} className="break-words">
