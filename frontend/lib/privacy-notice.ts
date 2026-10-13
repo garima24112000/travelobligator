@@ -10,6 +10,11 @@
 // Kept free of React and of runtime imports so it can be unit tested with Node's built-in test runner
 // (frontend/tests).
 
+/** The same sentence the registration form shows (`PASSWORD_LOSS_WARNING` in lib/beta-notice.ts). It is
+ * written out here because this module imports nothing; a unit test keeps the two identical. */
+export const PRIVACY_PASSWORD_LOSS_POINT =
+  "Password recovery is not available during this beta. If you lose your password, you may lose access to your saved trips and may be unable to delete your account yourself.";
+
 export const PROJECT_REPOSITORY_URL = "https://github.com/garima24112000/travelobligator";
 export const PROJECT_ISSUES_URL = `${PROJECT_REPOSITORY_URL}/issues`;
 
@@ -18,7 +23,7 @@ export type PrivacySection = { heading: string; points: string[] };
 export const PRIVACY_NOTICE_TITLE = "Your data and privacy";
 
 export const PRIVACY_NOTICE_INTRO =
-  "TravelObligator is a free portfolio and research project, not a commercial service. This is a plain description of what it stores and what you can delete.";
+  "TravelObligator is a free portfolio and research project in limited beta, not a commercial service. This is a plain description of what it stores and what you can delete.";
 
 export const PRIVACY_NOTICE: PrivacySection[] = [
   {
@@ -54,9 +59,13 @@ export const PRIVACY_NOTICE: PrivacySection[] = [
     heading: "Limits you should know about",
     points: [
       "A trip cannot be deleted while its itinerary is being built. Wait for it to finish and try again.",
-      "Deleting removes data from this app's database. It cannot recall what was already sent to the external providers above, and it does not reach logs or backups kept by the hosting services, which are removed on their own schedules. This project has not set its own retention period for those and has not verified theirs.",
+      "Deleting removes your records from this app's own database, and only from there. Copies that exist elsewhere, described in the next three points, are not changed by it.",
+      "Database exports that the project operator keeps: before a new version is deployed, the operator may export a copy of the database so that it can be restored if something goes wrong. Such an export may be kept temporarily for that purpose. It is not edited when you delete a trip or your account, so something you deleted can remain in an export made before you deleted it, until that export is disposed of. This project has not yet set a retention period for these exports.",
+      "Backups and logs kept by the hosting services: deletion does not reach them. They are removed on those services' own schedules, which this project has not verified.",
+      "What was already sent to the external services above to build an itinerary cannot be recalled. They keep it according to their own policies.",
       "To keep daily limits fair, the time of a recent itinerary request is kept for up to 24 hours after its trip or account is deleted, without the trip and, once the account is deleted, without any link to you.",
-      "There is no password reset yet. If you forget your password you cannot sign in, and so cannot delete your account yourself.",
+      PRIVACY_PASSWORD_LOSS_POINT,
+      "The project currently has no verified way to confirm that an account belongs to someone who cannot sign in to it, so it does not delete accounts on request for people who have lost their password.",
     ],
   },
   {

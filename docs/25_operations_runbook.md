@@ -103,11 +103,14 @@ person, and until then nobody should describe it as in force:
 | That a deleted file is gone from sync histories, trash folders and device backups too | **Not verified** |
 
 A backup holds the data of accounts that are deleted later; it is not purged when an account is deleted.
-The privacy notice (`frontend/lib/privacy-notice.ts`) today speaks only of backups "kept by the hosting
-services" and states no retention period, which is accurate **while no exported backup of production
-exists**. Taking the first one changes what is true: the notice must then say, in the same change, that the
-operator keeps exported backups, for how long, and that deleting an account does not remove the account from
-them until they expire. Do not take a production backup you intend to keep without that update.
+The privacy notice (`frontend/lib/privacy-notice.ts`) describes this practice in words that are true both
+before and after the first export exists: the operator "may export a copy of the database" before a
+deployment, such an export "may be kept temporarily", it "is not edited when you delete a trip or your
+account", and "this project has not yet set a retention period for these exports". It names no number of
+days on purpose. When the four checks above are done and a period is really in force, the notice changes in
+the same commit that records it here; until then it must not state one. Hosting-provider backups and logs,
+and what was already sent to external services, are separate points of the notice and are not affected by
+anything the operator does with an export.
 
 ### 2.3 Restore into a new, isolated database
 
@@ -587,4 +590,54 @@ CI security gate (`Security / Scan`: any HIGH or CRITICAL finding with a fix, in
 2. **Workflow notifications**: confirm that a failed `Uptime` run actually reaches someone (section 5.2).
    Unverified.
 3. **Backup storage**: location, encryption, access and the deletion routine (section 2.2). Unverified.
-4. **Privacy notice**: update it in the same change as the first kept production backup (section 2.2).
+4. **Privacy notice**: it now describes operator-held exports without a period (section 2.2). Change it only
+   together with a retention period that is really in force.
+5. **Deletion for someone who cannot sign in** (section 8): no verified procedure exists. A decision is
+   required before registration is opened without restriction.
+
+**Decided by the owner (release-copy alignment):** the first release is a clearly labelled **limited beta**;
+no itinerary is advertised as complete, verified or ready to follow; the holdout's manual rubric
+(`docs/24_itinerary_quality_contract.md` part C) is completed before a public launch; password recovery does
+not exist and is not claimed.
+
+## 8. An account deletion request from someone who cannot sign in
+
+**No verified operator deletion procedure exists. Do not improvise one.**
+
+What the system has, checked in the code:
+
+- An account can be deleted in exactly one way: `POST /auth/delete-account`, by a signed-in session that
+  also supplies the account's password.
+- The authentication routes are sign-up, log-in, log-out, delete-account and "who am I". There is no
+  password reset, no email verification, no mail-sending code or dependency, no recovery code and no second
+  factor. An email address is accepted at sign-up without proof that the person controls it.
+- So, without the password, **nothing the system stores can prove that a requester owns an account.**
+
+What follows from that:
+
+- **Knowing an account's email address is not proof of ownership.** Nor is knowing its trip destinations,
+  dates, or anything else a third party could know, guess or have been told. A request that offers only
+  such details must not lead to a deletion: deleting on that basis would let anyone destroy another
+  person's account.
+- A message sent *from* the email address is not proof either, as far as this project can tell: the
+  address was never verified at sign-up, and the project has no mail system of its own in which to check
+  where a message really came from.
+- The operator is technically able to remove rows from the database. That ability is not a procedure. It
+  must not be used on the strength of an unverified request, and the public notice does not offer it.
+- What a locked-out person can be told truthfully today: password recovery is not available; the project
+  cannot verify ownership without the password and therefore does not delete accounts on request; if they
+  recover the password themselves, "Delete account" works as described.
+
+**Decision required before unrestricted public registration.** One of these has to exist first, and none
+does:
+
+1. Password recovery through a verified email address (which also needs email verification at sign-up).
+   With it, a locked-out person regains access and deletes the account themselves, and no operator
+   procedure is needed. This is the path the project already lists for V1.1.
+2. A documented, owner-approved identity-verification procedure for operator-performed deletion. Nothing in
+   the current system supports one, so it would have to be designed, not merely written down.
+3. Keeping registration limited (for example to invited testers who accept this limit explicitly) until 1
+   or 2 exists.
+
+Until then the limitation is disclosed where it matters: in the registration form itself and in the privacy
+notice, in the same words.

@@ -753,12 +753,25 @@ def test_no_backup_retention_policy_is_claimed_before_it_exists() -> None:
         assert not re.search(r"\d", sentence), sentence
         assert not re.search(r"\b(retain|retained|retention of|kept for|deleted after|expire)\b", sentence, re.IGNORECASE), sentence
     assert not re.search(r"30[\s-]*day", notice)
-    assert "backups kept by the hosting services" in notice  # what it says today, and only that
-    assert "has not set its own retention period" in notice
+    # the same holds for the operator's own exports, which the notice describes without the word "backup"
+    about_exports = [sentence for sentence in re.split(r"(?<=[.!?])\s+", notice) if "export" in sentence.lower() and "export const" not in sentence]
+    assert len(about_exports) >= 3
+    for sentence in about_exports:
+        assert not re.search(r"\d", sentence), sentence
+        assert not re.search(r"\b(retained for|kept for|deleted after|expires? after|within)\b", sentence, re.IGNORECASE), sentence
+    # the four holders of a copy are told apart
+    assert "Deleting removes your records from this app's own database, and only from there." in notice
+    assert "Database exports that the project operator keeps:" in notice
+    assert "Backups and logs kept by the hosting services:" in notice
+    assert "What was already sent to the external services above" in notice
+    # true before the first export exists ("may"), and explicit that no period is set
+    assert "the operator may export a copy of the database" in notice and "may be kept temporarily" in notice
+    assert "It is not edited when you delete a trip or your account" in notice
+    assert "This project has not yet set a retention period for these exports." in notice
     # the runbook calls 30 days a recommendation and lists what is unverified
     section = _RUNBOOK[_RUNBOOK.index("**Retention: a recommendation, not yet an operating policy.**") : _RUNBOOK.index("### 2.3 ")]
     assert "**30 days**" in section and section.count("**Not verified**") == 4
-    assert "the notice must then say, in the same change" in section
+    assert "It names no number of\ndays on purpose." in section and "until then it must not state one" in section
     assert "is not an\n   operating policy" in _RUNBOOK or "It is not an operating policy" in _RUNBOOK.replace("\n   ", " ")
 
 
@@ -779,3 +792,40 @@ def test_the_runbook_records_the_decisions_and_what_is_still_unverified() -> Non
     installed = lambda name: tuple(int(part) for part in lock[f"node_modules/{name}"]["version"].split("."))  # noqa: E731
     assert installed("baseline-browser-mapping") >= (2, 11, 0)
     assert installed("js-yaml") >= (4, 3, 2) and installed("browserslist") > (4, 28, 6)
+
+
+# -- release-copy alignment: no operator deletion is promised without a way to verify ownership --------
+
+
+def test_no_account_deletion_is_promised_to_someone_who_cannot_prove_ownership() -> None:
+    section = _RUNBOOK[_RUNBOOK.index("## 8. An account deletion request from someone who cannot sign in") :]
+    for sentence in (
+        "**No verified operator deletion procedure exists. Do not improvise one.**",
+        "**nothing the system stores can prove that a requester owns an account.**",
+        "**Knowing an account's email address is not proof of ownership.**",
+        "That ability is not a procedure.",
+        "**Decision required before unrestricted public registration.**",
+    ):
+        assert sentence in section, sentence
+    assert "**Deletion for someone who cannot sign in** (section 8): no verified procedure exists." in _RUNBOOK
+
+    # what the runbook says the system has is what the code has: the only deletion route needs the
+    # password, and there is nothing that could verify an email address or reset a password
+    auth_routes = (_ROOT / "backend" / "app" / "api" / "routes" / "auth.py").read_text()
+    paths = re.findall(r'@router\.(?:get|post|put|patch|delete)\(\s*"([^"]+)"', auth_routes)
+    assert sorted(paths) == ["/delete-account", "/login", "/logout", "/me", "/signup"]
+    assert "password" in auth_routes[auth_routes.index('"/delete-account"') : auth_routes.index('"/me"')]
+    application = "\n".join(
+        path.read_text() for path in (_ROOT / "backend" / "app").rglob("*.py") if "tests" not in path.parts
+    )
+    assert not re.search(r"\b(smtplib|sendgrid|send_email|reset_token|verification_token|magic_link|pyotp)\b", application)
+    requirements = (_ROOT / "backend" / "requirements.txt").read_text().lower()
+    assert not re.search(r"^(sendgrid|resend|mailgun|aiosmtplib|fastapi-mail|pyotp)\b", requirements, re.MULTILINE)
+
+    # and the public notice offers no such deletion, in the same words as the registration form
+    notice = (_ROOT / "frontend" / "lib" / "privacy-notice.ts").read_text()
+    warning = "Password recovery is not available during this beta. If you lose your password, you may lose access to your saved trips and may be unable to delete your account yourself."
+    assert warning in notice and warning in (_ROOT / "frontend" / "lib" / "beta-notice.ts").read_text()
+    assert "so it does not delete accounts on request for people who have lost their password" in notice
+    for promise in (r"contact (us|the operator) to (have|get) your account deleted", r"we (will|can) delete your account (for you|on request)", r"password reset is available", r"reset your password"):
+        assert not re.search(promise, notice, re.IGNORECASE), promise

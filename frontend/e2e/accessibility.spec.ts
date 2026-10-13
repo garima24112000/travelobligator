@@ -180,8 +180,8 @@ test.describe("structure", () => {
         .map((heading) => Number(heading.tagName.slice(1))),
     );
     expect(levels.slice(0, 2)).toEqual([1, 2]);
-    // the whole notice: five sections, all one level below the h1, same words as when signed in
-    expect(levels).toEqual([1, 2, 2, 2, 2, 2]);
+    // the beta notice's own heading, then the privacy notice's five sections: all one level below the h1
+    expect(levels).toEqual([1, 2, 2, 2, 2, 2, 2]);
   });
 
   test("P1C-5: the privacy notice says the same thing, with fitting heading levels, signed out and signed in", async ({ page }) => {

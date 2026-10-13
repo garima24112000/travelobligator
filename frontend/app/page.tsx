@@ -49,6 +49,8 @@ import {
   tripDeletionQuestion,
 } from "@/lib/privacy-notice";
 import { DeleteAccountSection, PrivacyNotice } from "./AccountDataPanel";
+import { BetaBadge, BetaNotice, BetaSummary } from "./BetaNotice";
+import { PASSWORD_LOSS_WARNING } from "@/lib/beta-notice";
 import { DisclosureSection, TravelerLimitationsSection } from "./TravelerSections";
 import {
   InventorySufficiencyPanel,
@@ -8483,6 +8485,7 @@ PY`}
         <section className="w-full max-w-md rounded-3xl border border-white/10 bg-white/5 p-6 shadow-2xl sm:p-8">
           <p className="text-sm font-semibold uppercase tracking-[0.3em] text-cyan-200">
             TravelObligator
+            <BetaBadge />
           </p>
           <h1 className="mt-4 text-2xl font-semibold tracking-tight">
             {authMode === "signup" ? "Create your account" : "Log in to your account"}
@@ -8492,6 +8495,7 @@ PY`}
               ? "Sign up to create and manage your own trips. Trips are private to your account."
               : "Log in to see your own trips. Trips are private to your account."}
           </p>
+          <BetaSummary className="mt-2" />
 
           <div
             role="group"
@@ -8583,7 +8587,7 @@ PY`}
                 // then the hint separately, never "Password At least 8
                 // characters." folded into one run-on accessible name.
                 aria-describedby={
-                  authMode === "signup" ? "password-hint" : undefined
+                  authMode === "signup" ? "password-hint password-loss-warning" : undefined
                 }
                 className={`rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-slate-100 disabled:cursor-not-allowed disabled:opacity-50 ${FOCUS_RING_CLASSNAME}`}
                 value={authPassword}
@@ -8637,6 +8641,19 @@ PY`}
               </div>
             )}
 
+            {authMode === "signup" && (
+              // Release-copy alignment: stated in the registration form itself,
+              // before the account exists, not only inside the collapsed
+              // privacy notice. Always visible text; the password field also
+              // names it as part of its description.
+              <p
+                id="password-loss-warning"
+                className="break-words rounded-lg border border-amber-300/30 bg-amber-300/10 px-3 py-2 text-sm text-amber-100"
+              >
+                {PASSWORD_LOSS_WARNING}
+              </p>
+            )}
+
             {authNotice && !authError && (
               <p
                 role="status"
@@ -8671,6 +8688,7 @@ PY`}
                   : "Log in"}
             </button>
           </form>
+          <BetaNotice className="mt-6" />
           {/* P1C-5: directly under this screen's h1, so its sections are h2 */}
           <PrivacyNotice sectionHeadingLevel={2} className="mt-6" />
         </section>
@@ -8683,6 +8701,7 @@ PY`}
       <section className="mx-auto max-w-4xl rounded-3xl border border-white/10 bg-white/5 p-4 shadow-2xl sm:p-8">
         <p className="text-sm font-semibold uppercase tracking-[0.3em] text-cyan-200">
           TravelObligator
+          <BetaBadge />
         </p>
         <h1 className="mt-4 text-4xl font-semibold tracking-tight sm:text-5xl">
           AI Travel Decision Platform
@@ -8692,6 +8711,7 @@ PY`}
             ? "Everything below is read directly from the backend PlanningState. Nothing here is invented by the frontend."
             : "Everything below comes from your saved trip data. Places, distances and times are never invented by the app."}
         </p>
+        <BetaNotice className="mt-5 max-w-2xl" />
 
         <div className="mt-6 flex flex-col gap-2 rounded-2xl border border-white/10 bg-white/5 p-4 sm:flex-row sm:items-center sm:justify-between">
           <p className="text-xs text-slate-400">

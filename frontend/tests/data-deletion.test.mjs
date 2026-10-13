@@ -63,8 +63,9 @@ test("the notice covers what is stored, what is sent out, deletion, limits and c
     /Delete account/,
     /cannot be undone/,
     /while its itinerary is being built/,
-    /logs or backups/,
-    /no password reset/,
+    /Database exports that the project operator keeps/,
+    /Backups and logs kept by the hosting services/,
+    /Password recovery is not available during this beta/,
   ]) {
     assert.match(noticeText, expected);
   }
@@ -139,8 +140,9 @@ test("the notice makes no legal, compliance or absolute promise", () => {
     noticeText,
     /GDPR|CCPA|HIPAA|compliant|compliance|certif|guarantee|we never|never share|fully secure|encrypted at rest|anonymi[sz]ed forever/i,
   );
-  // no retention period is claimed for what the project does not control
-  assert.match(noticeText, /has not set its own retention period/);
+  // no retention period is claimed for what the project does not control, or has not yet configured
+  assert.match(noticeText, /has not yet set a retention period for these exports/);
+  assert.match(noticeText, /removed on those services' own schedules, which this project has not verified/);
   // the only durations stated are ones the code enforces
   const durations = noticeText.match(/\b(\w+ (days?|hours?|months?|years?))\b/gi) ?? [];
   assert.deepEqual(durations.map((d) => d.toLowerCase()).sort(), ["24 hours", "seven days"]);
