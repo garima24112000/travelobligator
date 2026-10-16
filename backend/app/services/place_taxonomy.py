@@ -79,6 +79,21 @@ PROVIDER_TAG_KEYS: tuple[str, ...] = (
 )
 
 
+# The `access` values that say the public may NOT enter: the adapter's
+# rename of the provider's `no_access` / `access_limited.private` categories,
+# or the same raw tag. Only these explicit values count; a missing or other
+# `access` value says nothing either way.
+NO_PUBLIC_ACCESS_VALUES = frozenset({"private", "no"})
+
+
+def explicit_no_public_access(tags: dict[str, Any] | None) -> str | None:
+    """The `access` value (`"private"` / `"no"`) when the provider's own tags
+    explicitly mark a place as not open to the public; None otherwise --
+    including when no access information exists at all."""
+    value = str((tags or {}).get("access") or "").lower()
+    return value if value in NO_PUBLIC_ACCESS_VALUES else None
+
+
 def filter_provider_tags(tags: dict[str, Any]) -> dict[str, str]:
     """The whitelisted, string-valued subset of raw OSM tags that the
     taxonomy reads. Heritage designations (`heritage`, `heritage:*`) are

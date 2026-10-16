@@ -410,6 +410,7 @@ const TRAVELER_WARNING_CATEGORIES = new Set([
   "holidays",
   "long_travel_day",
   "must_visit",
+  "must_visit_access_restricted",
   "budget",
   "constraints",
   "geographic_spread",

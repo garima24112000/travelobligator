@@ -79,7 +79,6 @@ _STRONG_SIGNIFICANCE = frozenset({"wikipedia", "heritage", "major_historic_type"
 # Section 202C.1C (see `apply_corroborated_anchor_boost`).
 _MUST_VISIT_SCORE_FLOOR = 0.95
 _CATEGORY_SPECIFICITY_BOOST = 0.03
-_NO_PUBLIC_ACCESS_VALUES = frozenset({"private", "no"})
 _CORROBORATED_ANCHOR_BOOST = 0.05
 _CORROBORATED_ANCHOR_MIN_PROPOSAL_CONFIDENCE = 0.75
 
@@ -429,7 +428,7 @@ class CandidateQualityService:
 
         # -- Section 203C.2B: provider access + category specificity -----------------
         tags = provider_tags if isinstance(provider_tags, dict) else {}
-        if str(tags.get("access") or "").lower() in _NO_PUBLIC_ACCESS_VALUES:
+        if taxonomy.explicit_no_public_access(tags) is not None:
             # A real place a traveler cannot enter (the provider marks it
             # private / no access) is not an itinerary stop.
             category_score = min(category_score, 0.1)

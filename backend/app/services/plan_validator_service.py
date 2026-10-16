@@ -22,7 +22,8 @@ from app.models.routing import (
 from app.core.errors import DESTINATION_UNRESOLVED_MESSAGE
 from app.services.plan_quality_findings import build_plan_quality_findings, interest_coverage_entries
 from app.services.entity_collisions import scheduled_unresolved_collisions
-from app.services.must_visit_matching import resolve_must_visits
+from app.services.must_visit_matching import must_visit_place_ids, resolve_must_visits
+from app.services.place_taxonomy import explicit_no_public_access
 from app.services.day_order_heuristics import GEOGRAPHIC_SPREAD_THRESHOLD_KM, day_spread_km
 from app.services.review_classification import classification_for
 from app.services.geographic_dispersion import (
@@ -523,6 +524,11 @@ class PlanValidatorService(PlanningStageService):
         # availability is known, and none is implied.
         warnings.extend(_ferry_in_route_issues(planning_state))
 
+        # A requested place is kept even when the place data explicitly marks
+        # it private / not open to the public (a must-visit is never removed);
+        # the traveller is told so on its day.
+        warnings.extend(_inaccessible_must_visit_issues(planning_state))
+
         captured_constraints: list[str] = []
         for constraint in planning_state.trip_request.constraints:
             if constraint not in captured_constraints:
@@ -814,6 +820,56 @@ def _ferry_in_route_issues(planning_state: PlanningState) -> list[ValidationIssu
                 ),
                 affected_section=f"experience_plan.daily_plans[{day.day_number}]",
                 suggested_fix="Check the crossing yourself before relying on this transfer.",
+            )
+        )
+    return issues
+
+
+_ACCESS_WORDING = {
+    "private": "is marked in the place data as private",
+    "no": "is marked in the place data as not open to the public",
+}
+
+
+def _inaccessible_must_visit_issues(planning_state: PlanningState) -> list[ValidationIssue]:
+    """One warning per day that schedules a grounded must-visit whose own
+    provider tags EXPLICITLY say the public may not enter (`access` private /
+    no -- `place_taxonomy.explicit_no_public_access`). The place is matched by
+    provider identity, never by name; a missing or other access value raises
+    nothing."""
+    plan = planning_state.experience_plan
+    context = planning_state.destination_context
+    if plan is None or context is None:
+        return []
+    must_visit_ids = must_visit_place_ids(planning_state)
+    if not must_visit_ids:
+        return []
+    access_of = {
+        str(poi["place_id"]): access
+        for poi in context.candidate_pois
+        if poi.get("place_id") and str(poi["place_id"]) in must_visit_ids
+        and (access := explicit_no_public_access(poi.get("provider_tags"))) is not None
+    }
+    issues: list[ValidationIssue] = []
+    for day in plan.daily_plans:
+        stops = [
+            f"{experience.name} {_ACCESS_WORDING[access_of[str(experience.provider_place_id)]]}"
+            for experience in day.experiences
+            if experience.provider_place_id and str(experience.provider_place_id) in access_of
+        ]
+        if not stops:
+            continue
+        issues.append(
+            ValidationIssue(
+                severity=ValidationSeverity.WARNING,
+                category="must_visit_access_restricted",
+                # Traveller wording: no implementation terms (the page shows it as written).
+                message=(
+                    f"Day {day.day_number}: {'; '.join(stops)}. It is kept because you asked for it, but "
+                    "visitor access and admission are not established, so do not rely on being able to visit it."
+                ),
+                affected_section=f"experience_plan.daily_plans[{day.day_number}]",
+                suggested_fix="Check whether and how this place can be visited before planning your day around it.",
             )
         )
     return issues

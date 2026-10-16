@@ -65,6 +65,7 @@ MATERIAL_CODES: frozenset[str] = frozenset(
         "LOW_VALUE_FILLER_SKIPPED",
         "MOVEMENT_DATA",
         "MUST_VISIT",
+        "MUST_VISIT_ACCESS_RESTRICTED",
         "ROUTE_FEASIBILITY",
         "ROUTE_INCLUDES_FERRY",
         "SCHEDULING",
