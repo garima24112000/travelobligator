@@ -340,6 +340,9 @@ class Composition:
     # could draw on and why moves were not generated or not accepted. Never
     # read by a decision; see `_Search.counts`.
     diagnostics: dict[str, int] = field(default_factory=dict)
+    # Diagnostic only: `(tier_rank, evidence_band)` of every stop a recorded
+    # move names, copied from the search's own `Stop`s. Never read by a decision.
+    move_stop_facts: dict[str, tuple[int, int]] = field(default_factory=dict)
 
     @property
     def changed(self) -> bool:
@@ -960,5 +963,11 @@ def compose(days: Sequence[Sequence[Stop]], unused: Sequence[Stop], policy: Poli
             "moves_applied": applied,
             "move_limit_reached": int(applied >= move_limit),
             "evaluation_budget_exhausted": int(exhausted),
+        },
+        move_stop_facts={
+            key: (stops[key].tier_rank, stops[key].evidence_band)
+            for move in moves
+            for key in (*move.outgoing, *move.incoming)
+            if key in stops
         },
     )

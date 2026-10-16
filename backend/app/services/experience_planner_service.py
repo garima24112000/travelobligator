@@ -2606,6 +2606,33 @@ def _trace_schedule(stage: str, day_groups: list[list[dict[str, Any]]]) -> None:
     generation_diagnostics.schedule(stage, [[_composition_key(poi) for poi in group] for group in day_groups])
 
 
+def _composition_move_records(composed: composition.Composition | None) -> list[dict[str, Any]]:
+    """Diagnostic only: every accepted move as recorded (kind, reason, the
+    provider ids it names and each one's tier rank / evidence band from the
+    search's own stops), in the order the search applied them. Never read by
+    a decision; on any malformed input the list is simply empty."""
+    if composed is None:
+        return []
+    try:
+        facts = composed.move_stop_facts
+
+        def place(key: str) -> dict[str, Any]:
+            tier_rank, evidence_band = facts.get(key, (None, None))
+            return {"place_id": key, "tier_rank": tier_rank, "evidence_band": evidence_band}
+
+        return [
+            {
+                "kind": move.kind,
+                "reason": move.reason,
+                "outgoing": [place(key) for key in move.outgoing],
+                "incoming": [place(key) for key in move.incoming],
+            }
+            for move in composed.moves
+        ]
+    except Exception:  # noqa: BLE001 - diagnostics never break a generation
+        return []
+
+
 def _trace_composition(
     composed: composition.Composition | None,
     before: list[list[dict[str, Any]]],
@@ -2652,6 +2679,7 @@ def _trace_composition(
             moves[move.kind] = moves.get(move.kind, 0) + 1
         before_bands, after_bands = bands(before), bands(after)
         generation_diagnostics.composition(
+            moves=_composition_move_records(composed),
             ran=composed is not None and composed.declined is None,
             changed=bool(composed is not None and composed.changed),
             status=status,

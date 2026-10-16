@@ -31,6 +31,9 @@ _MAX_DAYS = 31
 _MAX_STOPS_PER_DAY = 16
 _MAX_ID_LENGTH = 256
 _MAX_COMPOSITIONS = 8
+# Accepted day-composition moves kept per composition entry (a pass applies at
+# most one move per scheduled stop: 28 for 7 days x 4); the rest are counted.
+_MAX_COMPOSITION_MOVES = 32
 _MAX_ALLOWANCES = 16
 _MAX_LABEL_LENGTH = 64
 _MAX_COUNT_KEYS = 64
@@ -100,6 +103,76 @@ def _counts(values: object) -> dict[str, int]:
     return kept
 
 
+def _whole(value: object) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _place_id(value: object) -> str | None:
+    """A provider place id as given, or None: an id that is not a non-empty
+    string within `_MAX_ID_LENGTH` is never shortened into a different one."""
+    return value if isinstance(value, str) and 0 < len(value) <= _MAX_ID_LENGTH else None
+
+
+def _move_place(value: object) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    return {
+        "place_id": _place_id(value.get("place_id")),
+        "tier_rank": _whole(value.get("tier_rank")),
+        "evidence_band": _whole(value.get("evidence_band")),
+    }
+
+
+# Moves that only change which day a stop is on: nothing leaves the plan.
+_MOVED_KINDS = frozenset({"swap", "relocate"})
+
+
+def _composition_move(value: object) -> dict[str, Any] | None:
+    """One accepted day-composition move, or None when it is malformed. A
+    swap / relocate lists the stops it `moved`; any other kind lists
+    `replaced` pairs, index-aligned (`outgoing` null for an insertion,
+    `incoming` null for a removal)."""
+    if not isinstance(value, dict):
+        return None
+    kind, reason = _label(value.get("kind")), _label(value.get("reason"))
+    outgoing, incoming = value.get("outgoing") or [], value.get("incoming") or []
+    if kind is None or reason is None or not isinstance(outgoing, list) or not isinstance(incoming, list):
+        return None
+    outgoing, incoming = outgoing[:_MAX_STOPS_PER_DAY], incoming[:_MAX_STOPS_PER_DAY]
+    entry: dict[str, Any] = {"kind": kind, "reason": reason}
+    if kind in _MOVED_KINDS:
+        entry["moved"] = [place for place in map(_move_place, outgoing) if place is not None]
+    else:
+        entry["replaced"] = [
+            {
+                "outgoing": _move_place(outgoing[index]) if index < len(outgoing) else None,
+                "incoming": _move_place(incoming[index]) if index < len(incoming) else None,
+            }
+            for index in range(max(len(outgoing), len(incoming)))
+        ]
+    return entry
+
+
+def _composition_moves(values: object) -> tuple[list[dict[str, Any]], int, int]:
+    """`(kept moves, moves beyond the bound, malformed moves)`, in the order given."""
+    if not isinstance(values, list):
+        return [], 0, 0
+    kept: list[dict[str, Any]] = []
+    dropped = malformed = 0
+    for value in values:
+        try:
+            move = _composition_move(value)
+        except Exception:  # noqa: BLE001 - a malformed diagnostic is dropped, never raised
+            move = None
+        if move is None:
+            malformed += 1
+        elif len(kept) < _MAX_COMPOSITION_MOVES:
+            kept.append(move)
+        else:
+            dropped += 1
+    return kept, dropped, malformed
+
+
 def _days(days: Sequence[Sequence[object]]) -> list[list[str]]:
     return [
         [str(place_id)[:_MAX_ID_LENGTH] for place_id in list(day)[:_MAX_STOPS_PER_DAY] if place_id]
@@ -155,6 +228,13 @@ class GenerationDiagnostics:
         # Aggregate counts of what the search could draw on and why moves were
         # not generated or accepted: fixed labels and whole numbers only.
         entry["counts"] = _counts(fields.get("counts"))
+        # The accepted moves themselves (bounded; provider ids, fixed labels and
+        # whole numbers only). Never read by a decision.
+        if "moves" in fields:
+            moves, dropped, malformed = _composition_moves(fields.get("moves"))
+            entry["moves"] = moves
+            entry["moves_dropped"] = dropped
+            entry["moves_malformed"] = malformed
         with self._lock:
             if len(self._compositions) < _MAX_COMPOSITIONS:
                 self._compositions.append(entry)
