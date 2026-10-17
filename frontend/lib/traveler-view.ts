@@ -319,7 +319,19 @@ export const COVERAGE_UNKNOWN_NOTICE =
 //   - supply available: matching places were found -- not that one can be
 //     fitted into this schedule.
 function noSupplyNotice(label: string): string {
-  return `Nothing in this itinerary covers ${label}. The verified places we searched included none that fit it. That does not mean there are none in this destination.`;
+  // "identified by our place data": the match is only as good as the place
+  // categories, which can miss a place that does fit (Phase 2).
+  return `Nothing in this itinerary covers ${label}. None of the verified places we searched is identified by our place data as fitting it. That does not mean there are none in this destination.`;
+}
+
+// Phase 2: a "covered" interest whose coverage is weaker than the word. Each
+// sentence restates the backend's `basis`; nothing is re-judged here.
+function suggestionsOnlyNotice(label: string): string {
+  return `${label} is covered only by restaurant suggestions near your stops. No food experience, such as a food market, is scheduled.`;
+}
+
+function museumSubjectNotice(label: string): string {
+  return `${label} is covered only by museums whose subject our place data does not record, so they may not be about ${label}.`;
 }
 
 function supplyAvailableNotice(label: string): string {
@@ -338,7 +350,9 @@ function interestLabel(entry: { interest: string; requested_as?: string[] | null
  *
  *   - no supply:        no verified place for it was found at all;
  *   - supply available: suitable places existed but none is scheduled;
- *   - not tracked / an unrecognised status: coverage could not be checked.
+ *   - not tracked / an unrecognised status: coverage could not be checked;
+ *   - covered, but only by nearby restaurant suggestions or only by museums
+ *     whose subject is not recorded (`basis`): said so, never "covered".
  *
  * A report without the entries (stored before the field) is read from its
  * coverage findings when it has any; otherwise coverage is UNKNOWN.
@@ -356,7 +370,11 @@ export function travelerInterestCoverage(
         continue;
       }
       const label = interestLabel(entry);
-      if (entry.status === "covered") continue;
+      if (entry.status === "covered") {
+        if (entry.basis === "nearby_suggestions_only") notices.push(suggestionsOnlyNotice(`"${label}"`));
+        else if (entry.basis === "museum_subject_unrecorded") notices.push(museumSubjectNotice(`"${label}"`));
+        continue;
+      }
       if (entry.status === "not_covered_no_supply") {
         notices.push(noSupplyNotice(`"${label}"`));
       } else if (entry.status === "not_covered_supply_available") {

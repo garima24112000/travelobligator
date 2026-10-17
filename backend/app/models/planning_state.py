@@ -890,6 +890,17 @@ class InterestCoverageEntry(BaseModel):
     # none); `not_tracked` (the term is not recognised, so coverage is
     # unknown -- never reported as covered).
     status: str
+    # Phase 2 (presentation only): for a `covered` interest, what the
+    # coverage rests on (`interest_coverage.coverage_basis`):
+    # `scheduled_place` (the coverage comes from a scheduled stop the taxonomy
+    # matched on its provider categories -- the source of the decision, not
+    # an independent check of relevance), `nearby_suggestions_only` (food:
+    # only restaurant suggestions near
+    # the stops, no scheduled food experience) or `museum_subject_unrecorded`
+    # (history / art: only museums whose subject the place data does not
+    # record). `None` when not covered, and on an entry stored before this
+    # field. Never changes `status`, a finding, readiness or the planner.
+    basis: str | None = None
 
 
 class OverLimitWalkingLeg(BaseModel):

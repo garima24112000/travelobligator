@@ -713,6 +713,14 @@ export type InterestCoverageEntry = {
   // "covered" | "not_covered_supply_available" | "not_covered_no_supply" |
   // "not_tracked". Any other value is treated as unknown.
   status: string;
+  // Phase 2: for a "covered" interest, what the coverage rests on:
+  // "scheduled_place" (the source of the coverage decision is a scheduled
+  // stop -- not an independent check of relevance) |
+  // "nearby_suggestions_only" (food: only restaurant
+  // suggestions near the stops) | "museum_subject_unrecorded" (history / art:
+  // only museums whose subject the place data does not record). Absent or
+  // null on older reports and for an interest that is not covered.
+  basis?: string | null;
 };
 
 // Section 203C.2B (backend: app.models.inventory_sufficiency). Whether the

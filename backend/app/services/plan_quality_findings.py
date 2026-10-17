@@ -4,7 +4,7 @@ from app.models.candidate_quality import CandidateQualityScore, CandidateQuality
 from app.models.common import ValidationSeverity
 from app.models.planning_state import InterestCoverageEntry, PlanningState, TripPace, ValidationIssue
 from app.services import place_taxonomy as taxonomy
-from app.services.interest_coverage import interest_coverage
+from app.services.interest_coverage import coverage_basis, interest_coverage
 
 # Section 202B.2 (Tasks 23, 26-29, 31): factual, case-specific itinerary
 # quality findings. Pure read of `PlanningState` -- never repairs, drops or
@@ -60,6 +60,8 @@ def interest_coverage_entries(planning_state: PlanningState) -> list[InterestCov
     profile = planning_state.traveler_profile
     terms = [term for term in (profile.interests if profile else planning_state.trip_request.interests) if term]
     coverage = interest_coverage(planning_state)
+    # Phase 2: what each covered interest rests on (presentation only).
+    basis = coverage_basis(planning_state)
     viable = _viable_scores(planning_state)
 
     requested_as: dict[str, list[str]] = {}
@@ -81,7 +83,12 @@ def interest_coverage_entries(planning_state: PlanningState) -> list[InterestCov
         else:
             status = INTEREST_NOT_COVERED_NO_SUPPLY
         entries.append(
-            InterestCoverageEntry(interest=interest, requested_as=requested_as.get(interest, []), status=status)
+            InterestCoverageEntry(
+                interest=interest,
+                requested_as=requested_as.get(interest, []),
+                status=status,
+                basis=basis.get(interest) if status == INTEREST_COVERED else None,
+            )
         )
     entries.extend(
         InterestCoverageEntry(interest=term, requested_as=[term], status=INTEREST_NOT_TRACKED) for term in untracked

@@ -132,7 +132,8 @@ def test_nothing_that_plans_or_judges_reads_the_field() -> None:
     assert validator.index("interest_coverage=_interest_coverage_safely(") > validator.index("readiness_status = ReadinessStatus.READY")
     # the findings themselves were not rewritten around it
     assert "interest_coverage_entries" not in findings_module.build_plan_quality_findings.__code__.co_names
-    assert InterestCoverageEntry.model_fields.keys() == {"interest", "requested_as", "status"}
+    # Phase 2 added `basis`: presentation only, like the rest of the entry
+    assert InterestCoverageEntry.model_fields.keys() == {"interest", "requested_as", "status", "basis"}
 
 
 def test_the_api_returns_the_coverage_entries(client: Any, generated_trip_id: str) -> None:

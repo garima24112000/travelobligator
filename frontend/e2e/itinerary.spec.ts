@@ -88,7 +88,12 @@ test.describe("a real generated itinerary", () => {
     await expect(notice).toBeVisible();
     await expect(notice).toContainText('Nothing in this itinerary covers "art".');
     await expect(notice).toContainText("That does not mean there are none in this destination.");
-    await expect(notice).not.toContainText('"food"'); // the covered interest is not listed as missing
+    // the covered interest is not listed as missing ...
+    await expect(notice).not.toContainText('Nothing in this itinerary covers "food"');
+    // ... but food met only by nearby suggestions is not called a food experience (Phase 2)
+    await expect(notice).toContainText(
+      '"food" is covered only by restaurant suggestions near your stops. No food experience, such as a food market, is scheduled.',
+    );
     // it comes before the first day, not buried under it
     const noticeBox = await notice.boundingBox();
     const firstDayBox = await page.getByRole("heading", { level: 3, name: /^Day 1 · / }).boundingBox();

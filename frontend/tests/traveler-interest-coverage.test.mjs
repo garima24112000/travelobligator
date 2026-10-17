@@ -81,11 +81,11 @@ test("one uncovered interest with no verified supply", () => {
   );
   assert.equal(coverage.state, "some_uncovered");
   assert.deepEqual(coverage.notices, [
-    'Nothing in this itinerary covers "waterfront". The verified places we searched included none that fit it. That does not mean there are none in this destination.',
+    'Nothing in this itinerary covers "waterfront". None of the verified places we searched is identified by our place data as fitting it. That does not mean there are none in this destination.',
   ]);
   // it is about what was SEARCHED, never a claim that the destination has no such place,
   // and it says nothing about why supply was missing
-  assert.match(coverage.notices[0], /places we searched included none/);
+  assert.match(coverage.notices[0], /places we searched is identified by our place data/);
   assert.match(coverage.notices[0], /does not mean there are none in this destination/);
   assert.doesNotMatch(coverage.notices[0], /provider|closed|does not exist|no such|couldn't find .* in this destination|there (is|are) no /i);
 });
@@ -157,7 +157,7 @@ test("a report created before the disclosure patch", () => {
   const coverage = travelerInterestCoverage(old);
   assert.equal(coverage.state, "some_uncovered");
   assert.deepEqual(coverage.notices, [
-    'Nothing in this itinerary covers "waterfront". The verified places we searched included none that fit it. That does not mean there are none in this destination.',
+    'Nothing in this itinerary covers "waterfront". None of the verified places we searched is identified by our place data as fitting it. That does not mean there are none in this destination.',
     'Nothing in this itinerary covers "shopping", although the places we searched included some that fit it. You can request a change, but one may not fit this schedule.',
   ]);
   coverage.notices.forEach((notice) => assert.doesNotMatch(notice, /provider|quality-approved|candidate/i));
