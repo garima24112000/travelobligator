@@ -7,6 +7,7 @@ from app.models.hotel_ratings import HotelRatingsStatus
 from app.models.planning_state import (
     DailyPlan,
     InterestCoverageEntry,
+    OverLimitWalkingLeg,
     PlanningStage,
     PlanningState,
     ValidationIssue,
@@ -34,7 +35,8 @@ from app.services.geographic_dispersion import (
     CAUSE_UNVERIFIED,
     dispersion_by_day,
 )
-from app.services.route_burden import day_route_burdens, is_definitive_failure
+from app.services.remote_days import remote_days_safely
+from app.services.route_burden import day_route_burdens, is_definitive_failure, over_limit_walking_legs
 from app.services.usefulness_contract import evaluate_usefulness, usefulness_findings
 from app.services.experience_identity import experience_stable_key
 from app.services.base import PlanningStageService
@@ -484,6 +486,10 @@ class PlanValidatorService(PlanningStageService):
             for attempt in (repair_report.attempts if repair_report else [])
             if attempt.reason == "protected_stops_only"
         }
+        # Phase 1: a walk beyond the walking-leg limit that is still a walk
+        # is what the plan has for that transfer -- named on its day, and
+        # listed (presentation only) so the leg itself can be marked.
+        long_walks = over_limit_walking_legs(planning_state)
         for burden in day_route_burdens(planning_state):
             if not burden.long_route:
                 continue
@@ -495,6 +501,12 @@ class PlanValidatorService(PlanningStageService):
                     f"single leg is about {round(burden.max_walk_leg_duration_seconds / 60)} minutes. "
                     "These are walking routes from the routing provider -- no public-transport "
                     "or taxi time is available, so allow extra time or use local transport."
+                ) + "".join(
+                    f" The walk between {leg.from_experience_name} and {leg.to_experience_name} (about "
+                    f"{round(leg.duration_seconds / 60)} minutes) is longer than a usual walk between stops, "
+                    "and no faster way of making it was verified."
+                    for day_number, leg in long_walks
+                    if day_number == burden.day_number
                 )
             else:
                 message = (
@@ -532,6 +544,11 @@ class PlanValidatorService(PlanningStageService):
         # A requested place is also kept when the routing provider definitively
         # found no route for a leg it is on; the traveller is told which one.
         warnings.extend(_unrouted_must_visit_leg_issues(planning_state))
+
+        # Phase 1: a day whose stops all lie away from where the trip's places
+        # are. Its legs cover only the moves between its own stops; getting
+        # there and back is not in the plan and is said to be unchecked.
+        warnings.extend(_remote_day_issues(planning_state))
 
         captured_constraints: list[str] = []
         for constraint in planning_state.trip_request.constraints:
@@ -726,6 +743,19 @@ class PlanValidatorService(PlanningStageService):
             ),
             # Presentation only: the coverage facts the findings above were raised from.
             interest_coverage=_interest_coverage_safely(planning_state),
+            # Presentation only: the legs `long_travel_day` names as over-limit walks.
+            over_limit_walking_legs=(
+                [
+                    OverLimitWalkingLeg(
+                        day_number=day_number,
+                        from_experience_id=leg.from_experience_id,
+                        to_experience_id=leg.to_experience_id,
+                    )
+                    for day_number, leg in long_walks
+                ]
+                if planning_state.experience_plan is not None and planning_state.route_feasibility_report is not None
+                else None
+            ),
         )
 
         planning_state.validation_report = validation_report
@@ -923,6 +953,47 @@ def _unrouted_must_visit_leg_issues(planning_state: PlanningState) -> list[Valid
                     suggested_fix="Check how to get between these stops yourself before following this day.",
                 )
             )
+    return issues
+
+
+def _remote_day_issues(planning_state: PlanningState) -> list[ValidationIssue]:
+    """One warning per day whose located stops ALL lie beyond the planner's
+    own pool reach (`services/remote_days`). It says only what is true of
+    every such day: the journey to the day's area and back is not in the
+    plan and has not been checked. No time, distance, mode or place to stay
+    is stated; a day the traveller's must-visits put there is kept and says
+    so."""
+    issues: list[ValidationIssue] = []
+    for remote in remote_days_safely(planning_state):
+        if remote.located_stops > 1:
+            body = (
+                "All of this day's stops lie away from the area where most of this trip's places are. The travel "
+                "times shown cover only the moves between this day's stops: getting to this area and back is not "
+                "included and has not been checked."
+            )
+        else:
+            body = (
+                "This day's stop lies away from the area where most of this trip's places are. Getting there and "
+                "back is not included in this plan and has not been checked."
+            )
+        if remote.requested_places:
+            plural = len(remote.requested_places) > 1
+            body += (
+                f" {' and '.join(remote.requested_places)} {'are' if plural else 'is'} on this day because you "
+                f"asked for {'them' if plural else 'it'}."
+            )
+        issues.append(
+            ValidationIssue(
+                severity=ValidationSeverity.WARNING,
+                category="remote_day_access",
+                # Traveller wording: no implementation terms (the page shows it as written).
+                message=f"Day {remote.day_number}: {body}",
+                affected_section=f"experience_plan.daily_plans[{remote.day_number}]",
+                suggested_fix=(
+                    "Check how you will get to this area and back, and allow time for it, before following this day."
+                ),
+            )
+        )
     return issues
 
 

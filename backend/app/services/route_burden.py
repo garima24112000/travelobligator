@@ -114,6 +114,26 @@ def burden_of_legs(
     )
 
 
+def over_limit_walking_legs(planning_state: PlanningState) -> list[tuple[int, RouteLegFeasibility]]:
+    """`(day number, leg)` for every scheduled leg whose provider route, in
+    its FINAL mode, is a walk longer than the walking-leg limit
+    (`ROUTE_BURDEN_MAX_LEG_SECONDS`), in day and leg order. Such a leg is
+    what the plan has for that transfer: no vehicle route replaced it. Only
+    verified legs count; nothing is estimated."""
+    plan, report = planning_state.experience_plan, planning_state.route_feasibility_report
+    if plan is None or report is None:
+        return []
+    limit = get_settings().route_burden_max_leg_seconds
+    legs = {(leg.from_experience_id, leg.to_experience_id): leg for leg in report.legs}
+    found: list[tuple[int, RouteLegFeasibility]] = []
+    for day in plan.daily_plans:
+        for a, b in zip(day.experiences, day.experiences[1:]):
+            leg = legs.get((a.experience_id, b.experience_id))
+            if is_verified_leg(leg) and leg_mode(leg.mode) == TRANSFER_MODE_WALK and leg.duration_seconds > limit:
+                found.append((day.day_number, leg))
+    return found
+
+
 def day_route_burdens(planning_state: PlanningState) -> list[DayRouteBurden]:
     plan = planning_state.experience_plan
     if plan is None:

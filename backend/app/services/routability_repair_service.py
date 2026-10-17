@@ -43,6 +43,18 @@ Two bounded exceptions, each still at most ONE accepted change per day:
     its neighbours. Never a must-visit or a user-locked stop, and never one
     of two ambiguous end stops.
 
+One evidence rule (Phase 1): REPEATED REFUSALS AROUND A PROTECTED STOP. The
+first attempt for two ambiguous end stops replaces the unprotected one and
+verifies the replacement against the protected one (a must-visit or a locked
+stop). When the provider has already refused the protected stop, in
+two-point requests of this generation, with at least two DIFFERENT places
+and has never routed it at all, that has been shown not to help: when every
+failed leg of the day touches such a stop, no replacement is tried and no
+request is made (`protected_stop_repeated_failure`). One refusal is never
+enough, a transient failure and a rejected multi-waypoint request are never
+counted, and nothing is concluded about the place itself -- the leg keeps its
+provider code and its traveller-facing finding.
+
 Nothing is estimated: no route is inferred, no coordinate is moved, and a
 leg the provider did not route stays unrouted and keeps its review finding.
 Requests are bounded by the generation's route-request allowance and the
@@ -76,7 +88,7 @@ from app.services.grounded_anchors import grounded_anchor_place_ids
 from app.services.interest_coverage import FOOD
 from app.services.must_visit_matching import must_visit_place_ids
 from app.services.pace_targets import pace_of, pace_targets, trip_days_of
-from app.services.route_burden import burden_of_legs
+from app.services.route_burden import burden_of_legs, is_definitive_failure
 from app.services.route_burden_repair_service import REPLACEABLE, RouteBurdenRepairService
 from app.services.route_feasibility_service import RouteFeasibilityService
 from app.services.usefulness_contract import is_meaningful_stop
@@ -102,6 +114,12 @@ _TRANSIENT_REASONS = frozenset(
 _ANCHOR = "grounded_anchor"
 # Fixed reason code: the one proven suspect was removed (no replacement fitted).
 _REMOVED = "suspect_removed"
+# Fixed reason code: every failed leg of the day touches a protected stop the
+# provider has repeatedly refused (see `_RouteEvidence`); nothing was tried.
+_REPEATED_FAILURE = "protected_stop_repeated_failure"
+_PROTECTED = frozenset({"must_visit", "user_lock"})
+# Distinct places a protected stop must have been refused with.
+_REPEATED_FAILURE_PARTNERS = 2
 
 
 def _routed(leg: RouteLegFeasibility | None) -> bool:
@@ -115,6 +133,61 @@ def _routed(leg: RouteLegFeasibility | None) -> bool:
 
 def _km(a: GeoPoint | None, b: GeoPoint | None) -> float:
     return path_length_km([a, b])
+
+
+def _place_key(stop: ExperienceItem) -> str:
+    return stop.provider_place_id or stop.experience_id
+
+
+class _RouteEvidence:
+    """What this generation's routing has shown about places, by place key:
+    the places with at least one routed leg, and for each place the other
+    places of two-point requests the provider DEFINITIVELY refused. Held on
+    the generation's provider context, so a later planner pass reads what an
+    earlier one learned; without a context it lasts for one repair."""
+
+    def __init__(self, provider_context: GenerationProviderContext | None) -> None:
+        if provider_context is not None:
+            self.routed: set[str] = provider_context.routed_place_keys
+            self.partners: dict[str, set[str]] = provider_context.definitive_failure_partners
+        else:
+            self.routed, self.partners = set(), {}
+
+    def record(
+        self,
+        origin: ExperienceItem,
+        destination: ExperienceItem,
+        leg: RouteLegFeasibility | None,
+        *,
+        two_point: bool,
+    ) -> None:
+        """One leg's answer. A routed leg proves both stops routable whatever
+        request it came from; a definitive refusal counts only when it was
+        the answer to a request for that one leg."""
+        a, b = _place_key(origin), _place_key(destination)
+        if _routed(leg):
+            self.routed.update((a, b))
+        elif two_point and is_definitive_failure(leg):
+            self.partners.setdefault(a, set()).add(b)
+            self.partners.setdefault(b, set()).add(a)
+
+    def record_plan(self, planning_state: PlanningState) -> None:
+        """The stored legs of the plan as routed. A two-stop day is routed
+        with one two-point request, so its leg is evidence either way; a
+        longer day's refused legs came from one multi-waypoint request and
+        are not."""
+        report, plan = planning_state.route_feasibility_report, planning_state.experience_plan
+        if report is None or plan is None:
+            return
+        legs = {(leg.from_experience_id, leg.to_experience_id): leg for leg in report.legs}
+        for day in plan.daily_plans:
+            stops = day.experiences
+            for a, b in zip(stops, stops[1:]):
+                self.record(a, b, legs.get((a.experience_id, b.experience_id)), two_point=len(stops) == 2)
+
+    def repeatedly_refused(self, stop: ExperienceItem) -> bool:
+        key = _place_key(stop)
+        return key not in self.routed and len(self.partners.get(key, ())) >= _REPEATED_FAILURE_PARTNERS
 
 
 def routing_coverage(planning_state: PlanningState) -> float | None:
@@ -144,6 +217,9 @@ class RoutabilityRepairService:
         plan's factual routing coverage already meets the release threshold.
         Mutates `planning_state` only for a leg that now routes or an
         accepted replacement."""
+        # Every pass's legs are evidence, including a pass that needs no repair.
+        self._evidence = _RouteEvidence(provider_context)
+        self._evidence.record_plan(planning_state)
         before = routing_coverage(planning_state)
         if before is None or before >= ROUTING_COVERAGE_RELEASE_THRESHOLD:
             return None
@@ -275,6 +351,20 @@ class RoutabilityRepairService:
             first = ranked[0]
             return outcome(
                 "suspect_protected", suspect_place=stops[first].name, suspect_protection=protections[first]
+            ), None
+        # A protected suspect the provider has refused with two different
+        # places in this generation, and never routed: when it is on every
+        # failed leg of the day, replacing its neighbour has been shown not
+        # to help, so nothing is tried. The leg keeps its provider answer.
+        refused = [
+            position
+            for position in suspects
+            if protections[position] in _PROTECTED and self._evidence.repeatedly_refused(stops[position])
+        ]
+        if refused and all(any(index in (position - 1, position) for position in refused) for index in failed):
+            first = refused[0]
+            return outcome(
+                _REPEATED_FAILURE, suspect_place=stops[first].name, suspect_protection=protections[first]
             ), None
         # Exactly one stop is the suspect: an end stop whose neighbour has a
         # routed leg, or the interior stop the rule above singles out.
@@ -469,6 +559,10 @@ class RoutabilityRepairService:
         except Exception:
             logger.warning("Routing during the routability repair failed; nothing is changed.", exc_info=True)
             return None
+        evidence = getattr(self, "_evidence", None)
+        if evidence is not None and len(legs) == len(ordered) - 1:
+            for (a, b), leg in zip(zip(ordered, ordered[1:]), legs):
+                evidence.record(a, b, leg, two_point=len(ordered) == 2)
         if len(legs) != len(ordered) - 1 or not all(_routed(leg) for leg in legs):
             return None
         return legs

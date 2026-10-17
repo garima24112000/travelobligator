@@ -32,7 +32,9 @@ Bounded, deterministic, never partly verified
 ---------------------------------------------
 Per severe day, worst first:
 
-  1. PROPOSE every admissible move that changes an offending leg.
+  1. PROPOSE every admissible move that changes an offending leg -- never
+     one that leaves a place of an offending leg alone on a day (no leg of
+     its own left to verify is not an improvement).
   2. SHORTLIST at most `SHORTLIST_SIZE` (3). Moves whose legs are all
      already known are first; then a straight-line estimate ORDERS the rest
      (it never accepts one, and a move is dropped only when the estimate is
@@ -474,6 +476,11 @@ class RouteRecompositionService:
             seen.add(candidate.ident)
             # a changed leg with an unlocated end could never be verified
             if any(self._unknown_touches_unlocated(order) for order in candidate.orders.values()):
+                return
+            # Phase 1: a long leg is never "resolved" by leaving one of its
+            # places alone on a day -- that removes the only verified travel
+            # evidence about the place instead of improving it.
+            if any(len(order) == 1 and order[0].key in offending for order in candidate.orders.values()):
                 return
             candidate.proxy_delta_m = sum(
                 _path_m(order) - _path_m(current_orders[number]) for number, order in candidate.orders.items()

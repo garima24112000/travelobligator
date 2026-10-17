@@ -358,7 +358,7 @@ test("the day card, the leg rows and the banner use the disclosure helpers", () 
   assert.match(page, /travelerDayFindings\(\s*result\.validationReport\.warnings,\s*day\.day_number,\s*result\.validationReport\.review_code_classification,/);
   assert.match(page, /travelerDayRouteNotices\(/);
   assert.match(page, /\{legUnverified && <UnverifiedLegRow \/>\}/);
-  assert.match(page, /attention=\{legHasFerry\}/);
+  assert.match(page, /attention=\{legHasFerry \|\| legIsLongWalk\}/); // a ferry leg is still marked
 
   const row = componentSource("UnverifiedLegRow");
   assert.match(row, /\{UNVERIFIED_LEG_LINE\}/);

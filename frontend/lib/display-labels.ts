@@ -412,6 +412,7 @@ const TRAVELER_WARNING_CATEGORIES = new Set([
   "must_visit",
   "must_visit_access_restricted",
   "must_visit_route_unverified",
+  "remote_day_access",
   "budget",
   "constraints",
   "geographic_spread",

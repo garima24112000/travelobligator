@@ -232,6 +232,17 @@ class GenerationProviderContext:
     # request, no allowance, no credit. Never a transient failure, never
     # written to the provider cache, and gone with the generation.
     route_failure_memo: dict = field(default_factory=dict)
+    # Phase 1: what this generation's routing has shown about PLACES (by
+    # provider place id, else experience id), read by the routability repair
+    # across planner passes. `routed_place_keys`: places with at least one
+    # leg the provider routed. `definitive_failure_partners`: for each place,
+    # the other places of TWO-POINT requests the provider definitively
+    # refused (`no_route` / `unroutable_endpoint`) -- a rejected
+    # multi-waypoint request says nothing about one leg and is never counted.
+    # Evidence only: never an allowance, never persisted, gone with the
+    # generation.
+    routed_place_keys: set = field(default_factory=set)
+    definitive_failure_partners: dict = field(default_factory=dict)
     # Place Details lookups still allowed for off-pool grounded anchors.
     place_details_left: int = 12
     # Broad factual pool fetched during this generation, so a grounded

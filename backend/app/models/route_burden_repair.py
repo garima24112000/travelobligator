@@ -84,7 +84,11 @@ class RoutabilityRepairAttempt(BaseModel):
     # no_suspect_stop, suspect_protected, no_suitable_candidate,
     # route_budget_exhausted, replacement_unroutable, replacement_route_burden,
     # suspect_removed (the one proven suspect had no suitable replacement and
-    # was taken out of its day; `replaced_place` names it, nothing replaces it).
+    # was taken out of its day; `replaced_place` names it, nothing replaces it),
+    # protected_stop_repeated_failure (every failed leg touches a must-visit or
+    # locked stop the provider refused with two different places in this
+    # generation and never routed; no replacement tried, no request made --
+    # `suspect_place` names that stop, and nothing is concluded about it).
     reason: str
     accepted: bool = False
     # Legs of the day without a factual route, before and after the attempt.

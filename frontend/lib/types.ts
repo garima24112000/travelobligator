@@ -692,6 +692,17 @@ export type ValidationReport = {
   // absent means coverage is UNKNOWN (no plan judged, or a report stored
   // before the field) -- never "everything is covered".
   interest_coverage?: InterestCoverageEntry[] | null;
+  // Phase 1 (backend: OverLimitWalkingLeg): the scheduled legs whose route,
+  // in its final mode, is a walk longer than a usual walk between stops, so
+  // no faster way of making the transfer is on the plan. Presentation only;
+  // `null` or absent (a report stored before the field) marks no leg.
+  over_limit_walking_legs?: OverLimitWalkingLeg[] | null;
+};
+
+export type OverLimitWalkingLeg = {
+  day_number: number;
+  from_experience_id: string;
+  to_experience_id: string;
 };
 
 export type InterestCoverageEntry = {

@@ -892,6 +892,18 @@ class InterestCoverageEntry(BaseModel):
     status: str
 
 
+class OverLimitWalkingLeg(BaseModel):
+    """A scheduled leg whose provider route, in its final mode, is a WALK
+    longer than the walking-leg limit (`route_burden.over_limit_walking_legs`):
+    no faster way of making the transfer is on the plan. Presentation only
+    (Phase 1): it restates a fact `long_travel_day` is raised from, so a
+    client can mark that leg; never read by the planner, readiness or a code."""
+
+    day_number: int
+    from_experience_id: str
+    to_experience_id: str
+
+
 class ValidationReport(BaseModel):
     validation_report_id: str = Field(default_factory=lambda: _new_id("validation_report"))
 
@@ -924,6 +936,10 @@ class ValidationReport(BaseModel):
     # coverage is UNKNOWN (no plan to judge, or a report stored before this
     # field) -- a client must never read that as "covered".
     interest_coverage: list[InterestCoverageEntry] | None = None
+    # Phase 1 (presentation only): the scheduled legs that are walks beyond
+    # the walking-leg limit, in day and leg order. `None` when there is no
+    # route report to read (and on a report stored before this field).
+    over_limit_walking_legs: list[OverLimitWalkingLeg] | None = None
 
     validated_at: datetime = Field(default_factory=_utc_now)
 

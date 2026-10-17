@@ -95,6 +95,9 @@ export function travelerMovementLine(leg: {
   distanceMeters: number | null | undefined;
   // True only when the routing provider's own route for the leg uses a ferry.
   includesFerry?: boolean | null;
+  // True only when the backend lists the leg as a walk beyond the usual
+  // walking limit with no faster way on the plan (`over_limit_walking_legs`).
+  overLimitWalk?: boolean;
 }): string | null {
   const figures = [
     formatTravelDuration(leg.durationSeconds),
@@ -106,7 +109,31 @@ export function travelerMovementLine(leg: {
     // route estimate that knows nothing of the crossing's schedule.
     return [FERRY_LEG_LABEL, `route estimate ${figures.join(" · ")}`, FERRY_LEG_CAVEAT].join(" · ");
   }
+  if (leg.overLimitWalk === true) {
+    // Never "Walk" alone: the walking route is all the plan has for this
+    // transfer, not a recommendation, and no other mode is claimed.
+    return [OVER_LIMIT_WALK_LABEL, ...figures, OVER_LIMIT_WALK_CAVEAT].join(" · ");
+  }
   return [movementModeLabel(leg.mode), ...figures].join(" · ");
+}
+
+export const OVER_LIMIT_WALK_LABEL = "Long walking route";
+export const OVER_LIMIT_WALK_CAVEAT =
+  "longer than a usual walk between stops; no faster way of making this transfer was verified";
+
+/**
+ * True only when the backend listed the leg between two scheduled stops as
+ * a walk beyond the usual walking limit (`over_limit_walking_legs`). No
+ * threshold is kept here; a report without the list marks no leg.
+ */
+export function legIsOverLimitWalk(
+  report: Pick<ValidationReport, "over_limit_walking_legs"> | null | undefined,
+  fromExperienceId: string,
+  toExperienceId: string,
+): boolean {
+  return (report?.over_limit_walking_legs ?? []).some(
+    (leg) => leg.from_experience_id === fromExperienceId && leg.to_experience_id === toExperienceId,
+  );
 }
 
 export const FERRY_LEG_LABEL = "Includes a ferry crossing";
@@ -169,6 +196,7 @@ export function travelerLegLine(
     "from_experience_id" | "to_experience_id" | "status" | "route_duration_seconds" | "route_distance_meters"
   > | null,
   report: RouteFeasibilityReport | null | undefined,
+  validationReport?: Pick<ValidationReport, "over_limit_walking_legs"> | null,
 ): string | null {
   if (!buffer || buffer.status !== "success") return null;
   return travelerMovementLine({
@@ -176,6 +204,7 @@ export function travelerLegLine(
     durationSeconds: buffer.route_duration_seconds,
     distanceMeters: buffer.route_distance_meters,
     includesFerry: legIncludesFerry(report, buffer.from_experience_id, buffer.to_experience_id),
+    overLimitWalk: legIsOverLimitWalk(validationReport, buffer.from_experience_id, buffer.to_experience_id),
   });
 }
 

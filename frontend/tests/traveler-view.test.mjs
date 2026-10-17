@@ -169,7 +169,7 @@ test("Traveler movement rows come from the view model, not from raw fields", () 
   const row = componentSource("MovementRow");
   assert.match(row, /travelerLine/);
   assert.doesNotMatch(row, /\.mode\b|mode_adaptation|walking_distance/);
-  assert.match(page, /travelerLegLine\(movement, result\.routeFeasibilityReport\)/);
+  assert.match(page, /travelerLegLine\(\s*movement,\s*result\.routeFeasibilityReport,\s*result\.validationReport,?\s*\)/);
   assert.doesNotMatch(page, /mode_adaptation_attempted|walking_duration_seconds/);
 });
 

@@ -82,6 +82,7 @@ import {
   travelerErrorMessage,
   UNVERIFIED_LEG_LINE,
   legIncludesFerry,
+  legIsOverLimitWalk,
   legIsUnverified,
   reviewSeverity,
   travelerDayNotices,
@@ -547,7 +548,8 @@ function MovementRow({
   // Section 2: Traveler view's own line ("Walk · 12 min · 0.9 km"), built
   // by `travelerLegLine` from the leg's stored mode and route figures.
   travelerLine?: string | null;
-  // V1 disclosure: a leg the traveler must look at (a ferry crossing).
+  // V1 disclosure: a leg the traveler must look at (a ferry crossing, or a
+  // walk beyond the usual walking limit with no faster way verified).
   attention?: boolean;
 }) {
   if (mode === "user") {
@@ -8262,7 +8264,11 @@ export default function Home() {
                     // "unavailable for this trip" case once, concisely.
                     const travelerLine =
                       mode === "user"
-                        ? travelerLegLine(movement, result.routeFeasibilityReport)
+                        ? travelerLegLine(
+                            movement,
+                            result.routeFeasibilityReport,
+                            result.validationReport,
+                          )
                         : null;
                     const showMovementRow =
                       mode === "developer"
@@ -8284,6 +8290,15 @@ export default function Home() {
                       Boolean(nextExperience) &&
                       legIncludesFerry(
                         result.routeFeasibilityReport,
+                        experience.experience_id,
+                        nextExperience.experience_id,
+                      );
+                    // Phase 1: a walk beyond the usual walking limit, with
+                    // no faster way on the plan, is marked like a ferry leg.
+                    const legIsLongWalk =
+                      Boolean(nextExperience) &&
+                      legIsOverLimitWalk(
+                        result.validationReport,
                         experience.experience_id,
                         nextExperience.experience_id,
                       );
@@ -8320,7 +8335,7 @@ export default function Home() {
                             buffer={movement}
                             mode={mode}
                             travelerLine={travelerLine}
-                            attention={legHasFerry}
+                            attention={legHasFerry || legIsLongWalk}
                           />
                         )}
                         {legUnverified && <UnverifiedLegRow />}
