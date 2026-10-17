@@ -34,7 +34,7 @@ from app.services.geographic_dispersion import (
     CAUSE_UNVERIFIED,
     dispersion_by_day,
 )
-from app.services.route_burden import day_route_burdens
+from app.services.route_burden import day_route_burdens, is_definitive_failure
 from app.services.usefulness_contract import evaluate_usefulness, usefulness_findings
 from app.services.experience_identity import experience_stable_key
 from app.services.base import PlanningStageService
@@ -529,6 +529,10 @@ class PlanValidatorService(PlanningStageService):
         # the traveller is told so on its day.
         warnings.extend(_inaccessible_must_visit_issues(planning_state))
 
+        # A requested place is also kept when the routing provider definitively
+        # found no route for a leg it is on; the traveller is told which one.
+        warnings.extend(_unrouted_must_visit_leg_issues(planning_state))
+
         captured_constraints: list[str] = []
         for constraint in planning_state.trip_request.constraints:
             if constraint not in captured_constraints:
@@ -872,6 +876,53 @@ def _inaccessible_must_visit_issues(planning_state: PlanningState) -> list[Valid
                 suggested_fix="Check whether and how this place can be visited before planning your day around it.",
             )
         )
+    return issues
+
+
+def _unrouted_must_visit_leg_issues(planning_state: PlanningState) -> list[ValidationIssue]:
+    """One warning per scheduled leg that touches a grounded must-visit (by
+    provider identity) and that the routing provider DEFINITIVELY failed to
+    route (`route_burden.is_definitive_failure`: `no_route` /
+    `unroutable_endpoint` only). A transient failure, a leg stored without a
+    failure code and a routed leg raise nothing. Neither stop is blamed, and
+    nothing is said about why, how or whether the place can be reached."""
+    plan = planning_state.experience_plan
+    report = planning_state.route_feasibility_report
+    if plan is None or report is None:
+        return []
+    must_visit_ids = must_visit_place_ids(planning_state)
+    if not must_visit_ids:
+        return []
+    legs = {(leg.from_experience_id, leg.to_experience_id): leg for leg in report.legs}
+    issues: list[ValidationIssue] = []
+    for day in plan.daily_plans:
+        for origin, destination in zip(day.experiences, day.experiences[1:]):
+            if not is_definitive_failure(legs.get((origin.experience_id, destination.experience_id))):
+                continue
+            requested = [
+                stop.name
+                for stop in (origin, destination)
+                if stop.provider_place_id and str(stop.provider_place_id) in must_visit_ids
+            ]
+            if not requested:
+                continue
+            kept = " and ".join(requested)
+            plural = len(requested) > 1
+            issues.append(
+                ValidationIssue(
+                    severity=ValidationSeverity.WARNING,
+                    category="must_visit_route_unverified",
+                    # Traveller wording: no implementation terms (the page shows it as written).
+                    message=(
+                        f"Day {day.day_number}: A verified route between {origin.name} and {destination.name} "
+                        f"could not be found. {kept} {'are' if plural else 'is'} kept because you requested "
+                        f"{'them' if plural else 'it'}, but travel between these stops is not verified. Check the "
+                        f"appropriate way to reach {'them' if plural else 'it'} before relying on this day's plan."
+                    ),
+                    affected_section=f"experience_plan.daily_plans[{day.day_number}]",
+                    suggested_fix="Check how to get between these stops yourself before following this day.",
+                )
+            )
     return issues
 
 

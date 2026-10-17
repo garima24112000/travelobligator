@@ -411,6 +411,7 @@ const TRAVELER_WARNING_CATEGORIES = new Set([
   "long_travel_day",
   "must_visit",
   "must_visit_access_restricted",
+  "must_visit_route_unverified",
   "budget",
   "constraints",
   "geographic_spread",

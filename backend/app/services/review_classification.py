@@ -66,6 +66,7 @@ MATERIAL_CODES: frozenset[str] = frozenset(
         "MOVEMENT_DATA",
         "MUST_VISIT",
         "MUST_VISIT_ACCESS_RESTRICTED",
+        "MUST_VISIT_ROUTE_UNVERIFIED",
         "ROUTE_FEASIBILITY",
         "ROUTE_INCLUDES_FERRY",
         "SCHEDULING",
