@@ -56,7 +56,8 @@ class TripRepository:
             _COLLECTION,
             {
                 trip_id: record.model_dump(mode="json")
-                for trip_id, record in self._trips.items()
+                # a snapshot: never the live dict another thread may add to
+                for trip_id, record in list(self._trips.items())
             },
         )
 
@@ -85,7 +86,7 @@ class TripRepository:
 
     def delete_many(self, trip_ids: set[str]) -> int:
         """P1-A deletion (development backend). Returns the number of trips removed."""
-        removed = [trip_id for trip_id in self._trips if trip_id in trip_ids]
+        removed = [trip_id for trip_id in list(self._trips) if trip_id in trip_ids]
         for trip_id in removed:
             del self._trips[trip_id]
         if removed:
@@ -109,7 +110,8 @@ class TripRepository:
         """Returns every trip owned by `owner_id` -- `GET /trips`'s "My
         Trips" data source (Step 184D). Never returns a trip with a
         `None` or different `owner_id`."""
-        return [record for record in self._trips.values() if record.owner_id == owner_id]
+        # a snapshot: another request thread may be adding a trip right now
+        return [record for record in list(self._trips.values()) if record.owner_id == owner_id]
 
 
 trip_repository = TripRepository()

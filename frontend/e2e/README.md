@@ -68,6 +68,13 @@ the page at 200 % browser zoom.
 - `artifacts/`: for a failed test only, a trace (`npx playwright show-trace <trace.zip>`), a screenshot
   and `page-watch.json`.
 - `results.json`: the machine-readable result; `report/` is the HTML report (CI only).
+- `backend.log`: the offline backend's own structured log for the run (fixture data only), including
+  the warning and traceback of any generation job that failed unexpectedly. A test that waited for a job
+  also prints the job's last status and error code when it fails. It passes through the application's
+  own redaction (no password, cookie, token or email is written; ids of the throwaway test accounts are),
+  is created with mode 600, and if it cannot be written the backend runs without it. In CI it is part of
+  the `browser-e2e-results` artifact: kept 14 days and, because this repository is public, downloadable by
+  any signed-in GitHub user -- so never point the e2e backend at real data.
 
 ## Content Security Policy
 

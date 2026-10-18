@@ -35,7 +35,8 @@ class UserRepository:
             _COLLECTION,
             {
                 user_id: record.model_dump(mode="json")
-                for user_id, record in self._users.items()
+                # a snapshot: never the live dict another thread may add to
+                for user_id, record in list(self._users.items())
             },
         )
 
@@ -63,7 +64,7 @@ class UserRepository:
 
     def get_by_email(self, email: str) -> UserRecord | None:
         normalized = email.strip().lower()
-        for record in self._users.values():
+        for record in list(self._users.values()):  # a snapshot: a sign-up may be adding a user
             if record.email == normalized:
                 return record
         return None

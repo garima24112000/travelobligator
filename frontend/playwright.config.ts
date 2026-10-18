@@ -21,6 +21,9 @@ const BACKEND_ORIGIN = `http://127.0.0.1:${BACKEND_PORT}`;
 const FRONTEND_ORIGIN = `http://127.0.0.1:${FRONTEND_PORT}`;
 const PYTHON = process.env.E2E_PYTHON ?? "../.venv/bin/python";
 const CI = Boolean(process.env.CI);
+// Relative to this directory (the web servers' working directory); outside `artifacts`, which
+// Playwright empties at the start of a run, and inside the folder CI uploads.
+const BACKEND_LOG_FILE = "e2e-results/backend.log";
 
 export default defineConfig({
   testDir: "./e2e",
@@ -78,6 +81,9 @@ export default defineConfig({
         E2E_BACKEND_PORT: String(BACKEND_PORT),
         E2E_FRONTEND_ORIGIN: FRONTEND_ORIGIN,
         E2E_SLOW_SECONDS: process.env.E2E_SLOW_SECONDS ?? "6",
+        // The backend's own log, kept with the test results (and the CI artifact) so an
+        // unexpected job failure leaves its warning and traceback behind.
+        E2E_BACKEND_LOG_FILE: BACKEND_LOG_FILE,
       },
       stdout: "ignore",
       stderr: "pipe",

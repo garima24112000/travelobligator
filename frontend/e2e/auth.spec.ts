@@ -74,6 +74,10 @@ test("log out ends the session, and logging in again restores the account", asyn
 test("wrong credentials are refused with one generic message, for a real and an unknown email alike", async ({ page }) => {
   const email = await signUp(page);
   await page.getByRole("button", { name: "Log out" }).click();
+  // Phase 3: wait for the signed-out screen, as every other test does. Navigating at once could cancel
+  // the logout response before the browser applied its cookie-clearing Set-Cookie, leaving the page
+  // signed in (seen once: the backend logged the logout, the reloaded page was still the account).
+  await expect(page.getByRole("heading", { level: 1, name: "Log in to your account" })).toBeVisible();
 
   const messages: string[] = [];
   for (const attempt of [

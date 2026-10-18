@@ -63,7 +63,8 @@ class JobRepository:
     def _persist(self) -> None:
         self._store.write_collection(
             _COLLECTION,
-            {job_id: job.model_dump(mode="json") for job_id, job in self._jobs.items()},
+            # a snapshot: never the live dict another thread may add to
+            {job_id: job.model_dump(mode="json") for job_id, job in list(self._jobs.items())},
         )
 
     def create(self, job: GenerationJob) -> GenerationJob:
@@ -101,7 +102,7 @@ class JobRepository:
         (its `created_at`, and its owner only when `keep_owner`) so the admission limits still count
         it. Returns the number of jobs removed."""
         with self._lifecycle_lock:
-            removed = [job for job in self._jobs.values() if job.trip_id in trip_ids]
+            removed = [job for job in list(self._jobs.values()) if job.trip_id in trip_ids]
             for job in removed:
                 if job.created_at > usage_since:
                     self._deleted_usage.append((job.owner_id if keep_owner else None, job.created_at))
@@ -140,7 +141,8 @@ class JobRepository:
         newest-first. Ties (identical `created_at`) fall back to
         `job_id` for a fully deterministic order.
         """
-        matches = [job for job in self._jobs.values() if job.trip_id == trip_id]
+        # a snapshot: another request thread may be creating a job right now
+        matches = [job for job in list(self._jobs.values()) if job.trip_id == trip_id]
         return sorted(matches, key=lambda job: (job.created_at, job.job_id))
 
     def list_by_trip_id(self, trip_id: str) -> list[GenerationJob]:
@@ -164,7 +166,7 @@ class JobRepository:
         """
         matches = [
             job
-            for job in self._jobs.values()
+            for job in list(self._jobs.values())  # a snapshot (see `_jobs_for_trip`)
             if job.status in {status.value for status in _RUNNING_STATUSES}
         ]
         return sorted(matches, key=lambda job: (job.created_at, job.job_id))
@@ -258,7 +260,7 @@ class JobRepository:
         current = now or datetime.now(timezone.utc)
         recovered: list[GenerationJob] = []
         with self._lifecycle_lock:
-            for job in sorted(self._jobs.values(), key=lambda j: (j.created_at, j.job_id)):
+            for job in sorted(list(self._jobs.values()), key=lambda j: (j.created_at, j.job_id)):
                 if trip_id is not None and job.trip_id != trip_id:
                     continue
                 expired_running = job.status == GenerationJobStatus.RUNNING and (

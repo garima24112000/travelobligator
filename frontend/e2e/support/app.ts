@@ -193,12 +193,27 @@ export async function generateViaApi(page: Page, tripId: string, options: { wait
   expect(started.status(), await started.text()).toBe(202);
   const jobId = (await json(started)).data.job_id as string;
   if (options.wait === false) return jobId;
-  await expect
-    .poll(
-      async () => (await json(await page.request.get(`/api/trips/${tripId}/jobs/${jobId}`))).data.status,
-      { timeout: 30_000, intervals: [250] },
-    )
-    .toBe("succeeded");
+  // Phase 3: the job's fixed error code (never its trip data) is kept, so a job that ends
+  // `failed` says why in the test report. The wait and the expectation are unchanged.
+  let last: { status?: string; error_code?: string | null; error_message?: string | null } = {};
+  try {
+    await expect
+      .poll(
+        async () => {
+          last = (await json(await page.request.get(`/api/trips/${tripId}/jobs/${jobId}`))).data ?? {};
+          return last.status;
+        },
+        { timeout: 30_000, intervals: [250] },
+      )
+      .toBe("succeeded");
+  } catch (error) {
+    if (error instanceof Error) {
+      error.message += `\nLast job state: status=${last.status ?? "unknown"} error_code=${
+        last.error_code ?? "none"
+      } error_message=${last.error_message ?? "none"} (backend log: frontend/e2e-results/backend.log)`;
+    }
+    throw error;
+  }
   return jobId;
 }
 

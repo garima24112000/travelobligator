@@ -161,6 +161,32 @@ test.describe("a real generated itinerary", () => {
     await expect(page.getByText("Map links open the scheduled place coordinates only.")).toBeVisible();
   });
 
+  // Phase 3: the map tile server is down. Two kinds of outage: it answers with an error, or the request
+  // fails at the network level. Either way the itinerary is still readable without the map, and the page
+  // throws nothing.
+  for (const outage of ["answers 503", "is unreachable"] as const) {
+    test(`with the map tile server down (${outage}) the itinerary stays usable`, async ({ page, watch }) => {
+      if (outage === "is unreachable") watch.allowPageErrors(); // the failed tile requests are the point
+      // registered after the fixture's stub, so it answers the tile requests instead
+      await page.route(/^https:\/\/[abc]\.tile\.openstreetmap\.org\//, (route) =>
+        outage === "answers 503" ? route.fulfill({ status: 503, body: "" }) : route.abort("failed"),
+      );
+      await openGeneratedTrip(page);
+
+      const map = page.locator(".leaflet-container").first();
+      await map.scrollIntoViewIfNeeded();
+      await expect(map).toBeVisible(); // the map area is still laid out
+      // every stop can still be found without a single tile
+      await expect(page.getByText("Numbers show the visit order.").first()).toBeVisible();
+      await expect(page.getByRole("link", { name: "Open Fixture Cathedral in OpenStreetMap" })).toBeVisible();
+      await expect(page.getByRole("heading", { level: 3, name: /^Day 1 · / })).toBeVisible();
+      // and the map still answers the keyboard and its controls
+      await map.getByRole("button", { name: "Zoom in" }).click();
+      await page.waitForTimeout(500);
+      expect(watch.pageErrors, "uncaught errors in the page").toEqual([]);
+    });
+  }
+
   test("lists nearby food as ideas, not as bookings or recommendations", async ({ page }) => {
     await openGeneratedTrip(page);
     await expect(page.getByText("Nearby food ideas").first()).toBeVisible();

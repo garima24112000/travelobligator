@@ -83,6 +83,25 @@ for _name in ("DATABASE_URL", "REDIS_URL", "GROQ_API_KEY", "GEMINI_API_KEY", "GE
     os.environ.pop(_name, None)
 os.environ.update(_ENVIRONMENT)
 
+# Phase 3: keep the application's own log (stdout: the structured, redacted
+# JSON lines, including the warning and traceback of a generation job that
+# failed unexpectedly) in a file the browser tests keep as an artifact. The
+# data is the made-up fixture data above; nothing else is written there.
+_LOG_FILE = os.environ.get("E2E_BACKEND_LOG_FILE")
+if _LOG_FILE:
+    try:
+        Path(_LOG_FILE).parent.mkdir(parents=True, exist_ok=True)
+        # one log per run: a new backend start replaces the previous run's file
+        _log_fd = os.open(_LOG_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        os.fchmod(_log_fd, 0o600)  # also when the file already existed with another mode
+        sys.stdout.flush()
+        os.dup2(_log_fd, sys.stdout.fileno())
+        os.close(_log_fd)
+        sys.stdout.reconfigure(line_buffering=True)
+    except OSError as exc:
+        # Diagnostics never stop the backend (and so never fail a test): it runs without the file.
+        print(f"e2e backend: log file not available ({type(exc).__name__}); logging to stdout", file=sys.stderr)
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.models.common import DataStatus, GeoPoint, ProviderStatus  # noqa: E402
