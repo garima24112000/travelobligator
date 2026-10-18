@@ -149,6 +149,7 @@ def _regenerate_targeted(trip_id: str, background_tasks: BackgroundTasks, curren
     ultimately call the exact same service method (Task 28: semantic
     parity by construction).
     """
+    generation_job_service.ensure_generation_enabled()  # the owner's switch, both branches
     if get_settings().async_generation_enabled:
         job = generation_job_service.start_targeted_regenerate_job(
             trip_id=trip_id,
@@ -350,6 +351,8 @@ def generate_trip_plan(
     second one. The default, synchronous behavior below is completely
     unchanged either way.
     """
+    # The owner's switch applies to both branches (the job path checks it again at admission).
+    generation_job_service.ensure_generation_enabled()
     if get_settings().async_generation_enabled:
         job = generation_job_service.start_generate_job(
             trip_id=trip_id, owner_id=current_user.user_id, background_tasks=background_tasks
@@ -538,6 +541,8 @@ def regenerate_trip_plan(
 
     applied_feedback_event_ids = [event.feedback_event_id for event in pending_events]
 
+    # Planning would start here: the owner's switch applies (after every refusal above, unchanged).
+    generation_job_service.ensure_generation_enabled()
     if get_settings().async_generation_enabled:
         job = generation_job_service.start_regenerate_job(
             trip_id=trip_id,

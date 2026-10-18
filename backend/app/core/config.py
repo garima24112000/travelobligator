@@ -62,6 +62,7 @@ _ALLOWED_LOG_LEVELS = frozenset({"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"
 # attribute values are conventionally capitalized ("Lax"/"Strict"/"None")
 # but env vars are easiest to write in lowercase.
 _ALLOWED_SESSION_COOKIE_SAMESITE_VALUES = frozenset({"lax", "strict", "none"})
+_ALLOWED_SIGNUP_MODES = frozenset({"open", "invite_link", "closed"})
 
 # backend/app/core/config.py -> parents[2] is the backend/ project root, so
 # a relative local_storage_path resolves the same way whether the app is
@@ -1363,6 +1364,25 @@ class Settings(BaseSettings):
     # Saved trips one account may hold (`POST /trips`). `0` switches it off (rejected in production).
     max_trips_per_user: int = Field(default=20, alias="MAX_TRIPS_PER_USER", ge=0, le=10000)
 
+    # Limited-beta access and emergency switches (`app/auth/registration.py`). Owner-configured, no
+    # code change needed to use any of them; a change takes effect when the service restarts.
+    #   * `SIGNUP_MODE`: `open` (anyone may create an account -- the development default; production
+    #     refuses it at startup), `invite_link` (a new account needs the shareable beta link: its token
+    #     is exchanged for a short-lived registration cookie that sign-up requires) or `closed` (no new
+    #     account at all). Existing accounts sign in in every mode. An unrecognised value means `closed`.
+    #   * `BETA_REGISTRATION_TOKEN`: the secret in the shareable link. Set in the host's dashboard only,
+    #     never committed or logged. Changing it revokes the old link AND every registration cookie
+    #     issued for it; unsetting it closes registration.
+    #   * `REGISTRATION_ACCESS_TTL_SECONDS`: how long an accepted link allows sign-up (at most 30 min).
+    #   * `GENERATION_ENABLED`: `false` refuses every new generation / regeneration (503
+    #     `GENERATION_DISABLED`); existing trips and itineraries stay readable.
+    signup_mode: str = Field(default="open", alias="SIGNUP_MODE")
+    beta_registration_token: str | None = Field(default=None, alias="BETA_REGISTRATION_TOKEN")
+    registration_access_ttl_seconds: int = Field(
+        default=1800, alias="REGISTRATION_ACCESS_TTL_SECONDS", ge=60, le=1800
+    )
+    generation_enabled: bool = Field(default=True, alias="GENERATION_ENABLED")
+
     # Trip request bounds, enforced at the request boundary only (`schemas.trips.TripCreateRequest`) so a
     # stored trip always loads. Days are calendar days INCLUDING the start and the end date.
     max_trip_days: int = Field(default=7, alias="MAX_TRIP_DAYS", ge=1, le=60)
@@ -1622,6 +1642,20 @@ class Settings(BaseSettings):
                 "(sub-second timeouts would cancel healthy work)."
             )
         return value
+
+    @field_validator("signup_mode", mode="after")
+    @classmethod
+    def _normalize_signup_mode(cls, value: str) -> str:
+        # A misspelt mode must never open registration: anything unrecognised is `closed`.
+        lowered = value.strip().lower()
+        return lowered if lowered in _ALLOWED_SIGNUP_MODES else "closed"
+
+    @field_validator("beta_registration_token", mode="after")
+    @classmethod
+    def _blank_token_is_none(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return value.strip() or None
 
     @field_validator("session_cookie_samesite", mode="after")
     @classmethod

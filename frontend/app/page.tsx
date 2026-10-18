@@ -16,6 +16,7 @@ import {
   createTripLock,
   deleteTrip,
   deleteTripLock,
+  exchangeRegistrationLink,
   generatePlan,
   getAiCandidateReview,
   getCurrentUser,
@@ -25,6 +26,7 @@ import {
   getProviderCoverage,
   getRegenerationAttempts,
   getRegenerationReadiness,
+  getRegistrationStatus,
   getTrip,
   getTripJob,
   getTripJobs,
@@ -40,6 +42,7 @@ import {
 } from "@/lib/api";
 import BranchWorkspacePanel from "./BranchWorkspacePanel";
 import { readSelectedTripId, writeSelectedTripId } from "@/lib/trip-selection";
+import { signupAccessNotice, takeBetaLinkToken } from "@/lib/beta-access";
 import { defaultTripDates } from "@/lib/default-trip-dates";
 import { latestEndDate, tripRequestLimitProblem } from "@/lib/trip-request-limits";
 import {
@@ -139,6 +142,7 @@ import type {
   PromotedAICandidate,
   PublicUser,
   ReadinessChecklist,
+  RegistrationStatus,
   RegenerateResponseData,
   RegenerationAttempt,
   RegenerationReadiness,
@@ -7392,6 +7396,8 @@ export default function Home() {
   const [authLoading, setAuthLoading] = useState(true);
   const [authNotConfigured, setAuthNotConfigured] = useState(false);
   const [authMode, setAuthMode] = useState<"login" | "signup">("login");
+  // Limited beta: open / invite_link / closed, and whether this browser may sign up (null = unknown).
+  const [registrationStatus, setRegistrationStatus] = useState<RegistrationStatus | null>(null);
   const [authEmail, setAuthEmail] = useState("");
   const [authPassword, setAuthPassword] = useState("");
   const [authConfirmPassword, setAuthConfirmPassword] = useState("");
@@ -7477,6 +7483,32 @@ export default function Home() {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     void checkAuth();
   }, [checkAuth]);
+
+  // Limited beta: an invitation link (`#beta=<token>`). The fragment is removed from the address bar
+  // before anything else happens; the token goes to the backend in a JSON body and is not kept here.
+  // Then the sign-up screen learns whether new accounts are open, need a link, or are closed.
+  useEffect(() => {
+    const token = takeBetaLinkToken(window.location, window.history);
+    void (async () => {
+      if (token !== null) {
+        try {
+          await exchangeRegistrationLink(token);
+          setAuthMode("signup");
+        } catch (err) {
+          setAuthError(
+            err instanceof ApiRequestError
+              ? err.message
+              : "This invitation link could not be checked. Please try again.",
+          );
+        }
+      }
+      try {
+        setRegistrationStatus(await getRegistrationStatus());
+      } catch {
+        setRegistrationStatus(null); // unknown: the backend still decides at sign-up
+      }
+    })();
+  }, []);
 
   // Shared by every trip-related action below: a session that expired or
   // was revoked mid-use surfaces here as a normal `ApiRequestError` with
@@ -8510,6 +8542,15 @@ PY`}
               ? "Sign up to create and manage your own trips. Trips are private to your account."
               : "Log in to see your own trips. Trips are private to your account."}
           </p>
+          {authMode === "signup" && signupAccessNotice(registrationStatus) && (
+            <p
+              data-testid="signup-access-notice"
+              role="status"
+              className="mt-2 break-words rounded-lg border border-cyan-300/30 bg-cyan-400/10 p-3 text-sm text-cyan-100"
+            >
+              {signupAccessNotice(registrationStatus)}
+            </p>
+          )}
           <BetaSummary className="mt-2" />
 
           <div

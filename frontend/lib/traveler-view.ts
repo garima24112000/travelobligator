@@ -849,6 +849,12 @@ export function travelerErrorMessage(input: TravelerErrorInput): TravelerError {
           "Other itineraries are being built right now. Your trip is saved. Please try again in a minute.",
         retryable: true,
       };
+    // Limited beta: the owner paused new itineraries (HTTP 503). Nothing was started; retrying now cannot help.
+    case "GENERATION_DISABLED":
+      return {
+        message: "Building new itineraries is paused right now. Your trips are saved. Please try again later.",
+        retryable: false,
+      };
     case "TRIP_LIMIT_REACHED":
       return {
         message: isSafeForTraveler(message)

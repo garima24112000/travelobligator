@@ -448,6 +448,48 @@ def trip_limit_error(limit: int) -> AppError:
     )
 
 
+def registration_closed_error() -> AppError:
+    """403 -- the deployment is not creating new accounts at all (`SIGNUP_MODE=closed`, or an invitation
+    link with no token configured). Existing accounts can still sign in."""
+    return AppError(
+        code=ErrorCode.REGISTRATION_CLOSED,
+        message="New accounts are not being created right now. If you already have an account, log in.",
+        status_code=status.HTTP_403_FORBIDDEN,
+    )
+
+
+def registration_link_required_error() -> AppError:
+    """403 -- sign-up needs the shareable beta link, and this browser has no valid authorization from
+    it (never opened, expired, or issued for a link that has since been replaced)."""
+    return AppError(
+        code=ErrorCode.REGISTRATION_LINK_REQUIRED,
+        message=(
+            "Creating an account needs a beta invitation link. Open the link you were given, then sign up "
+            "soon after. If you already have an account, log in."
+        ),
+        status_code=status.HTTP_403_FORBIDDEN,
+    )
+
+
+def registration_link_invalid_error() -> AppError:
+    """403 -- the link's token is not the current one (mistyped, revoked or replaced). Says nothing about
+    what the right token is."""
+    return AppError(
+        code=ErrorCode.REGISTRATION_LINK_INVALID,
+        message="This beta invitation link is not valid. It may have been replaced; ask for a new one.",
+        status_code=status.HTTP_403_FORBIDDEN,
+    )
+
+
+def generation_disabled_error() -> AppError:
+    """503 -- the owner has paused new itineraries (`GENERATION_ENABLED=false`). Nothing was started."""
+    return AppError(
+        code=ErrorCode.GENERATION_DISABLED,
+        message="Building new itineraries is paused right now. Your trips are saved. Please try again later.",
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+    )
+
+
 def signup_limit_error() -> AppError:
     """429 -- new accounts are temporarily not being created (a deployment-wide or per-address limit;
     the answer never says which, and never whether the email is already registered)."""

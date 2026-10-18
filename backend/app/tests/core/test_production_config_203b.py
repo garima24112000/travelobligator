@@ -19,6 +19,7 @@ _SESSION_SECRET = "SENTINEL_203B_SESSION_SECRET_" + "x" * 24
 _OPS_SECRET = "SENTINEL_203B_OPS_TOKEN_" + "y" * 16
 _GROQ_SECRET = "SENTINEL_P1B_GROQ_KEY_7731"
 _GEMINI_SECRET = "SENTINEL_P1B_GEMINI_KEY_4410"
+_BETA_SECRET = "SENTINEL_BETA_REGISTRATION_TOKEN_" + "w" * 16
 
 _PRODUCTION = {
     "APP_ENV": "production",
@@ -55,6 +56,9 @@ _PRODUCTION = {
     "GROQ_API_KEY": _GROQ_SECRET,
     "GEMINI_API_KEY": _GEMINI_SECRET,
     "GEMINI_MODEL": "gemini-test-model",
+    # Limited beta: production never runs with open registration
+    "SIGNUP_MODE": "invite_link",
+    "BETA_REGISTRATION_TOKEN": _BETA_SECRET,
 }
 
 
@@ -66,7 +70,7 @@ def _rejected(**overrides: object) -> str:
     with pytest.raises(OperationalConfigurationError) as excinfo:
         validate_runtime_configuration(_settings(**overrides))
     message = str(excinfo.value)
-    for secret in (_DB_SECRET, _REDIS_SECRET, _SESSION_SECRET, _OPS_SECRET, _GROQ_SECRET, _GEMINI_SECRET):
+    for secret in (_DB_SECRET, _REDIS_SECRET, _SESSION_SECRET, _OPS_SECRET, _GROQ_SECRET, _GEMINI_SECRET, _BETA_SECRET):
         assert secret not in message
     return message
 

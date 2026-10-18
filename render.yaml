@@ -63,6 +63,16 @@ services:
         value: "30"
       - key: LOGIN_MAX_FAILURES_PER_ACCOUNT
         value: "10"
+      # Limited beta (docs/29_release_readiness_checklist.md section 8). New accounts need the shareable
+      # invitation link, whose token BETA_REGISTRATION_TOKEN is set in the dashboard below; production refuses
+      # SIGNUP_MODE=open. Emergency switches: SIGNUP_MODE=closed stops new accounts; GENERATION_ENABLED=false
+      # stops new itineraries. Both take effect when the service restarts.
+      - key: SIGNUP_MODE
+        value: invite_link
+      - key: REGISTRATION_ACCESS_TTL_SECONDS
+        value: "1800"
+      - key: GENERATION_ENABLED
+        value: "true"
       # No client address is trusted until the proxy chain in front of this service has been checked against
       # real request headers (section 13A); until then the per-address limits do not apply.
       - key: CLIENT_IP_TRUSTED_PROXY_HOPS
@@ -142,6 +152,10 @@ services:
       - key: GEMINI_API_KEY
         sync: false
       - key: GEOAPIFY_API_KEY
+        sync: false
+      # ---- the shareable beta link's token (dashboard only; at least 32 random characters; replace it to
+      # revoke every link and registration authorization issued for it)
+      - key: BETA_REGISTRATION_TOKEN
         sync: false
       # ---- generated secrets
       - key: SESSION_SECRET_KEY

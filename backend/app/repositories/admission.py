@@ -36,6 +36,10 @@ ADMISSION_ADVISORY_LOCK_KEY = 7_203_001
 # a hash of the owner id), so different accounts never wait on each other.
 TRIP_LIMIT_ADVISORY_LOCK_KEY = 7_203_002
 
+# Key of the advisory lock that serialises the deployment-wide signup count, so simultaneous signups
+# cannot both take the last place of `SIGNUP_MAX_PER_WINDOW_GLOBAL` (`AuthAttemptRepository.reserve`).
+SIGNUP_LIMIT_ADVISORY_LOCK_KEY = 7_203_003
+
 
 class TripLimitReachedError(Exception):
     """The owner already holds the maximum number of saved trips; no trip row was written."""

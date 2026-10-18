@@ -20,6 +20,7 @@ from app.core.errors import (
     REGENERATION_NOT_AVAILABLE_MESSAGE,
     AppError,
     generation_capacity_error,
+    generation_disabled_error,
     generation_global_limit_error,
     generation_user_limit_error,
     job_already_running_error,
@@ -469,6 +470,17 @@ def _admission_refused_error(reason: AdmissionRefusal, policy: AdmissionPolicy) 
     return generation_capacity_error()
 
 
+def ensure_generation_enabled() -> None:
+    """Raises `generation_disabled_error()` (503) when the owner has switched new generation off
+    (`GENERATION_ENABLED=false`). Read at call time, so a restart with the new value is all it takes."""
+    if not get_settings().generation_enabled:
+        logger.warning(
+            "Refused a generation request: new generation is switched off.",
+            extra={"error_code": ErrorCode.GENERATION_DISABLED.value},
+        )
+        raise generation_disabled_error()
+
+
 def _create_job_or_conflict(job: GenerationJob) -> None:
     """Admit and insert a queued job -- the ONE way a generate / regenerate / targeted-regenerate job
     comes into existence, so every admission limit applies to all three.
@@ -479,6 +491,8 @@ def _create_job_or_conflict(job: GenerationJob) -> None:
     closed across ALL trips first, so an abandoned job never keeps a concurrent slot. The DATABASE's
     one-active-job-per-trip index stays the final arbiter of the per-trip rule -- losing that race is
     the same friendly 409 the pre-check produces."""
+    # The owner's emergency switch comes first: nothing is counted, stored or scheduled.
+    ensure_generation_enabled()
     policy = admission_policy()
     if policy.max_concurrent_jobs > 0:
         _reconcile_stale_jobs(None)

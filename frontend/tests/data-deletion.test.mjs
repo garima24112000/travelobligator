@@ -74,6 +74,8 @@ test("the notice covers what is stored, what is sent out, deletion, limits and c
 test("cookie and storage statements say only what the application's own code does", () => {
   // What the wording claims ...
   assert.match(noticeText, /one sign-in cookie/);
+  // limited beta: the invitation cookie, as the backend sets it (at most 30 minutes, cleared at sign-up)
+  assert.match(noticeText, /an invitation cookie that only allows creating an account from that browser, which expires after at most 30 minutes and is removed once the account is created/);
   assert.match(noticeText, /your choice of view, kept in the browser's local storage/);
   assert.match(noticeText, /the only things this application's own code stores there/);
   // ... and what it explicitly does not vouch for
@@ -81,7 +83,8 @@ test("cookie and storage statements say only what the application's own code doe
   // no blanket claim about cookies or tracking in general
   assert.doesNotMatch(noticeText, /sets no|no advertising|no tracking|does not track|never tracks/i);
 
-  // Evidence for "one cookie": the backend sets a cookie in exactly one place, the session cookie.
+  // Evidence for the cookies named: the backend sets a cookie in exactly two places, once each -- the
+  // session cookie and the beta invitation cookie.
   const backendFiles = (dir) =>
     readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
       const full = join(dir, entry.name);
@@ -89,8 +92,12 @@ test("cookie and storage statements say only what the application's own code doe
       return entry.name.endsWith(".py") ? [full] : [];
     });
   const setters = backendFiles(join(repo, "backend", "app")).filter((file) => /\.set_cookie\(/.test(read(file)));
-  assert.deepEqual(setters.map((file) => file.slice(file.indexOf("backend"))), ["backend/app/auth/sessions.py"]);
+  assert.deepEqual(setters.map((file) => file.slice(file.indexOf("backend"))).sort(), [
+    "backend/app/auth/registration.py",
+    "backend/app/auth/sessions.py",
+  ]);
   assert.equal(read(repo, "backend", "app", "auth", "sessions.py").split(".set_cookie(").length - 1, 1);
+  assert.equal(read(repo, "backend", "app", "auth", "registration.py").split(".set_cookie(").length - 1, 1);
 
   // Evidence for the browser side: no cookie is written by frontend code, and local storage holds one key.
   const frontendSources = ["app", "lib"].flatMap((dir) =>
@@ -153,6 +160,8 @@ test("the durations in the notice are the configured ones", () => {
   const setting = (name) => Number(new RegExp(`${name}: int = Field\\(\\s*default=(\\d+)`).exec(config)[1]);
   assert.equal(setting("session_ttl_seconds"), 7 * 24 * 3600); // "expires after seven days"
   assert.equal(setting("generation_limit_window_seconds"), 24 * 3600); // "kept for up to 24 hours"
+  // "expires after at most 30 minutes": the invitation cookie's lifetime cannot be configured above that
+  assert.match(config, /registration_access_ttl_seconds: int = Field\(\s*default=1800, alias="REGISTRATION_ACCESS_TTL_SECONDS", ge=60, le=1800\s*\)/);
 });
 
 test("every provider and host named in the notice is one the project documents", () => {

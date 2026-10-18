@@ -13,7 +13,7 @@ import logging
 
 from fastapi import APIRouter, Depends, Request, Response, status
 
-from app.auth import abuse
+from app.auth import abuse, registration
 from app.auth.dependencies import get_current_user
 from app.auth.passwords import verify_password
 from app.auth.service import login, signup
@@ -33,6 +33,9 @@ from app.models.user import (
     DeleteAccountRequest,
     LoginRequest,
     PublicUser,
+    RegistrationAccessRequest,
+    RegistrationAccessResponseData,
+    RegistrationStatusData,
     SignupRequest,
 )
 from app.repositories.errors import GenerationInProgressError, NothingToDeleteError
@@ -66,18 +69,46 @@ def signup_route(
     settings = get_settings()
     _require_auth_configured(settings)
 
-    # P0: the signup limits are checked before the email is looked at (429 `SIGNUP_LIMIT_REACHED`
-    # says nothing about the address), and only a CREATED account is counted.
-    client_address = abuse.trusted_client_address(request, settings)
-    abuse.ensure_signup_allowed(client_address)
+    # Limited beta: whether this deployment creates accounts at all, and -- with an invitation link --
+    # whether this browser holds a valid registration authorization. Enforced here, so a direct API
+    # request cannot skip it; decided before the email is looked at.
+    registration.ensure_registration_allowed(request)
 
-    public_user = signup(payload)
-    abuse.record_signup(client_address)
+    # P0: the signup limits are checked before the email is looked at (429 `SIGNUP_LIMIT_REACHED`
+    # says nothing about the address), and only a CREATED account is counted. The deployment-wide
+    # place is reserved atomically first and given back if no account results, so simultaneous
+    # signups cannot pass the limit.
+    client_address = abuse.trusted_client_address(request, settings)
+    reservation = abuse.reserve_signup(client_address)
+    try:
+        public_user = signup(payload)
+    except BaseException:
+        abuse.release_signup(reservation)
+        raise
 
     token = create_session_token(public_user.user_id, settings)
     set_session_cookie(response, token, settings)
+    registration.clear_registration_access(response)
 
     return success_response(AuthResponse(user=public_user))
+
+
+@router.get("/registration", response_model=ApiResponse[RegistrationStatusData])
+def registration_status_route(request: Request) -> ApiResponse[RegistrationStatusData]:
+    """Limited beta: what the sign-up screen should say -- `open`, `invite_link` or `closed`, and
+    whether this browser may create an account now. Never the token."""
+    return success_response(RegistrationStatusData(**registration.registration_status(request)))
+
+
+@router.post("/registration-access", response_model=ApiResponse[RegistrationAccessResponseData])
+def registration_access_route(
+    payload: RegistrationAccessRequest, response: Response
+) -> ApiResponse[RegistrationAccessResponseData]:
+    """Limited beta: exchange the token of a shareable link (sent in the JSON body) for a short-lived,
+    HttpOnly registration cookie. 403 `REGISTRATION_LINK_INVALID` for any other token,
+    `REGISTRATION_CLOSED` when no link is being accepted. The response never contains the token."""
+    expires_in = registration.grant_registration_access(payload.token, response)
+    return success_response(RegistrationAccessResponseData(expires_in_seconds=expires_in))
 
 
 @router.post("/login", response_model=ApiResponse[AuthResponse])

@@ -13,9 +13,11 @@ authoritative cost control. What this module bounds:
     and with generous limits, so people sharing an address are not locked out together.
 
 Counters live in the authoritative store (`get_auth_attempt_repository()`), as keyed hashes: no email
-address and no IP address is stored or logged. A check is "count, then act", not a lock: under a burst
-of simultaneous requests a limit can be passed by the number of requests in flight. That is acceptable
-here (these are speed bumps; the generation limits are the atomic ones).
+address and no IP address is stored or logged. The deployment-wide signup limit is atomic: a place is
+reserved (count and insert under one advisory lock) before the account is created and given back if no
+account results, so simultaneous signups cannot pass it. Every other check is "count, then act", not a
+lock: under a burst of simultaneous requests it can be passed by the number of requests in flight. That
+is acceptable here (they are speed bumps; the generation limits are atomic too).
 
 Client address. `X-Forwarded-For` is client-controlled except for what trusted proxies append, so it
 is read ONLY when `CLIENT_IP_TRUSTED_PROXY_HOPS` says how many trusted proxies there are, and then only
@@ -85,28 +87,50 @@ def _refused(event: str, error_code: str) -> None:
     )
 
 
-def ensure_signup_allowed(client_address: str | None) -> None:
-    """Raises `signup_limit_error()` (429) when the deployment-wide or, with a trusted address, the
-    per-address signup limit is reached. Runs before the email is looked at, so the answer says
-    nothing about whether it is registered."""
+
+def reserve_signup(client_address: str | None) -> str | None:
+    """Takes one place of the deployment-wide signup limit BEFORE the account is created, atomically
+    (`AuthAttemptRepository.reserve`: count and insert under one advisory lock), so simultaneous
+    signups cannot pass `SIGNUP_MAX_PER_WINDOW_GLOBAL`. Raises `signup_limit_error()` (429) when no
+    place is left -- or, with a trusted client address, when that address is at its own (count-then-act)
+    limit. Returns the reservation, to be released with `release_signup` if no account is created. With
+    the global limit switched off (0) the signup is simply recorded."""
     settings = get_settings()
     repository = get_auth_attempt_repository()
-    since = _now() - timedelta(seconds=settings.signup_limit_window_seconds)
-    over_global = (
-        settings.signup_max_per_window_global > 0
-        and repository.count(SIGNUP, since=since) >= settings.signup_max_per_window_global
-    )
-    over_address = (
-        not over_global
-        and client_address is not None
+    now = _now()
+    since = now - timedelta(seconds=settings.signup_limit_window_seconds)
+    ip_hash = _digest("ip", client_address, settings) if client_address else None
+    if (
+        ip_hash is not None
         and settings.signup_max_per_window_per_ip > 0
-        and repository.count(SIGNUP, since=since, ip_hash=_digest("ip", client_address, settings))
-        >= settings.signup_max_per_window_per_ip
-    )
-    if over_global or over_address:
+        and repository.count(SIGNUP, since=since, ip_hash=ip_hash) >= settings.signup_max_per_window_per_ip
+    ):
         error = signup_limit_error()
         _refused("signup", error.code.value)
         raise error
+    if settings.signup_max_per_window_global <= 0:
+        record_signup(client_address)
+        return None
+    reservation = repository.reserve(
+        SIGNUP,
+        now=now,
+        limit=settings.signup_max_per_window_global,
+        since=since,
+        ip_hash=ip_hash,
+        prune_before=_prune_before(now, settings),
+    )
+    if reservation is None:
+        error = signup_limit_error()
+        _refused("signup", error.code.value)
+        raise error
+    return reservation
+
+
+def release_signup(reservation: str | None) -> None:
+    """The reserved signup did not create an account (e.g. the email is already registered): its place
+    is given back, so only CREATED accounts count, as before."""
+    if reservation is not None:
+        get_auth_attempt_repository().release(reservation)
 
 
 def record_signup(client_address: str | None) -> None:

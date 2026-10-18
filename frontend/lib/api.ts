@@ -5,6 +5,8 @@ import type {
   AICandidateReviewData,
   ApiResponse,
   AuthResponse,
+  RegistrationAccess,
+  RegistrationStatus,
   CreateForkRequest,
   CreateForkResponse,
   DestinationContextData,
@@ -325,6 +327,21 @@ export function signup(email: string, password: string): Promise<AuthResponse> {
   return request<AuthResponse>("/auth/signup", {
     method: "POST",
     body: JSON.stringify({ email, password }),
+  });
+}
+
+// Limited beta: whether new accounts are open, need the invitation link, or are closed, and whether
+// this browser may sign up now. Never carries the link's token.
+export function getRegistrationStatus(): Promise<RegistrationStatus> {
+  return request<RegistrationStatus>("/auth/registration");
+}
+
+// Limited beta: the invitation link's token goes in the JSON BODY, never a URL. On success the backend
+// sets a short-lived HttpOnly registration cookie; nothing secret comes back.
+export function exchangeRegistrationLink(token: string): Promise<RegistrationAccess> {
+  return request<RegistrationAccess>("/auth/registration-access", {
+    method: "POST",
+    body: JSON.stringify({ token }),
   });
 }
 

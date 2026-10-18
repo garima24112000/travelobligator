@@ -461,6 +461,29 @@ def test_the_attempt_counters_live_in_postgres() -> None:
     assert stored == [(None, address)]
 
 
+def test_RACE_signup_reservations_take_exactly_the_limit() -> None:
+    """The deployment-wide signup limit is reserved atomically (advisory lock + count + insert in one
+    transaction): ten simultaneous signups against a limit of three get exactly three places, and a
+    released place can be taken again. At a private future instant, so no other test's rows count."""
+    with get_session_factory()() as session:
+        session.execute(text("delete from auth_attempts where created_at > now() + interval '1 year'"))
+        session.commit()
+    now = _private_now()
+    since = now - timedelta(days=1)
+    repo = PostgresAuthAttemptRepository()
+
+    outcomes = _race(lambda i: repo.reserve(SIGNUP, now=now, limit=3, since=since), workers=10)
+
+    granted = [outcome for outcome in outcomes if isinstance(outcome, str)]
+    assert len(granted) == 3 and outcomes.count(None) == 7, outcomes
+    counted = "select count(*) from auth_attempts where kind = 'signup' and created_at > :s"
+    assert _scalar(counted, s=since) == 3
+    repo.release(granted[0])
+    assert _scalar(counted, s=since) == 2
+    assert repo.reserve(SIGNUP, now=now, limit=3, since=since) is not None
+    assert repo.reserve(SIGNUP, now=now, limit=3, since=since) is None
+
+
 def test_old_attempt_rows_are_pruned_on_write() -> None:
     repo = PostgresAuthAttemptRepository()
     marker = uuid.uuid4().hex

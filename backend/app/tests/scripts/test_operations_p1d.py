@@ -813,7 +813,10 @@ def test_no_account_deletion_is_promised_to_someone_who_cannot_prove_ownership()
     # password, and there is nothing that could verify an email address or reset a password
     auth_routes = (_ROOT / "backend" / "app" / "api" / "routes" / "auth.py").read_text()
     paths = re.findall(r'@router\.(?:get|post|put|patch|delete)\(\s*"([^"]+)"', auth_routes)
-    assert sorted(paths) == ["/delete-account", "/login", "/logout", "/me", "/signup"]
+    # (the limited beta's two registration routes only decide whether a NEW account may be created)
+    assert sorted(paths) == [
+        "/delete-account", "/login", "/logout", "/me", "/registration", "/registration-access", "/signup",
+    ]
     assert "password" in auth_routes[auth_routes.index('"/delete-account"') : auth_routes.index('"/me"')]
     application = "\n".join(
         path.read_text() for path in (_ROOT / "backend" / "app").rglob("*.py") if "tests" not in path.parts

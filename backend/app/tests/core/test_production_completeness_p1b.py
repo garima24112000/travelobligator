@@ -34,6 +34,7 @@ _PLACEHOLDERS = {
     "SESSION_SECRET_KEY": "SENTINEL_P1B_SESSION_SECRET_" + "x" * 24,
     "OPS_TOKEN": "SENTINEL_P1B_OPS_TOKEN_" + "y" * 16,
     "BACKEND_CORS_ORIGINS": "https://frontend.example.test",
+    "BETA_REGISTRATION_TOKEN": "SENTINEL_P1B_BETA_TOKEN_" + "z" * 16,
 }
 _SECRET_VALUES = [value for key, value in _PLACEHOLDERS.items() if key != "BACKEND_CORS_ORIGINS"]
 
@@ -159,6 +160,8 @@ def test_secrets_are_referenced_by_name_only() -> None:
     generated = {key for key, entry in env.items() if entry.get("generateValue") is True}
     assert dashboard == {
         "DATABASE_URL", "REDIS_URL", "GROQ_API_KEY", "GEMINI_API_KEY", "GEOAPIFY_API_KEY", "BACKEND_CORS_ORIGINS",
+        # limited beta: the owner chooses (and replaces) the shareable link's token
+        "BETA_REGISTRATION_TOKEN",
     }
     assert generated == {"SESSION_SECRET_KEY", "OPS_TOKEN"}
     for key in dashboard | generated:

@@ -15,7 +15,7 @@ A row carries a `kind`, two optional keyed hashes and a timestamp -- never an em
 from __future__ import annotations
 
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from uuid import uuid4
 
@@ -32,6 +32,7 @@ class _Attempt:
     subject_hash: str | None
     ip_hash: str | None
     created_at: datetime
+    attempt_id: str = field(default_factory=lambda: uuid4().hex)
 
 
 class AuthAttemptRepository:
@@ -71,6 +72,33 @@ class AuthAttemptRepository:
                 and (subject_hash is None or a.subject_hash == subject_hash)
                 and (ip_hash is None or a.ip_hash == ip_hash)
             )
+
+    def reserve(
+        self,
+        kind: str,
+        *,
+        now: datetime,
+        limit: int,
+        since: datetime,
+        ip_hash: str | None = None,
+        prune_before: datetime | None = None,
+    ) -> str | None:
+        """Atomically: when fewer than `limit` rows of `kind` are later than `since`, record one and
+        return its id; otherwise record nothing and return None. Same contract as the PostgreSQL
+        repository; here under this process's lock."""
+        with self._lock:
+            if prune_before is not None:
+                self._attempts = [a for a in self._attempts if a.created_at >= prune_before]
+            if sum(1 for a in self._attempts if a.kind == kind and a.created_at > since) >= limit:
+                return None
+            attempt = _Attempt(kind, None, ip_hash, now)
+            self._attempts.append(attempt)
+            return attempt.attempt_id
+
+    def release(self, attempt_id: str) -> None:
+        """Removes one reserved row (the action it was reserved for did not happen)."""
+        with self._lock:
+            self._attempts = [a for a in self._attempts if a.attempt_id != attempt_id]
 
     def clear(self, kind: str, *, subject_hash: str) -> None:
         with self._lock:
@@ -138,6 +166,47 @@ class PostgresAuthAttemptRepository:
             return session.execute(
                 select(func.count()).select_from(AuthAttemptRow).where(*conditions)
             ).scalar_one()
+
+    def reserve(
+        self,
+        kind: str,
+        *,
+        now: datetime,
+        limit: int,
+        since: datetime,
+        ip_hash: str | None = None,
+        prune_before: datetime | None = None,
+    ) -> str | None:
+        """Atomically: when fewer than `limit` rows of `kind` are later than `since`, insert one and
+        return its id; otherwise insert nothing and return None. One transaction that takes
+        `pg_advisory_xact_lock` first (the admission pattern), so simultaneous callers -- in any
+        process -- are decided one at a time and cannot both take the last place."""
+        from app.db.models import AuthAttemptRow
+        from app.repositories.admission import SIGNUP_LIMIT_ADVISORY_LOCK_KEY
+
+        with self._scope() as session:
+            session.execute(select(func.pg_advisory_xact_lock(SIGNUP_LIMIT_ADVISORY_LOCK_KEY)))
+            if prune_before is not None:
+                session.execute(delete(AuthAttemptRow).where(AuthAttemptRow.created_at < prune_before))
+            taken = session.execute(
+                select(func.count())
+                .select_from(AuthAttemptRow)
+                .where(AuthAttemptRow.kind == kind, AuthAttemptRow.created_at > since)
+            ).scalar_one()
+            if taken >= limit:
+                return None
+            attempt_id = uuid4().hex
+            session.add(
+                AuthAttemptRow(attempt_id=attempt_id, kind=kind, subject_hash=None, ip_hash=ip_hash, created_at=now)
+            )
+            return attempt_id
+
+    def release(self, attempt_id: str) -> None:
+        """Removes one reserved row (the action it was reserved for did not happen)."""
+        from app.db.models import AuthAttemptRow
+
+        with self._scope() as session:
+            session.execute(delete(AuthAttemptRow).where(AuthAttemptRow.attempt_id == attempt_id))
 
     def clear(self, kind: str, *, subject_hash: str) -> None:
         from app.db.models import AuthAttemptRow

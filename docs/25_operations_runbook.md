@@ -608,9 +608,11 @@ What the system has, checked in the code:
 
 - An account can be deleted in exactly one way: `POST /auth/delete-account`, by a signed-in session that
   also supplies the account's password.
-- The authentication routes are sign-up, log-in, log-out, delete-account and "who am I". There is no
-  password reset, no email verification, no mail-sending code or dependency, no recovery code and no second
-  factor. An email address is accepted at sign-up without proof that the person controls it.
+- The authentication routes are sign-up, log-in, log-out, delete-account and "who am I", plus the limited
+  beta's registration status and invitation-link exchange (`docs/29` section 8), which only decide whether
+  a NEW account may be created. There is no password reset, no email verification, no mail-sending code or
+  dependency, no recovery code and no second factor. An email address is accepted at sign-up without proof
+  that the person controls it; an invitation link controls who may register, not who an account belongs to.
 - So, without the password, **nothing the system stores can prove that a requester owns an account.**
 
 What follows from that:

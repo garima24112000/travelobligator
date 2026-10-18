@@ -46,6 +46,18 @@ export type AuthResponse = {
   user: PublicUser;
 };
 
+// Limited beta (backend: app.models.user.RegistrationStatusData / RegistrationAccessResponseData).
+// "open" | "invite_link" | "closed"; any other value is treated as closed.
+export type RegistrationStatus = {
+  mode: string;
+  authorized: boolean;
+};
+
+export type RegistrationAccess = {
+  authorized: boolean;
+  expires_in_seconds: number;
+};
+
 // P1-A deletion (backend: app.schemas.trips.TripDeletedResponseData /
 // app.models.user.AccountDeletedResponseData).
 export type TripDeletedData = {

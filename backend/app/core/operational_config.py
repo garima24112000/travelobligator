@@ -287,7 +287,31 @@ def _production_abuse_limit_problems(settings: Settings) -> list[str]:
         problems.append(
             "GENERATION_MAX_JOBS_PER_USER_PER_WINDOW must not exceed GENERATION_MAX_JOBS_GLOBAL_PER_WINDOW."
         )
+    problems.extend(_production_registration_problems(settings))
     return problems
+
+
+# The shortest acceptable shareable-link token: the same bar as `SESSION_SECRET_KEY`.
+MIN_BETA_REGISTRATION_TOKEN_LENGTH = 32
+
+
+def _production_registration_problems(settings: Settings) -> list[str]:
+    """Limited beta: production never runs with open registration, and an invitation link needs a
+    long, unguessable token. Names the variable, never its value."""
+    if settings.signup_mode == "open":
+        return [
+            "APP_ENV=production does not allow SIGNUP_MODE=open: use invite_link (the shareable beta link) "
+            "or closed."
+        ]
+    token = settings.beta_registration_token or ""
+    if settings.signup_mode == "invite_link" and len(token) < MIN_BETA_REGISTRATION_TOKEN_LENGTH:
+        return [
+            f"SIGNUP_MODE=invite_link requires BETA_REGISTRATION_TOKEN of at least "
+            f"{MIN_BETA_REGISTRATION_TOKEN_LENGTH} characters."
+        ]
+    if token and token == (settings.session_secret_key or ""):
+        return ["BETA_REGISTRATION_TOKEN must not be the same value as SESSION_SECRET_KEY."]
+    return []
 
 
 _PUBLIC_NOMINATIM_HOST = "nominatim.openstreetmap.org"
