@@ -1,0 +1,89 @@
+# Daily encrypted backup of the production Neon database to Amazon S3. Details: docs/30_automated_neon_backups.md.
+#
+# What it does: pg_dump (PostgreSQL 16 client) -> GnuPG symmetric AEAD encryption (AES-256-OCB) -> proves the
+# encrypted file decrypts to the dump -> deletes the plaintext -> uploads ONLY the encrypted file to
+# s3://travelobligator-db-backups-10192026/neon/ under a new timestamped name -> checks the stored object's size
+# and SHA-256. The bucket's lifecycle rule deletes objects after 7 days; this workflow never deletes anything.
+#
+# What it deliberately is NOT:
+#   * Not CI and not deployment: a separate workflow, never a required check, no checkout of a pull request.
+#   * Never triggered by pull_request / push: only by the schedule and by a person (workflow_dispatch).
+#   * Never run off main: the job is skipped unless the ref is refs/heads/main (the AWS role trusts only
+#     that ref anyway). The SCHEDULED run additionally stays off until the repository variable
+#     NEON_BACKUP_SCHEDULE_ENABLED is "true", so merging this file starts nothing by itself.
+#   * No long-lived AWS key: GitHub OIDC -> a short-lived role session.
+#   * No Python package is installed in the job that holds the secrets (the script is standard library only).
+#
+# Secrets (repository): NEON_BACKUP_DATABASE_URL (direct, TLS, role travelobligator_backup) and
+# BACKUP_ENCRYPTION_PASSPHRASE. They are given to the one step that needs them, never to a third-party action.
+#
+# A scheduled workflow runs from the default branch only, and GitHub pauses schedules in a repository that has
+# had no activity for 60 days -- after which no new backup is made and the lifecycle rule empties the prefix
+# within 7 days. A failed run is the alert (see the runbook for notification settings).
+
+name: Neon backup
+
+on:
+  schedule:
+    - cron: "37 3 * * *" # daily, 03:37 UTC (off the hour: GitHub's scheduler is most delayed at :00)
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: neon-backup
+  cancel-in-progress: false
+
+jobs:
+  backup:
+    name: Backup to S3
+    if: >-
+      ${{ github.repository == 'garima24112000/travelobligator'
+          && github.ref == 'refs/heads/main'
+          && (github.event_name == 'workflow_dispatch' || vars.NEON_BACKUP_SCHEDULE_ENABLED == 'true') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read # checkout
+      id-token: write # GitHub OIDC token for the AWS role
+    env:
+      AWS_REGION: us-east-1
+      BACKUP_S3_BUCKET: travelobligator-db-backups-10192026
+      BACKUP_S3_PREFIX: neon/
+      BACKUP_EXPECTED_DB_USER: travelobligator_backup
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # From Ubuntu's own signed archive: pg_dump 16 matches Neon's PostgreSQL 16 (pg_dump refuses a server
+      # newer than itself, so a server upgrade fails this job loudly rather than producing a bad dump).
+      - name: Install PostgreSQL 16 client and GnuPG
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends postgresql-client-16 gnupg
+          /usr/lib/postgresql/16/bin/pg_dump --version
+          gpg --version | head -n 1
+          aws --version
+
+      - name: Assume the backup role (OIDC)
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: arn:aws:iam::078038703506:role/TravelObligatorNeonBackupRole
+          aws-region: us-east-1
+          allowed-account-ids: "078038703506"
+          role-session-name: neon-backup-${{ github.run_id }}
+          role-duration-seconds: 3600
+
+      - name: Dump, encrypt, upload and verify
+        env:
+          NEON_BACKUP_DATABASE_URL: ${{ secrets.NEON_BACKUP_DATABASE_URL }}
+          BACKUP_ENCRYPTION_PASSPHRASE: ${{ secrets.BACKUP_ENCRYPTION_PASSPHRASE }}
+          PG_BIN_DIR: /usr/lib/postgresql/16/bin
+        run: python3 -I scripts/backup/neon_s3_backup.py
+
+      # The script removes its directory itself (also when cancelled); this covers a hard kill of the step.
+      # The hosted runner's machine is discarded after the job in any case.
+      - name: Remove temporary files
+        if: ${{ always() }}
+        run: find "$RUNNER_TEMP" -maxdepth 1 -name 'neon-backup-*' -exec rm -rf {} +
