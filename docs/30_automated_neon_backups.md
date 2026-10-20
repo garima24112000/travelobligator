@@ -107,7 +107,9 @@ file and a wrong passphrase all exit 2.
   the same step, or the role can no longer be assumed.
 - The bucket's 7-day expiration deletes objects whether or not newer ones exist. If backups fail for more
   than 7 days in a row (a broken run, or GitHub pausing schedules after 60 days without repository
-  activity), the prefix empties. A failed run is the alert: confirm that it reaches someone.
+  activity), the prefix empties. `.github/workflows/production-monitor.yml` alerts on a failed run, a
+  disabled schedule and a backup older than 36 hours; only an external heartbeat notices GitHub no longer
+  running workflows at all (`docs/31_production_monitoring.md`).
 - If bucket **versioning** is enabled, expiration only adds a delete marker and the old versions stay until
   a noncurrent-version rule removes them. Check this (section 7).
 

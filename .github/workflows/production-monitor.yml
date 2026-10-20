@@ -1,0 +1,154 @@
+# Hourly production monitoring: backend liveness, backup freshness, and alert issues. Details and the owner's
+# response checklist: docs/31_production_monitoring.md.
+#
+#   Backend health    GET https://travelobligator-backend.onrender.com/health only, validated (HTTP 200, JSON,
+#                     success + data.status "ok"), up to 4 attempts over ~8 min so a free-tier cold start is not
+#                     an outage. No token, no other endpoint, never a planning or provider call.
+#   Backup freshness  Lists s3://travelobligator-db-backups-10192026/neon/ (no download, no decryption) through
+#                     the existing backup role, narrowed by an inline session policy to s3:ListBucket on neon/
+#                     only. Newest valid encrypted backup must be < 36 h old by S3's LastModified; empty prefix,
+#                     zero-byte, undersized or unrecognised objects are problems. Also checks that the backup
+#                     workflow is active, its schedule variable is on, and its latest run did not fail.
+#   Alerts            One GitHub issue per check in this repository, @-mentioning the owner: opened on the first
+#                     failing run, updated silently while it lasts, closed with a comment on recovery. Optional
+#                     dead-man heartbeat to an external service (secret MONITOR_HEARTBEAT_URL, owner-approved).
+#
+# Switches (repository variables; merging this file starts nothing scheduled):
+#   PRODUCTION_MONITOR_ENABLED=true      scheduled runs of this workflow at all
+#   MONITOR_BACKEND_HEALTH_ENABLED=true  the scheduled backend check too. Off by default: every check wakes the
+#                                        Render Free backend (it sleeps again after ~15 idle minutes; an hourly
+#                                        check is not a keepalive), and the recorded owner decision was to keep
+#                                        scheduled backend checks off until changed deliberately.
+#
+# Never triggered by pull_request/push; runs only on main in this repository (the AWS role trusts only main).
+# A workflow cannot report its own absence: if GitHub stops scheduling it (disabled, 60 days of repository
+# inactivity, an outage), only the external heartbeat notices.
+
+name: Production monitor
+
+on:
+  schedule:
+    - cron: "17 * * * *" # hourly, off the hour (GitHub's scheduler is most delayed at :00)
+  workflow_dispatch:
+    inputs:
+      backend:
+        description: "Check the backend's /health (wakes a sleeping free-tier backend)"
+        type: boolean
+        default: true
+      backups:
+        description: "Check backup freshness in S3"
+        type: boolean
+        default: true
+
+permissions: {}
+
+concurrency:
+  group: production-monitor
+  cancel-in-progress: false
+
+jobs:
+  backend-health:
+    name: Backend health
+    if: >-
+      ${{ github.repository == 'garima24112000/travelobligator'
+          && github.ref == 'refs/heads/main'
+          && ((github.event_name == 'workflow_dispatch' && inputs.backend)
+              || (github.event_name == 'schedule' && vars.PRODUCTION_MONITOR_ENABLED == 'true'
+                  && vars.MONITOR_BACKEND_HEALTH_ENABLED == 'true')) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    permissions:
+      contents: read # checkout
+    outputs:
+      status: ${{ steps.check.outputs.status }}
+      summary: ${{ steps.check.outputs.summary }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # continue-on-error: the finding travels as an output to the alert job, which decides the run's result.
+      - name: GET /health with a cold-start allowance
+        id: check
+        continue-on-error: true
+        env:
+          MONITOR_BACKEND_URL: https://travelobligator-backend.onrender.com
+        run: python3 -I scripts/monitoring/production_monitor.py health
+
+  backup-freshness:
+    name: Backup freshness
+    if: >-
+      ${{ github.repository == 'garima24112000/travelobligator'
+          && github.ref == 'refs/heads/main'
+          && ((github.event_name == 'workflow_dispatch' && inputs.backups)
+              || (github.event_name == 'schedule' && vars.PRODUCTION_MONITOR_ENABLED == 'true')) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read # checkout
+      id-token: write # GitHub OIDC token for the AWS role
+      actions: read # the backup workflow's state and latest run
+    outputs:
+      status: ${{ steps.check.outputs.status }}
+      summary: ${{ steps.check.outputs.summary }}
+    env:
+      AWS_REGION: us-east-1
+      BACKUP_S3_BUCKET: travelobligator-db-backups-10192026
+      BACKUP_S3_PREFIX: neon/
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The backup role, narrowed for this session to listing neon/ (a session policy can only remove
+      # permissions): this job can neither read an object's content nor write one.
+      - name: Assume the backup role, list-only (OIDC)
+        continue-on-error: true # a failure is reported by the check below as "could not run"
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: arn:aws:iam::078038703506:role/TravelObligatorNeonBackupRole
+          aws-region: us-east-1
+          allowed-account-ids: "078038703506"
+          role-session-name: production-monitor-${{ github.run_id }}
+          role-duration-seconds: 900
+          inline-session-policy: >-
+            {"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"s3:ListBucket",
+            "Resource":"arn:aws:s3:::travelobligator-db-backups-10192026",
+            "Condition":{"StringLike":{"s3:prefix":["neon/*"]}}}]}
+
+      - name: Check the newest encrypted backup and the backup workflow
+        id: check
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          NEON_BACKUP_SCHEDULE_ENABLED: ${{ vars.NEON_BACKUP_SCHEDULE_ENABLED }}
+        run: python3 -I scripts/monitoring/production_monitor.py backups
+
+  alert:
+    name: Alerts
+    needs: [backend-health, backup-freshness]
+    if: >-
+      ${{ always()
+          && github.repository == 'garima24112000/travelobligator'
+          && github.ref == 'refs/heads/main'
+          && (github.event_name == 'workflow_dispatch' || vars.PRODUCTION_MONITOR_ENABLED == 'true') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read # checkout
+      issues: write # open, update and close the alert issues
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Open, update or close alert issues
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          MONITOR_ALERT_MENTION: ${{ github.repository_owner }}
+          MONITOR_HEARTBEAT_URL: ${{ secrets.MONITOR_HEARTBEAT_URL }}
+          HEALTH_JOB: ${{ needs.backend-health.result }}
+          HEALTH_STATUS: ${{ needs.backend-health.outputs.status }}
+          HEALTH_SUMMARY: ${{ needs.backend-health.outputs.summary }}
+          BACKUP_JOB: ${{ needs.backup-freshness.result }}
+          BACKUP_STATUS: ${{ needs.backup-freshness.outputs.status }}
+          BACKUP_SUMMARY: ${{ needs.backup-freshness.outputs.summary }}
+        run: python3 -I scripts/monitoring/production_monitor.py alert
