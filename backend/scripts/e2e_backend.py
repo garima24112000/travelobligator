@@ -206,7 +206,18 @@ def main() -> None:
     # before it; the default one would end the process without running `atexit`, leaving the store behind.
     for signum in (signal.SIGTERM, signal.SIGINT):
         signal.signal(signum, lambda *_: sys.exit(0))
-    uvicorn.run(app, host="127.0.0.1", port=int(os.environ.get("E2E_BACKEND_PORT", "8100")), log_level="warning")
+    # The browser reaches this backend through `next start`'s /api rewrite, whose proxy pools connections in
+    # Node's keep-alive agent and retires an idle one after 5 s. Uvicorn's own default also closes an idle
+    # connection after 5 s, so the two raced: the proxy could reuse a connection uvicorn had just closed,
+    # read ECONNRESET and answer the browser with a bodiless 500 (seen in CI on a job poll). Keeping idle
+    # connections open here well past the proxy's 5 s means the proxy always retires them first.
+    uvicorn.run(
+        app,
+        host="127.0.0.1",
+        port=int(os.environ.get("E2E_BACKEND_PORT", "8100")),
+        log_level="warning",
+        timeout_keep_alive=int(os.environ.get("E2E_BACKEND_KEEP_ALIVE_SECONDS", "30")),
+    )
 
 
 if __name__ == "__main__":

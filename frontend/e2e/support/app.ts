@@ -176,7 +176,19 @@ function tripPayload(input: TripInput) {
   };
 }
 
-async function json(response: APIResponse) {
+/** The JSON body of a successful API response. Anything else fails at once with what was received instead
+ * (status, content type, path with the synthetic ids masked, the first characters of the body), never a bare
+ * "not valid JSON": in CI, `next start`'s /api proxy once answered a job poll with a bodiless 500 after
+ * reading ECONNRESET from the backend, and the parse error hid which side failed. Not retried here. */
+async function json(response: APIResponse, what = "API response") {
+  const contentType = response.headers()["content-type"] ?? "";
+  if (!response.ok() || !contentType.includes("application/json")) {
+    const body = (await response.text().catch(() => "")).replace(/\s+/g, " ").slice(0, 80);
+    const path = new URL(response.url()).pathname.replace(/\b(trip|job|user)_[0-9a-f]+/g, "$1_<id>");
+    throw new Error(
+      `${what}: HTTP ${response.status()} ${contentType || "(no content type)"} from ${path}; body starts ${JSON.stringify(body)}`,
+    );
+  }
   return (await response.json()) as { data: Record<string, unknown>; errors?: { code: string }[] };
 }
 
@@ -200,7 +212,7 @@ export async function generateViaApi(page: Page, tripId: string, options: { wait
     await expect
       .poll(
         async () => {
-          last = (await json(await page.request.get(`/api/trips/${tripId}/jobs/${jobId}`))).data ?? {};
+          last = (await json(await page.request.get(`/api/trips/${tripId}/jobs/${jobId}`), "job poll")).data ?? {};
           return last.status;
         },
         { timeout: 30_000, intervals: [250] },
