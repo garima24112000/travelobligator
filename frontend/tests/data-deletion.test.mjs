@@ -10,6 +10,8 @@ import { fileURLToPath } from "node:url";
 import {
   ACCOUNT_DELETED_MESSAGE,
   ACCOUNT_DELETE_FAILED_MESSAGE,
+  ACCOUNT_DELETION_CODE_HOURS,
+  ACCOUNT_DELETION_CONTACT,
   ACCOUNT_DELETION_CHECKBOX_LABEL,
   ACCOUNT_DELETION_WARNING,
   PRIVACY_NOTICE,
@@ -150,9 +152,20 @@ test("the notice makes no legal, compliance or absolute promise", () => {
   // no retention period is claimed for what the project does not control, or has not yet configured
   assert.match(noticeText, /has not yet set a retention period for these exports/);
   assert.match(noticeText, /removed on those services' own schedules, which this project has not verified/);
-  // the only durations stated are ones the code enforces
+  // the only durations stated are ones in force: the code's (sign-in cookie, usage record) and the
+  // automated backups' schedule and expiry (recorded in the runbook, checked below)
   const durations = noticeText.match(/\b(\w+ (days?|hours?|months?|years?))\b/gi) ?? [];
-  assert.deepEqual(durations.map((d) => d.toLowerCase()).sort(), ["24 hours", "seven days"]);
+  assert.deepEqual(durations.map((d) => d.toLowerCase()).sort(), ["24 hours", "72 hours", "a day", "seven days", "seven days", "seven days"]);
+});
+
+test("the backup schedule and expiry in the notice are the ones the runbook records as in force", () => {
+  const runbook = read(repo, "docs", "25_operations_runbook.md");
+  const section = runbook.slice(runbook.indexOf("### 2.6 Automated daily backups"), runbook.indexOf("## 3. Deployment procedure"));
+  assert.ok(section.length > 0, "runbook section 2.6 is missing");
+  assert.match(section, /once a day at 03:37 UTC/); // "once a day"
+  assert.match(section, /expires \*\*7 days\*\* after it is created/); // "about seven days after it is made"
+  assert.match(noticeText, /once a day, an automated job copies the whole database/);
+  assert.match(noticeText, /deleted automatically about seven days after it is made/);
 });
 
 test("the durations in the notice are the configured ones", () => {
@@ -162,6 +175,10 @@ test("the durations in the notice are the configured ones", () => {
   assert.equal(setting("generation_limit_window_seconds"), 24 * 3600); // "kept for up to 24 hours"
   // "expires after at most 30 minutes": the invitation cookie's lifetime cannot be configured above that
   assert.match(config, /registration_access_ttl_seconds: int = Field\(\s*default=1800, alias="REGISTRATION_ACCESS_TTL_SECONDS", ge=60, le=1800\s*\)/);
+  // "at most 72 hours": the operator command refuses a longer code lifetime
+  const command = read(repo, "backend", "scripts", "locked_out_account_deletion.py");
+  assert.match(command, new RegExp(`^MAX_HOURS = ${ACCOUNT_DELETION_CODE_HOURS}$`, "m"));
+  assert.match(command, /^MAX_ATTEMPTS = 5$/m); // "a few wrong codes cancel the request"
 });
 
 test("every provider and host named in the notice is one the project documents", () => {
@@ -175,10 +192,15 @@ test("every provider and host named in the notice is one the project documents",
   assert.match(noticeText, /OpenStreetMap/);
 });
 
-test("the only contact is the project's own public repository", () => {
+test("the contacts are the public repository and the owner-chosen deletion address, nothing invented", () => {
   assert.equal(PROJECT_ISSUES_URL, `${PROJECT_REPOSITORY_URL}/issues`);
   assert.ok(readme.includes(PROJECT_REPOSITORY_URL), "the repository URL must be the one in the README");
-  assert.doesNotMatch(noticeText + panel, /@[a-z0-9-]+\.[a-z]{2,}|mailto:|tel:|\+\d{6,}/i); // no invented email / phone
+  // exactly one email address appears, the owner's decision D3a, and it is the one the runbook names
+  assert.equal(ACCOUNT_DELETION_CONTACT, "garimaprachi2411@gmail.com");
+  const addresses = [...(noticeText + panel).matchAll(/[a-z0-9._%+-]+@[a-z0-9-]+(\.[a-z0-9-]+)+/gi)].map((m) => m[0]);
+  assert.deepEqual([...new Set(addresses)], [ACCOUNT_DELETION_CONTACT]);
+  assert.ok(read(repo, "docs", "25_operations_runbook.md").includes(ACCOUNT_DELETION_CONTACT), "the runbook must name the same address");
+  assert.doesNotMatch(noticeText + panel, /mailto:|tel:|\+\d{6,}/i); // no phone number, no link that sends mail
   assert.match(noticeText, /Issues are public, so do not include personal details/);
   assert.match(panel, /href=\{PROJECT_ISSUES_URL\}/);
   assert.match(panel, /rel="noopener noreferrer"/);

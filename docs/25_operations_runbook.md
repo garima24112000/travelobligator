@@ -45,21 +45,23 @@ not purely additive, so this paragraph cannot silently become false.
 
 ## 2. Backup and restore
 
-### 2.1 Two different things are called "backup"
+### 2.1 Three different things are called "backup"
 
-| | Neon-managed recovery | An exported backup (this section) |
-| --- | --- | --- |
-| What it is | Neon keeps a history of the database and can restore a branch to an earlier point in time | A `pg_dump` file you hold yourself |
-| Where it lives | Inside the same Neon project | Wherever you put it, outside Neon |
-| Survives losing the Neon project or account | No | Yes |
-| How far back | Set by the project's plan and history setting. **Needs the dashboard:** read it in the Neon console. This project has not verified its value and states none. | As far back as the files you kept |
-| Restores into | A Neon branch | Any empty PostgreSQL database |
-| Effort | A few clicks; nothing to prepare | A command before each deployment; a file to keep safe |
+| | Neon-managed recovery | The automated daily backup (section 2.6) | An exported backup (sections 2.2–2.5) |
+| --- | --- | --- | --- |
+| What it is | Neon keeps a history of the database and can restore a branch to an earlier point in time | A `pg_dump` made by a GitHub Actions workflow on `main` every day, encrypted, stored in Amazon S3 | A `pg_dump` file plus manifest you make and hold yourself |
+| Where it lives | Inside the same Neon project | S3 bucket `travelobligator-db-backups-10192026`, prefix `neon/` (AWS `us-east-1`) | Wherever you put it, outside Neon |
+| Survives losing the Neon project or account | No | Yes | Yes |
+| How far back | Set by the project's plan and history setting. **Needs the dashboard:** read it in the Neon console. This project has not verified its value and states none. | 7 days (S3 lifecycle expiry) | As far back as the files you kept |
+| Restores into | A Neon branch | A throwaway local database (drill) or a new Neon branch | Any empty PostgreSQL database |
+| Effort | A few clicks; nothing to prepare | None day to day; a monthly restore drill | A command before each deployment; a file to keep safe |
 
-Use both. Neon's history is the fast answer to "undo the last hour". The exported file is the only answer to
-"the project is gone", and the only one you can test without Neon.
+Use all three. Neon's history is the fast answer to "undo the last hour". The automated backup is the
+standing answer to "the project is gone". The manifest-checked export before a deployment is the one whose
+restore this tool verifies table by table.
 
-**Neither has been used against production yet.** The first production backup is taken in the next
+**Status:** the automated daily backup runs in production since 2026-10-19 (section 2.6). Neon's history and
+the manifest-checked export have not been used against production yet; the first export is taken in the next
 deployment (section 3, step 4).
 
 ### 2.2 Take a backup
@@ -90,6 +92,9 @@ encrypted disk, never in the repository, a chat or an issue, and delete it when 
 
 **The tool does not encrypt the dump.** Encryption is a property of where you keep it.
 
+This subsection is about the **manual export**. The automated daily backup has its own, configured expiry
+(7 days; section 2.6) and is described separately in the privacy notice.
+
 **Retention: a recommendation, not yet an operating policy.** The owner's decision is to keep exported
 backups for **30 days**, on encrypted storage with restricted access, and to delete them after that. That
 recommendation becomes a policy the project may state only once all four of these have been checked by a
@@ -103,14 +108,15 @@ person, and until then nobody should describe it as in force:
 | That a deleted file is gone from sync histories, trash folders and device backups too | **Not verified** |
 
 A backup holds the data of accounts that are deleted later; it is not purged when an account is deleted.
-The privacy notice (`frontend/lib/privacy-notice.ts`) describes this practice in words that are true both
-before and after the first export exists: the operator "may export a copy of the database" before a
+The privacy notice (`frontend/lib/privacy-notice.ts`) describes the manual export in words that are true
+both before and after the first export exists: the operator "may export a copy of the database" before a
 deployment, such an export "may be kept temporarily", it "is not edited when you delete a trip or your
-account", and "this project has not yet set a retention period for these exports". It names no number of
-days on purpose. When the four checks above are done and a period is really in force, the notice changes in
-the same commit that records it here; until then it must not state one. Hosting-provider backups and logs,
-and what was already sent to external services, are separate points of the notice and are not affected by
-anything the operator does with an export.
+account", and "this project has not yet set a retention period for these exports". For the exports it names
+no number of days on purpose. When the four checks above are done and a period is really in force, the
+notice changes in the same commit that records it here; until then it must not state one for exports. The
+automated daily backups (section 2.6), hosting-provider backups and logs, and what was already sent to
+external services are separate points of the notice and are not affected by anything the operator does with
+an export.
 
 ### 2.3 Restore into a new, isolated database
 
@@ -205,6 +211,41 @@ an untested procedure. It is the only way to learn what the local drill cannot s
   time and database id);
 - whether the Neon database holds anything outside schema `public`, which the dump would not include.
 
+### 2.6 Automated daily backups
+
+Since 2026-10-19 a GitHub Actions workflow on `main` (`.github/workflows/neon-backup.yml`; full design,
+restore and drill procedure in `docs/30_automated_neon_backups.md` on `main`) backs the production database
+up **once a day at 03:37 UTC**:
+
+- `pg_dump` (custom format, schema `public`) as the read-only role `travelobligator_backup`, over TLS;
+- encrypted on the GitHub-hosted runner with GnuPG (AES-256-OCB, an authenticated mode) before upload; the
+  plaintext dump exists only in a private temporary directory on that runner until the encrypted copy is
+  proven to decrypt to it, and is deleted on every exit path;
+- uploaded to the S3 bucket `travelobligator-db-backups-10192026`, prefix `neon/`, in `us-east-1`, through a
+  short-lived OIDC session of a role that may only list, read and write `neon/`; public access blocked;
+- each object expires **7 days** after it is created (S3 lifecycle rule); S3 removes expired objects
+  asynchronously, usually within about a day, so the notice says "about seven days";
+- watched hourly by `.github/workflows/production-monitor.yml` (`docs/31_production_monitoring.md` on
+  `main`): an issue is opened if the newest valid backup is older than 36 hours or the workflow is off.
+
+The privacy notice describes exactly this ("once a day … deleted automatically about seven days after it is
+made"; deletion in the app does not remove backups early). A test keeps the notice and this section in step.
+
+| Fact | Status |
+| --- | --- |
+| Daily run, encryption, upload and stored-object check | First production backup uploaded and restored by the local drill (reported by the owner, 2026-10-19) |
+| 7-day lifecycle expiry on `neon/` | Configured (reported by the owner); **check before release:** bucket versioning is off, or a noncurrent-version expiry rule exists, otherwise expired backups survive as old versions and "about seven days" is not true |
+| Who can read `neon/*` | The backup role (GitHub `main` only) and the account's administrators; **check before release:** no other principal or bucket policy grants read access |
+| Restore into a Neon branch | Not done (section 2.5) |
+
+**After every migration that adds a table**, grant the backup role read access to it, or the next backup
+fails with `permission denied` (and the monitor alerts). For the pending migrations:
+
+```sql
+-- as the owner of the tables, after `alembic upgrade head`
+GRANT SELECT ON auth_attempts, deleted_job_usage TO travelobligator_backup;
+```
+
 ## 3. Deployment procedure
 
 Order matters and is forced by section 1: the backend needs its schema, the frontend needs the backend's new
@@ -225,7 +266,33 @@ endpoints.
      `SIGNUP_MAX_PER_WINDOW_GLOBAL`, `LOGIN_MAX_FAILURES_PER_ACCOUNT`), the model-stage switches and
      `GROQ_MODEL` / `GEMINI_MODEL`. Check that the two model names are still offered by their providers
      (provider consoles); a benchmark that used them does not prove they are still available.
-   - Vercel: `BACKEND_ORIGIN` and `API_BASE_URL=/api` on the Production environment.
+   - **Limited beta, new and required** (all listed in `render.yaml`): `SIGNUP_MODE=invite_link`;
+     `BETA_REGISTRATION_TOKEN` (dashboard only, at least 32 random characters, different from
+     `SESSION_SECRET_KEY`; keep a copy in your password manager); `REGISTRATION_ACCESS_TTL_SECONDS=1800`;
+     `GENERATION_ENABLED=true`; `CLIENT_IP_TRUSTED_PROXY_HOPS=0`. Production code before `615ae9a` ignores
+     them, so they can be saved ("Save only") before the migration without restarting anything.
+   - **What `APP_ENV=production` enforces at startup** (`core/operational_config.py`; a violation stops
+     startup with a message naming the variable, never its value): PostgreSQL only; Redis provider cache (or
+     none); `APP_DEBUG=false`; Secure, HttpOnly, non-`none` session cookie; `SESSION_SECRET_KEY` of at least
+     32 characters; explicit https CORS origins; Geoapify for geocoding and places with its key; the inventory
+     gate on; `ASYNC_GENERATION_ENABLED=true`; none of the six P0 limits at 0 and the per-user generation
+     limit not above the global one; `SIGNUP_MODE` not `open`, and `invite_link` only with a valid token; the
+     four model stages on with a connected provider and its credential (and both Groq and Gemini while
+     failover is on); a feedback interpreter that is switched on needs the same. `OPS_TOKEN`, when set, of at
+     least 24 characters. **`APP_ENV` itself must be `production`: any other value switches all of these
+     checks off.**
+   - Variables that exist only in the dashboard and not in `render.yaml` (for example the feedback
+     interpreter, targeted regeneration, `LLM_PROVIDER_*` tuning) must equal the evaluated code defaults or be
+     a deliberate, recorded decision. **Find out whether the Render service is managed by a Blueprint**
+     (Render → Blueprints): if it is, a Blueprint sync applies every `value:` in `render.yaml` over the
+     dashboard; if not, `render.yaml` is documentation and every value is set by hand.
+   - Vercel: `BACKEND_ORIGIN` and `API_BASE_URL=/api` on the Production environment. Check what the
+     **Preview** environment's `BACKEND_ORIGIN` points at: if it is the production backend, every preview
+     deployment is a test against production.
+   - **Hold the Vercel production deployment.** Vercel production builds from `main` automatically, and the
+     release changes `frontend/`, so merging it would publish the new frontend before the backend is migrated
+     and deployed. Before merging, set Vercel's Ignored Build Step to "Don't build anything" for the duration
+     (and note the current command to restore it); step 8 deploys the frontend deliberately.
 3. **Nothing is generating.** Run the report of section 5.3, or wait for a quiet moment. A deploy interrupts
    running generations (section 1, fact 3).
 
@@ -246,7 +313,12 @@ endpoints.
 
    From this moment until step 6 finishes, the **old** backend still serves requests it has already started
    for, but its `/ready` says `not_ready`, and if it restarts (it sleeps after a quiet period) it will not
-   come back. **Do step 6 immediately.**
+   come back. **Do step 6 immediately.** There is no way back to the old backend from here without the manual
+   downgrade of section 4.3: plan to fix forward.
+
+   Then, as the owner of the tables, give the backup role read access to the two new tables, or the next
+   daily backup fails (section 2.6):
+   `GRANT SELECT ON auth_attempts, deleted_job_usage TO travelobligator_backup;`
 6. **Deploy the backend** on Render (manual deploy of the commit; `autoDeploy` is off).
 7. **Check the backend.** The deploy log shows one `Application started.` line with the new
    `migration_head` and no secret. Then:
@@ -259,11 +331,18 @@ endpoints.
    unset OPS_TOKEN
    ```
 
-8. **Deploy the frontend** on Vercel (the same commit).
+8. **Deploy the frontend** on Vercel (the same commit): Deployments → the commit → **Redeploy** with "Use
+   project's Ignore Build Step" **unticked**, then restore the Ignored Build Step command noted in step 2.
 9. **Smoke test, non-destructive first:**
    `python backend/scripts/public_check.py --backend --expect-security-headers`. Then, in a browser, the
    checklist of `docs/22_free_tier_deployment.md` section 11-G with a disposable account, which you delete
-   afterwards through "Delete account" (that is itself part of the test).
+   afterwards through "Delete account" (that is itself part of the test). Create that account **through the
+   invitation link on the real domain**, in a private window, and check in the developer tools
+   (`docs/29_release_readiness_checklist.md` section 8.7): `travelobligator_registration` is set (`HttpOnly`,
+   `Secure`, `SameSite=Lax`) after opening the link; after sign-up it is gone and the session cookie is
+   present (sign-up returns two `Set-Cookie` headers through Vercel's proxy, which has not been verified
+   before); sign out and in again. Then run **Actions → Neon backup** by hand: it must succeed (it proves the
+   grant of step 5).
 10. **Cold start.** Leave the site untouched until Render has put the backend to sleep (the dashboard shows
     when; allow well over a quarter of an hour without any request, including your own checks), then open it
     and sign in: the first request is slow and then succeeds. This has never been verified after a genuine
@@ -293,6 +372,13 @@ The new frontend is wrong, the backend is fine.
 
 - Render → the service → Manual Deploy → the previous commit (or "Rollback" on the previous deploy).
 - Check with section 3 step 7. Running generations are interrupted.
+- **After the next deployment, "the previous commit" is not production's old one.** Only commits whose
+  Alembic head is `a94c0e7d2b61` start on the migrated schema (`3eb11c7` … `615ae9a` and later). Every one of
+  them **before `615ae9a` has open registration and neither emergency switch** (`SIGNUP_MODE`,
+  `GENERATION_ENABLED` arrived in `615ae9a`), so deploying one of them reopens sign-up to anyone. For a
+  misbehaving limited-beta backend, first use the switches on the current commit (`SIGNUP_MODE=closed`,
+  `GENERATION_ENABLED=false`, `docs/29` section 8.6), then fix forward; suspend the service if even that is
+  not enough.
 
 ### 4.3 Backend across a migration (the next deployment is this case)
 
@@ -589,11 +675,17 @@ CI security gate (`Security / Scan`: any HIGH or CRITICAL finding with a fix, in
 1. **Neon history retention**: read it in the Neon console and record the value in section 2.1. Unknown.
 2. **Workflow notifications**: confirm that a failed `Uptime` run actually reaches someone (section 5.2).
    Unverified.
-3. **Backup storage**: location, encryption, access and the deletion routine (section 2.2). Unverified.
-4. **Privacy notice**: it now describes operator-held exports without a period (section 2.2). Change it only
-   together with a retention period that is really in force.
-5. **Deletion for someone who cannot sign in** (section 8): no verified procedure exists. A decision is
-   required before registration is opened without restriction.
+3. **Backup storage**: for manual exports, location, encryption, access and the deletion routine
+   (section 2.2) are unverified. For the automated S3 backups, bucket versioning and who else can read
+   `neon/*` (section 2.6) are unverified.
+4. **Privacy notice**: it describes the automated daily backups with their 7-day expiry, and operator-held
+   exports without a period (sections 2.2 and 2.6). The backups' "about seven days" depends on the versioning
+   check of item 3. Change the exports' wording only together with a retention period that is really in
+   force.
+5. **Deletion for someone who cannot sign in** (section 8): decided (D3a contact
+   garimaprachi2411@gmail.com, D3b mailbox challenge, D3c the operator command) and implemented; **not yet
+   usable** until the prerequisites of section 8.2 are done (deployment, operator access, a rehearsal on a
+   disposable database). Whether this suffices for **unrestricted** registration is still open.
 
 **Decided by the owner (release-copy alignment):** the first release is a clearly labelled **limited beta**;
 no itinerary is advertised as complete, verified or ready to follow; the holdout's manual rubric
@@ -602,7 +694,9 @@ not exist and is not claimed.
 
 ## 8. An account deletion request from someone who cannot sign in
 
-**No verified operator deletion procedure exists. Do not improvise one.**
+**Status: decided by the owner (D3a, D3b, D3c, 2026-10-21) and implemented as the operator command
+`backend/scripts/locked_out_account_deletion.py` (section 8.1). Usable only once the prerequisites of section
+8.2 are done. Never improvise around it.**
 
 What the system has, checked in the code:
 
@@ -613,7 +707,8 @@ What the system has, checked in the code:
   a NEW account may be created. There is no password reset, no email verification, no mail-sending code or
   dependency, no recovery code and no second factor. An email address is accepted at sign-up without proof
   that the person controls it; an invitation link controls who may register, not who an account belongs to.
-- So, without the password, **nothing the system stores can prove that a requester owns an account.**
+- So, without the password, **nothing the system stores can prove that a requester owns an account.** The
+  procedure of section 8.1 adds one proof from outside the system: control of the account's mailbox.
 
 What follows from that:
 
@@ -624,22 +719,110 @@ What follows from that:
 - A message sent *from* the email address is not proof either, as far as this project can tell: the
   address was never verified at sign-up, and the project has no mail system of its own in which to check
   where a message really came from.
-- The operator is technically able to remove rows from the database. That ability is not a procedure. It
-  must not be used on the strength of an unverified request, and the public notice does not offer it.
-- What a locked-out person can be told truthfully today: password recovery is not available; the project
-  cannot verify ownership without the password and therefore does not delete accounts on request; if they
-  recover the password themselves, "Delete account" works as described.
+- The operator is technically able to remove rows from the database. That ability is not a procedure: an
+  account is deleted only by the command of section 8.1, after a verified challenge, never by SQL.
+- Password recovery still does not exist and is not offered. The registration form's warning ("may be unable
+  to delete your account yourself") stays true: the person cannot do it themselves, only through 8.1.
 
-**Decision required before unrestricted public registration.** One of these has to exist first, and none
-does:
+Before **unrestricted** public registration, the owner still has to decide whether this hand-run procedure is
+enough or whether password recovery through a verified email address (V1.1) must come first.
 
-1. Password recovery through a verified email address (which also needs email verification at sign-up).
-   With it, a locked-out person regains access and deletes the account themselves, and no operator
-   procedure is needed. This is the path the project already lists for V1.1.
-2. A documented, owner-approved identity-verification procedure for operator-performed deletion. Nothing in
-   the current system supports one, so it would have to be designed, not merely written down.
-3. Keeping registration limited (for example to invited testers who accept this limit explicitly) until 1
-   or 2 exists.
+### 8.1 Procedure (owner decisions D3a, D3b, D3c)
 
-Until then the limitation is disclosed where it matters: in the registration form itself and in the privacy
-notice, in the same words.
+**D3a: contact.** Requests go to **garimaprachi2411@gmail.com** (the owner's Gmail mailbox), the address the
+privacy notice publishes. GitHub issues are never used for this: they are public.
+
+**D3b: ownership check: a mailbox challenge.** A code is sent **to** the account's registered address; only
+the code coming back proves control of that mailbox. A message that merely comes *from* the address is never
+enough, and neither is anything a third party could know (trip details, dates, screenshots).
+
+**D3c: deletion.** Only `backend/scripts/locked_out_account_deletion.py delete`, which calls the
+application's own `data_deletion_service.delete_account` (one transaction, every table including the
+failed-sign-in counters, refused while a generation runs, generation usage kept for the window) exactly as
+"Delete account" does. Never SQL.
+
+**Steps:**
+
+1. A request arrives at the contact address and names the account's email address (it may come from any
+   address).
+2. Reply to the requester with the **same text in every case** (it must not reveal whether an account exists):
+   > Thank you. If a TravelObligator account uses the address you gave, a one-time code has been sent to that
+   > address. To confirm the deletion, send that code to garimaprachi2411@gmail.com within 72 hours. If no
+   > code arrives, nothing will be deleted.
+3. On your own machine, in a fresh shell, create the challenge (the address is typed without echo):
+
+   ```bash
+   read -rs ACCOUNT_DELETION_DATABASE_URL && export ACCOUNT_DELETION_DATABASE_URL   # Neon's DIRECT connection string
+   python backend/scripts/locked_out_account_deletion.py challenge
+   unset ACCOUNT_DELETION_DATABASE_URL
+   ```
+
+   "No account uses that address" → send nothing more; the reply of step 2 already went out. Otherwise the
+   command prints a request id, the account's **fingerprint**, the expiry (72 hours) and the **code**.
+4. Send a **new** message from the contact mailbox **to the account's address** (not as a reply to the
+   requester, unless it is the same address):
+   > Someone asked for the TravelObligator account registered to this address to be deleted. If that was
+   > you, send this code to garimaprachi2411@gmail.com within 72 hours: CODE. If it was not you, ignore this
+   > message; nothing will be deleted.
+
+   The code goes nowhere else: not into an issue, a note, a chat, the repository or a log.
+5. When a code comes back (from any address), check it. Every attempt is counted; five wrong ones lock the
+   request; an expired, used or replaced request is refused:
+
+   ```bash
+   python backend/scripts/locked_out_account_deletion.py verify --request R-...
+   ```
+
+6. Delete, first as a dry run (all checks, nothing deleted), then for real. The real run needs that
+   deployment's `SESSION_SECRET_KEY` (Render dashboard) so that the account's failed-sign-in counters go too,
+   asks for the account's address again (it must be the same account the request was verified for) and for
+   `DELETE <fingerprint>` typed exactly:
+
+   ```bash
+   read -rs ACCOUNT_DELETION_DATABASE_URL && export ACCOUNT_DELETION_DATABASE_URL
+   python backend/scripts/locked_out_account_deletion.py delete --request R-... --confirm-account <fingerprint> --dry-run
+   read -rs ACCOUNT_DELETION_SESSION_SECRET_KEY && export ACCOUNT_DELETION_SESSION_SECRET_KEY
+   python backend/scripts/locked_out_account_deletion.py delete --request R-... --confirm-account <fingerprint>
+   unset ACCOUNT_DELETION_DATABASE_URL ACCOUNT_DELETION_SESSION_SECRET_KEY
+   ```
+
+   "A generation is running" → nothing was deleted and the request stays verified: try again later.
+7. Tell the requester it is done, that copies in the daily encrypted backups expire about seven days later
+   (section 2.6) and that a manual export kept by the operator is not edited (section 2.2).
+8. Close: delete both email threads from the mailbox **and its trash**; keep only the date and the outcome,
+   without the address, in a private record. The challenge store (`~/.travelobligator-account-deletion`)
+   holds only keyed hashes and may be kept.
+
+**What the challenge proves, and what it does not.** It proves that the requester can read the account's
+mailbox now: a forged sender cannot fake it, because the code goes **to** the address. It does not prove that
+the requester created the account (sign-up never verified addresses): an account someone registered with
+another person's address can be deleted by the owner of that mailbox. The owner accepted that residual risk
+with D3b.
+
+**How the command keeps the challenge, and its limits** (an operator-local store instead of new server
+infrastructure):
+
+- It lives in a private directory on the operator's machine (0700, files 0600, outside the repository,
+  locked while in use) and holds no address, account id or code: an scrypt hash of the code, keyed hashes
+  of the account id and the address, times and attempt counters.
+- A code is random (10 characters from a 31-letter alphabet, about 49 bits), valid for at most 72 hours,
+  accepted once, and locked after five wrong attempts. The requester never enters it anywhere: the operator
+  does, which is itself a rate limit.
+- Single operator, single machine: requests open on a lost or different machine cannot be continued; start
+  a new one (`challenge --replace` cancels an account's open request).
+- Gmail sees the addresses and the code; a code is useless after use or after 72 hours.
+- The production database URL and session secret are on the operator's machine for the duration of a run:
+  typed blind, never written to a file, unset afterwards. The command refuses a database that is not at its
+  code's migration head, so run it from a checkout of the commit production runs.
+- No response time is promised.
+
+### 8.2 Prerequisites before the notice offering this is published
+
+The notice describes the process; it reaches visitors only with the release. Before that release:
+
+- [ ] The release containing `locked_out_account_deletion.py` and the notice is deployed (`docs/29` B1, B2).
+- [ ] The operator can obtain Neon's **direct** connection string and Render's `SESSION_SECRET_KEY`.
+- [x] **Rehearsal:** done by the owner on 2026-10-21, passed (recorded in `docs/29` section 7). The whole of section 8.1 against a disposable database (a local one or a new Neon
+      branch, never production) with a synthetic account: a wrong code, the right code, a dry run, the
+      deletion, and a second attempt with the used request (refused). Record it in `docs/29` section 7.
+- [ ] The contact mailbox has two-step verification enabled, and the two message texts above are saved.

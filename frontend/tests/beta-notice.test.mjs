@@ -11,7 +11,13 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { BETA_LABEL, BETA_NOTICE_HEADING, BETA_NOTICE_POINTS, BETA_SUMMARY, PASSWORD_LOSS_WARNING } from "../lib/beta-notice.ts";
-import { PRIVACY_NOTICE, PRIVACY_NOTICE_INTRO, PRIVACY_PASSWORD_LOSS_POINT } from "../lib/privacy-notice.ts";
+import {
+  ACCOUNT_DELETION_CODE_HOURS,
+  ACCOUNT_DELETION_CONTACT,
+  PRIVACY_NOTICE,
+  PRIVACY_NOTICE_INTRO,
+  PRIVACY_PASSWORD_LOSS_POINT,
+} from "../lib/privacy-notice.ts";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const page = readFileSync(join(root, "app", "page.tsx"), "utf8");
@@ -114,23 +120,43 @@ test("the password-loss warning is the exact sentence, shown in the registration
   assert.match(page, /authMode === "signup" \? "password-hint password-loss-warning" : undefined/);
 });
 
-test("the privacy notice says the same about a lost password, and promises no recovery or assisted deletion", () => {
+test("the privacy notice says the same about a lost password, promises no recovery, and describes the verified deletion request", () => {
   assert.equal(PRIVACY_PASSWORD_LOSS_POINT, PASSWORD_LOSS_WARNING);
   assert.ok(limits.includes(PRIVACY_PASSWORD_LOSS_POINT));
-  assert.match(noticeText, /no verified way to confirm that an account belongs to someone who cannot sign in to it/);
-  assert.match(noticeText, /does not delete accounts on request for people who have lost their password/);
   assert.doesNotMatch(noticeText, /There is no password reset yet/); // the old wording is gone, not duplicated
   assert.doesNotMatch(noticeText, /reset your password|password reset is available|recover your password by/i);
-  assert.doesNotMatch(noticeText, /(contact|email|write to) (us|the operator|the project) (to|and we)/i);
   assert.doesNotMatch(noticeText, /we (will|can) delete your account/i);
+  assert.doesNotMatch(noticeText, /no verified way to confirm|does not delete accounts on request/); // superseded by D3a-D3c
+  // the locked-out deletion request: owner-chosen contact, a code to the account's own address, no shortcut
+  const request = limits.find((point) => point.startsWith("If you cannot sign in and want your account deleted:"));
+  assert.ok(request, "the deletion request is described in the limits");
+  assert.match(request, new RegExp(`email ${ACCOUNT_DELETION_CONTACT.replace(".", "\\.")} and give the email address of the account`));
+  assert.match(request, /You get the same reply whether or not an account uses that address\./);
+  assert.match(request, /a one-time code is sent to that address, and the account is deleted only if that code is sent back/);
+  assert.match(request, new RegExp(`at most ${ACCOUNT_DELETION_CODE_HOURS} hours`));
+  assert.match(request, /A message that merely comes from the account's address is not accepted as proof on its own\./);
+  assert.match(request, /removed from the app's database, exactly as with "Delete account"/);
+  assert.match(request, /Copies in the daily encrypted backups stay until those backups are deleted, about seven days later/);
+  assert.match(request, /a database export kept by the operator is not edited/);
+  assert.doesNotMatch(request, /immediately|straight away|backups? (are|is) (deleted|removed) (too|as well)/i);
+  assert.match(noticeText, /handled by hand through a Gmail mailbox, so Google processes those messages/);
   assert.match(PRIVACY_NOTICE_INTRO, /in limited beta/);
 });
 
-test("the privacy notice tells four kinds of copy apart and states no retention period", () => {
-  const [database, exports_, hosting, external] = limits.slice(1, 5);
+test("the privacy notice tells five kinds of copy apart and states only the backups' period in force", () => {
+  const [database, backups, exports_, hosting, external] = limits.slice(1, 6);
   // 1. the application's own database: what deletion does, and that it does nothing else
   assert.match(database, /^Deleting removes your records from this app's own database, and only from there\./);
-  // 2. exports kept by the operator: possible, temporary, not edited on deletion, no period set
+  assert.match(database, /described in the next four points/);
+  // 2. the automated daily backups: encrypted, in S3, expiring after about seven days, never cut short by a deletion
+  assert.match(backups, /^Daily encrypted backups: once a day, an automated job copies the whole database/);
+  assert.match(backups, /stores it with Amazon Web Services \(Amazon S3\)/);
+  assert.match(backups, /unencrypted copy exists only briefly, on GitHub's servers/);
+  assert.match(backups, /deleted automatically about seven days after it is made/);
+  assert.match(backups, /Backups are not edited when you delete a trip or your account, and deleting does not remove them early/);
+  assert.doesNotMatch(noticeText, /backups? (is|are) (deleted|removed) (immediately|straight away|at once|when you delete)/i);
+  assert.match(backups, /restores a backup into a temporary database on their own computer and removes it afterwards/);
+  // 3. exports kept by the operator: possible, temporary, not edited on deletion, no period set
   assert.match(exports_, /^Database exports that the project operator keeps:/);
   assert.match(exports_, /the operator may export a copy of the database/);
   assert.match(exports_, /may be kept temporarily/);
@@ -139,10 +165,11 @@ test("the privacy notice tells four kinds of copy apart and states no retention 
   assert.match(exports_, /has not yet set a retention period for these exports/);
   // true whether or not an export has been made yet: it never says one exists or is always made
   assert.doesNotMatch(exports_, /\b(is exported|are exported|always|every deployment|each deployment|regularly|daily|weekly)\b/i);
-  // 3. the hosting services' backups and logs: not reached, not vouched for
+  assert.match(exports_, /separately from the automated backups/);
+  // 4. the hosting services' backups and logs: not reached, not vouched for
   assert.match(hosting, /^Backups and logs kept by the hosting services: deletion does not reach them\./);
   assert.match(hosting, /which this project has not verified/);
-  // 4. what was already sent out
+  // 5. what was already sent out
   assert.match(external, /^What was already sent to the external services above .* cannot be recalled\./);
   assert.match(external, /according to their own policies/);
 
@@ -153,6 +180,8 @@ test("the privacy notice tells four kinds of copy apart and states no retention 
   }
   assert.doesNotMatch(noticeText, /30[\s-]*days?/);
   // the one period the notice does state is the one the application itself enforces
-  assert.equal([...noticeText.matchAll(/\b\d+\s*(hours?|days?|weeks?|months?)\b/g)].map((match) => match[0]).join(), "24 hours");
+  // the numeric periods the notice states are the ones the code enforces: the usage record (24 hours) and the
+  // locked-out deletion code's maximum validity (72 hours)
+  assert.equal([...noticeText.matchAll(/\b\d+\s*(hours?|days?|weeks?|months?)\b/g)].map((match) => match[0]).join(), "24 hours,72 hours");
   assert.match(noticeText, /expires after seven days/); // the sign-in cookie, set by the application's own code
 });

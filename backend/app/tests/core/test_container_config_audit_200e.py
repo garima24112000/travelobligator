@@ -30,6 +30,19 @@ def test_backend_image_is_pinned_multistage_non_root_and_exec_form() -> None:
     assert not any(l.startswith(("CMD sh", "ENTRYPOINT sh", "CMD /bin/sh")) for l in lines)
 
 
+def test_backend_runtime_image_drops_setuid_bits_and_the_installer() -> None:
+    # Phase 1A: no setuid/setgid binary (the only in-container privilege-escalation path for uid 10001) and no pip
+    # (an installer with known CVEs that nothing runs). The built image is checked by scripts/ci/image_audit.sh.
+    builder, runtime = _BACKEND_DOCKERFILE.split("FROM ${PYTHON_IMAGE} AS runtime")
+    assert "/opt/venv/bin/python -m pip uninstall --yes pip" in builder
+    runtime_lines = _instructions(runtime)
+    user_line = next(i for i, l in enumerate(runtime_lines) if l.startswith("USER "))
+    before_user = "\n".join(runtime_lines[:user_line])
+    assert "find / -xdev -perm /6000 -type f -exec chmod a-s {} +" in before_user  # done as root, before USER
+    assert re.search(r"pip uninstall --yes --no-cache-dir setuptools wheel pip\b", before_user)
+    assert "pip install" not in runtime  # nothing is installed into the runtime stage
+
+
 def test_backend_healthcheck_is_liveness_only() -> None:
     health = re.search(r"HEALTHCHECK.*?\n\s+CMD (.*)", _BACKEND_DOCKERFILE).group(1)
     assert "/health" in health and "/ready" not in health

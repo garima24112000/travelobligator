@@ -20,9 +20,12 @@ given here and change nothing else. Values are given only where the repository e
    limits, trip and account deletion, the P1-B security headers and configuration checks, the beta copy,
    and Phases 1–3. The runbook describes it as having "no per-user limit, no deployment-wide limit, no cap
    on simultaneous generations … and no sign-up or sign-in limit" (`docs/25` section 4.3).
-2. **This branch is not on `main`.** `origin/main` is `8bffd39`, 18 commits behind `65801a7`. The uptime
-   workflow and the three operator scripts (`db_backup_restore.py`, `ops_report.py`, `public_check.py`) are
-   not on `main`. Run the scripts from a checkout of this branch.
+2. **This branch is not on `main`.** The uptime workflow and the three operator scripts
+   (`db_backup_restore.py`, `ops_report.py`, `public_check.py`) are not on `main`. Run the scripts from a
+   checkout of this branch. `origin/main` (`dc65466`) does have the automated, encrypted daily Neon backups
+   to S3 (PR #2, `docs/30_automated_neon_backups.md` on `main`; recorded here in `docs/25` section 2.6) and
+   the production monitor (backend health, backup freshness, alert issues; PR #3,
+   `docs/31_production_monitoring.md` on `main`), both merged and, per the owner, activated.
 3. **There is no staging environment.** Manual tests use the isolated local stack of section 6.
 4. **The quality gate is NOT MET** (`docs/27`, `docs/28` section 1), against the unchanged target: median
    overall ≥ 4 of 5; no scenario below 3; zero part-A failures.
@@ -40,6 +43,8 @@ given here and change nothing else. Values are given only where the repository e
 | 1.7 | No fixable container finding | Trivy gate in Containers / Build & Smoke (run 39082560024) |
 | 1.8 | Automated browser checks (Chromium only) | 178 tests at desktop, 375 px, 320 px, 200 % zoom; axe-core rules, keyboard, live regions, maps, tile outage |
 | 1.9 | Frozen holdout intact | 21 files byte-identical to their SHA-256 before Phase 1 |
+| 1.10 | Phase 1A–1B (container hardening, locked-out deletion, privacy and operations documents) validated **locally** on 2026-10-21 before the local commit. **CI has not yet run on that commit** | Equivalent of each CI job, offline, throwaway services only: **Hermetic** `compileall` + 6,767 passed, 143 skipped; **Integration** (PostgreSQL 16 + Redis 7.4, both gates, empty database migrated to `a94c0e7d2b61`, one head) 6,910 tests, 0 skipped, 0 failed — 2 backup-drill tests fail with the Mac's `pg_dump` 18 (it writes `SET transaction_timeout`, a PostgreSQL 17+ setting a 16 server rejects) and all 3 drill tests pass with the 16 client CI uses; **Browser / E2E** 178 passed (all viewports); **Frontend** unit 167/167, `tsc`, lint, build, `check:headers` 13/13; **Containers** image audit passed (no setuid/setgid file, no `pip`), Trivy HIGH/CRITICAL-with-a-fix gate exit 0 on both images, container smoke passed; **Security** Trivy secret scan 0 findings, dependency gate exit 0 |
+| 1.11 | Locked-out deletion procedure rehearsed on a disposable database | By the owner, personally, 2026-10-21 (section 7) |
 
 Not done, and not to be read as done: anything against the deployed Neon, Render or Vercel services in
 this list; manual device, browser and screen-reader testing; a new acceptance evaluation.
@@ -51,11 +56,11 @@ this list; manual device, browser and screen-reader testing; a new acceptance ev
 | B1 | Production (per the repository) runs pre-P0 code with no generation or sign-up limits on a public URL | A0 below, then a deployment of a reviewed commit (`docs/25` section 3) — or, until then, restricting public generation (`docs/25` section 4.3 lists three ways) |
 | B2 | This branch is not merged; `docs/25` section 3 step 1 requires the deployed commit to be green on `main` | Owner merges after review; CI re-runs on `main` |
 | B3 | **Restricted registration exists in code, not yet in production.** The shareable beta link (section 8) makes new accounts possible only for holders of the link, and production refuses open registration; it takes effect only once a commit containing it is deployed (B1, B2). It restricts registration to *link holders*, not to named people (section 8.4) | Deployment, then section 8 |
-| B4 | No Neon restore drill | A1 |
-| B5 | Uptime checks do not run (not on `main`) and failure notifications are unverified | B2, then A3 |
-| B6 | Backup storage, access and deletion unverified | A2 |
-| B7 | No verified deletion path for someone who cannot sign in | DECISION D3 |
-| B8 | Unfixed container findings not risk-accepted | DECISION D5 (section 5) |
+| B4 | No Neon restore drill. (The owner reports that the first automated, encrypted production backup was downloaded and restored with the local drill of `docs/30` section 5.1; the restore into a disposable **Neon** branch of A1 is still not recorded.) | A1 |
+| B5 | Monitoring: merged and activated (owner), but delivery of an alert to the owner has not been shown to arrive, and nothing independent of GitHub notices scheduled workflows stopping (no heartbeat). The frontend uptime workflow is not on `main` (B2) | A3 steps 5–6; heartbeat decision D8 |
+| B6 | Backup storage: the automated backups are in S3 (client-side encrypted, 7-day expiry, role-restricted; `docs/25` section 2.6) and the privacy notice now describes them ("about seven days"). **Before release:** confirm bucket versioning is off or a noncurrent-version expiry exists (otherwise "about seven days" is untrue), and that nobody else can read `neon/*`. Manual exports (`docs/25` section 2.2) are as before | A2 |
+| B7 | Deletion for someone who cannot sign in: **decided and implemented** (D3a–D3c; `docs/25` section 8.1, `backend/scripts/locked_out_account_deletion.py`, uncommitted), and described in the privacy notice. **Rehearsed by the owner on a disposable database on 2026-10-21: passed** (section 7). **Not yet usable:** the other prerequisites of `docs/25` section 8.2 are open — the release must be deployed, the operator must be able to obtain the production direct URL and `SESSION_SECRET_KEY`, and the contact mailbox needs two-step verification | `docs/25` section 8.2 |
+| B8 | Unfixed container findings not risk-accepted (2 CRITICAL, 61 HIGH, 111 MEDIUM OS findings, none fixable). The setuid path and the `pip` findings are removed by the uncommitted Phase 1A Dockerfile change (section 5), which takes effect only once that change is merged and deployed | DECISION D5 (section 5) |
 | B9 | Quality gate NOT MET | DECISION D1 (beta exception), and a new evaluation (D6) before any wider release |
 
 ## 3. Required decisions (owner)
@@ -63,12 +68,14 @@ this list; manual device, browser and screen-reader testing; a new acceptance ev
 | # | Decision | Options the repository gives | Record it in |
 | --- | --- | --- | --- |
 | D1 | Explicit exception for a limited beta despite the failed quality result | Accept, naming median 2.0 and eight plans "poor" (`docs/27` section 8); or do not release | `docs/25` section 7 |
-| D2 | Backup retention | The recommendation is 30 days on encrypted, access-restricted storage; it becomes policy only after A2's four checks | `docs/25` sections 2.2 and 7; the privacy notice in the same commit |
-| D3 | Deletion for someone who cannot sign in | (1) password recovery with email verification; (2) an owner-approved identity-verification procedure; (3) keep registration limited until 1 or 2 exists (`docs/25` section 8) | `docs/25` section 8 |
+| D2 | Backup retention | **Automated backups:** 7-day S3 expiry is in force and stated in the notice ("about seven days"); approve the wording (section 9.8) after the versioning check of B6. **Manual exports:** the recommendation is 30 days on encrypted, access-restricted storage; it becomes policy only after A2's four checks, and until then the notice states no period for them | `docs/25` sections 2.2, 2.6 and 7; the privacy notice in the same commit |
+| D3 | Deletion for someone who cannot sign in | **Decided 2026-10-21:** **D3a** contact `garimaprachi2411@gmail.com` (the owner's Gmail; published in the notice); **D3b** a manual mailbox challenge — a code sent **to** the account's registered address must come back, never a message merely *from* it (residual risk accepted: it proves control of the mailbox, not who registered); **D3c** the operator command `locked_out_account_deletion.py`, which calls the application's own deletion service. **Still open:** whether this hand-run procedure suffices for *unrestricted* registration, or password recovery (V1.1) must come first | `docs/25` sections 7, 8.1, 8.2 |
 | D4 | Whether link-holder registration is restrictive enough (B3) | (a) the shareable link of section 8 (implemented; anyone the link is forwarded to can sign up, bounded by the signup cap); (b) in addition, access control for the whole site at the frontend host — check in Vercel whether Deployment Protection can cover **Production** on the current plan (not verified here); (c) do not open the beta | `docs/25` section 7 |
-| D5 | Risk acceptance per container finding | Section 5 | `docs/28` section 4 |
+| D5 | Risk acceptance per container finding | Section 5 (each row says what is verified, what is assumed, and the available mitigation) | `docs/28` section 4 |
 | D6 | New acceptance evaluation: scenarios and budget | `docs/28` section 5 (≤ 1,000 Geoapify credits and ≤ 80 model requests for ten scenarios) | A new document next to `docs/27` |
 | D7 | Whether to merge and deploy | — | `docs/22` section 14, `docs/23` |
+| D9 | Model features outside the evaluated configuration | `AI_FEEDBACK_INTERPRETER_*` and `TARGETED_REGENERATION_ENABLED` exist in the Render dashboard but not in `render.yaml`: keep them off, or switch them on deliberately (the release refuses to start with the interpreter on but no connected provider and key) | `docs/25` section 7 |
+| D8 | Monitoring scope | (a) scheduled backend health checks (`MONITOR_BACKEND_HEALTH_ENABLED=true`): hourly, each wakes the free-tier backend, which reverses the recorded "scheduled backend check stays off" decision (`docs/25` section 7, `Claude.md`); (b) an external heartbeat (free healthchecks.io check, secret `MONITOR_HEARTBEAT_URL`) as the only watchdog for GitHub no longer running workflows (`docs/31` section 4); (c) neither | `docs/25` section 7 and `Claude.md` for (a); `docs/31` section 7 |
 
 ## 4. Operator procedures
 
@@ -144,8 +151,30 @@ Answer the four questions; each needs evidence, not intent.
 
 - *Record:* the answers in `docs/25` section 2.2's table. Only when all four are verified does D2 become a
   policy; then change the privacy notice in the same commit (never before).
+- *The automated S3 backups* (`docs/30`) answer the four questions differently and need their own evidence:
+  S3 default encryption and the client-side GnuPG encryption (`docs/30` section 2); the principals that can
+  read `neon/*` (IAM, bucket policy); the 7-day lifecycle rule **and** bucket versioning (with versioning on,
+  expiry leaves old versions unless a noncurrent-version rule deletes them); no other copy. A 7-day expiry is
+  then in force for these copies, which differs from D2's 30-day recommendation for manual exports and from
+  the privacy notice's "no retention period set": decide the wording in D2 and change the notice in the same
+  commit, before this branch ships.
 
-### A3. Uptime monitoring and notification delivery (`docs/25` section 5.2)
+### A3. Monitoring and notification delivery
+
+**Production monitor** (`docs/31_production_monitoring.md` section 7; independent of this branch):
+
+1. Merge `ops/production-monitoring` into `main` after review. Nothing scheduled starts by itself.
+2. Run **Actions → Production monitor** by hand with only *backups*: `backup-freshness: OK`. An
+   `AccessDenied` here means the backup role's `s3:ListBucket` condition does not allow the prefix `neon/`
+   (`docs/31` section 5).
+3. Run it by hand with only *backend*: `healthy` or `healthy after a cold start`.
+4. Set `PRODUCTION_MONITOR_ENABLED=true`. Hourly backup-freshness checks start.
+5. Verify delivery once (`docs/31` section 7 step 5): an alert issue opens with an @-mention that reaches
+   your inbox, and closes with a "Recovered" comment.
+6. Decide D8 (scheduled backend checks; heartbeat) and record it.
+- *Verify:* a scheduled run appears in Actions; the alert notification arrived; the issue closed itself.
+
+**Frontend uptime** (`docs/25` section 5.2; on this branch only):
 
 1. **The schedule runs only after B2** (the workflow is not on `main`). After the merge: GitHub → the
    repository → **Actions** → **Uptime**: scheduled runs appear at `23 */4 * * *` and `41 6 * * *` (UTC).
@@ -207,24 +236,74 @@ Before the deployment that leaves `f55401c`, confirm — do not assume:
    target, section 4.1).
 - *Record:* the four answers and the date, before deploying.
 
-## 5. Security findings (Trivy on the backend image, run 39082560024)
+## 5. Security findings: risk register (backend image)
 
-**Fixable: 0.** **Unfixed:** 174 findings in Debian 12 base packages: 2 CRITICAL, 61 HIGH, 111 MEDIUM. Debian
-status of the 63 HIGH and CRITICAL ones: 55 `affected`, 7 `fix_deferred`, 1 `will_not_fix`; none has a fixed
-version. Python packages: 10 MEDIUM. **Exploitability against this image was not tested for any finding.**
+**Sources.** CI run 39160676077 on `615ae9a` (Containers / Build & Smoke, Trivy, amd64) and a local re-scan
+of an image built from the same Dockerfile on 2026-10-20 (Trivy 0.67.2, arm64; same Debian 12.15 package
+versions and the same counts). **Reachability was examined in the image itself:** the application was
+imported the way the server starts it, with production-style settings and no network, and the process's
+mapped libraries (`/proc/self/maps`), imported modules, setuid binaries and exported symbols were recorded.
+Exploitation was not attempted for any finding.
 
-| Finding | What the advisory title says | Verified mitigation in this application | Status |
-| --- | --- | --- | --- |
-| `zlib1g` CVE-2023-45853 (CRITICAL, Debian `will_not_fix`) | overflow in `zipOpenNewFileInZip4_64` (the MiniZip add-on) | The application imports no zip, gzip or tar module and runs no subprocess (checked in `backend/app`) | **Acceptable with this evidence**, pending the owner's acceptance (D5) |
-| `libssl3` / `openssl` CVE-2026-84782 (HIGH) | information disclosure via **DTLS** handshake retransmission | Python's `ssl` module, used by every client of this application, has no DTLS support (checked: no DTLS name in `ssl`) | **Acceptable with this evidence**, pending D5 |
-| `libsqlite3-0` CVE-2025-7458 (CRITICAL), CVE-2026-11822, CVE-2026-11824 (HIGH) | integer overflow; code execution via crafted FTS5 data; heap overflow | SQLite is opened only by the provider-cache store, and production refuses that backend at startup (`test_production_rejects_the_sqlite_provider_cache`). The library is still loaded | **Needs acceptance (D5)**; residual risk is any other code path that opens SQLite |
-| util-linux family (48 HIGH: `util-linux`, `mount`, `libblkid1`, `libmount1`, `libsmartcols1`, `libuuid1`, `bsdutils`, `util-linux-extra`) | mount / nsenter / partition-parsing flaws | The application runs no subprocess; the container runs as non-root with a read-only root. These tools are reachable only by someone already executing code in the container | **Needs acceptance (D5)** as post-compromise local risk |
-| `libncursesw6`, `libtinfo6`, `ncurses-*` CVE-2025-69720 (HIGH) | buffer overflow, possible code execution | No `curses` or `readline` import in the application | **Needs acceptance (D5)**; low evidence of reach |
-| `gzip` CVE-2026-41992, `perl-base` CVE-2026-9538, `libacl1` CVE-2026-54369, `libsystemd0` / `libudev1` CVE-2026-16742 (HIGH) | LZH decompression; Archive::Tar DoS; acl symlink escalation; systemd-homed escalation | None of these tools or services is run by the application | **Needs acceptance (D5)** |
-| 111 MEDIUM OS findings, 10 MEDIUM Python findings | not reviewed one by one | — | **Cannot responsibly be accepted without review**: listed in the CI log of Containers / Build & Smoke |
+**Counts.** OS (Debian 12.15): 2 CRITICAL, 61 HIGH, 111 MEDIUM, **none with a fixed Debian version** (of the
+63 CRITICAL/HIGH: 55 `affected`, 7 `fix_deferred`, 1 `will_not_fix`). Python: 10 MEDIUM, all in `pip` 24.0
+(two copies: `/usr/local` and `/opt/venv`), **all with a fixed version** (pip 25.3 to 26.2). The earlier
+"Fixable: 0" was true only for HIGH/CRITICAL.
 
-No dependency or image was changed. A rebuild picks up Debian fixes when they ship; the Trivy gate then
-reports them as fixable.
+**Phase 1A hardening (2026-10-21, `backend/Dockerfile`, uncommitted).** Two changes, both in the image only:
+`pip` is uninstalled from the builder's virtualenv and from the base interpreter, and every setuid/setgid bit
+is removed in the runtime stage (as root, before `USER 10001:10001`). Same Trivy 0.67.2 and database for both
+images, same cached base image:
+
+| | Before (current `main`/`615ae9a` Dockerfile) | After (hardened) |
+| --- | --- | --- |
+| OS packages (Debian 12.15) | 2 CRITICAL, 61 HIGH, 111 MEDIUM, 107 LOW; 0 fixable | **unchanged**: 2 CRITICAL, 61 HIGH, 111 MEDIUM, 107 LOW; 0 fixable |
+| Python packages | 10 MEDIUM + 2 LOW, all `pip` 24.0, all fixable | **0** |
+| setuid/setgid files | 11 (`mount`, `umount`, `su`, `passwd`, `chsh`, `chfn`, `gpasswd`, `newgrp`, `chage`, `expiry`, `unix_chkpwd`) | **0** (the binaries remain, without the bit) |
+| `pip` importable / on `PATH` | yes / yes | no / no |
+
+The OS findings are **not** fixed: no package changed, and the scanner still reports every one of them,
+including the `mount` advisory. What changed is reachability: the setuid path that made the `mount` TOCTOU a
+possible privilege escalation no longer exists. Python's standard library still contains the bundled
+`ensurepip` wheel `pip-24.0` (used only to bootstrap new virtualenvs); Trivy does not report it, and nothing
+in the image runs `ensurepip`.
+
+**Escalation paths checked in the hardened image** (as uid 10001, also started **without** the Compose
+hardening, i.e. default Docker capabilities, writable root, `no-new-privileges` off): no setuid/setgid file;
+no file capabilities on any binary; no `sudo`; permitted and effective capability sets are empty
+(`CapPrm`/`CapEff` 0); `mount` refuses ("must be superuser"); `su` fails; `/etc/passwd`, `/etc/shadow`,
+`/etc/group`, the application code, the virtualenv and the Python library are not writable; no writable
+directory outside `/tmp`, `/var/tmp`, `/dev`, `/proc`. **Remaining path:** a kernel or container-runtime
+vulnerability, which no image change addresses (Render's isolation; not verifiable here).
+
+| Package(s) / advisory | Severity | In the running app? (verified) | Assumptions | Fix / mitigation available | Remaining exposure |
+| --- | --- | --- | --- | --- | --- |
+| `zlib1g` CVE-2023-45853 (MiniZip `zipOpenNewFileInZip4_64`) | CRITICAL (`will_not_fix`) | `libz` **is loaded** (HTTP decompression, `zipfile` imported by dependencies), but the vulnerable function is **not in it**: the library does not export `zipOpenNewFileInZip4_64`, no `minizip` package is installed, `zlib1g` ships only `libz.so` | — | None needed for this image | **None found** (the scanner matches the source package) |
+| `libssl3` / `openssl` CVE-2026-84782 (DTLS retransmission) | HIGH | `libssl` **is loaded** (all TLS), but Python's `ssl` module exposes **no DTLS** (no DTLS name; OpenSSL 3.0.22) | No dependency uses DTLS through another binding (none found among imported modules) | Debian update when released | **Very low**: DTLS is not used |
+| `libsqlite3-0` CVE-2025-7458, CVE-2026-11822/11824 (integer overflow; FTS5 code execution; heap overflow) | CRITICAL + 2 HIGH | `libsqlite3` **is loaded** (`app/storage/provider_cache_store.py` imports `sqlite3` at import time). The only `sqlite3.connect` in the application is in the SQLite cache store, reached only through `get_provider_cache_store`, which returns Redis in production; production refuses `PROVIDER_CACHE_BACKEND=sqlite` at startup | No dependency opens an SQLite database at run time (not traced exhaustively); the FTS5 issues need attacker-supplied database content | Debian update when released; or import `sqlite3` lazily so the library is not loaded in production (code change, not made) | **Low**: no attacker-controlled SQLite input path found |
+| util-linux family (`util-linux`, `mount`, `libblkid1`, `libmount1`, `libsmartcols1`, `libuuid1`, `bsdutils`, `util-linux-extra`): CVE-2026-53613 (TOCTOU in `mount`), -53615 (DOS partition parser), -76642 (mount helper post-hooks), -78408 (`nsenter`), -78409/-78410 (`X-mount` options) | 48 HIGH | `libblkid`, `libmount`, `libsmartcols` **not loaded**; `libuuid` **loaded** (UUIDs). The application never runs these programs. **`/usr/bin/mount` and `umount` are setuid-root** in the image (also `su`, `passwd`, `chsh`, `chfn`, `gpasswd`, `newgrp`, `chage`, `expiry`, `unix_chkpwd`) | That the advisories concern the programs and parsers named in their titles, not `libuuid`'s UUID code (from titles; not checked in source). Whether Render runs containers with `no-new-privileges` is unknown | **Done (Phase 1A):** setuid/setgid bits removed; verified `mount` now refuses an unprivileged caller even without `no-new-privileges`. Debian update when released | **Low (post-compromise)**: the programs remain and run with the caller's rights only; the scanner still reports all 48 findings |
+| `libncursesw6`, `libtinfo6`, `ncurses-base`, `ncurses-bin` CVE-2025-69720 | HIGH | **Not loaded**; `curses` and `readline` not imported | — | Debian update | **None found** in the running app |
+| `gzip` CVE-2026-41992 (LZH) | HIGH (`fix_deferred`) | `/usr/bin/gzip` present, **never run** by the app (`gzip`, `tarfile` modules not imported) | — | Debian update | **Post-compromise only** |
+| `perl-base` CVE-2026-9538 (Archive::Tar DoS) | HIGH (`fix_deferred`) | `/usr/bin/perl` present (essential package), never run | — | Debian update | **Post-compromise only** |
+| `libacl1` CVE-2026-54369 (symlink escalation) | HIGH (`fix_deferred`) | **Not loaded** | — | Debian update | **Post-compromise only** |
+| `libsystemd0`, `libudev1` CVE-2026-16742 (systemd-homed) | HIGH (`fix_deferred`) | **Not loaded**; no systemd runs in the container | — | Debian update | **None found** |
+| `pip` 24.0: CVE-2025-8869, CVE-2026-13346, -3219, -6357, -8643 (archive and index handling) | 10 MEDIUM (+2 LOW) | **Done (Phase 1A):** `pip` removed from the runtime image; the re-scan reports **0** Python findings | — | — | **None reported** (the `ensurepip` bundled wheel remains in the standard library, unreported and unused) |
+| 111 MEDIUM OS findings | MEDIUM | Not reviewed one by one | — | Debian updates | **Unreviewed**: not acceptable without review |
+
+**Facts about the whole container** (verified in the image): the process runs as uid/gid 10001 (non-root);
+no network was needed to import the application. **Not verified on Render:** a read-only root filesystem
+(set in `docker-compose.yml`, not known for Render) and `no-new-privileges`.
+
+**Status of the recommendations:**
+1. Strip setuid/setgid bits: **done in Phase 1A** (uncommitted; `scripts/ci/image_audit.sh` now fails a
+   built image that has one, and `test_container_config_audit_200e.py` checks the Dockerfile).
+2. Remove `pip` from the runtime image: **done in Phase 1A** (same two checks).
+3. **Still the owner's decision (D5):** accept, in writing, the remaining OS findings (2 CRITICAL, 61 HIGH,
+   111 MEDIUM, none fixable) with the exposure stated in each row, or wait for Debian fixes; rebuild
+   regularly so that the Trivy gate reports fixes as they ship. The 111 MEDIUM OS findings remain unreviewed
+   one by one.
+
+No Python dependency, application code or base-image tag was changed.
 
 ## 6. Manual test procedures
 
@@ -278,11 +357,16 @@ Record the results in a new table in `docs/28` section 3, replacing a checkbox o
 | A2 backup storage (four checks) | | | | |
 | A3 first scheduled uptime run | | | | |
 | A3 failure notification received | | | | |
+| A3 monitor: manual backup-freshness run OK | | | | |
+| A3 monitor: manual backend-health run OK | | | | |
+| A3 monitor: alert issue @-mention received, then auto-closed | | | | |
+| D8 scheduled backend checks / heartbeat decided (and heartbeat first ping, if adopted) | | | | |
 | 8 beta link created, stored and set (no value recorded) | | | | |
 | 8 first link-holder sign-up checked | | | | |
 | A4 configuration and model names | | | | |
 | A6 rollback pre-checks | | | | |
-| D1–D7 decisions | | | | |
+| D1–D9 decisions (D3a–D3c recorded 2026-10-21) | | | | |
+| `docs/25` 8.2 locked-out deletion rehearsal on a disposable database (wrong code, right code, dry run, deletion, reused request refused) | 2026-10-21 | Owner, personally, on their Mac | **Passed.** Disposable local PostgreSQL 16 container (127.0.0.1 only), migrated to `a94c0e7d2b61`; two synthetic `.test` accounts (one with 2 trips + 1 failed sign-in to delete, one with 1 trip + 1 failed sign-in to keep). `challenge`: request created, 72 h expiry; unknown address: no request, no code. `verify`: two wrong codes refused and counted, then verified (3 of 5 attempts). `status`: verified. Dry run: all checks passed, nothing deleted. Other account's address: refused. Real `delete` (rehearsal session secret): account, its 2 trips and its failed-sign-in counter removed. Reuse of the request: refused. After: unrelated account unchanged (present, 1 trip, 1 failed sign-in); request `consumed`, outcome `deleted`. Cleanup: container and temporary challenge store removed; the real default store was never created | Owner's terminal output reviewed in the session; no production system, credential or real address used. Habit noted for real use: the code was pasted once into a chat during the rehearsal (harmless for synthetic data; in real use, start again with `challenge --replace`) |
 | Section 6 manual tests | | | | |
 
 ## 8. Limited-beta access: the shareable link and the emergency switches
@@ -404,7 +488,7 @@ and is gone after sign-up, and that the session cookie remains; sign out and in 
 
 ### 8.8 Not covered by this feature (still open)
 
-- Blockers B1 (production runs old code), B2 (not merged), B4–B9 and decisions D1–D7 are unchanged: the Neon
+- Blockers B1 (production runs old code), B2 (not merged), B4–B9 and decisions D1–D8 are unchanged: the Neon
   restore drill and retention value, backup storage, uptime alerting, the manual accessibility and device
   passes, and the container-finding risk acceptance all still need a person.
 - No rate limit on wrong tokens at the exchange endpoint (the existing per-address limits need a trusted
@@ -414,3 +498,89 @@ and is gone after sign-up, and that the session cookie remains; sign out and in 
 - No email verification and no password recovery (`docs/25` section 8): the link controls who may register,
   not who an account belongs to.
 - The V1 quality gate remains **NOT MET**.
+
+## 9. Production preflight for the limited beta (read-only summary; the procedure is `docs/25` section 3)
+
+Production today, per the repository: backend `f55401c` (schema `d41a7e2c9b53`), frontend `8bffd39`. The
+release is `615ae9a` or a later commit of this branch, merged into `main`. Nothing below has been executed.
+
+### 9.1 Limited-beta variables (Render)
+
+New, all in `render.yaml`; production code before `615ae9a` ignores them, so they can be saved ("Save only")
+before the migration: `SIGNUP_MODE=invite_link`; `BETA_REGISTRATION_TOKEN` (secret, dashboard only, at least
+32 random characters, not equal to `SESSION_SECRET_KEY`); `REGISTRATION_ACCESS_TTL_SECONDS=1800`;
+`GENERATION_ENABLED=true`; `CLIENT_IP_TRUSTED_PROXY_HOPS=0`; and the P0 limits written out in `render.yaml`
+(`GENERATION_MAX_JOBS_PER_USER_PER_WINDOW=5`, `GENERATION_MAX_JOBS_GLOBAL_PER_WINDOW=25`,
+`GENERATION_MAX_CONCURRENT_JOBS=2`, `GENERATION_LIMIT_WINDOW_SECONDS=86400`, `MAX_TRIPS_PER_USER=20`,
+`MAX_TRIP_DAYS=7`, `SIGNUP_MAX_PER_WINDOW_GLOBAL=30`, `LOGIN_MAX_FAILURES_PER_ACCOUNT=10`), plus
+`GROQ_MODEL=openai/gpt-oss-20b` written out. Every backend setting is read at startup: a change applies
+after a restart ("Save and deploy"). Whether the Render service follows a Blueprint decides whether
+`render.yaml` values are applied automatically (`docs/25` section 3 step 2).
+
+### 9.2 What `APP_ENV=production` refuses at startup
+
+Listed in `docs/25` section 3 step 2. The ones new in this release: `SIGNUP_MODE=open` (also the default
+when the variable is missing); `invite_link` without a valid token or with the session secret as token;
+any P0 limit at 0; `ASYNC_GENERATION_ENABLED` not true; a release model stage off or without a connected
+provider and key; failover on with only one provider; a feedback interpreter switched on without a connected
+provider and key (D9). **`APP_ENV` must be exactly `production`**: any other value disables every check.
+A refused start fails Render's health check; the previous instance keeps serving only until it restarts.
+
+### 9.3 Two new tables, and the backup role
+
+The migration adds `auth_attempts` (`e52b7c1a9f04`, with two indexes on `generation_jobs`) and
+`deleted_job_usage` (`a94c0e7d2b61`); both additive, one transaction. The read-only backup role
+`travelobligator_backup` cannot read tables created after its grant, so the next daily backup would fail
+until the owner runs, right after the migration:
+`GRANT SELECT ON auth_attempts, deleted_job_usage TO travelobligator_backup;` (`docs/25` sections 2.6, 3).
+
+### 9.4 Hold the Vercel production deployment
+
+Vercel builds production from `main` on every push that changes `frontend/`; merging the release would
+publish the new frontend before the backend exists. Set the Ignored Build Step to "Don't build anything"
+before the merge, deploy the frontend deliberately afterwards (Redeploy with the project's ignore step
+unticked), then restore the previous command.
+
+### 9.5 Order
+
+Prepare variables → hold Vercel → quiet moment and fresh backup → merge → migrate → grant → **deploy the
+backend immediately** → check `/health`, `/ready`, the startup line → deploy the frontend → smoke test with a
+disposable account through the invitation link → run the backup workflow by hand → cold start → record.
+
+### 9.6 No straightforward rollback to the old backend after the migration
+
+The backend starts only on its exact schema head, so `f55401c` will not start on the migrated database (and
+will not survive a sleep once the migration has run). Going back means the manual downgrade of `docs/25`
+section 4.3, which drops the quota tables and reinstates a backend without cost limits. Commits that do run on
+the new schema and predate `615ae9a` reopen registration and have no emergency switches. **Plan to fix
+forward**, with `SIGNUP_MODE=closed` / `GENERATION_ENABLED=false` as the first response (section 8.6) and
+suspending the service as the last. A frontend-only rollback to `8bffd39` is possible (sign-in works; new
+accounts cannot be created through it).
+
+### 9.7 Real-domain cookie check
+
+Sign-up returns two `Set-Cookie` headers (the session cookie set, the invitation cookie deleted) through
+Vercel's proxy; that has only been seen on Next's own server locally. Check it on the real domain right after
+the deployment, in a private window with a disposable account (section 8.7, `docs/25` section 3 step 9).
+
+### 9.8 Privacy notice (for the owner's approval)
+
+`frontend/lib/privacy-notice.ts` now describes, in "Limits you should know about": the daily encrypted
+backups in Amazon S3, made by a GitHub job, deleted automatically **about seven days** after each is made,
+not edited and not removed early by a deletion, and occasionally restored into a temporary database for a
+drill; separately, manual exports with **no** retention period; and, in "What is stored", how invitation
+links are handled. "About seven days" is true only if bucket versioning is off or noncurrent versions expire
+(B6). It also describes the locked-out deletion request (D3): email `garimaprachi2411@gmail.com` with the
+account's address; the same reply in every case; a one-time code sent to that address, valid for at most 72
+hours, a few wrong codes cancel the request; a message merely from the address is not proof; deletion as with
+"Delete account"; backup copies remain about seven days and a manual export is not edited; Gmail processes the
+messages, and only the date and outcome are kept. That paragraph becomes true only once `docs/25` section 8.2
+is done, so it must not be deployed before then (B7).
+
+### 9.9 The limited-beta quality exception (owner approval required)
+
+The historical V1 itinerary-quality gate is **NOT MET** (median overall 2.0 against a target of 4; eight plans
+rated "poor"; `docs/27` section 8). This release does not claim otherwise, and the frozen holdout is not
+re-run or changed. A shareable-link beta can go ahead only with the owner's explicit, recorded exception
+(D1), naming those results, and with the beta copy that tells travellers to check every plan. Any wider
+release needs a new acceptance evaluation first (D6).

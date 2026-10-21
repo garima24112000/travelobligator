@@ -744,12 +744,25 @@ def test_the_runbook_keeps_the_rollback_safeguards() -> None:
     assert offenders == []
 
 
-def test_no_backup_retention_policy_is_claimed_before_it_exists() -> None:
-    notice = (_ROOT / "frontend" / "lib" / "privacy-notice.ts").read_text()
-    # every sentence of the notice that mentions a backup: none states a period, a number or a promise
-    about_backups = [sentence for sentence in re.split(r"(?<=[.!?])\s+", notice) if "backup" in sentence.lower()]
-    assert about_backups
-    for sentence in about_backups:
+def test_only_the_automated_backups_state_a_retention_period_and_it_is_the_one_in_force() -> None:
+    source = (_ROOT / "frontend" / "lib" / "privacy-notice.ts").read_text()
+    # the notice text itself (the points shown to people), not the module's comments
+    notice = source[source.index("export const PRIVACY_NOTICE: PrivacySection[]") : source.index("// -- deletion controls")]
+    sentences = re.split(r"(?<=[.!?])\s+", notice)
+    # the automated daily backups: the one period the notice states for a copy, and the runbook records it
+    automated = notice[notice.index("Daily encrypted backups:") : notice.index("Database exports that the project operator keeps:")]
+    assert "Each backup is deleted automatically about seven days after it is made." in automated
+    assert "Backups are not edited when you delete a trip or your account, and deleting does not remove them early" in automated
+    record = _RUNBOOK[_RUNBOOK.index("### 2.6 Automated daily backups") : _RUNBOOK.index("## 3. Deployment procedure")]
+    assert "once a day at 03:37 UTC" in record and "expires **7 days** after it is created" in record
+    assert "**check before release:** bucket versioning is off" in record
+    # no sentence anywhere claims that deleting a trip or an account removes backups
+    for sentence in sentences:
+        assert not re.search(r"backups? (is|are) (deleted|removed|purged) (immediately|straight away|at once|when you delete)", sentence, re.IGNORECASE), sentence
+    # every OTHER sentence that mentions a backup (the hosting services') states no period or promise
+    about_other_backups = [s for s in sentences if "backup" in s.lower() and s not in automated and "Daily encrypted backups" not in s]
+    assert about_other_backups
+    for sentence in about_other_backups:
         assert not re.search(r"\d", sentence), sentence
         assert not re.search(r"\b(retain|retained|retention of|kept for|deleted after|expire)\b", sentence, re.IGNORECASE), sentence
     assert not re.search(r"30[\s-]*day", notice)
@@ -771,7 +784,7 @@ def test_no_backup_retention_policy_is_claimed_before_it_exists() -> None:
     # the runbook calls 30 days a recommendation and lists what is unverified
     section = _RUNBOOK[_RUNBOOK.index("**Retention: a recommendation, not yet an operating policy.**") : _RUNBOOK.index("### 2.3 ")]
     assert "**30 days**" in section and section.count("**Not verified**") == 4
-    assert "It names no number of\ndays on purpose." in section and "until then it must not state one" in section
+    assert "For the exports it names\nno number of days on purpose." in section and "until then it must not state one for exports" in section
     assert "is not an\n   operating policy" in _RUNBOOK or "It is not an operating policy" in _RUNBOOK.replace("\n   ", " ")
 
 
@@ -797,17 +810,28 @@ def test_the_runbook_records_the_decisions_and_what_is_still_unverified() -> Non
 # -- release-copy alignment: no operator deletion is promised without a way to verify ownership --------
 
 
-def test_no_account_deletion_is_promised_to_someone_who_cannot_prove_ownership() -> None:
+def test_a_locked_out_deletion_needs_proof_of_mailbox_control_and_runs_only_through_the_operator_command() -> None:
     section = _RUNBOOK[_RUNBOOK.index("## 8. An account deletion request from someone who cannot sign in") :]
     for sentence in (
-        "**No verified operator deletion procedure exists. Do not improvise one.**",
         "**nothing the system stores can prove that a requester owns an account.**",
         "**Knowing an account's email address is not proof of ownership.**",
-        "That ability is not a procedure.",
-        "**Decision required before unrestricted public registration.**",
+        "That ability is not a procedure",
+        "Never improvise around it.",
+        "**D3a: contact.** Requests go to **garimaprachi2411@gmail.com**",
+        "A message that merely comes *from* the address is never\nenough",
+        "the code goes **to** the address",
+        "Reply to the requester with the **same text in every case** (it must not reveal whether an account exists)",
+        "Never SQL.",
+        "### 8.2 Prerequisites before the notice offering this is published",
+        "**Rehearsal:**",
     ):
         assert sentence in section, sentence
-    assert "**Deletion for someone who cannot sign in** (section 8): no verified procedure exists." in _RUNBOOK
+    assert "not yet\n   usable** until the prerequisites of section 8.2 are done" in _RUNBOOK
+    # the commands shown are the tool's, and its own variables are typed blind
+    tool = (_ROOT / "backend" / "scripts" / "locked_out_account_deletion.py").read_text()
+    for name in ("ACCOUNT_DELETION_DATABASE_URL", "ACCOUNT_DELETION_SESSION_SECRET_KEY"):
+        assert f'"{name}"' in tool and f"read -rs {name}" in section
+    assert "MAX_HOURS = 72" in tool and "within 72 hours" in section and "MAX_ATTEMPTS = 5" in tool and "five wrong" in section
 
     # what the runbook says the system has is what the code has: the only deletion route needs the
     # password, and there is nothing that could verify an email address or reset a password
@@ -829,6 +853,11 @@ def test_no_account_deletion_is_promised_to_someone_who_cannot_prove_ownership()
     notice = (_ROOT / "frontend" / "lib" / "privacy-notice.ts").read_text()
     warning = "Password recovery is not available during this beta. If you lose your password, you may lose access to your saved trips and may be unable to delete your account yourself."
     assert warning in notice and warning in (_ROOT / "frontend" / "lib" / "beta-notice.ts").read_text()
-    assert "so it does not delete accounts on request for people who have lost their password" in notice
-    for promise in (r"contact (us|the operator) to (have|get) your account deleted", r"we (will|can) delete your account (for you|on request)", r"password reset is available", r"reset your password"):
+    # the notice describes the mailbox challenge, names the owner-chosen address, and promises no reset
+    assert 'export const ACCOUNT_DELETION_CONTACT = "garimaprachi2411@gmail.com";' in notice
+    assert "A message that merely comes from the account's address is not accepted as proof on its own." in notice
+    assert "a one-time code is sent to that address, and the account is deleted only if that code is sent back" in notice
+    assert "does not delete accounts on request" not in notice
+    for promise in (r"we (will|can) delete your account (for you|on request)", r"password reset is available", r"reset your password",
+                    r"deleted (immediately|straight away) on request"):
         assert not re.search(promise, notice, re.IGNORECASE), promise

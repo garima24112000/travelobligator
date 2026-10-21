@@ -24,16 +24,20 @@ test("the privacy notice can be read before signing up", async ({ page }) => {
   for (const heading of SECTIONS) await expect(notice.getByRole("heading", { name: heading })).toBeVisible();
   await expect(notice).toContainText("a salted hash of your password");
   await expect(notice).toContainText("AI providers (Groq and Google Gemini)");
-  // the four kinds of copy, told apart, and no retention period claimed for the operator's exports
+  // the five kinds of copy, told apart; the daily backups' expiry stated, none for the operator's exports
   await expect(notice).toContainText("Deleting removes your records from this app's own database, and only from there.");
+  await expect(notice).toContainText("Each backup is deleted automatically about seven days after it is made.");
   await expect(notice).toContainText("Database exports that the project operator keeps:");
   await expect(notice).toContainText("This project has not yet set a retention period for these exports.");
   await expect(notice).toContainText("Backups and logs kept by the hosting services: deletion does not reach them.");
   await expect(notice).toContainText("What was already sent to the external services above to build an itinerary cannot be recalled.");
   await expect(notice).not.toContainText(/30[\s-]*days?/);
-  // a lost password: the same sentence as the registration form, and no assisted deletion is offered
+  // a lost password: the same sentence as the registration form, and deletion only after a code sent to the
+  // account's own address (owner decisions D3a-D3c)
   await expect(notice).toContainText(PASSWORD_LOSS_WARNING);
-  await expect(notice).toContainText("it does not delete accounts on request for people who have lost their password");
+  await expect(notice).toContainText("If you cannot sign in and want your account deleted: email garimaprachi2411@gmail.com");
+  await expect(notice).toContainText("A message that merely comes from the account's address is not accepted as proof on its own.");
+  await expect(notice).not.toContainText("does not delete accounts on request");
   await expect(notice).toContainText("in limited beta");
   await expect(notice).toContainText("Issues are public, so do not include personal details there.");
   const issues = notice.getByRole("link", { name: "Open an issue on GitHub" });
