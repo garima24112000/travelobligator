@@ -511,6 +511,24 @@ def new_authenticated_client() -> TestClient:
     return test_client
 
 
+def replace_session_cookie(test_client: TestClient, value: str) -> None:
+    """Make `value` the ONLY session cookie `test_client` sends.
+
+    `client.cookies.set(name, value)` does not replace the cookie the server set at sign-up: that one is
+    scoped to the test host's domain, the new one to no domain, so the jar then holds TWO same-name cookies
+    and the request carries both. Which one the application reads depends on the HTTP client's header order
+    (it changed between httpx2 2.13 and 2.16), so a test written that way passes or fails by luck. This
+    removes every session cookie first, then sets exactly one, and checks that it did.
+    """
+    name = get_settings().session_cookie_name
+    held = [cookie for cookie in test_client.cookies.jar if cookie.name == name]
+    for cookie in held:
+        test_client.cookies.delete(name, domain=cookie.domain, path=cookie.path)
+    test_client.cookies.set(name, value, domain=held[0].domain if held else "", path="/")
+    remaining = [cookie.value for cookie in test_client.cookies.jar if cookie.name == name]
+    assert remaining == [value], "the session cookie was not replaced"
+
+
 @pytest.fixture()
 def client() -> TestClient:
     """Step 184D: every `/trips/*` route requires a real session, so this

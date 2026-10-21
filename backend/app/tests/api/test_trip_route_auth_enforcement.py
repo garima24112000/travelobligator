@@ -3,10 +3,11 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
+from app.core.config import get_settings
 from app.main import app
 from app.models.planning_state import PlanningState, TravelGroupType, TripRequest
 from app.repositories.factory import get_planning_state_repository, get_trip_repository
-from app.tests.conftest import create_trip_payload, new_authenticated_client
+from app.tests.conftest import create_trip_payload, new_authenticated_client, replace_session_cookie
 
 # Step 184D: the full auth-enforcement matrix across every `/trips/*`
 # route -- not just one or two representative ones. Every route below
@@ -206,12 +207,32 @@ def test_unowned_legacy_trip_returns_403_for_every_trip_route(
 def test_invalid_session_cookie_returns_401_on_a_trips_route(client: TestClient) -> None:
     create_response = client.post("/trips", json=create_trip_payload())
     trip_id = create_response.json()["data"]["trip_id"]
-    client.cookies.set("travelobligator_session", "not-a-real-token")
+    replace_session_cookie(client, "not-a-real-token")
 
     response = client.get(f"/trips/{trip_id}")
 
     assert response.status_code == 401
     assert response.json()["errors"][0]["code"] == "AUTHENTICATION_REQUIRED"
+
+
+def test_a_genuinely_invalid_session_cannot_read_another_users_trip() -> None:
+    owner = new_authenticated_client()
+    trip_id = owner.post("/trips", json=create_trip_payload()).json()["data"]["trip_id"]
+    owner_token = owner.cookies.get(get_settings().session_cookie_name)
+
+    # a browser that holds only an invalid session cookie
+    intruder = TestClient(app)
+    replace_session_cookie(intruder, "not-a-real-token")
+    response = intruder.get(f"/trips/{trip_id}")
+    assert response.status_code == 401
+    assert response.json()["errors"][0]["code"] == "AUTHENTICATION_REQUIRED"
+
+    # ... or a copy of the owner's token with its signature broken
+    replace_session_cookie(intruder, owner_token[:-4] + ("AAAA" if not owner_token.endswith("AAAA") else "BBBB"))
+    assert intruder.get(f"/trips/{trip_id}").status_code == 401
+
+    # the owner's genuine session is unaffected
+    assert owner.get(f"/trips/{trip_id}").status_code == 200
 
 
 def test_expired_session_cookie_returns_401_on_a_trips_route(
