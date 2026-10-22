@@ -6,7 +6,8 @@ This document is the deployment **contract** for the portfolio release, and the 
 | --- | --- |
 | 203B — contract prepared and validated | Completed |
 | 203C — deployment ([section 11](#11-deployment-checklist-executed-in-203c)) | Completed |
-| 203D — production acceptance ([section 14](#14-production-verification-record)) | Completed, except cold-start recovery (pending) |
+| 203D — production acceptance ([section 14](#14-production-verification-record)) | Completed; cold-start recovery, pending at 203D, was verified on the M1 deployment (section 14.1) |
+| M1 — restricted deployment of `b559ff0`, schema `a94c0e7d2b61` ([section 14.1](#141-restricted-m1-deployment-b559ff0)) | Completed, owner-verified 2026-10-22, including the cold start. Invite-only; no invitation shared; no limited-beta or public-launch approval |
 
 Live deployment URLs are recorded in `README.md` and `docs/23_v1_release_reference.md`. This contract uses
 `<VERCEL_FRONTEND_ORIGIN>` and `<RENDER_BACKEND_ORIGIN>` throughout so it remains reusable and contains no
@@ -332,7 +333,8 @@ This checklist was carried out for the V1 release and is kept as the procedure f
 redeploy. **For a redeploy of the existing system** (backup first, then migrations, backend, frontend, smoke
 test), for rolling one back and for restoring data, follow
 [docs/25_operations_runbook.md](25_operations_runbook.md); this section stays the record of how the system
-was first set up. Step G.7 (cold-start recovery) is the one item still pending. Order matters: the backend needs the database migrated first, the frontend build needs the backend origin, and
+was first set up. Step G.7 (cold-start recovery), pending at 203D, was verified on the M1 deployment
+(section 14.1). Order matters: the backend needs the database migrated first, the frontend build needs the backend origin, and
 the backend's CORS value needs the frontend origin.
 
 **A. Neon**
@@ -474,9 +476,9 @@ whether its deadline was exceeded and how it ended. These are reported, never ac
 
 ## 13A. Abuse and cost limits (P0)
 
-Added after the V1 production-readiness audit. **Not yet deployed:** the verification record in section 14
-describes the system before these limits existed. Deploying them needs the migration `e52b7c1a9f04`
-(section 11-B) before the backend deploy.
+Added after the V1 production-readiness audit. **Deployed in `b559ff0` (M1, owner-verified 2026-10-22),
+after the migration `e52b7c1a9f04` (section 11-B); section 14.1.** The 203D table of section 14 describes the
+system before these limits existed.
 
 Nothing here changes how a trip is planned. Every limit is a validated setting with a documented default
 (`.env.example`); the production values are written out in `render.yaml`.
@@ -571,7 +573,8 @@ Tests (no remote service needed unless marked): `tests/api/test_trip_request_bou
 
 ## 13B. Deleting a trip or an account (P1-A)
 
-**Not yet deployed.** Needs the migration `a94c0e7d2b61` (section 11-B) before the backend deploy.
+**Deployed in `b559ff0` (M1, owner-verified 2026-10-22),** after the migration `a94c0e7d2b61` (section 11-B).
+Account deletion through "Delete account" was exercised with a disposable account (section 14.1).
 
 **Endpoints.**
 
@@ -645,8 +648,11 @@ Tests: `tests/api/test_data_deletion_p1a.py`, `tests/db/test_migration_schema_de
 
 ## 13C. Security headers and a reproducible production configuration (P1-B)
 
-**Not yet deployed.** Nothing in this section has been checked in a real browser or against the hosted
-platforms; what was checked, and how, is stated per item.
+**Deployed in `b559ff0` (M1, owner-verified 2026-10-22).** Against the hosted platforms, only this has been
+checked: `public_check.py --backend --expect-security-headers` passed (exit 0) — the page carries `nosniff`,
+`X-Frame-Options: DENY` and a Content-Security-Policy that is still **Report-Only**, not enforcing (section
+14.1). The browser procedure for promoting the policy to enforcing has not been carried out; otherwise, what
+was checked, and how, is stated per item.
 
 ### Response headers
 
@@ -810,5 +816,38 @@ session value or token is recorded here.
 | UI | Lisbon 3-day balanced itinerary | rendered: 9 scheduled places, maps, routes, movement rows |
 | UI | Limitations and unavailable data | labelled as such |
 | UI | Final production smoke | no uncaught application error observed |
-| Render | Deployed commit | `f55401c` |
-| Render | Cold-start recovery after a genuine idle sleep | **Pending — not yet verified** |
+| Render | Deployed commit | `f55401c` (at 203D; superseded by `b559ff0`, section 14.1) |
+| Render | Cold-start recovery after a genuine idle sleep | Pending at 203D; **verified on `b559ff0`** (section 14.1) |
+
+The table above is the 203D record of commit `f55401c` on schema `d41a7e2c9b53`, kept as it was.
+
+### 14.1 Restricted M1 deployment (`b559ff0`)
+
+Production since 2026-10-22: backend and frontend commit **`b559ff0`** (the merge of PR #6 into `main`),
+schema **`a94c0e7d2b61`**. Owner-verified; the operator's step-by-step record is
+`docs/29_release_readiness_checklist.md` section 7. Restricted: registration needs the invitation link, which
+has not been shared with anyone. This is **not** an approval of the limited beta or of a public launch: the
+itinerary-quality gate is **FAILED** and the quality exception (D1) is deferred; the container-finding risk
+acceptance (D5) covers this restricted deployment only; the Neon restore drill is not done.
+
+| Area | Check | Result |
+| --- | --- | --- |
+| CI | Six jobs on the merge commit | passed |
+| Database | Migration `d41a7e2c9b53` → `a94c0e7d2b61`; backup-role grants on `auth_attempts`, `deleted_job_usage` | done |
+| Render | Deployed commit | `b559ff0` |
+| Backend | Startup: persistence, provider cache, `migration_head` | PostgreSQL, Redis, `a94c0e7d2b61` |
+| Backend | `/health` (public) | 200 |
+| Backend | `/ready` with the ops token | 200, status `ready` |
+| Backend | `/ready` without the token; `/api/ready` through the frontend | 404, by design |
+| Vercel | Merge-triggered production build | canceled by the build hold, as intended |
+| Vercel | Production deployment | `b559ff0`; the custom Ignored Build Step restored afterwards |
+| Public check | `public_check.py --backend --expect-security-headers` | passed, exit 0; page policy Report-Only |
+| Auth | Sign-up without the invitation | rejected |
+| Auth | Private invitation exchange | succeeded |
+| Auth | Registration and session cookies | each `HttpOnly`, `Secure`, `SameSite=Lax` |
+| Journey | Disposable account: sign-up, Lisbon itinerary, log out / log in, persistence, account deletion | all succeeded |
+| Backups | Post-migration Neon backup (run #5); production monitor (run #18: backend health, backup freshness, alerts) | passed |
+| Render | Cold start after a genuine free-tier idle sleep | **passed** — shutdown completed 2026-10-21 23:53:51 EDT (2026-10-22 03:53:51 UTC); after about 55 idle minutes a new `Application started.` at 2026-10-22 00:49:02 EDT (04:49:02 UTC) with `migration_head=a94c0e7d2b61`, PostgreSQL and Redis; then `POST /auth/login` 200 ("Login succeeded") and `GET /trips` 200 |
+
+Not verified here: delivery of a monitoring alert to the owner, the Neon restore drill, the enforcing
+Content Security Policy, and manual device / screen-reader testing.
