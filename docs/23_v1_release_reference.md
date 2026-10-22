@@ -10,14 +10,19 @@ No secret, connection string, session value or token appears in this document.
 
 ## 1. Release status
 
-V1 is deployed and production-verified, with one operational check still open (section 12).
+V1 is deployed and production-verified, including the free-tier cold start (section 12). Production now
+runs the restricted M1 deployment (owner-verified, 2026-10-22): registration is invite-only and the invitation
+has not been shared with anyone. This is **not** an approval of a limited beta or a public launch — the
+itinerary-quality gate is **FAILED**, the quality exception (D1) is deferred, the container-finding risk
+acceptance (D5) covers the restricted M1 deployment only, and the Neon restore drill is not done
+(`docs/29_release_readiness_checklist.md`).
 
 | Item | Value |
 | --- | --- |
 | Frontend | <https://travelobligator.vercel.app> |
 | Backend | <https://travelobligator-backend.onrender.com> (reached through the frontend's `/api/*` rewrite) |
-| Deployed backend commit | `f55401c` — "fix: accept short equivalent city spellings" |
-| Database schema (Alembic head) | `d41a7e2c9b53` |
+| Deployed commit (backend and frontend) | `b559ff0` — merge of PR #6 into `main` (restricted M1, 2026-10-22). Before it: backend `f55401c`, frontend `8bffd39` |
+| Database schema (Alembic head) | `a94c0e7d2b61` (before M1: `d41a7e2c9b53`) |
 | Hosting | Free tiers: Vercel Hobby, Render Free, Neon Free, Upstash Free |
 
 This is a portfolio / research / demo deployment. It is not an SLA-backed production service.
@@ -403,12 +408,30 @@ All checks below were performed against the deployed system.
 
 **Render**
 
-- The latest production deployment is on `f55401c`.
+- At the time of these checks the production deployment was on `f55401c` (schema `d41a7e2c9b53`). Everything
+  above in this section is that record, kept as it was.
 
-**Pending**
+**Restricted M1 deployment of `b559ff0` (owner-verified, 2026-10-22)**
 
-- Free-tier cold-start recovery after a genuine idle sleep has **not yet been verified**. The expected
-  behaviour is a slow first request that recovers; it is recorded here as pending, not as passed.
+Full table: `docs/22_free_tier_deployment.md` section 14.1; operator record:
+`docs/29_release_readiness_checklist.md` section 7.
+
+- Six CI jobs passed on the merge commit `b559ff0`. Neon migrated to `a94c0e7d2b61`; backup-role grants on the
+  two new tables succeeded. Render deployed `b559ff0` (startup: PostgreSQL, Redis,
+  `migration_head=a94c0e7d2b61`); Vercel production deployed `b559ff0`.
+- Authenticated `/ready`: 200, status `ready`. `public_check.py --backend --expect-security-headers` passed
+  (exit 0); the page's Content Security Policy is Report-Only, not enforcing.
+- Invite-only registration enforced (sign-up without the invitation rejected; the private invitation exchange
+  succeeded); registration and session cookies each `HttpOnly`, `Secure`, `SameSite=Lax`.
+- A disposable account signed up, generated a Lisbon itinerary, logged out and in, found the trip persisted,
+  and was deleted. The post-migration Neon backup and the production monitor passed.
+
+**Cold start — passed**
+
+- Free-tier cold-start recovery after a genuine idle sleep was verified on `b559ff0`: the instance shut down
+  at 2026-10-21 23:53:51 EDT and, after about 55 idle minutes, a new `Application started.` was logged at
+  2026-10-22 00:49:02 EDT with `migration_head=a94c0e7d2b61`, PostgreSQL and Redis; `POST /auth/login` then
+  returned 200 and `GET /trips` 200.
 
 ## 13. Known limitations
 
@@ -448,8 +471,9 @@ core production acceptance checks have passed, and its evaluation is recorded as
 on the unseen holdout with zero fabricated identities, duplicates or unsupported claims, a generic defect
 found by the holdout and fixed without rerunning it, and 8/8 on stress.
 
-One operational check remains open: cold-start recovery after a genuine idle sleep on the free Render
-instance (section 12).
+The operational check that was open, cold-start recovery after a genuine idle sleep on the free Render
+instance, passed on the restricted M1 deployment of `b559ff0` (section 12). That deployment invites no one:
+the itinerary-quality gate is FAILED, and no limited beta or public launch is approved (section 1).
 
 That conclusion covers infrastructure and factual safety. Itinerary-composition quality is being addressed
 in the phase described in [`24_itinerary_quality_contract.md`](24_itinerary_quality_contract.md), and the

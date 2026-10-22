@@ -31,13 +31,16 @@ No command in this document was run against the production database, and none pr
    is closed as `JOB_INTERRUPTED` (at once on a graceful stop, at the next start after a hard one); the trip
    stays consistent and the traveller starts again. Every deploy, restart and sleep does this.
 
-Revisions at the time of writing:
+Revisions at the time of writing. The first row is production **before** the restricted M1 deployment; it
+is still the baseline from which `test_operations_p1d.py` requires every later migration to be additive, and
+the target of the rollback in section 4.3:
 
 | | Revision |
 | --- | --- |
 | Production (commit `f55401c`) | `d41a7e2c9b53` |
-| Pending, in order | `e52b7c1a9f04` (indexes on `generation_jobs`, table `auth_attempts`), then `a94c0e7d2b61` (table `deleted_job_usage`) |
+| Applied by the M1 deployment, in order | `e52b7c1a9f04` (indexes on `generation_jobs`, table `auth_attempts`), then `a94c0e7d2b61` (table `deleted_job_usage`) |
 | Head of this branch | `a94c0e7d2b61` |
+| Production since M1 (commit `b559ff0`, owner-verified 2026-10-22 UTC) | `a94c0e7d2b61`, recorded as `migration_head` at startup |
 
 Both pending migrations only **add** tables and indexes. No existing row, column or constraint changes, and
 their downgrades drop only what they added. A test (`test_operations_p1d.py`) fails when a later migration is
@@ -345,12 +348,21 @@ endpoints.
    grant of step 5).
 10. **Cold start.** Leave the site untouched until Render has put the backend to sleep (the dashboard shows
     when; allow well over a quarter of an hour without any request, including your own checks), then open it
-    and sign in: the first request is slow and then succeeds. This has never been verified after a genuine
-    idle sleep and is the last open acceptance item.
+    and sign in: the first request is slow and then succeeds. **Passed on the M1 deployment of `b559ff0`**
+    (owner-verified: idle shutdown 2026-10-21 23:53:51 EDT, restart 2026-10-22 00:49:02 EDT with
+    `migration_head=a94c0e7d2b61`, then login 200 and `GET /trips` 200; `docs/29` section 7).
 11. **Record** the deployed commit, the migration head and the results in `docs/22` section 14 and `docs/23`.
 12. **Tag** only after all of the above is accepted: `git tag -a v1.0.0 <commit> -m "..."`, then push the tag.
 
-Status: **documented, not executed.** Steps 5 and the schema checks of step 7 are exercised on throwaway
+Status: **executed for the restricted M1 deployment of `b559ff0` (owner-verified, 2026-10-22 UTC) through
+step 9, as recorded** — CI on the merge commit, migration, grant, backend deploy and startup head,
+authenticated `/ready`, frontend deploy, the invitation and cookie checks, the disposable-account journey and
+the backup run, and `public_check.py --backend --expect-security-headers` (exit 0, CSP Report-Only); **step 10
+(cold start after a genuine idle sleep) PASSED** on 2026-10-22; step 11 is done (`docs/22` section 14.1,
+`docs/23`). The results, one row each, are in `docs/29_release_readiness_checklist.md` section 7. Step 12
+(tag) has not been done. The Neon restore drill of section 2.5 is still not done
+(deferred for M1 only, decision D10), and the restore-point branch `pre-m1-20261021` is still kept.
+Steps 5 and the schema checks of step 7 are also exercised on throwaway
 databases in CI (section 2.5, and `scripts/ci/container_smoke.sh` proves that a backend on an un-migrated
 database never reports ready).
 
