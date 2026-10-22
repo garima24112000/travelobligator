@@ -44,6 +44,32 @@ class JobAlreadyActiveError(Exception):
         super().__init__("A generation or regeneration job is already active for this trip.")
 
 
+class TripNoLongerExistsError(Exception):
+    """A job was to be created for a trip that has just been deleted (P1-A): the request passed its
+    ownership check, then lost to a simultaneous deletion of the trip or of the whole account. An
+    expected outcome of that race, not a database failure -- the API answers 404 `TRIP_NOT_FOUND`.
+    No job row was written."""
+
+    def __init__(self, trip_id: str | None = None) -> None:
+        self.trip_id = trip_id
+        super().__init__("The trip no longer exists; no job was created.")
+
+
+class GenerationInProgressError(Exception):
+    """A deletion was refused: a queued or running job exists for the trip (or for one of the
+    account's trips). Nothing was deleted (P1-A; `services.data_deletion_service`)."""
+
+    def __init__(self) -> None:
+        super().__init__("A generation job is queued or running; nothing was deleted.")
+
+
+class NothingToDeleteError(Exception):
+    """A deletion found nothing: the owner has no such trip, or the account no longer exists."""
+
+    def __init__(self) -> None:
+        super().__init__("There was nothing to delete.")
+
+
 class _Unset:
     """Sentinel: "the caller did not supply an expected value" (distinct from a real `None`,
     e.g. a branch whose head is legitimately still `None`)."""

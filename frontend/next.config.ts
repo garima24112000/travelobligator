@@ -1,5 +1,7 @@
 import type { NextConfig } from "next";
 
+import { hstsMaxAgeSeconds, staticSecurityHeaders } from "./lib/security-headers";
+
 // Section 203B: same-origin API proxy. When `BACKEND_ORIGIN` is set at BUILD time (the hosted frontend),
 // `/api/*` is rewritten to that backend, so the browser only ever talks to the frontend's own origin and the
 // session cookie stays a first-party, host-only cookie. Pair it with the runtime `API_BASE_URL=/api`
@@ -45,9 +47,19 @@ const nextConfig: NextConfig = {
     return [{ source: `${API_PROXY_PREFIX}/:path*`, destination: `${origin}/:path*` }];
   },
   async headers() {
-    // API responses are session-scoped: never cacheable by the CDN or the browser. The backend already sends
-    // `Cache-Control: no-store` on every response; this also covers an error answered by the proxy itself.
     return [
+      // P1-B: enforced security headers on EVERY response of this host -- pages, error pages, static
+      // assets and the `/api/*` proxy. None of them is a header the backend sets itself, so nothing the
+      // backend sends (Cache-Control, Set-Cookie, X-Request-Id) is replaced. The Content Security Policy
+      // is not here: it needs a per-response nonce and is added, Report-Only, by proxy.ts.
+      {
+        source: "/(.*)",
+        headers: staticSecurityHeaders({
+          hstsMaxAgeSeconds: hstsMaxAgeSeconds(process.env.FRONTEND_HSTS_MAX_AGE_SECONDS),
+        }),
+      },
+      // API responses are session-scoped: never cacheable by the CDN or the browser. The backend already sends
+      // `Cache-Control: no-store` on every response; this also covers an error answered by the proxy itself.
       {
         source: `${API_PROXY_PREFIX}/:path*`,
         headers: [{ key: "Cache-Control", value: "no-store" }],

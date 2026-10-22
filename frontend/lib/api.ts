@@ -1,9 +1,12 @@
 import type {
+  AccountDeletedData,
   ActivateBranchResponse,
   AICandidatePromotionData,
   AICandidateReviewData,
   ApiResponse,
   AuthResponse,
+  RegistrationAccess,
+  RegistrationStatus,
   CreateForkRequest,
   CreateForkResponse,
   DestinationContextData,
@@ -23,6 +26,7 @@ import type {
   RegenerationReadinessData,
   TripCreateData,
   TripData,
+  TripDeletedData,
   TripListResponseData,
   TripRequestInput,
   TripSummary,
@@ -326,6 +330,21 @@ export function signup(email: string, password: string): Promise<AuthResponse> {
   });
 }
 
+// Limited beta: whether new accounts are open, need the invitation link, or are closed, and whether
+// this browser may sign up now. Never carries the link's token.
+export function getRegistrationStatus(): Promise<RegistrationStatus> {
+  return request<RegistrationStatus>("/auth/registration");
+}
+
+// Limited beta: the invitation link's token goes in the JSON BODY, never a URL. On success the backend
+// sets a short-lived HttpOnly registration cookie; nothing secret comes back.
+export function exchangeRegistrationLink(token: string): Promise<RegistrationAccess> {
+  return request<RegistrationAccess>("/auth/registration-access", {
+    method: "POST",
+    body: JSON.stringify({ token }),
+  });
+}
+
 export function login(email: string, password: string): Promise<AuthResponse> {
   return request<AuthResponse>("/auth/login", {
     method: "POST",
@@ -350,6 +369,23 @@ export function getCurrentUser(): Promise<AuthResponse> {
 
 export function listTrips(): Promise<TripListResponseData> {
   return request<TripListResponseData>("/trips");
+}
+
+// P1-A: permanently deletes one of the signed-in user's trips with everything
+// stored for it. 409 `TRIP_DELETION_BLOCKED` while its itinerary is being built.
+export function deleteTrip(tripId: string): Promise<TripDeletedData> {
+  return request<TripDeletedData>(`/trips/${tripId}`, { method: "DELETE" });
+}
+
+// P1-A: permanently deletes the signed-in account and every trip in it. The
+// current password is required (a session alone is not enough) and `confirm`
+// is always sent as `true` -- the caller asks the user first. On success the
+// backend clears the session cookie.
+export function deleteAccount(password: string): Promise<AccountDeletedData> {
+  return request<AccountDeletedData>("/auth/delete-account", {
+    method: "POST",
+    body: JSON.stringify({ password, confirm: true }),
+  });
 }
 
 // Section 199A/199B/199C: itinerary branches. Every call goes through the

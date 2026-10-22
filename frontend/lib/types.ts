@@ -46,6 +46,30 @@ export type AuthResponse = {
   user: PublicUser;
 };
 
+// Limited beta (backend: app.models.user.RegistrationStatusData / RegistrationAccessResponseData).
+// "open" | "invite_link" | "closed"; any other value is treated as closed.
+export type RegistrationStatus = {
+  mode: string;
+  authorized: boolean;
+};
+
+export type RegistrationAccess = {
+  authorized: boolean;
+  expires_in_seconds: number;
+};
+
+// P1-A deletion (backend: app.schemas.trips.TripDeletedResponseData /
+// app.models.user.AccountDeletedResponseData).
+export type TripDeletedData = {
+  trip_id: string;
+  deleted: boolean;
+};
+
+export type AccountDeletedData = {
+  deleted: boolean;
+  trips_deleted: number;
+};
+
 // One row of `GET /trips`'s "My Trips" list (Step 184D backend, Step 184E
 // frontend; backend: app.schemas.trips.TripListItem). Deliberately small --
 // never the full PlanningState (that stays behind `GET /trips/{trip_id}`).
@@ -584,6 +608,10 @@ export type RouteFeasibilityReport = {
     to_experience_id: string;
     status: string;
     mode?: string | null;
+    // True only when the routing provider's own route for this leg uses a
+    // ferry; false when it said it does not; null / absent when it said
+    // nothing. Never inferred here.
+    includes_ferry?: boolean | null;
   }[];
 };
 
@@ -666,6 +694,45 @@ export type ValidationReport = {
   // stored before that section.
   blocking_codes?: string[];
   review_codes?: string[];
+  // V1 disclosure contract (backend: app.services.review_classification):
+  // the class of every code / finding category of this report. The backend
+  // owns it -- a code it does not know is "material" -- and this page never
+  // keeps a list of its own. Absent on reports stored before the field.
+  review_code_classification?: Record<string, "informational" | "material">;
+  // V1 disclosure contract (backend: InterestCoverageEntry): whether the
+  // final itinerary covers each thing the traveler asked for. `null` or
+  // absent means coverage is UNKNOWN (no plan judged, or a report stored
+  // before the field) -- never "everything is covered".
+  interest_coverage?: InterestCoverageEntry[] | null;
+  // Phase 1 (backend: OverLimitWalkingLeg): the scheduled legs whose route,
+  // in its final mode, is a walk longer than a usual walk between stops, so
+  // no faster way of making the transfer is on the plan. Presentation only;
+  // `null` or absent (a report stored before the field) marks no leg.
+  over_limit_walking_legs?: OverLimitWalkingLeg[] | null;
+};
+
+export type OverLimitWalkingLeg = {
+  day_number: number;
+  from_experience_id: string;
+  to_experience_id: string;
+};
+
+export type InterestCoverageEntry = {
+  // The canonical interest, or the traveler's own term when not tracked.
+  interest: string;
+  // The traveler's own term(s) for it.
+  requested_as: string[];
+  // "covered" | "not_covered_supply_available" | "not_covered_no_supply" |
+  // "not_tracked". Any other value is treated as unknown.
+  status: string;
+  // Phase 2: for a "covered" interest, what the coverage rests on:
+  // "scheduled_place" (the source of the coverage decision is a scheduled
+  // stop -- not an independent check of relevance) |
+  // "nearby_suggestions_only" (food: only restaurant
+  // suggestions near the stops) | "museum_subject_unrecorded" (history / art:
+  // only museums whose subject the place data does not record). Absent or
+  // null on older reports and for an interest that is not covered.
+  basis?: string | null;
 };
 
 // Section 203C.2B (backend: app.models.inventory_sufficiency). Whether the

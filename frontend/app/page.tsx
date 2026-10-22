@@ -14,7 +14,9 @@ import {
   BACKEND_UNREACHABLE_CODE,
   createTrip,
   createTripLock,
+  deleteTrip,
   deleteTripLock,
+  exchangeRegistrationLink,
   generatePlan,
   getAiCandidateReview,
   getCurrentUser,
@@ -24,6 +26,7 @@ import {
   getProviderCoverage,
   getRegenerationAttempts,
   getRegenerationReadiness,
+  getRegistrationStatus,
   getTrip,
   getTripJob,
   getTripJobs,
@@ -39,7 +42,18 @@ import {
 } from "@/lib/api";
 import BranchWorkspacePanel from "./BranchWorkspacePanel";
 import { readSelectedTripId, writeSelectedTripId } from "@/lib/trip-selection";
+import { signupAccessNotice, takeBetaLinkToken } from "@/lib/beta-access";
 import { defaultTripDates } from "@/lib/default-trip-dates";
+import { latestEndDate, tripRequestLimitProblem } from "@/lib/trip-request-limits";
+import {
+  ACCOUNT_DELETED_MESSAGE,
+  TRIP_DELETED_MESSAGE,
+  TRIP_DELETE_FAILED_MESSAGE,
+  tripDeletionQuestion,
+} from "@/lib/privacy-notice";
+import { DeleteAccountSection, PrivacyNotice } from "./AccountDataPanel";
+import { BetaBadge, BetaNotice, BetaSummary } from "./BetaNotice";
+import { PASSWORD_LOSS_WARNING } from "@/lib/beta-notice";
 import { DisclosureSection, TravelerLimitationsSection } from "./TravelerSections";
 import {
   InventorySufficiencyPanel,
@@ -49,6 +63,7 @@ import {
 import {
   aggregateCaveats,
   humanizeIdentifier,
+  travelerDayFindings,
   travelerProse,
   travelerText,
   travelerWhyIncluded,
@@ -57,17 +72,30 @@ import {
   GETTING_AROUND_DISCLAIMER,
   GETTING_AROUND_HEADING,
   LOADING_DEFAULT_MESSAGE,
+  PLAN_INCOMPLETE,
   PLAN_NOT_GENERATED,
+  PLAN_UNUSABLE,
   SESSION_ENDED_MESSAGE,
   genericLoadingStep,
   gettingAroundAdvisory,
   loadingPatienceNote,
   loadingStageLabel,
+  planAvailability,
   travelerChangeRefusal,
   travelerErrorMessage,
+  UNVERIFIED_LEG_LINE,
+  legIncludesFerry,
+  legIsOverLimitWalk,
+  legIsUnverified,
+  reviewSeverity,
+  travelerDayNotices,
+  travelerDayRouteNotices,
+  travelerInterestCoverage,
+  type CoverageState,
   travelerLegLine,
   travelerReadiness,
   travelerReviewNotices,
+  type ReviewSeverity,
   travelerRouteCoverageNote,
   tripSummarySourceNote,
 } from "@/lib/traveler-view";
@@ -114,6 +142,7 @@ import type {
   PromotedAICandidate,
   PublicUser,
   ReadinessChecklist,
+  RegistrationStatus,
   RegenerateResponseData,
   RegenerationAttempt,
   RegenerationReadiness,
@@ -516,19 +545,26 @@ function MovementRow({
   buffer,
   mode = "developer",
   travelerLine = null,
+  attention = false,
 }: {
   buffer: TravelTimeBuffer;
   mode?: "user" | "developer";
   // Section 2: Traveler view's own line ("Walk · 12 min · 0.9 km"), built
   // by `travelerLegLine` from the leg's stored mode and route figures.
   travelerLine?: string | null;
+  // V1 disclosure: a leg the traveler must look at (a ferry crossing, or a
+  // walk beyond the usual walking limit with no faster way verified).
+  attention?: boolean;
 }) {
   if (mode === "user") {
     if (!travelerLine) return null;
     return (
       <li
         data-testid="movement-row"
-        className="ml-3 break-words border-l border-white/10 pl-3 text-xs text-slate-300"
+        data-attention={attention ? "true" : undefined}
+        className={`ml-3 break-words border-l pl-3 text-xs ${
+          attention ? "border-amber-300/60 font-medium text-amber-200" : "border-white/10 text-slate-300"
+        }`}
       >
         {travelerLine}
       </li>
@@ -538,6 +574,74 @@ function MovementRow({
     <li className="ml-3 break-words border-l border-white/10 pl-3 text-[11px] text-slate-500">
       {formatMovementSummary(buffer)}
     </li>
+  );
+}
+
+/**
+ * Traveler view's row for a leg WITHOUT a verified route (V1 disclosure):
+ * says so between the two stops instead of leaving a silent gap. It states
+ * no mode, time or distance -- there is none to state.
+ */
+function UnverifiedLegRow() {
+  return (
+    <li
+      data-testid="unverified-leg-row"
+      className="ml-3 break-words border-l border-amber-300/60 pl-3 text-xs font-medium text-amber-200"
+    >
+      {UNVERIFIED_LEG_LINE}
+    </li>
+  );
+}
+
+/**
+ * What the traveler asked for that this itinerary does not cover (V1
+ * disclosure), from the backend's per-interest coverage entries. Shown above
+ * the itinerary whatever the readiness status; renders nothing when every
+ * requested interest is covered or there is nothing specific to say.
+ */
+function InterestCoverageNotice({ notices }: { notices: string[] }) {
+  if (notices.length === 0) return null;
+  return (
+    <section
+      id="interest-coverage-notice"
+      role="status"
+      aria-labelledby="interest-coverage-heading"
+      data-testid="interest-coverage-notice"
+      className="scroll-mt-6 rounded-2xl border border-amber-400/40 bg-amber-500/10 p-4 text-amber-100"
+    >
+      <h2 id="interest-coverage-heading" className="text-base font-semibold">
+        Not everything you asked for is covered
+      </h2>
+      <ul className="mt-1 list-disc break-words pl-5 text-sm leading-6">
+        {notices.map((notice) => (
+          <li key={notice}>{notice}</li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+/**
+ * What needs review on ONE day, on that day's card (V1 disclosure): the
+ * backend's material findings about the day plus the ferry / unverified
+ * travel notices its own legs call for. Renders nothing when there is none.
+ */
+function DayReviewNotices({ dayNumber, notices }: { dayNumber: number; notices: string[] }) {
+  if (notices.length === 0) return null;
+  return (
+    <div
+      role="note"
+      aria-label={`Needs review on day ${dayNumber}`}
+      data-testid="day-review-notices"
+      className="mt-2 rounded-lg border border-amber-300/40 bg-amber-400/10 p-3 text-xs leading-5 text-amber-100"
+    >
+      <p className="font-semibold">Needs your review</p>
+      <ul className="mt-1 list-disc break-words pl-5">
+        {notices.map((notice) => (
+          <li key={notice}>{notice}</li>
+        ))}
+      </ul>
+    </div>
   );
 }
 
@@ -1646,6 +1750,7 @@ function DayMapPreview({
 
     const container = containerRef.current;
     let isCancelled = false;
+    let dispose: (() => void) | null = null;
 
     void (async () => {
       const L = await import("leaflet");
@@ -1653,8 +1758,52 @@ function DayMapPreview({
         return;
       }
 
-      const map = L.map(container);
+      // P1C-3: the map lives in an element this effect owns, inside React's
+      // container, so the container is free for the next map the moment
+      // this one is disposed -- even when Leaflet itself has to be removed
+      // a little later (below). One effect run = one host = one map.
+      const host = document.createElement("div");
+      host.className = "h-full w-full";
+      container.appendChild(host);
+      const map = L.map(host);
       mapRef.current = map;
+
+      // Leaflet 1.9 ends an animated zoom from a plain timer that
+      // `map.remove()` does not cancel (`remove()` / `stop()` only stop pan
+      // and fly animations). Removing the map while that timer is pending
+      // makes its callback run on a torn-down map and throw. So: know, from
+      // Leaflet's own events, whether a zoom is in flight, and if one is,
+      // let it finish before removing.
+      let zoomInFlight = false;
+      map.on("zoomanim", () => {
+        zoomInFlight = true;
+      });
+      map.on("zoomend", () => {
+        zoomInFlight = false;
+      });
+      dispose = () => {
+        host.remove();
+        if (!zoomInFlight) {
+          map.remove();
+          return;
+        }
+        // Nothing of the discarded map should load or draw meanwhile.
+        map.eachLayer((layer) => {
+          map.removeLayer(layer);
+        });
+        let removed = false;
+        const finish = () => {
+          if (removed) return;
+          removed = true;
+          window.clearTimeout(fallback);
+          map.remove();
+        };
+        // `zoomend` always follows; the timer is only a backstop so a map
+        // can never be left behind. `remove()` runs after Leaflet's own
+        // end-of-zoom code has returned, never inside it.
+        const fallback = window.setTimeout(finish, 1000);
+        map.once("zoomend", () => window.setTimeout(finish, 0));
+      };
 
       L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
         attribution:
@@ -1746,7 +1895,8 @@ function DayMapPreview({
 
     return () => {
       isCancelled = true;
-      mapRef.current?.remove();
+      dispose?.();
+      dispose = null;
       mapRef.current = null;
     };
   }, [experiences, travelTimeBufferReport, coordinateBackedCount]);
@@ -4306,6 +4456,10 @@ const REGENERATION_REASON_CODE_LABELS: Record<string, string> = {
   // Section 200C: a write was based on stale state; nothing was overwritten.
   CONCURRENT_UPDATE: "Changed by another request",
   DESTINATION_UNRESOLVED: "Destination not resolved",
+  // Admission limits (HTTP 429): no job was started and nothing changed.
+  GENERATION_USER_LIMIT_REACHED: "Your limit was reached",
+  GENERATION_GLOBAL_LIMIT_REACHED: "Service limit reached",
+  GENERATION_CAPACITY_REACHED: "Busy right now",
   UNKNOWN_ERROR: "Unknown error",
 };
 
@@ -5865,27 +6019,41 @@ function UserModeReadinessBanner({
   validationStatus,
   notices,
   blockingReason,
+  severity,
+  coverage,
 }: {
   validationStatus: string | null;
   notices: string[];
   // The first critical finding, when the plan is not usable (Section 2B:
   // shown here, in the one readiness treatment, instead of in the header).
   blockingReason: string | null;
+  // V1 disclosure: how strongly a `needs_review` plan is presented, from the
+  // backend's own classification of its codes. Never changes the status.
+  severity?: ReviewSeverity;
+  // What is known about requested-interest coverage, so the wording never
+  // says coverage is fine unless the backend said so.
+  coverage?: CoverageState;
 }) {
-  const readiness = travelerReadiness(validationStatus);
+  const readiness = travelerReadiness(validationStatus, severity, coverage);
   const toneClassName =
     readiness.tone === "ok"
       ? "border-emerald-300/30 bg-emerald-400/10 text-emerald-100"
       : readiness.tone === "blocked"
         ? "border-red-400/30 bg-red-400/10 text-red-100"
-        : "border-amber-300/30 bg-amber-400/10 text-amber-100";
+        : readiness.tone === "review_material"
+          ? "border-2 border-orange-400/70 bg-orange-500/15 text-orange-50"
+          : "border-amber-300/30 bg-amber-400/10 text-amber-100";
 
   return (
     <div
       className={`rounded-2xl border p-4 text-sm ${toneClassName}`}
       data-testid="traveler-readiness"
+      data-tone={readiness.tone}
+      role={readiness.tone === "review_material" || readiness.tone === "blocked" ? "alert" : "status"}
     >
-      <p className="font-semibold">{readiness.label}</p>
+      <p className={readiness.tone === "review_material" ? "text-base font-semibold" : "font-semibold"}>
+        {readiness.label}
+      </p>
       <p className="mt-1 leading-6">{readiness.message}</p>
       {blockingReason && (
         <p className="mt-1 break-words leading-6">{travelerText(blockingReason)}</p>
@@ -6241,16 +6409,27 @@ function UserModeFlightSummary({
 async function loadPlanResult(tripId: string): Promise<PlanResult> {
   const summary = await getTripSummary(tripId);
 
-  if (
-    !summary.destination_context_generated ||
-    !summary.experience_plan_generated ||
-    !summary.validation_report_generated
-  ) {
+  // P1C-2: the summary's own status decides what can be shown. A finished
+  // generation that scheduled nothing is "no usable itinerary", never "not
+  // generated yet"; a blocked or review-needed plan that CAN be rendered is
+  // still rendered below, under its validation banner.
+  const availability = planAvailability(summary);
+  if (availability === "not_generated") {
     throw new ApiRequestError(
       `Trip '${tripId}' exists, but its plan has not been generated yet. ` +
         "Generate the plan first, then load this trip again.",
       409,
       PLAN_NOT_GENERATED,
+    );
+  }
+  if (availability !== "displayable") {
+    throw new ApiRequestError(
+      `Trip '${tripId}' finished generating without a plan that can be shown ` +
+        `(validation_status=${summary.validation_status ?? "none"}, ` +
+        `scheduled_experiences_count=${summary.scheduled_experiences_count}, ` +
+        `destination_context_generated=${summary.destination_context_generated}).`,
+      409,
+      availability === "no_usable_itinerary" ? PLAN_UNUSABLE : PLAN_INCOMPLETE,
     );
   }
 
@@ -6618,7 +6797,8 @@ function TravelGenerationLoading({
   // under way.
   const reportedStageLabel = loadingStageLabel(stageKey);
   const displayMessage = isCompleted
-    ? "Itinerary ready. Opening it now."
+    ? // P1C-2: "finished", not "ready" -- what was produced is not known yet.
+      "Finished. Opening the result."
     : reportedStageLabel ||
       (mode === "developer" ? stageLabel || progressMessage : undefined) ||
       LOADING_DEFAULT_MESSAGE;
@@ -7018,7 +7198,12 @@ function JobStatusCard({
   const travelerHeadline =
     job.status === "succeeded"
       ? job.job_type === "generate"
-        ? "Your itinerary is ready"
+        ? // P1C-2: a finished job says nothing about the plan it produced --
+          // it may need review, be blocked, or hold no itinerary at all. Only
+          // the validation banner of the loaded result says which. (The card
+          // also stays up when a trip is reopened, so it must not say
+          // "loading" either.)
+          "Itinerary generation finished"
         : "Your changes were applied"
       : job.status === "failed"
         ? job.job_type === "generate"
@@ -7170,6 +7355,10 @@ export default function Home() {
   // submit (double click, Enter held down) before React re-renders the
   // disabled button can never start a second generation.
   const generationInFlightRef = useRef(false);
+  // The trip saved by the last submit whose itinerary was never built, with
+  // the exact request it was saved for. Submitting the same request again
+  // builds on that trip instead of creating another one.
+  const ungeneratedTripRef = useRef<{ tripId: string; requestKey: string } | null>(null);
   const [result, setResult] = useState<PlanResult | null>(null);
   // Section 199C: bumped after a branch activation so the two
   // RegenerationReadinessSection instances (whose success/summary state
@@ -7207,6 +7396,8 @@ export default function Home() {
   const [authLoading, setAuthLoading] = useState(true);
   const [authNotConfigured, setAuthNotConfigured] = useState(false);
   const [authMode, setAuthMode] = useState<"login" | "signup">("login");
+  // Limited beta: open / invite_link / closed, and whether this browser may sign up (null = unknown).
+  const [registrationStatus, setRegistrationStatus] = useState<RegistrationStatus | null>(null);
   const [authEmail, setAuthEmail] = useState("");
   const [authPassword, setAuthPassword] = useState("");
   const [authConfirmPassword, setAuthConfirmPassword] = useState("");
@@ -7220,6 +7411,16 @@ export default function Home() {
   // lets that one row say "Loading…" instead of every row just going
   // uniformly disabled with no indication of which one was clicked.
   const [loadingTripId, setLoadingTripId] = useState<string | null>(null);
+  // P1-A: which trip's "delete?" confirmation is open, which deletion is in
+  // flight, and the last outcome (announced under the list).
+  const [pendingDeleteTripId, setPendingDeleteTripId] = useState<string | null>(null);
+  const [deletingTripId, setDeletingTripId] = useState<string | null>(null);
+  const [tripDeleteError, setTripDeleteError] = useState<
+    { tripId: string; message: string } | null
+  >(null);
+  const [tripDeleteNotice, setTripDeleteNotice] = useState<string | null>(null);
+  // A neutral message on the sign-in screen (e.g. after deleting the account).
+  const [authNotice, setAuthNotice] = useState<string | null>(null);
 
   const refreshMyTrips = useCallback(async () => {
     setMyTripsLoading(true);
@@ -7283,6 +7484,32 @@ export default function Home() {
     void checkAuth();
   }, [checkAuth]);
 
+  // Limited beta: an invitation link (`#beta=<token>`). The fragment is removed from the address bar
+  // before anything else happens; the token goes to the backend in a JSON body and is not kept here.
+  // Then the sign-up screen learns whether new accounts are open, need a link, or are closed.
+  useEffect(() => {
+    const token = takeBetaLinkToken(window.location, window.history);
+    void (async () => {
+      if (token !== null) {
+        try {
+          await exchangeRegistrationLink(token);
+          setAuthMode("signup");
+        } catch (err) {
+          setAuthError(
+            err instanceof ApiRequestError
+              ? err.message
+              : "This invitation link could not be checked. Please try again.",
+          );
+        }
+      }
+      try {
+        setRegistrationStatus(await getRegistrationStatus());
+      } catch {
+        setRegistrationStatus(null); // unknown: the backend still decides at sign-up
+      }
+    })();
+  }, []);
+
   // Shared by every trip-related action below: a session that expired or
   // was revoked mid-use surfaces here as a normal `ApiRequestError` with
   // `code === "AUTHENTICATION_REQUIRED"` -- when that happens this clears
@@ -7303,11 +7530,17 @@ export default function Home() {
     // Section 202B.3: an ended session forgets which trip was open, so a
     // later sign-in (possibly another person) never reopens it.
     writeSelectedTripId(null);
+    ungeneratedTripRef.current = null;
     restoreAttemptedRef.current = false;
     setWorkspaceEpoch(0);
     setIsRegenerationRunning(false);
     clearJob();
     // Section 2: the login screen that now replaces the app says why.
+    // P1C-1: and it is the LOG-IN form, whichever form this tab last used --
+    // the message asks the person to log in again, and their account exists.
+    setAuthMode("login");
+    setAuthPassword("");
+    setAuthConfirmPassword("");
     setAuthError(SESSION_ENDED_MESSAGE);
     setError(null);
     setRetryAction(null);
@@ -7357,6 +7590,7 @@ export default function Home() {
 
   async function handleAuthSubmit() {
     setAuthError(null);
+    setAuthNotice(null);
 
     const email = authEmail.trim();
     if (!email || !authPassword) {
@@ -7406,6 +7640,9 @@ export default function Home() {
     setMyTrips([]);
     setMyTripsError(null);
     setLoadingTripId(null);
+    setPendingDeleteTripId(null);
+    setTripDeleteError(null);
+    setTripDeleteNotice(null);
     setResult(null);
     setExistingTripId("");
     setError(null);
@@ -7415,6 +7652,7 @@ export default function Home() {
     // UI -- unmounted with the result subtree -- regeneration status, the
     // half-filled create form) is visible to whoever signs in next.
     writeSelectedTripId(null);
+    ungeneratedTripRef.current = null;
     restoreAttemptedRef.current = false;
     setWorkspaceEpoch(0);
     setIsRegenerationRunning(false);
@@ -7459,6 +7697,69 @@ export default function Home() {
     if (newestJob.status === "queued" || newestJob.status === "running") {
       await waitForJob(tripId, newestJob.job_id);
     }
+  }
+
+  // P1-A: deleting a trip. Two steps on purpose -- "Delete" only asks
+  // (`pendingDeleteTripId`), "Delete trip" in the confirmation sends the
+  // request. One deletion at a time.
+  async function handleDeleteTrip(tripId: string) {
+    if (deletingTripId !== null) return;
+    setDeletingTripId(tripId);
+    setTripDeleteError(null);
+    setTripDeleteNotice(null);
+    try {
+      await deleteTrip(tripId);
+      // The deleted trip may be the one on screen, or the one a retry would
+      // reuse: drop every reference to it before anything can fetch it again.
+      if (openTripId === tripId || readSelectedTripId() === tripId) {
+        setResult(null);
+        writeSelectedTripId(null);
+        clearJob();
+        resetFeedbackPanelState();
+        setWorkspaceEpoch(0);
+        setIsRegenerationRunning(false);
+        setError(null);
+        setRetryAction(null);
+      }
+      if (ungeneratedTripRef.current?.tripId === tripId) ungeneratedTripRef.current = null;
+      if (existingTripId === tripId) setExistingTripId("");
+      setMyTrips((trips) => trips.filter((trip) => trip.trip_id !== tripId));
+      setPendingDeleteTripId(null);
+      setTripDeleteNotice(TRIP_DELETED_MESSAGE);
+      void refreshMyTrips();
+    } catch (err) {
+      recordApiError("delete_trip", err);
+      if (err instanceof ApiRequestError && err.code === "AUTHENTICATION_REQUIRED") {
+        handleAuthenticationRequired();
+        return;
+      }
+      if (err instanceof ApiRequestError && err.code === "TRIP_NOT_FOUND") {
+        // Already gone (deleted in another tab): the list is simply out of date.
+        setPendingDeleteTripId(null);
+        void refreshMyTrips();
+      }
+      setTripDeleteError({
+        tripId,
+        message:
+          err instanceof ApiRequestError
+            ? travelerErrorMessage({
+                code: err.code,
+                status: err.status,
+                message: err.message,
+                operation: "delete_trip",
+              }).message
+            : TRIP_DELETE_FAILED_MESSAGE,
+      });
+    } finally {
+      setDeletingTripId(null);
+    }
+  }
+
+  // P1-A: the account is gone and the backend cleared the session cookie.
+  // Drop exactly what logging out drops, then say what happened.
+  async function handleAccountDeleted() {
+    await handleLogout();
+    setAuthNotice(ACCOUNT_DELETED_MESSAGE);
   }
 
   async function handleSelectMyTrip(tripId: string) {
@@ -7642,6 +7943,21 @@ export default function Home() {
     // One generation at a time: a submit that arrives while one is already
     // running (or while a saved trip is loading) is ignored.
     if (generationInFlightRef.current || isLoading || isLoadingExisting) return;
+    const requestBody: TripRequestInput = {
+      ...form,
+      interests: parseCommaList(interestsText),
+      must_visit: parseCommaList(mustVisitText),
+      constraints: parseCommaList(constraintsText),
+    };
+    // A request over a size limit (trip length, list sizes) is never sent:
+    // the traveller is told what to change, and there is nothing to retry.
+    const limitProblem = tripRequestLimitProblem(requestBody);
+    if (limitProblem) {
+      setError(limitProblem);
+      setRetryAction(null);
+      return;
+    }
+    const requestKey = JSON.stringify(requestBody);
     generationInFlightRef.current = true;
     setIsLoading(true);
     setError(null);
@@ -7668,6 +7984,7 @@ export default function Home() {
     // message in the job status card, so the generic error box below is
     // not repeated for it.
     let failureShownByJobCard = false;
+    let jobFinished = false;
 
     function stopPolling() {
       pollingStopped = true;
@@ -7678,13 +7995,18 @@ export default function Home() {
     }
 
     try {
-      const requestBody: TripRequestInput = {
-        ...form,
-        interests: parseCommaList(interestsText),
-        must_visit: parseCommaList(mustVisitText),
-        constraints: parseCommaList(constraintsText),
-      };
-      const { trip_id: tripId } = await createTrip(requestBody);
+      // A trip that was saved but whose itinerary was never built (the
+      // generation was refused by a limit, failed or was interrupted) is
+      // reused when the same request is submitted again, so "Try again"
+      // does not leave a second, empty trip behind.
+      const saved = ungeneratedTripRef.current;
+      let tripId: string;
+      if (saved !== null && saved.requestKey === requestKey) {
+        tripId = saved.tripId;
+      } else {
+        tripId = (await createTrip(requestBody)).trip_id;
+        ungeneratedTripRef.current = { tripId, requestKey };
+      }
       // A reload while generating reopens this trip (and, in async mode,
       // resumes its job) instead of dropping back to an empty home page.
       writeSelectedTripId(tripId);
@@ -7729,6 +8051,7 @@ export default function Home() {
         }
       }
 
+      jobFinished = true;
       stopPolling();
       setGenerationPhase("loading_itinerary");
 
@@ -7742,10 +8065,19 @@ export default function Home() {
       }
       await new Promise((resolve) => setTimeout(resolve, 500));
 
-      setResult(await loadPlanResult(tripId));
+      // P1C-2: only a plan that can actually be shown ends the "not built
+      // yet" state. If the finished generation left nothing usable, the
+      // trip stays the one a "Try again" rebuilds (never a second trip).
+      const loaded = await loadPlanResult(tripId);
+      ungeneratedTripRef.current = null;
+      setResult(loaded);
       void refreshMyTrips();
       clearJob();
     } catch (err) {
+      // P1C-2: the job finished, but there is nothing to show for it. The
+      // error below is the whole message; a "finished" card beside it
+      // would contradict it.
+      if (jobFinished) clearJob();
       if (err instanceof JobPollingCancelledError) {
         // Abandoned (unmount/logout) -- nothing to show, state is already
         // being cleared by whatever triggered the cancellation.
@@ -7754,6 +8086,13 @@ export default function Home() {
       // Nothing was generated, so there is nothing for a reload to reopen;
       // the trip itself still exists and is listed under My trips.
       writeSelectedTripId(null);
+      // A saved trip that can no longer be used is never tried again.
+      if (
+        err instanceof ApiRequestError &&
+        (err.code === "TRIP_NOT_FOUND" || err.code === "FORBIDDEN")
+      ) {
+        ungeneratedTripRef.current = null;
+      }
       void refreshMyTrips();
       const failure = tripApiErrorView(
           err,
@@ -7884,6 +8223,22 @@ export default function Home() {
               mode={mode}
               factualSummary={day.goal ?? null}
             />
+            {mode === "user" && (
+              <DayReviewNotices
+                dayNumber={day.day_number}
+                notices={travelerDayNotices(
+                  travelerDayFindings(
+                    result.validationReport.warnings,
+                    day.day_number,
+                    result.validationReport.review_code_classification,
+                  ),
+                  travelerDayRouteNotices(
+                    day.experiences.map((experience) => experience.experience_id),
+                    result.routeFeasibilityReport,
+                  ),
+                )}
+              />
+            )}
             {day.experiences.length === 0 ? (
               mode === "developer" ? (
                 <p className="mt-1 text-sm text-slate-400">
@@ -7941,12 +8296,44 @@ export default function Home() {
                     // "unavailable for this trip" case once, concisely.
                     const travelerLine =
                       mode === "user"
-                        ? travelerLegLine(movement, result.routeFeasibilityReport)
+                        ? travelerLegLine(
+                            movement,
+                            result.routeFeasibilityReport,
+                            result.validationReport,
+                          )
                         : null;
                     const showMovementRow =
                       mode === "developer"
                         ? shouldRenderMovementRow(movement)
                         : travelerLine !== null;
+                    // V1 disclosure: a leg without a verified route gets an
+                    // explicit row (never a silent gap), and a leg the
+                    // provider flagged as using a ferry is marked.
+                    const legUnverified =
+                      mode === "user" &&
+                      Boolean(nextExperience) &&
+                      travelerLine === null &&
+                      legIsUnverified(
+                        result.routeFeasibilityReport,
+                        experience.experience_id,
+                        nextExperience.experience_id,
+                      );
+                    const legHasFerry =
+                      Boolean(nextExperience) &&
+                      legIncludesFerry(
+                        result.routeFeasibilityReport,
+                        experience.experience_id,
+                        nextExperience.experience_id,
+                      );
+                    // Phase 1: a walk beyond the usual walking limit, with
+                    // no faster way on the plan, is marked like a ferry leg.
+                    const legIsLongWalk =
+                      Boolean(nextExperience) &&
+                      legIsOverLimitWalk(
+                        result.validationReport,
+                        experience.experience_id,
+                        nextExperience.experience_id,
+                      );
                     return (
                       <Fragment key={experience.experience_id}>
                         <ScheduledExperienceCard
@@ -7980,8 +8367,10 @@ export default function Home() {
                             buffer={movement}
                             mode={mode}
                             travelerLine={travelerLine}
+                            attention={legHasFerry || legIsLongWalk}
                           />
                         )}
+                        {legUnverified && <UnverifiedLegRow />}
                       </Fragment>
                     );
                   })}
@@ -8143,6 +8532,7 @@ PY`}
         <section className="w-full max-w-md rounded-3xl border border-white/10 bg-white/5 p-6 shadow-2xl sm:p-8">
           <p className="text-sm font-semibold uppercase tracking-[0.3em] text-cyan-200">
             TravelObligator
+            <BetaBadge />
           </p>
           <h1 className="mt-4 text-2xl font-semibold tracking-tight">
             {authMode === "signup" ? "Create your account" : "Log in to your account"}
@@ -8152,6 +8542,16 @@ PY`}
               ? "Sign up to create and manage your own trips. Trips are private to your account."
               : "Log in to see your own trips. Trips are private to your account."}
           </p>
+          {authMode === "signup" && signupAccessNotice(registrationStatus) && (
+            <p
+              data-testid="signup-access-notice"
+              role="status"
+              className="mt-2 break-words rounded-lg border border-cyan-300/30 bg-cyan-400/10 p-3 text-sm text-cyan-100"
+            >
+              {signupAccessNotice(registrationStatus)}
+            </p>
+          )}
+          <BetaSummary className="mt-2" />
 
           <div
             role="group"
@@ -8243,14 +8643,16 @@ PY`}
                 // then the hint separately, never "Password At least 8
                 // characters." folded into one run-on accessible name.
                 aria-describedby={
-                  authMode === "signup" ? "password-hint" : undefined
+                  authMode === "signup" ? "password-hint password-loss-warning" : undefined
                 }
                 className={`rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-slate-100 disabled:cursor-not-allowed disabled:opacity-50 ${FOCUS_RING_CLASSNAME}`}
                 value={authPassword}
                 onChange={(event) => setAuthPassword(event.target.value)}
               />
               {authMode === "signup" && (
-                <span id="password-hint" className="text-xs text-slate-500">
+                // P1C-4: slate-400, not slate-500 -- at this size on this
+                // card slate-500 measures 3.89:1, under the 4.5:1 minimum.
+                <span id="password-hint" className="text-xs text-slate-400">
                   At least 8 characters.
                 </span>
               )}
@@ -8295,6 +8697,29 @@ PY`}
               </div>
             )}
 
+            {authMode === "signup" && (
+              // Release-copy alignment: stated in the registration form itself,
+              // before the account exists, not only inside the collapsed
+              // privacy notice. Always visible text; the password field also
+              // names it as part of its description.
+              <p
+                id="password-loss-warning"
+                className="break-words rounded-lg border border-amber-300/30 bg-amber-300/10 px-3 py-2 text-sm text-amber-100"
+              >
+                {PASSWORD_LOSS_WARNING}
+              </p>
+            )}
+
+            {authNotice && !authError && (
+              <p
+                role="status"
+                aria-live="polite"
+                className="rounded-lg border border-emerald-400/30 bg-emerald-400/10 px-3 py-2 text-sm text-emerald-200"
+              >
+                {authNotice}
+              </p>
+            )}
+
             {authError && !passwordMismatch && (
               <p
                 role="alert"
@@ -8319,6 +8744,9 @@ PY`}
                   : "Log in"}
             </button>
           </form>
+          <BetaNotice className="mt-6" />
+          {/* P1C-5: directly under this screen's h1, so its sections are h2 */}
+          <PrivacyNotice sectionHeadingLevel={2} className="mt-6" />
         </section>
       </main>
     );
@@ -8329,6 +8757,7 @@ PY`}
       <section className="mx-auto max-w-4xl rounded-3xl border border-white/10 bg-white/5 p-4 shadow-2xl sm:p-8">
         <p className="text-sm font-semibold uppercase tracking-[0.3em] text-cyan-200">
           TravelObligator
+          <BetaBadge />
         </p>
         <h1 className="mt-4 text-4xl font-semibold tracking-tight sm:text-5xl">
           AI Travel Decision Platform
@@ -8338,6 +8767,7 @@ PY`}
             ? "Everything below is read directly from the backend PlanningState. Nothing here is invented by the frontend."
             : "Everything below comes from your saved trip data. Places, distances and times are never invented by the app."}
         </p>
+        <BetaNotice className="mt-5 max-w-2xl" />
 
         <div className="mt-6 flex flex-col gap-2 rounded-2xl border border-white/10 bg-white/5 p-4 sm:flex-row sm:items-center sm:justify-between">
           <p className="text-xs text-slate-400">
@@ -8396,14 +8826,18 @@ PY`}
               {myTrips.map((trip) => {
                 const isThisTripLoading =
                   isLoadingExisting && loadingTripId === trip.trip_id;
+                const tripName = trip.primary_destination ?? "Untitled destination";
+                const isConfirmingDelete = pendingDeleteTripId === trip.trip_id;
+                const isThisTripDeleting = deletingTripId === trip.trip_id;
                 return (
                   <li key={trip.trip_id}>
+                    <div className="flex items-stretch gap-2">
                     <button
                       type="button"
                       onClick={() => void handleSelectMyTrip(trip.trip_id)}
-                      disabled={isLoading || isLoadingExisting}
+                      disabled={isLoading || isLoadingExisting || deletingTripId !== null}
                       aria-busy={isThisTripLoading}
-                      className={`w-full rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-left text-sm text-slate-200 transition hover:border-cyan-300/40 hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50 ${FOCUS_RING_CLASSNAME}`}
+                      className={`min-w-0 flex-1 rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-left text-sm text-slate-200 transition hover:border-cyan-300/40 hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50 ${FOCUS_RING_CLASSNAME}`}
                     >
                       <p className="break-words font-semibold text-cyan-200">
                         {trip.primary_destination ?? "Untitled destination"}
@@ -8419,11 +8853,77 @@ PY`}
                         </p>
                       )}
                     </button>
+                    <button
+                      type="button"
+                      aria-label={`Delete trip: ${tripName}`}
+                      aria-expanded={isConfirmingDelete}
+                      onClick={() => {
+                        setTripDeleteError(null);
+                        setTripDeleteNotice(null);
+                        setPendingDeleteTripId(isConfirmingDelete ? null : trip.trip_id);
+                      }}
+                      disabled={isLoading || isLoadingExisting || deletingTripId !== null}
+                      className={`shrink-0 rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-xs font-semibold text-slate-300 transition hover:border-rose-300/40 hover:text-rose-200 disabled:cursor-not-allowed disabled:opacity-50 ${FOCUS_RING_CLASSNAME}`}
+                    >
+                      Delete
+                    </button>
+                    </div>
+                    {isConfirmingDelete && (
+                      <div
+                        role="group"
+                        aria-label={`Confirm deleting ${tripName}`}
+                        className="mt-2 rounded-lg border border-rose-300/30 bg-rose-400/[0.05] p-3 text-sm"
+                      >
+                        <p className="break-words text-slate-200">
+                          {tripDeletionQuestion(trip.primary_destination)}
+                        </p>
+                        <div className="mt-2 flex flex-wrap gap-2">
+                          <button
+                            type="button"
+                            onClick={() => void handleDeleteTrip(trip.trip_id)}
+                            disabled={deletingTripId !== null}
+                            aria-busy={isThisTripDeleting}
+                            className={`rounded-lg bg-rose-500 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-rose-400 disabled:cursor-not-allowed disabled:opacity-50 ${FOCUS_RING_CLASSNAME}`}
+                          >
+                            {isThisTripDeleting ? "Deleting…" : "Delete trip"}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setPendingDeleteTripId(null);
+                              setTripDeleteError(null);
+                            }}
+                            disabled={deletingTripId !== null}
+                            className={`rounded-lg border border-white/20 bg-slate-900 px-3 py-1.5 text-xs font-semibold text-slate-200 transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50 ${FOCUS_RING_CLASSNAME}`}
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                    {tripDeleteError?.tripId === trip.trip_id && (
+                      <p role="alert" className="mt-2 break-words text-sm text-rose-300">
+                        {tripDeleteError.message}
+                      </p>
+                    )}
                   </li>
                 );
               })}
             </ul>
           )}
+          <div aria-live="polite">
+            {tripDeleteNotice && (
+              <p role="status" className="mt-2 text-sm text-emerald-300">
+                {tripDeleteNotice}
+              </p>
+            )}
+            {tripDeleteError &&
+              !myTrips.some((trip) => trip.trip_id === tripDeleteError.tripId) && (
+                <p role="alert" className="mt-2 break-words text-sm text-rose-300">
+                  {tripDeleteError.message}
+                </p>
+              )}
+          </div>
         </div>
 
         <div className="mt-8">
@@ -8492,6 +8992,7 @@ PY`}
               type="date"
               required
               min={form.start_date || undefined}
+              max={latestEndDate(form.start_date)}
               className="rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-slate-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/50"
               value={form.end_date}
               onChange={(event) =>
@@ -8864,6 +9365,8 @@ PY`}
                 <UserModeReadinessBanner
                   validationStatus={result.summary.validation_status}
                   blockingReason={result.summary.main_blocking_reason}
+                  severity={reviewSeverity(result.validationReport)}
+                  coverage={travelerInterestCoverage(result.validationReport).state}
                   notices={travelerReviewNotices(result.validationReport, {
                     weather: result.weatherContext,
                     holiday: result.holidayContext,
@@ -9112,6 +9615,12 @@ PY`}
                   validationReport={result.validationReport}
                   inventoryReport={result.inventorySufficiencyReport}
                 />
+                {/* V1 disclosure: anything the traveler asked for that the
+                    itinerary does not cover is said here, above the
+                    itinerary, never inside a disclosure. */}
+                <InterestCoverageNotice
+                  notices={travelerInterestCoverage(result.validationReport).notices}
+                />
 
                 <div id="draft-itinerary" className="flex flex-col gap-6">
                   <LockedItemsSummarySection
@@ -9216,6 +9725,18 @@ PY`}
             )}
           </div>
         )}
+
+        <div className="mt-10 flex flex-col gap-4 border-t border-white/10 pt-6">
+          <h2 className="text-xs font-semibold uppercase tracking-wide text-cyan-300/80">
+            Your account and data
+          </h2>
+          <PrivacyNotice sectionHeadingLevel={3} />
+          <DeleteAccountSection
+            email={currentUser.email}
+            onDeleted={() => void handleAccountDeleted()}
+            onAuthenticationRequired={handleAuthenticationRequired}
+          />
+        </div>
       </section>
     </main>
   );

@@ -76,13 +76,20 @@ from app.providers.places.geoapify_categories import (
     ACCOMMODATION_GROUP,
     ATTRACTION_GROUPS,
     FOOD_GROUP,
+    INTEREST_GROUPS,
+    MAX_MUST_VISIT_ANCHORS,
     CategoryGroup,
     evidence_tags,
+    held_back_limit,
+    local_limit,
     most_specific_category,
     taxonomy_tags_from_categories,
 )
+from app.core import generation_diagnostics
 from app.core.provider_usage import GenerationProviderContext, ProviderUsageTracker
+from app.services.day_order_heuristics import NEAR_DAY_STOPS_KM
 from app.services.place_taxonomy import classify_place, filter_provider_tags
+from app.utils.geo import haversine_distance_km
 from app.services.schedule_diversity import HISTORY_ARCHITECTURE, MUSEUM_CULTURE, coarse_class
 from app.utils.names import comparable_name
 from app.storage.provider_cache_store import (
@@ -96,7 +103,10 @@ logger = logging.getLogger(__name__)
 _POI_CACHE_SOURCE = "geoapify_places"
 _DETAILS_CACHE_SOURCE = "geoapify_place_details"
 # v2: cached places carry the sanitised source identity used for de-duplication.
-_CACHE_SCHEMA = "203c2b-v2"
+# v3: a request's identity also names its category group and its proximity
+# bias anchor (mixed local / broad discovery), so an answer cached before the
+# split is never read as the answer to a split request.
+_CACHE_SCHEMA = "203c2b-v3"
 _LANGUAGE = "en"
 _PLACES_PER_CREDIT = 20
 _DEFAULT_ATTRACTION_POOL = 60
@@ -119,6 +129,35 @@ _BUILDING_CLASSES = frozenset({HISTORY_ARCHITECTURE, MUSEUM_CULTURE})
 
 def _compatible_classes(first: str, second: str) -> bool:
     return first == second or {first, second} <= _BUILDING_CLASSES
+
+
+# Where a discovery request looks (fixed labels; reported, never decided on).
+SOURCE_BROAD = "broad"
+SOURCE_DESTINATION_LOCAL = "destination_local"
+SOURCE_MUST_VISIT_LOCAL = "must_visit_local"
+SOURCE_INTEREST = "interest_local"
+# Kinds of held-back local share (see `GenerationProviderContext.held_place_requests`).
+_KIND_ATTRACTIONS = "attractions"
+_KIND_RESTAURANTS = "restaurants"
+
+
+@dataclass(frozen=True)
+class _PlaceRequest:
+    """ONE Places request of a discovery plan. `bias` is the locality anchor
+    of a LOCAL request (the provider then answers nearest first); a broad
+    request has none. The destination's geographic filter is the same for
+    both."""
+
+    group: CategoryGroup
+    limit: int
+    offset: int = 0
+    bias: GeoPoint | None = None
+    source: str = SOURCE_BROAD
+
+
+def _bias_key(bias: GeoPoint | None) -> str | None:
+    """The cache identity of a proximity-bias anchor (about a metre)."""
+    return None if bias is None else f"{bias.lat:.5f},{bias.lng:.5f}"
 
 
 @dataclass
@@ -203,7 +242,23 @@ class GeoapifyPlacesAdapter(DestinationResolutionMixin, PlacesProvider):
     def _attraction_plan(filters: dict[str, Any] | None) -> list[tuple[CategoryGroup, int]]:
         pool = int((filters or {}).get("pool_size") or _DEFAULT_ATTRACTION_POOL)
         pool = max(_MIN_GROUP_LIMIT, min(pool, _MAX_ATTRACTION_POOL))
-        return [(group, max(_MIN_GROUP_LIMIT, round(group.share * pool))) for group in ATTRACTION_GROUPS]
+        plan = [(group, max(_MIN_GROUP_LIMIT, round(group.share * pool))) for group in ATTRACTION_GROUPS]
+        # Interest-driven discovery: one extra group per requested interest
+        # that has one (first page only -- an expansion page asks the broad
+        # groups for more of the same). Its places are taken from the largest
+        # broad group, so the pool is no larger than before.
+        if int((filters or {}).get("page") or 0) == 0:
+            for key in dict.fromkeys((filters or {}).get("interest_groups") or []):
+                group = INTEREST_GROUPS.get(key)
+                if group is None:
+                    continue
+                limit = max(_MIN_GROUP_LIMIT, round(group.share * pool))
+                largest = max(range(len(ATTRACTION_GROUPS)), key=lambda index: plan[index][1])
+                if plan[largest][1] - limit < _MIN_GROUP_LIMIT:
+                    continue  # nothing to take the places from: the broad pool is not shrunk further
+                plan[largest] = (plan[largest][0], plan[largest][1] - limit)
+                plan.append((group, limit))
+        return plan
 
     @staticmethod
     def _food_plan(filters: dict[str, Any] | None) -> list[tuple[CategoryGroup, int]]:
@@ -211,17 +266,110 @@ class GeoapifyPlacesAdapter(DestinationResolutionMixin, PlacesProvider):
         pool = max(_MIN_GROUP_LIMIT, min(pool, _MAX_FOOD_POOL))
         return [(FOOD_GROUP, pool)]
 
+    # -- mixed local / broad discovery (quality tuning corrections) -------------------
+    #
+    # `_attraction_plan` / `_food_plan` give each group's TOTAL limit, as
+    # before. The requests below divide that limit -- never add to it -- into a
+    # broad request (the destination filter, no bias) and local requests (the
+    # same filter with a proximity bias towards a locality anchor). The order
+    # of the returned list is the order results are applied in: every broad
+    # request, then every local one, then the interest groups.
+
+    @staticmethod
+    def _unsplit(plan: list[tuple[CategoryGroup, int]], page: int) -> list[_PlaceRequest]:
+        """One broad request per group, as before the split (also what an
+        expansion page asks for: more of the broad list)."""
+        return [_PlaceRequest(group, limit, page * limit) for group, limit in plan]
+
+    @staticmethod
+    def _split(
+        plan: list[tuple[CategoryGroup, int]], anchor: GeoPoint, hold_back: bool, kind: str
+    ) -> tuple[list[_PlaceRequest], list[tuple[str, str, int, int]]]:
+        """`plan` as broad + destination-local requests, and the part of the
+        local share held back for the must-visit anchors."""
+        broad: list[_PlaceRequest] = []
+        local: list[_PlaceRequest] = []
+        interest: list[_PlaceRequest] = []
+        held: list[tuple[str, str, int, int]] = []
+        for group, limit in plan:
+            if group.key in INTEREST_GROUPS:
+                # an interest group is small and specific: all of it is asked for near the destination
+                interest.append(_PlaceRequest(group, limit, 0, anchor, SOURCE_INTEREST))
+                continue
+            near = local_limit(group.key, limit)
+            waiting = held_back_limit(group.key, limit) if hold_back else 0
+            if limit - near > 0:
+                broad.append(_PlaceRequest(group, limit - near))
+            if near - waiting > 0:
+                local.append(_PlaceRequest(group, near - waiting, 0, anchor, SOURCE_DESTINATION_LOCAL))
+            if waiting > 0:
+                held.append((kind, group.key, waiting, near - waiting))
+        return [*broad, *local, *interest], held
+
+    @staticmethod
+    def _reserve_of(requests: list[_PlaceRequest]) -> int:
+        """The credits `requests` reserve: each request is billed by itself."""
+        return sum(places_request_credits(request.limit) for request in requests)
+
+    @staticmethod
+    def _worst_case_follow_up_credits(held: list[tuple[str, str, int, int]]) -> int:
+        """The most the follow-up batch can reserve for `held`: one request
+        per group and anchor, with the largest number of anchors."""
+        return sum(min(MAX_MUST_VISIT_ANCHORS, waiting) * places_request_credits(waiting) for _, _, waiting, _ in held)
+
+    def _discovery_requests(
+        self,
+        resolved: _ResolvedDestination,
+        attraction_filters: dict[str, Any] | None,
+        food_filters: dict[str, Any] | None,
+        *,
+        attractions: bool = True,
+        food: bool = False,
+        others: tuple[_PlaceRequest, ...] = (),
+    ) -> tuple[list[_PlaceRequest], list[_PlaceRequest]]:
+        """`(attraction requests, food requests)` for one batch. The split is
+        used only when the WHOLE batch, plus the worst-case must-visit
+        follow-up it commits to, fits what is left of the generation's
+        credit cap; otherwise the unsplit plan is used and nothing is held
+        back. An expansion page is always unsplit."""
+        page = int((attraction_filters or {}).get("page") or 0)
+        attraction_plan = self._attraction_plan(attraction_filters) if attractions else []
+        food_plan = self._food_plan(food_filters) if food else []
+        unsplit = (self._unsplit(attraction_plan, page), self._unsplit(food_plan, 0))
+        if page > 0:
+            return unsplit
+        hold_attractions = bool((attraction_filters or {}).get("hold_back_for_must_visits")) and self._context is not None
+        hold_food = bool((food_filters or {}).get("hold_back_for_must_visits")) and self._context is not None
+        attraction_requests, held_attractions = self._split(
+            attraction_plan, resolved.point, hold_attractions, _KIND_ATTRACTIONS
+        )
+        food_requests, held_food = self._split(food_plan, resolved.point, hold_food, _KIND_RESTAURANTS)
+        held = [*held_attractions, *held_food]
+        needed = (
+            self._reserve_of([*attraction_requests, *food_requests, *others])
+            + self._worst_case_follow_up_credits(held)
+        )
+        if self._usage is not None and not self._usage.can_afford(needed):
+            return unsplit
+        if self._context is not None:
+            # replaces what this batch plans (attractions and/or restaurants); another kind's hold stands
+            planned = {kind for kind, wanted in ((_KIND_ATTRACTIONS, attractions), (_KIND_RESTAURANTS, food)) if wanted}
+            self._context.held_place_requests = [
+                *(entry for entry in self._context.held_place_requests if entry[0] not in planned),
+                *held,
+            ]
+        return attraction_requests, food_requests
+
     def search_attractions(
         self,
         destination: str,
         filters: dict[str, Any] | None = None,
-        _prefetched: list[Outcome[list[NormalizedPlace]]] | None = None,
+        _prefetched: tuple[list[_PlaceRequest], list[Outcome[list[NormalizedPlace]]]] | None = None,
     ) -> ProviderResponse[Any]:
         response = self._search(
             destination,
-            self._attraction_plan(filters),
+            lambda resolved: self._discovery_requests(resolved, filters, None)[0],
             "attractions",
-            page=int((filters or {}).get("page") or 0),
             prefetched=_prefetched,
         )
         if self._context is not None and response.data:
@@ -244,29 +392,29 @@ class GeoapifyPlacesAdapter(DestinationResolutionMixin, PlacesProvider):
         original category order -- exactly what three separate calls do -- so
         de-duplication, containment, collision resolution and the place pool
         never depend on which request finished first."""
-        page = int((attraction_filters or {}).get("page") or 0)
-        attraction_plan = self._attraction_plan(attraction_filters)
-        food_plan = self._food_plan(food_filters)
-        accommodation_plan = [(ACCOMMODATION_GROUP, _ACCOMMODATION_POOL)]
+        accommodation_requests = [_PlaceRequest(ACCOMMODATION_GROUP, _ACCOMMODATION_POOL)]
+        attraction_requests: list[_PlaceRequest] = []
+        food_requests: list[_PlaceRequest] = []
         try:
             with self._client() as client:
                 resolved = self._resolve_destination(client, destination)
                 self._resolve_cache_store()  # resolved once, before any task runs
-                outcomes = (
-                    run_bounded(
+                outcomes = None
+                if resolved is not None:
+                    # Planned on the calling thread, before anything is sent: the
+                    # whole batch and the follow-up it commits to must fit the
+                    # generation's credit cap, or the unsplit plan is used.
+                    attraction_requests, food_requests = self._discovery_requests(
+                        resolved, attraction_filters, food_filters, food=True, others=tuple(accommodation_requests)
+                    )
+                    outcomes = run_bounded(
                         "places",
                         [
-                            partial(self._query_group, client, resolved, group, limit, offset)
-                            for group, limit, offset in (
-                                *((group, limit, page * limit) for group, limit in attraction_plan),
-                                *((group, limit, 0) for group, limit in (*food_plan, *accommodation_plan)),
-                            )
+                            partial(self._query_group, client, resolved, request)
+                            for request in (*attraction_requests, *food_requests, *accommodation_requests)
                         ],
                         PLACES_BATCH_LIMIT,
                     )
-                    if resolved is not None
-                    else None
-                )
         except GeocoderError:
             outcomes = None
         if outcomes is None:
@@ -277,11 +425,17 @@ class GeoapifyPlacesAdapter(DestinationResolutionMixin, PlacesProvider):
                 self.search_restaurants(destination, food_filters),
                 self.search_accommodation_pois(destination),
             )
-        split = len(attraction_plan)
+        first, second = len(attraction_requests), len(attraction_requests) + len(food_requests)
         return (
-            self.search_attractions(destination, attraction_filters, _prefetched=outcomes[:split]),
-            self._search(destination, food_plan, "restaurants", prefetched=outcomes[split : split + 1]),
-            self._search(destination, accommodation_plan, "accommodation_pois", prefetched=outcomes[split + 1 :]),
+            self.search_attractions(
+                destination, attraction_filters, _prefetched=(attraction_requests, outcomes[:first])
+            ),
+            self._search(
+                destination, None, "restaurants", prefetched=(food_requests, outcomes[first:second])
+            ),
+            self._search(
+                destination, None, "accommodation_pois", prefetched=(accommodation_requests, outcomes[second:])
+            ),
         )
 
     # -- suspected duplicate candidates ---------------------------------------------
@@ -362,25 +516,32 @@ class GeoapifyPlacesAdapter(DestinationResolutionMixin, PlacesProvider):
     def search_restaurants(
         self, area: str, filters: dict[str, Any] | None = None
     ) -> ProviderResponse[Any]:
-        return self._search(area, self._food_plan(filters), "restaurants")
+        return self._search(
+            area,
+            lambda resolved: self._discovery_requests(resolved, None, filters, attractions=False, food=True)[1],
+            "restaurants",
+        )
 
     def search_accommodation_pois(
         self, destination: str, filters: dict[str, Any] | None = None
     ) -> ProviderResponse[Any]:
-        return self._search(destination, [(ACCOMMODATION_GROUP, _ACCOMMODATION_POOL)], "accommodation_pois")
+        return self._search(
+            destination, lambda resolved: [_PlaceRequest(ACCOMMODATION_GROUP, _ACCOMMODATION_POOL)], "accommodation_pois"
+        )
 
     def _search(
         self,
         destination: str,
-        plan: list[tuple[CategoryGroup, int]],
+        plan: Any,
         field_name: str,
-        page: int = 0,
-        prefetched: list[Outcome[list[NormalizedPlace]]] | None = None,
+        prefetched: tuple[list[_PlaceRequest], list[Outcome[list[NormalizedPlace]]]] | None = None,
     ) -> ProviderResponse[Any]:
-        """`prefetched` (Section 1B): one already-fetched outcome per entry
-        of `plan`, in plan order, from `search_broad_inventory`. Without it
-        the plan's requests are fetched here, as one bounded concurrent
-        batch. Either way the outcomes are applied in plan order."""
+        """`plan` builds the requests once the destination is resolved.
+        `prefetched` (Section 1B): the requests `search_broad_inventory`
+        already planned and one fetched outcome per request, in request
+        order. Without it the requests are planned and fetched here, as one
+        bounded concurrent batch. Either way the outcomes are applied in
+        request order, so nothing depends on which request finished first."""
         failures: list[str] = []
         places: list[NormalizedPlace] = []
         try:
@@ -399,23 +560,16 @@ class GeoapifyPlacesAdapter(DestinationResolutionMixin, PlacesProvider):
                     unresolved.failure_reason = "destination_unresolved"
                     return unresolved
                 self._resolve_cache_store()  # resolved once, before any task runs
-                outcomes = (
-                    prefetched
-                    if prefetched is not None
-                    else run_bounded(
+                if prefetched is not None:
+                    requests, outcomes = prefetched
+                else:
+                    requests = plan(resolved)
+                    outcomes = run_bounded(
                         "places",
-                        [
-                            partial(self._query_group, client, resolved, group, limit, page * limit)
-                            for group, limit in plan
-                        ],
+                        [partial(self._query_group, client, resolved, request) for request in requests],
                         PLACES_BATCH_LIMIT,
                     )
-                )
-                for outcome in outcomes:
-                    try:
-                        places.extend(outcome.unwrap())
-                    except ProviderRequestError as exc:
-                        failures.append(exc.kind)
+                places, failures = self._applied(field_name, requests, outcomes)
         except GeocoderError as exc:
             return self._geocoder_failure_response(exc, field_name)
 
@@ -449,6 +603,135 @@ class GeoapifyPlacesAdapter(DestinationResolutionMixin, PlacesProvider):
             unavailable_fields=[field_name],
             message=f"{self.display_name} returned no named {field_label} inside '{destination}'.",
         )
+
+    @staticmethod
+    def _applied(
+        field_name: str, requests: list[_PlaceRequest], outcomes: list[Outcome[list[NormalizedPlace]]]
+    ) -> tuple[list[NormalizedPlace], list[str]]:
+        """The places of `outcomes`, in REQUEST order, and the kinds of the
+        requests that failed. Each request is also reported to the
+        generation's diagnostics (a no-op unless the evaluation tooling is
+        recording): where it looked, how many places it asked for and got."""
+        places: list[NormalizedPlace] = []
+        failures: list[str] = []
+        # A group's broad and local requests can return the SAME provider
+        # record. That is one record seen twice, not two candidates merged:
+        # the first occurrence (request order) is kept and the repeat is not
+        # counted as an entity merge. Records of different groups still go
+        # through the identity rules below, exactly as before.
+        seen: dict[str, set[str]] = {}
+        for request, outcome in zip(requests, outcomes):
+            try:
+                found = outcome.unwrap()
+            except ProviderRequestError as exc:
+                failures.append(exc.kind)
+                generation_diagnostics.discovery_request(
+                    kind=field_name, source=request.source, group=request.group.key, requested=request.limit,
+                    offset=request.offset, returned=0, place_ids=[], failed=True,
+                )
+                continue
+            held = seen.setdefault(request.group.key, set())
+            places.extend(place for place in found if place.place_id not in held)
+            held.update(place.place_id for place in found)
+            generation_diagnostics.discovery_request(
+                kind=field_name, source=request.source, group=request.group.key, requested=request.limit,
+                offset=request.offset, returned=len(found), place_ids=[place.place_id for place in found], failed=False,
+            )
+        return places, failures
+
+    # -- must-visit locality: the follow-up batch (after must-visit grounding) -----------
+
+    def _distinct_anchors(self, resolved: _ResolvedDestination, points: list[GeoPoint]) -> list[GeoPoint]:
+        """The grounded must-visit points that are locality anchors of their
+        own, in the order given: not within the existing near proxy
+        (`NEAR_DAY_STOPS_KM`) of the destination point -- the destination-local
+        requests already look there -- nor of an anchor already kept. At most
+        `MAX_MUST_VISIT_ANCHORS`."""
+        kept: list[GeoPoint] = []
+        for point in points:
+            if len(kept) >= MAX_MUST_VISIT_ANCHORS:
+                break
+            near = lambda other: (haversine_distance_km(point, other) or 0.0) <= NEAR_DAY_STOPS_KM  # noqa: E731
+            if near(resolved.point) or any(near(anchor) for anchor in kept):
+                continue
+            kept.append(point)
+        return kept
+
+    def search_must_visit_local_inventory(
+        self, destination: str, must_visit_points: list[GeoPoint]
+    ) -> tuple[list[NormalizedPlace], list[NormalizedPlace]]:
+        """`(attractions, restaurants)` found with the part of the local share
+        the first batch held back, now that the must-visits are grounded.
+
+        With geographically distinct grounded must-visit points, each held
+        group's places are shared out over them (the first anchor takes any
+        remainder) and requested with a proximity bias towards each. With
+        none -- no must-visit grounded, or all of them near the destination
+        point -- the held places are released to the destination anchor,
+        continuing after the local places already requested there.
+
+        Nothing here grounds, re-grounds or re-identifies a must-visit, and no
+        model is called. A returned attraction that IS a place the pool
+        already holds (the existing identity rules) is dropped, so the pool
+        identity -- a grounded must-visit's included -- is never replaced.
+        Returns `([], [])` when nothing was held or the request cannot be
+        made; a failed follow-up request simply contributes nothing."""
+        context = self._context
+        if context is None or not context.held_place_requests:
+            return [], []
+        held, context.held_place_requests = list(context.held_place_requests), []
+        groups = {group.key: group for group in (*ATTRACTION_GROUPS, FOOD_GROUP)}
+        try:
+            with self._client() as client:
+                resolved = self._resolve_destination(client, destination)
+                if resolved is None:
+                    return [], []
+                self._resolve_cache_store()  # resolved once, before any task runs
+                anchors = self._distinct_anchors(resolved, must_visit_points)
+                planned: list[tuple[str, _PlaceRequest]] = []
+                for kind, group_key, waiting, already_local in held:
+                    group = groups.get(group_key)
+                    if group is None:
+                        continue
+                    if not anchors:
+                        planned.append(
+                            (kind, _PlaceRequest(group, waiting, already_local, resolved.point, SOURCE_DESTINATION_LOCAL))
+                        )
+                        continue
+                    share, extra = divmod(waiting, len(anchors))
+                    for index, anchor in enumerate(anchors):
+                        limit = share + (extra if index == 0 else 0)
+                        if limit > 0:
+                            planned.append((kind, _PlaceRequest(group, limit, 0, anchor, SOURCE_MUST_VISIT_LOCAL)))
+                if not planned:
+                    return [], []
+                outcomes = run_bounded(
+                    "places",
+                    [partial(self._query_group, client, resolved, request) for _, request in planned],
+                    PLACES_BATCH_LIMIT,
+                )
+        except GeocoderError:
+            return [], []
+
+        found: dict[str, list[NormalizedPlace]] = {_KIND_ATTRACTIONS: [], _KIND_RESTAURANTS: []}
+        for kind in found:
+            pairs = [(request, outcome) for (owner, request), outcome in zip(planned, outcomes) if owner == kind]
+            places, _failures = self._applied(
+                f"{kind}_follow_up", [request for request, _ in pairs], [outcome for _, outcome in pairs]
+            )
+            found[kind] = [
+                place
+                for place in dedupe_places(places, _SAME_PLACE_METERS, context.entity_merges)
+                if place.coordinates is not None
+                and _is_within_destination(place.coordinates, resolved, _CONTAINMENT_RADIUS_METERS)
+            ]
+        # One identity per real place: a follow-up record of a place the pool
+        # already holds gives way to the pool's record.
+        attractions = [place for place in found[_KIND_ATTRACTIONS] if self._pool_match(place) is None]
+        if attractions:
+            attractions = self._resolve_suspect_collisions(attractions)
+            context.place_pool.extend(attractions)
+        return attractions, found[_KIND_RESTAURANTS]
 
     def _places_failure_response(self, kind: str, field_name: str) -> ProviderResponse[Any]:
         """An honest result for a failed Places request: names the POI
@@ -488,14 +771,12 @@ class GeoapifyPlacesAdapter(DestinationResolutionMixin, PlacesProvider):
         self,
         client: httpx.Client,
         resolved: _ResolvedDestination,
-        group: CategoryGroup,
-        limit: int,
-        offset: int,
+        request: _PlaceRequest,
     ) -> list[NormalizedPlace]:
         destination_filters = self._destination_filters(resolved)
         for index, destination_filter in enumerate(destination_filters):
             try:
-                return self._query(client, destination_filter, group, limit, offset)
+                return self._query(client, destination_filter, request)
             except ProviderRequestError as exc:
                 # Only a refused filter is retried, once, with the next one.
                 if exc.kind != "bad_request" or index == len(destination_filters) - 1:
@@ -506,13 +787,16 @@ class GeoapifyPlacesAdapter(DestinationResolutionMixin, PlacesProvider):
         self,
         client: httpx.Client,
         destination_filter: str,
-        group: CategoryGroup,
-        limit: int,
-        offset: int,
+        request: _PlaceRequest,
     ) -> list[NormalizedPlace]:
+        group, limit, offset = request.group, request.limit, request.offset
+        # The identity of one request: which group and categories, where (the
+        # filter and the bias anchor), how many and from which offset.
         query_hash = make_query_hash(
             {
+                "group": group.key,
                 "filter": destination_filter,
+                "bias": _bias_key(request.bias),
                 "categories": sorted(group.categories),
                 "limit": limit,
                 "offset": offset,
@@ -537,6 +821,12 @@ class GeoapifyPlacesAdapter(DestinationResolutionMixin, PlacesProvider):
                 "limit": limit,
                 "offset": offset,
                 "lang": _LANGUAGE,
+                # a LOCAL request: the same filter, answered nearest to the anchor first
+                **(
+                    {"bias": f"proximity:{request.bias.lng},{request.bias.lat}"}
+                    if request.bias is not None
+                    else {}
+                ),
             },
             api_key=self._api_key,
             timeout=self._timeout,

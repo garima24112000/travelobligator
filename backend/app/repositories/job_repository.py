@@ -12,6 +12,7 @@ from app.models.generation_job import (
     GenerationJobStatus,
     mark_job_failed,
 )
+from app.repositories.admission import AdmissionPolicy, AdmissionRefusedError
 from app.repositories.errors import UNSET
 from app.storage.local_json_store import LocalJsonStore, get_local_json_store
 
@@ -48,6 +49,9 @@ class JobRepository:
 
     def __init__(self, store: LocalJsonStore | None = None) -> None:
         self._lifecycle_lock = threading.RLock()
+        # (owner_id | None, created_at) of jobs removed with their trip or account. Process memory
+        # only: this development backend makes no durability promise for the admission limits.
+        self._deleted_usage: list[tuple[str | None, datetime]] = []
         self._store = store or get_local_json_store(
             get_settings().resolved_local_storage_path()
         )
@@ -59,13 +63,62 @@ class JobRepository:
     def _persist(self) -> None:
         self._store.write_collection(
             _COLLECTION,
-            {job_id: job.model_dump(mode="json") for job_id, job in self._jobs.items()},
+            # a snapshot: never the live dict another thread may add to
+            {job_id: job.model_dump(mode="json") for job_id, job in list(self._jobs.items())},
         )
 
     def create(self, job: GenerationJob) -> GenerationJob:
         self._jobs[job.job_id] = job
         self._persist()
         return job
+
+    def admit(self, job: GenerationJob, policy: AdmissionPolicy, *, now: datetime) -> GenerationJob:
+        """Same contract as `PostgresJobRepository.admit`, decided under this repository's
+        in-process lock (development backend: no cross-process guarantee)."""
+        window_start = policy.window_start(now)
+        with self._lifecycle_lock:
+            jobs = list(self._jobs.values())
+            in_window = [existing for existing in jobs if existing.created_at > window_start]
+            # Jobs whose trip or account was deleted still count in their window (P1-A).
+            deleted = [usage for usage in self._deleted_usage if usage[1] > window_start]
+            refusal = policy.refusal(
+                user_jobs_in_window=sum(1 for existing in in_window if existing.owner_id == job.owner_id)
+                + sum(1 for owner_id, _ in deleted if owner_id == job.owner_id),
+                global_jobs_in_window=len(in_window) + len(deleted),
+                active_jobs=sum(1 for existing in jobs if existing.status in _RUNNING_STATUSES),
+            )
+            if refusal is not None:
+                raise AdmissionRefusedError(refusal)
+            self._jobs[job.job_id] = job
+            self._persist()
+        return job
+
+    # -- P1-A: deletion (development backend; the PostgreSQL path is `data_deletion_service`) --------
+
+    def delete_for_trips(
+        self, trip_ids: set[str], *, usage_since: datetime, keep_owner: bool
+    ) -> int:
+        """Remove every job of `trip_ids`. A job admitted after `usage_since` leaves a usage record
+        (its `created_at`, and its owner only when `keep_owner`) so the admission limits still count
+        it. Returns the number of jobs removed."""
+        with self._lifecycle_lock:
+            removed = [job for job in list(self._jobs.values()) if job.trip_id in trip_ids]
+            for job in removed:
+                if job.created_at > usage_since:
+                    self._deleted_usage.append((job.owner_id if keep_owner else None, job.created_at))
+                del self._jobs[job.job_id]
+            self._deleted_usage = [usage for usage in self._deleted_usage if usage[1] > usage_since]
+            if removed:
+                self._persist()
+            return len(removed)
+
+    def anonymize_deleted_usage(self, owner_id: str) -> None:
+        """An account was deleted: its usage records keep counting for the deployment, for nobody."""
+        with self._lifecycle_lock:
+            self._deleted_usage = [
+                (None if owner == owner_id else owner, created_at)
+                for owner, created_at in self._deleted_usage
+            ]
 
     def save(self, job: GenerationJob) -> GenerationJob:
         """Replaces whatever job already exists for `job.job_id` (or
@@ -88,7 +141,8 @@ class JobRepository:
         newest-first. Ties (identical `created_at`) fall back to
         `job_id` for a fully deterministic order.
         """
-        matches = [job for job in self._jobs.values() if job.trip_id == trip_id]
+        # a snapshot: another request thread may be creating a job right now
+        matches = [job for job in list(self._jobs.values()) if job.trip_id == trip_id]
         return sorted(matches, key=lambda job: (job.created_at, job.job_id))
 
     def list_by_trip_id(self, trip_id: str) -> list[GenerationJob]:
@@ -112,7 +166,7 @@ class JobRepository:
         """
         matches = [
             job
-            for job in self._jobs.values()
+            for job in list(self._jobs.values())  # a snapshot (see `_jobs_for_trip`)
             if job.status in {status.value for status in _RUNNING_STATUSES}
         ]
         return sorted(matches, key=lambda job: (job.created_at, job.job_id))
@@ -206,7 +260,7 @@ class JobRepository:
         current = now or datetime.now(timezone.utc)
         recovered: list[GenerationJob] = []
         with self._lifecycle_lock:
-            for job in sorted(self._jobs.values(), key=lambda j: (j.created_at, j.job_id)):
+            for job in sorted(list(self._jobs.values()), key=lambda j: (j.created_at, j.job_id)):
                 if trip_id is not None and job.trip_id != trip_id:
                     continue
                 expired_running = job.status == GenerationJobStatus.RUNNING and (

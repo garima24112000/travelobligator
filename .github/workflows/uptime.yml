@@ -1,0 +1,59 @@
+# P1-D: a lightweight availability check of the PUBLIC site. Details: docs/25_operations_runbook.md, "Monitoring".
+#
+# What it is: GET requests against the public frontend, a few times a day, from a GitHub-hosted runner. A
+# failed run is the alert (GitHub notifies the repository's owner about a failed scheduled workflow, subject to
+# their notification settings).
+#
+# What it deliberately is NOT:
+#   * Not a keepalive. The scheduled job requests the frontend page only, which the frontend host serves by
+#     itself: the free-tier backend is NOT contacted and is left to sleep (docs/22_free_tier_deployment.md,
+#     "No keepalive/cron ping"). The backend is checked only when a person starts this workflow by hand with
+#     the `backend` box ticked, or when the repository variable UPTIME_CHECK_BACKEND is "true", and then on
+#     the once-a-day run only -- far apart enough that the backend still sleeps in between.
+#   * No secret, no token, no account: the operational endpoints (/ready, /metrics) stay private and are only
+#     checked to be 404 from outside. Readiness with the ops token is a manual, local step of the runbook.
+#   * Not part of CI: it is a separate workflow, so it is never a required check and never blocks a merge.
+#
+# A scheduled workflow runs from the default branch only, and GitHub pauses schedules in a repository that has
+# had no activity for 60 days.
+
+name: Uptime
+
+on:
+  schedule:
+    # Minutes chosen off the hour (the top of the hour is when GitHub's scheduler is most delayed).
+    - cron: "23 */4 * * *" # the frontend, every four hours
+    - cron: "41 6 * * *" # once a day: the run that may also check the backend (see above)
+  workflow_dispatch:
+    inputs:
+      backend:
+        description: "Also check the backend through the frontend (wakes a sleeping backend)"
+        type: boolean
+        default: false
+
+concurrency:
+  group: uptime
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  public-site:
+    name: Public site
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Standard library only: the runner's own Python, no dependency to install.
+      - name: Frontend is reachable
+        run: python3 backend/scripts/public_check.py
+
+      - name: Backend answers through the frontend
+        if: >-
+          ${{ (github.event_name == 'workflow_dispatch' && inputs.backend)
+              || (github.event_name == 'schedule' && github.event.schedule == '41 6 * * *' && vars.UPTIME_CHECK_BACKEND == 'true') }}
+        run: python3 backend/scripts/public_check.py --backend

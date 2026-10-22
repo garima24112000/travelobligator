@@ -17,6 +17,9 @@ _DB_SECRET = "SENTINEL_203B_DB_PASSWORD_6610"
 _REDIS_SECRET = "SENTINEL_203B_REDIS_PASSWORD_2284"
 _SESSION_SECRET = "SENTINEL_203B_SESSION_SECRET_" + "x" * 24
 _OPS_SECRET = "SENTINEL_203B_OPS_TOKEN_" + "y" * 16
+_GROQ_SECRET = "SENTINEL_P1B_GROQ_KEY_7731"
+_GEMINI_SECRET = "SENTINEL_P1B_GEMINI_KEY_4410"
+_BETA_SECRET = "SENTINEL_BETA_REGISTRATION_TOKEN_" + "w" * 16
 
 _PRODUCTION = {
     "APP_ENV": "production",
@@ -39,6 +42,23 @@ _PRODUCTION = {
     "PLACES_PROVIDER": "geoapify",
     "ROUTING_PROVIDER": "geoapify",
     "INVENTORY_SUFFICIENCY_GATE_ENABLED": "true",
+    # P0: generation runs as jobs in production (the admission limits are enforced there)
+    "ASYNC_GENERATION_ENABLED": "true",
+    # P1-B: the release's model stages, as written in render.yaml, with both failover providers configured
+    "AI_CANDIDATE_PROPOSAL_PROVIDER": "groq",
+    "AI_CANDIDATE_DISCOVERY_ENABLED": "true",
+    "AI_ITINERARY_REASONING_ENABLED": "true",
+    "AI_ITINERARY_REASONING_PROVIDER": "groq",
+    "AI_ITINERARY_REPAIR_ENABLED": "true",
+    "ITINERARY_NARRATOR_ENABLED": "true",
+    "ITINERARY_NARRATOR_PROVIDER": "groq",
+    "LLM_FAILOVER_ENABLED": "true",
+    "GROQ_API_KEY": _GROQ_SECRET,
+    "GEMINI_API_KEY": _GEMINI_SECRET,
+    "GEMINI_MODEL": "gemini-test-model",
+    # Limited beta: production never runs with open registration
+    "SIGNUP_MODE": "invite_link",
+    "BETA_REGISTRATION_TOKEN": _BETA_SECRET,
 }
 
 
@@ -50,7 +70,7 @@ def _rejected(**overrides: object) -> str:
     with pytest.raises(OperationalConfigurationError) as excinfo:
         validate_runtime_configuration(_settings(**overrides))
     message = str(excinfo.value)
-    for secret in (_DB_SECRET, _REDIS_SECRET, _SESSION_SECRET, _OPS_SECRET):
+    for secret in (_DB_SECRET, _REDIS_SECRET, _SESSION_SECRET, _OPS_SECRET, _GROQ_SECRET, _GEMINI_SECRET, _BETA_SECRET):
         assert secret not in message
     return message
 
@@ -144,3 +164,57 @@ def test_development_keeps_its_defaults_but_never_a_wildcard_or_credentialed_ori
         with pytest.raises(OperationalConfigurationError) as excinfo:
             validate_runtime_configuration(Settings(_env_file=None, BACKEND_CORS_ORIGINS=origins, **development))
         assert "BACKEND_CORS_ORIGINS" in str(excinfo.value) and _DB_SECRET not in str(excinfo.value)
+
+
+# -- P0: abuse / cost limits cannot be switched off in production ----------------------------------------------------
+
+
+def test_production_requires_generation_to_run_as_jobs() -> None:
+    # the admission limits are enforced where a job is created; the synchronous path creates none
+    message = _rejected(ASYNC_GENERATION_ENABLED="false")
+    assert "ASYNC_GENERATION_ENABLED=true" in message
+
+
+@pytest.mark.parametrize(
+    "variable",
+    [
+        "GENERATION_MAX_JOBS_PER_USER_PER_WINDOW",
+        "GENERATION_MAX_JOBS_GLOBAL_PER_WINDOW",
+        "GENERATION_MAX_CONCURRENT_JOBS",
+        "MAX_TRIPS_PER_USER",
+        "SIGNUP_MAX_PER_WINDOW_GLOBAL",
+        "LOGIN_MAX_FAILURES_PER_ACCOUNT",
+    ],
+)
+def test_production_rejects_a_disabled_limit(variable: str) -> None:
+    assert variable in _rejected(**{variable: "0"})
+
+
+def test_production_reports_every_disabled_limit_at_once() -> None:
+    message = _rejected(GENERATION_MAX_CONCURRENT_JOBS="0", MAX_TRIPS_PER_USER="0")
+    assert "GENERATION_MAX_CONCURRENT_JOBS" in message and "MAX_TRIPS_PER_USER" in message
+
+
+def test_production_rejects_a_per_user_limit_above_the_global_one() -> None:
+    message = _rejected(GENERATION_MAX_JOBS_PER_USER_PER_WINDOW="30", GENERATION_MAX_JOBS_GLOBAL_PER_WINDOW="25")
+    assert "must not exceed GENERATION_MAX_JOBS_GLOBAL_PER_WINDOW" in message
+
+
+def test_production_accepts_the_approved_limits_and_leaves_the_address_limits_optional() -> None:
+    settings = _settings()
+    assert (
+        settings.generation_max_jobs_per_user_per_window,
+        settings.generation_max_jobs_global_per_window,
+        settings.generation_max_concurrent_jobs,
+        settings.max_trips_per_user,
+    ) == (5, 25, 2, 20)
+    validate_runtime_configuration(settings)
+    # the per-address limits only apply behind a trusted proxy, so switching them off is allowed
+    validate_runtime_configuration(_settings(SIGNUP_MAX_PER_WINDOW_PER_IP="0", LOGIN_MAX_FAILURES_PER_IP="0"))
+
+
+def test_development_may_switch_the_limits_off() -> None:
+    development = {"APP_ENV": "development", "PERSISTENCE_BACKEND": "local_json", "PROVIDER_CACHE_BACKEND": "sqlite"}
+    validate_runtime_configuration(
+        Settings(_env_file=None, GENERATION_MAX_CONCURRENT_JOBS="0", MAX_TRIPS_PER_USER="0", **development)
+    )

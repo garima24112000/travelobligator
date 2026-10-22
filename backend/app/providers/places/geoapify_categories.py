@@ -65,9 +65,14 @@ VERIFIED_TAXONOMY: frozenset[str] = frozenset(
     building.historic building.tourism
     man_made.breakwater man_made.bridge man_made.lighthouse man_made.pier man_made.tower
     man_made.water_tower man_made.watermill man_made.windmill
-    beach.beach_resort
+    beach beach.beach_resort
+    maritime.marina
     """.split()
 )
+# `beach` and `maritime.marina` were added after a bounded provider probe
+# (quality tuning corrections): the API accepted both and returned records
+# carrying those categories, each with the raw tag the taxonomy already reads
+# (`natural=beach`, `leisure=marina`).
 
 
 @dataclass(frozen=True)
@@ -110,9 +115,70 @@ ACCOMMODATION_GROUP = CategoryGroup(
 
 ALL_GROUPS: tuple[CategoryGroup, ...] = (*ATTRACTION_GROUPS, FOOD_GROUP, ACCOMMODATION_GROUP)
 
+# Interest-driven discovery (quality tuning corrections). A requested
+# canonical interest whose provider categories none of the broad groups asks
+# for gets ONE extra group, only when that interest is requested. Its places
+# come OUT of the largest broad group's share, so the pool is no larger; only
+# categories of the verified snapshot above are used, and a kind of place the
+# snapshot has no category for (a marina, a promenade, coastal access) is not
+# invented here -- it can still be recognised from the place's own tags.
+# The waterfront group asks for piers, beaches and managed beaches. A marina
+# is CLASSIFIED when one is encountered (see `_EXACT`) but is not asked for:
+# a mooring facility is not a visitor experience merely because it is on the
+# water, and whether any waterfront place deserves a slot stays the business
+# of the quality gates and the usefulness ordering.
+INTEREST_GROUP_SHARE = 0.10
+INTEREST_GROUPS: dict[str, CategoryGroup] = {
+    "waterfront": CategoryGroup(
+        "waterfront", ("man_made.pier", "beach", "beach.beach_resort"), INTEREST_GROUP_SHARE
+    ),
+}
+
+# -- Mixed local / broad discovery (quality tuning corrections) -------------------
+#
+# A broad request (the destination boundary, no bias) returns places in an
+# order the provider does not document; for a destination resolved to a large
+# boundary a bounded probe found every one of them tens of kilometres from the
+# destination point. A LOCAL request is the same request with a proximity
+# bias towards a locality anchor, which the provider answers nearest first.
+#
+# Each attraction group's limit is therefore split, by a FIXED fraction, into
+# a broad share and a local share -- the pool is no larger. The fractions
+# follow what the probe observed per group near a city point: culture results
+# were all ordinary candidates, parks were valid but small, attractions and
+# sights were mostly single artworks and memorials. They are constants of the
+# retrieval policy, not tuning knobs, and no destination is known here.
+LOCAL_SHARE: dict[str, tuple[int, int]] = {  # group key -> (numerator, denominator) of its limit
+    "sights": (1, 3),
+    "attractions": (1, 3),
+    "culture": (2, 3),
+    "outdoors_heritage_markets": (1, 2),
+    "food": (1, 2),
+}
+# Groups whose local share is partly HELD BACK when the trip has must-visits,
+# to be requested around the grounded must-visit points once they are known
+# (half of the local share, rounded down). Sights and attractions are not:
+# their local results are mostly low-value objects.
+MUST_VISIT_FOLLOW_UP_GROUPS: frozenset[str] = frozenset({"culture", "outdoors_heritage_markets", "food"})
+# At most this many geographically distinct must-visit anchors get a follow-up.
+MAX_MUST_VISIT_ANCHORS = 2
+
+
+def local_limit(group_key: str, limit: int) -> int:
+    """How many of a group's `limit` places are requested locally."""
+    numerator, denominator = LOCAL_SHARE.get(group_key, (0, 1))
+    return min(limit, round(limit * numerator / denominator))
+
+
+def held_back_limit(group_key: str, limit: int) -> int:
+    """How many of a group's local places wait for the must-visit anchors."""
+    return local_limit(group_key, limit) // 2 if group_key in MUST_VISIT_FOLLOW_UP_GROUPS else 0
+
 
 def configured_categories() -> frozenset[str]:
-    return frozenset(category for group in ALL_GROUPS for category in group.categories)
+    return frozenset(
+        category for group in (*ALL_GROUPS, *INTEREST_GROUPS.values()) for category in group.categories
+    )
 
 
 # -- Geoapify category -> the taxonomy's tag vocabulary ---------------------------
@@ -177,13 +243,20 @@ _EXACT: dict[str, dict[str, str]] = {
     "man_made.lighthouse": {"man_made": "lighthouse"},
     "man_made.bridge": {"man_made": "bridge"},
     "man_made.pier": {"man_made": "pier"},
+    # A managed beach (OpenStreetMap `leisure=beach_resort`).
+    "beach.beach_resort": {"leisure": "beach_resort"},
+    # Observed on live records: every `beach` record carried `natural=beach`
+    # and every `maritime.marina` record `leisure=marina`. The mapping makes
+    # the classification independent of the raw tags being returned.
+    "beach": {"natural": "beach"},
+    "maritime.marina": {"leisure": "marina"},
 }
 
 # Categories that describe WHAT the place is (as opposed to conditions such
 # as `fee`, `wheelchair.yes`, `internet_access`).
 _KIND_ROOTS = (
     "tourism", "entertainment", "leisure", "heritage", "national_park", "natural", "commercial",
-    "catering", "accommodation", "religion", "man_made", "beach",
+    "catering", "accommodation", "religion", "man_made", "beach", "maritime",
 )
 
 

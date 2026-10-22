@@ -239,6 +239,14 @@ _GENERATION_STAGE_LABELS: dict[str, str] = {
 }
 
 
+def _create_trip_record(trips, trip_id: str, owner_id: str | None, max_trips_for_owner: int) -> None:
+    """Create the trip row, within the owner's saved-trip limit when one applies (P0)."""
+    if owner_id is not None and max_trips_for_owner > 0:
+        trips.create_within_owner_limit(trip_id, owner_id, max_trips_for_owner)
+    else:
+        trips.create(trip_id, owner_id=owner_id)
+
+
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -453,9 +461,18 @@ class PlanningOrchestrator:
         return get_trip_repository()
 
     def create_trip(
-        self, trip_request: TripRequest, owner_id: str | None = None
+        self,
+        trip_request: TripRequest,
+        owner_id: str | None = None,
+        *,
+        max_trips_for_owner: int = 0,
     ) -> PlanningState:
-        """`owner_id` (Step 184D) is stored only on the `TripRecord`
+        """`max_trips_for_owner` (P0; 0 = no limit, the default for every non-route caller): with an
+        `owner_id`, the trip is created only while that owner holds fewer trips, decided by the
+        repository in the same transaction as the insert (`TripLimitReachedError` otherwise, and
+        nothing is stored).
+
+        `owner_id` (Step 184D) is stored only on the `TripRecord`
         (`self.trip_repository`) -- never on `PlanningState` itself,
         which has no `owner_id` field and never will (ownership lives on
         `trips` only, see docs/14_backend_architecture.md section 110).
@@ -484,12 +501,14 @@ class PlanningOrchestrator:
             # Section 200C: the trip row and its initial PlanningState are ONE transaction --
             # a failure between the two writes leaves neither behind (no orphan trip/state).
             def _persist_new_trip(uow) -> None:
-                uow.trips.create(planning_state.trip_id, owner_id=owner_id)
+                _create_trip_record(uow.trips, planning_state.trip_id, owner_id, max_trips_for_owner)
                 uow.planning_states.save(planning_state)
 
             run_atomic(_persist_new_trip)
         else:
-            self.trip_repository.create(planning_state.trip_id, owner_id=owner_id)
+            _create_trip_record(
+                self.trip_repository, planning_state.trip_id, owner_id, max_trips_for_owner
+            )
             self.planning_state_repository.save(planning_state)
         return planning_state
 

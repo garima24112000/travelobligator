@@ -6,6 +6,8 @@ from app.models.flight import FlightSearchResult, FlightSearchStatus
 from app.models.hotel_ratings import HotelRatingsStatus
 from app.models.planning_state import (
     DailyPlan,
+    InterestCoverageEntry,
+    OverLimitWalkingLeg,
     PlanningStage,
     PlanningState,
     ValidationIssue,
@@ -19,11 +21,22 @@ from app.models.routing import (
     TravelTimeBufferReport,
 )
 from app.core.errors import DESTINATION_UNRESOLVED_MESSAGE
-from app.services.plan_quality_findings import build_plan_quality_findings
+from app.services.plan_quality_findings import build_plan_quality_findings, interest_coverage_entries
 from app.services.entity_collisions import scheduled_unresolved_collisions
-from app.services.must_visit_matching import resolve_must_visits
+from app.services.must_visit_matching import must_visit_place_ids, resolve_must_visits
+from app.services.place_taxonomy import explicit_no_public_access
 from app.services.day_order_heuristics import GEOGRAPHIC_SPREAD_THRESHOLD_KM, day_spread_km
-from app.services.route_burden import day_route_burdens
+from app.services.review_classification import classification_for
+from app.services.geographic_dispersion import (
+    CATEGORY as GEOGRAPHIC_DISPERSION_CATEGORY,
+    CAUSE_DISCRETIONARY_DISPERSION,
+    CAUSE_LIMITED_COMPATIBLE_INVENTORY,
+    CAUSE_MANDATORY_DESTINATION,
+    CAUSE_UNVERIFIED,
+    dispersion_by_day,
+)
+from app.services.remote_days import remote_days_safely
+from app.services.route_burden import day_route_burdens, is_definitive_failure, over_limit_walking_legs
 from app.services.usefulness_contract import evaluate_usefulness, usefulness_findings
 from app.services.experience_identity import experience_stable_key
 from app.services.base import PlanningStageService
@@ -319,10 +332,19 @@ class PlanValidatorService(PlanningStageService):
             # provider has verified EVERY leg of the day in its final mode
             # (walk or vehicle transfer) and the day's walking and transfer
             # burdens are within their limits, the factual route answers the
-            # question and raw separation alone is not a finding. The warning
-            # still stands when a leg is unrouted, or the routed day is itself
+            # question of FEASIBILITY: the `geographic_spread` finding (an
+            # unverified or over-limit day) is not raised. That finding still
+            # stands when a leg is unrouted, or the routed day is itself
             # unreasonable (it then accompanies LONG_TRAVEL_DAY).
+            #
+            # Quality tuning corrections: a verified, acceptable drive does not
+            # make a regional day a compact one. Such a day gets its own
+            # finding, `geographic_dispersion` -- about where the day's places
+            # lie, kept apart from route burden (`long_travel_day`) and from
+            # unverified feasibility (`geographic_spread`) -- with the reason
+            # the stored state supports (`services/geographic_dispersion`).
             burdens_by_day = {burden.day_number: burden for burden in day_route_burdens(planning_state)}
+            dispersion = dispersion_by_day(planning_state)
             for day in planning_state.experience_plan.daily_plans:
                 spread_km = _day_geographic_spread_km(day)
                 if (
@@ -336,6 +358,12 @@ class PlanValidatorService(PlanningStageService):
                         and burden.routed_legs == burden.required_legs
                     )
                     if fully_routed and not burden.long_route:
+                        found = dispersion.get(day.day_number)
+                        warnings.append(
+                            _geographic_dispersion_issue(
+                                day.day_number, spread_km, found.cause if found is not None else CAUSE_UNVERIFIED
+                            )
+                        )
                         continue
                     if fully_routed:
                         detail = (
@@ -449,6 +477,19 @@ class PlanValidatorService(PlanningStageService):
         # judged on WALK legs only, so a leg that became a reasonable vehicle
         # transfer no longer makes its day a long-travel day; a day whose
         # vehicle transfers are themselves unreasonable still is one.
+        # Q4: a long-travel day the recomposition stage could not change
+        # because only places the traveller asked for or locked are on its
+        # long legs says so, instead of suggesting a regrouping.
+        repair_report = planning_state.route_burden_repair_report
+        protected_long_days = {
+            attempt.day_number
+            for attempt in (repair_report.attempts if repair_report else [])
+            if attempt.reason == "protected_stops_only"
+        }
+        # Phase 1: a walk beyond the walking-leg limit that is still a walk
+        # is what the plan has for that transfer -- named on its day, and
+        # listed (presentation only) so the leg itself can be marked.
+        long_walks = over_limit_walking_legs(planning_state)
         for burden in day_route_burdens(planning_state):
             if not burden.long_route:
                 continue
@@ -460,6 +501,12 @@ class PlanValidatorService(PlanningStageService):
                     f"single leg is about {round(burden.max_walk_leg_duration_seconds / 60)} minutes. "
                     "These are walking routes from the routing provider -- no public-transport "
                     "or taxi time is available, so allow extra time or use local transport."
+                ) + "".join(
+                    f" The walk between {leg.from_experience_name} and {leg.to_experience_name} (about "
+                    f"{round(leg.duration_seconds / 60)} minutes) is longer than a usual walk between stops, "
+                    "and no faster way of making it was verified."
+                    for day_number, leg in long_walks
+                    if day_number == burden.day_number
                 )
             else:
                 message = (
@@ -476,9 +523,32 @@ class PlanValidatorService(PlanningStageService):
                     category="long_travel_day",
                     message=message,
                     affected_section=f"experience_plan.daily_plans[{burden.day_number}]",
-                    suggested_fix="Request changes to group this day's stops closer together.",
+                    suggested_fix=(
+                        _PROTECTED_LONG_TRAVEL_FIX
+                        if burden.day_number in protected_long_days
+                        else "Request changes to group this day's stops closer together."
+                    ),
                 )
             )
+
+        # Q4: the routing provider's own route for a leg includes a ferry.
+        # Only that fact is stated -- no timetable, fare, ticket or
+        # availability is known, and none is implied.
+        warnings.extend(_ferry_in_route_issues(planning_state))
+
+        # A requested place is kept even when the place data explicitly marks
+        # it private / not open to the public (a must-visit is never removed);
+        # the traveller is told so on its day.
+        warnings.extend(_inaccessible_must_visit_issues(planning_state))
+
+        # A requested place is also kept when the routing provider definitively
+        # found no route for a leg it is on; the traveller is told which one.
+        warnings.extend(_unrouted_must_visit_leg_issues(planning_state))
+
+        # Phase 1: a day whose stops all lie away from where the trip's places
+        # are. Its legs cover only the moves between its own stops; getting
+        # there and back is not in the plan and is said to be unchecked.
+        warnings.extend(_remote_day_issues(planning_state))
 
         captured_constraints: list[str] = []
         for constraint in planning_state.trip_request.constraints:
@@ -667,11 +737,264 @@ class PlanValidatorService(PlanningStageService):
             unavailable_data_notes=unavailable_data_notes,
             blocking_codes=blocking_codes,
             review_codes=review_codes,
+            # Presentation only: computed AFTER readiness and the codes, from them.
+            review_code_classification=classification_for(
+                [*blocking_codes, *review_codes, *(issue.category for issue in (*critical_issues, *warnings))]
+            ),
+            # Presentation only: the coverage facts the findings above were raised from.
+            interest_coverage=_interest_coverage_safely(planning_state),
+            # Presentation only: the legs `long_travel_day` names as over-limit walks.
+            over_limit_walking_legs=(
+                [
+                    OverLimitWalkingLeg(
+                        day_number=day_number,
+                        from_experience_id=leg.from_experience_id,
+                        to_experience_id=leg.to_experience_id,
+                    )
+                    for day_number, leg in long_walks
+                ]
+                if planning_state.experience_plan is not None and planning_state.route_feasibility_report is not None
+                else None
+            ),
         )
 
         planning_state.validation_report = validation_report
         planning_state.touch()
         return planning_state
+
+
+_DISPERSION_REASONS: dict[str, tuple[str, str]] = {
+    CAUSE_MANDATORY_DESTINATION: (
+        "The distance is between places you asked for, and they could not be given separate days.",
+        "Allow extra time for this day, or remove one of the places you asked for.",
+    ),
+    CAUSE_LIMITED_COMPATIBLE_INVENTORY: (
+        "No closer verified place was available for this day without leaving the plan too thin.",
+        "Request changes to this day, or accept a shorter day.",
+    ),
+    CAUSE_DISCRETIONARY_DISPERSION: (
+        "At least one stop of this day is optional and lies far from the others.",
+        "Request changes to group this day's stops closer together.",
+    ),
+    CAUSE_UNVERIFIED: (
+        "The plan does not record why these stops share a day.",
+        "Request changes to group this day's stops closer together.",
+    ),
+}
+
+
+def _interest_coverage_safely(planning_state: PlanningState) -> list[InterestCoverageEntry] | None:
+    """The per-interest coverage restatement for the report, or None (coverage
+    unknown) when it cannot be produced. Presentation only: a problem here
+    never affects validation, readiness or a code."""
+    try:
+        return interest_coverage_entries(planning_state)
+    except Exception:  # noqa: BLE001 - disclosure data never breaks validation
+        return None
+
+
+def _geographic_dispersion_issue(day_number: int, spread_km: float, cause: str) -> ValidationIssue:
+    """A day whose routes are verified and within their limits, yet whose
+    places lie far apart. States the straight-line figure as what it is; it
+    never calls the day compact and never repeats a route figure. A day
+    dispersed only by a place the traveller asked for is a note, not a
+    review finding; every other cause is a warning."""
+    reason, suggested_fix = _DISPERSION_REASONS.get(cause, _DISPERSION_REASONS[CAUSE_UNVERIFIED])
+    return ValidationIssue(
+        severity=(
+            ValidationSeverity.SUGGESTION if cause == CAUSE_MANDATORY_DESTINATION else ValidationSeverity.WARNING
+        ),
+        category=GEOGRAPHIC_DISPERSION_CATEGORY,
+        # Traveller wording: no implementation terms (the page shows it as written).
+        message=(
+            f"Day {day_number}: this day's attractions are spread across a large area -- about "
+            f"{spread_km:.1f} km in a straight line between consecutive stops. Review the travel required "
+            "before following this schedule. Each transfer of the day has a checked route within the usual "
+            f"limits, so this is about how far apart the places are. {reason}"
+        ),
+        affected_section=f"experience_plan.daily_plans[{day_number}]",
+        suggested_fix=suggested_fix,
+    )
+
+
+_PROTECTED_LONG_TRAVEL_FIX = (
+    "The long transfer is between places you asked for or locked, so they were kept. "
+    "Move one of them to another day, or allow extra time for this transfer."
+)
+
+
+def _ferry_in_route_issues(planning_state: PlanningState) -> list[ValidationIssue]:
+    """One warning per day whose CURRENT legs include a ferry according to
+    the routing provider's own route (`RouteLegFeasibility.includes_ferry is
+    True`). A leg the provider said nothing about is not reported either way."""
+    plan = planning_state.experience_plan
+    report = planning_state.route_feasibility_report
+    if plan is None or report is None:
+        return []
+    legs = {(leg.from_experience_id, leg.to_experience_id): leg for leg in report.legs}
+    issues: list[ValidationIssue] = []
+    for day in plan.daily_plans:
+        crossings = [
+            f"{a.name} and {b.name}"
+            for a, b in zip(day.experiences, day.experiences[1:])
+            if (leg := legs.get((a.experience_id, b.experience_id))) is not None and leg.includes_ferry is True
+        ]
+        if not crossings:
+            continue
+        issues.append(
+            ValidationIssue(
+                severity=ValidationSeverity.WARNING,
+                category="route_includes_ferry",
+                # Traveller wording: no implementation terms (the page shows it as written).
+                message=(
+                    f"Day {day.day_number}: getting between {'; '.join(crossings)} involves a ferry crossing. "
+                    "No ferry timetable, fare, ticket or availability is known to this plan. The time shown for "
+                    "this leg is a route estimate only: it does not include waiting for or boarding the ferry "
+                    "and is not a verified ferry schedule."
+                ),
+                affected_section=f"experience_plan.daily_plans[{day.day_number}]",
+                suggested_fix="Check the crossing yourself before relying on this transfer.",
+            )
+        )
+    return issues
+
+
+_ACCESS_WORDING = {
+    "private": "is marked in the place data as private",
+    "no": "is marked in the place data as not open to the public",
+}
+
+
+def _inaccessible_must_visit_issues(planning_state: PlanningState) -> list[ValidationIssue]:
+    """One warning per day that schedules a grounded must-visit whose own
+    provider tags EXPLICITLY say the public may not enter (`access` private /
+    no -- `place_taxonomy.explicit_no_public_access`). The place is matched by
+    provider identity, never by name; a missing or other access value raises
+    nothing."""
+    plan = planning_state.experience_plan
+    context = planning_state.destination_context
+    if plan is None or context is None:
+        return []
+    must_visit_ids = must_visit_place_ids(planning_state)
+    if not must_visit_ids:
+        return []
+    access_of = {
+        str(poi["place_id"]): access
+        for poi in context.candidate_pois
+        if poi.get("place_id") and str(poi["place_id"]) in must_visit_ids
+        and (access := explicit_no_public_access(poi.get("provider_tags"))) is not None
+    }
+    issues: list[ValidationIssue] = []
+    for day in plan.daily_plans:
+        stops = [
+            f"{experience.name} {_ACCESS_WORDING[access_of[str(experience.provider_place_id)]]}"
+            for experience in day.experiences
+            if experience.provider_place_id and str(experience.provider_place_id) in access_of
+        ]
+        if not stops:
+            continue
+        issues.append(
+            ValidationIssue(
+                severity=ValidationSeverity.WARNING,
+                category="must_visit_access_restricted",
+                # Traveller wording: no implementation terms (the page shows it as written).
+                message=(
+                    f"Day {day.day_number}: {'; '.join(stops)}. It is kept because you asked for it, but "
+                    "visitor access and admission are not established, so do not rely on being able to visit it."
+                ),
+                affected_section=f"experience_plan.daily_plans[{day.day_number}]",
+                suggested_fix="Check whether and how this place can be visited before planning your day around it.",
+            )
+        )
+    return issues
+
+
+def _unrouted_must_visit_leg_issues(planning_state: PlanningState) -> list[ValidationIssue]:
+    """One warning per scheduled leg that touches a grounded must-visit (by
+    provider identity) and that the routing provider DEFINITIVELY failed to
+    route (`route_burden.is_definitive_failure`: `no_route` /
+    `unroutable_endpoint` only). A transient failure, a leg stored without a
+    failure code and a routed leg raise nothing. Neither stop is blamed, and
+    nothing is said about why, how or whether the place can be reached."""
+    plan = planning_state.experience_plan
+    report = planning_state.route_feasibility_report
+    if plan is None or report is None:
+        return []
+    must_visit_ids = must_visit_place_ids(planning_state)
+    if not must_visit_ids:
+        return []
+    legs = {(leg.from_experience_id, leg.to_experience_id): leg for leg in report.legs}
+    issues: list[ValidationIssue] = []
+    for day in plan.daily_plans:
+        for origin, destination in zip(day.experiences, day.experiences[1:]):
+            if not is_definitive_failure(legs.get((origin.experience_id, destination.experience_id))):
+                continue
+            requested = [
+                stop.name
+                for stop in (origin, destination)
+                if stop.provider_place_id and str(stop.provider_place_id) in must_visit_ids
+            ]
+            if not requested:
+                continue
+            kept = " and ".join(requested)
+            plural = len(requested) > 1
+            issues.append(
+                ValidationIssue(
+                    severity=ValidationSeverity.WARNING,
+                    category="must_visit_route_unverified",
+                    # Traveller wording: no implementation terms (the page shows it as written).
+                    message=(
+                        f"Day {day.day_number}: A verified route between {origin.name} and {destination.name} "
+                        f"could not be found. {kept} {'are' if plural else 'is'} kept because you requested "
+                        f"{'them' if plural else 'it'}, but travel between these stops is not verified. Check the "
+                        f"appropriate way to reach {'them' if plural else 'it'} before relying on this day's plan."
+                    ),
+                    affected_section=f"experience_plan.daily_plans[{day.day_number}]",
+                    suggested_fix="Check how to get between these stops yourself before following this day.",
+                )
+            )
+    return issues
+
+
+def _remote_day_issues(planning_state: PlanningState) -> list[ValidationIssue]:
+    """One warning per day whose located stops ALL lie beyond the planner's
+    own pool reach (`services/remote_days`). It says only what is true of
+    every such day: the journey to the day's area and back is not in the
+    plan and has not been checked. No time, distance, mode or place to stay
+    is stated; a day the traveller's must-visits put there is kept and says
+    so."""
+    issues: list[ValidationIssue] = []
+    for remote in remote_days_safely(planning_state):
+        if remote.located_stops > 1:
+            body = (
+                "All of this day's stops lie away from the area where most of this trip's places are. The travel "
+                "times shown cover only the moves between this day's stops: getting to this area and back is not "
+                "included and has not been checked."
+            )
+        else:
+            body = (
+                "This day's stop lies away from the area where most of this trip's places are. Getting there and "
+                "back is not included in this plan and has not been checked."
+            )
+        if remote.requested_places:
+            plural = len(remote.requested_places) > 1
+            body += (
+                f" {' and '.join(remote.requested_places)} {'are' if plural else 'is'} on this day because you "
+                f"asked for {'them' if plural else 'it'}."
+            )
+        issues.append(
+            ValidationIssue(
+                severity=ValidationSeverity.WARNING,
+                category="remote_day_access",
+                # Traveller wording: no implementation terms (the page shows it as written).
+                message=f"Day {remote.day_number}: {body}",
+                affected_section=f"experience_plan.daily_plans[{remote.day_number}]",
+                suggested_fix=(
+                    "Check how you will get to this area and back, and allow time for it, before following this day."
+                ),
+            )
+        )
+    return issues
 
 
 def _format_budget_amount(value: float) -> str:

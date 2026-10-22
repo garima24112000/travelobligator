@@ -29,8 +29,11 @@ RUN python -m venv /opt/venv
 COPY requirements.txt /tmp/requirements.txt
 # setuptools (seeded into every 3.11 virtualenv) is a build tool no runtime dependency imports; it is removed after
 # the install so its vendored copies (wheel, jaraco.context -- both with known CVEs) never reach the runtime image.
+# pip itself goes too (Phase 1A): it is only the installer, nothing imports or runs it once the dependencies are in,
+# and the copied virtualenv would otherwise carry its known CVEs into the runtime image.
 RUN /opt/venv/bin/pip install --no-cache-dir -r /tmp/requirements.txt \
-    && /opt/venv/bin/pip uninstall --yes setuptools
+    && /opt/venv/bin/pip uninstall --yes setuptools \
+    && /opt/venv/bin/python -m pip uninstall --yes pip
 
 FROM ${PYTHON_IMAGE} AS runtime
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -38,11 +41,16 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PATH=/opt/venv/bin:$PATH \
     PORT=8000
 
-# Dedicated unprivileged user (no login shell, no home directory). The base image's own setuptools/wheel (packaging
-# tools, never used at runtime) are removed for the same reason as in the builder stage.
+# Dedicated unprivileged user (no login shell, no home directory). The base image's own setuptools/wheel/pip
+# (packaging tools, never used at runtime) are removed for the same reason as in the builder stage.
+# Phase 1A: the base image ships setuid/setgid-root utilities (mount, umount, su, passwd, chsh, chfn, gpasswd, newgrp,
+# chage, expiry, unix_chkpwd). Nothing in this image runs them, and for a process running as uid 10001 they are the
+# only way to gain privileges inside the container (a HIGH advisory concerns `mount` itself), so the bits are removed.
+# The binaries stay (Debian marks util-linux/login essential); without the bit they run only with the caller's rights.
 RUN groupadd --system --gid 10001 app \
     && useradd --system --uid 10001 --gid app --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin app \
-    && python -m pip uninstall --yes --no-cache-dir setuptools wheel
+    && python -m pip uninstall --yes --no-cache-dir setuptools wheel pip \
+    && find / -xdev -perm /6000 -type f -exec chmod a-s {} +
 
 COPY --from=builder /opt/venv /opt/venv
 

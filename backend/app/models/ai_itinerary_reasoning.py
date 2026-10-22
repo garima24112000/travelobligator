@@ -158,6 +158,22 @@ class ItineraryCandidateReference(BaseModel):
     # the traveler's canonical interests this candidate demonstrably serves.
     normalized_category: str | None = None
     matched_interests: list[str] = Field(default_factory=list)
+    # Q2 planning signals (`app.services.candidate_usefulness`). All optional
+    # and defaulted. None is a fact about popularity, rating or ranking.
+    # `must_visit`: this provider identity was grounded for a must-visit the
+    # traveller requested (Q1 identity resolution; never a name comparison).
+    must_visit: bool = False
+    # `semantic_anchor`: a grounded, promoted semantic proposal, by provider
+    # place id -- set only where the usefulness band gate lets it count.
+    semantic_anchor: bool = False
+    # `provider_evidence`: the place-level significance signals the provider
+    # carries for THIS place ("wikipedia", "heritage"); never the kind of
+    # place and never a bare id.
+    provider_evidence: list[str] = Field(default_factory=list)
+    # Q3 (`app.services.day_composition`): an opaque id of the geographic
+    # group this candidate's verified coordinates fall in, for THIS request
+    # only. Never a neighbourhood name, and never set without coordinates.
+    area: str | None = None
 
     @field_validator("candidate_id", "name", "provider_name", "provider_place_id", "quality_tier")
     @classmethod
@@ -232,6 +248,21 @@ class TravelerContextSummary(BaseModel):
 # structurally (forbidden-text patterns above, candidate-id-only
 # references) -- these strings restate them for the model in its own
 # input, they do not relax or replace the structural enforcement.
+# Q2: what the planning signals printed on every candidate line mean (also
+# restated to the repair call, which prints the same lines).
+MUST_VISIT_INSTRUCTION = (
+    "A candidate marked must_visit=yes represents a provider-grounded place the traveler "
+    "explicitly requested. Include grounded must-visits unless doing so is impossible "
+    "under deterministic trip constraints. Never infer must-visit identity from a "
+    "candidate name."
+)
+PLANNING_SIGNALS_INSTRUCTION = (
+    "semantic_anchor and provider_evidence are planning signals supplied to you, not "
+    "facts about popularity, rating or ranking. When slots are limited, prefer candidates "
+    "that carry more of them and that serve the requested interests. Never describe a "
+    "place as popular, top rated, best reviewed or famous."
+)
+
 DEFAULT_ITINERARY_REASONING_INSTRUCTIONS: tuple[str, ...] = (
     "Use only the candidate_id values supplied in allowed_candidates. Never invent a "
     "new place, and never reference a place by name only.",
@@ -245,7 +276,64 @@ DEFAULT_ITINERARY_REASONING_INSTRUCTIONS: tuple[str, ...] = (
     "candidate's own confidence.",
     "Return structured reasoning only: a short strategy summary, per-day candidate "
     "groupings with a brief rationale, and any tradeoffs worth surfacing.",
+    MUST_VISIT_INSTRUCTION,
+    PLANNING_SIGNALS_INSTRUCTION,
 )
+
+
+# Q3: what the `area` printed on a candidate line means. Added to a request's
+# instructions only when the request carries areas.
+AREA_INSTRUCTION = (
+    "Each candidate's area is a computed grouping of the supplied candidates by "
+    "location -- it is not a neighbourhood, district or place name. Candidates of one "
+    "area lie close together; areas listed as near each other are close too. Compose "
+    "each day from one area, or from areas listed as near each other, unless a "
+    "must_visit candidate requires otherwise. Never write an area id in your text, "
+    "never name or describe an area, and never state a distance, a walking time or a "
+    "travel time."
+)
+
+
+class ItineraryAreaSummary(BaseModel):
+    """One geographic group of a request's candidates (Q3). Derived only from
+    verified provider coordinates; carries no name, distance or duration."""
+
+    area_id: str
+    candidate_count: int = Field(ge=1)
+    near_area_ids: list[str] = Field(default_factory=list)
+
+
+def area_text(candidate: object) -> str:
+    """The Q3 area of one candidate, as every reasoning prompt prints it
+    (nothing at all for a candidate without one)."""
+    area = getattr(candidate, "area", None)
+    return f" area={area}" if area else ""
+
+
+def area_block_lines(areas: object) -> list[str]:
+    """The prompt lines describing a request's areas (none without areas)."""
+    summaries = list(areas or [])
+    if not summaries:
+        return []
+    return [
+        "Areas (computed groupings of the candidates by location; ids only, not place names):",
+        *(
+            f"- area={summary.area_id} candidates={summary.candidate_count} "
+            f"near=[{', '.join(summary.near_area_ids)}]"
+            for summary in summaries
+        ),
+    ]
+
+
+def planning_signals_text(candidate: object) -> str:
+    """The Q2 planning signals of one candidate, as every reasoning prompt
+    prints them (one wording for every provider adapter)."""
+    evidence = ", ".join(getattr(candidate, "provider_evidence", None) or [])
+    return (
+        f" must_visit={'yes' if getattr(candidate, 'must_visit', False) else 'no'}"
+        f" semantic_anchor={'yes' if getattr(candidate, 'semantic_anchor', False) else 'no'}"
+        f" provider_evidence=[{evidence}]"
+    )
 
 
 class AIItineraryReasoningRequest(BaseModel):
@@ -264,6 +352,8 @@ class AIItineraryReasoningRequest(BaseModel):
     trip_strategy_summary: TripStrategySummary | None = None
     factual_context: FactualContextSummary = Field(default_factory=FactualContextSummary)
     allowed_candidates: list[ItineraryCandidateReference] = Field(default_factory=list)
+    # Q3: the geographic groups of `allowed_candidates` (empty = none sent).
+    areas: list[ItineraryAreaSummary] = Field(default_factory=list)
     reasoning_instructions: list[str] = Field(
         default_factory=lambda: list(DEFAULT_ITINERARY_REASONING_INSTRUCTIONS)
     )

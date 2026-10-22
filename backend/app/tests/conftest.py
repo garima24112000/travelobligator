@@ -33,6 +33,7 @@ from app.models.common import DataStatus, GeoPoint, ProviderStatus
 from app.models.providers import NormalizedPlace, ProviderResponse
 from app.providers.base import PlacesProvider
 from app.providers.gateway import provider_gateway
+from app.repositories.auth_attempt_repository import auth_attempt_repository
 from app.repositories.itinerary_lineage_repository import itinerary_lineage_repository
 from app.repositories.job_repository import job_repository
 from app.repositories.planning_state_repository import planning_state_repository
@@ -267,12 +268,15 @@ def _reset_in_memory_repositories(tmp_path: Path) -> None:
     # "jobs" collection -- reset here for the same isolation reason.
     job_repository._store = test_store
     job_repository._jobs = {}
+    job_repository._deleted_usage = []  # P1-A: usage of deleted jobs (process memory)
     # Section 199A: itinerary_lineage_repository (branches/revisions)
     # shares the same underlying file as the other four, under its own
     # two new collections -- reset here for the same isolation reason.
     itinerary_lineage_repository._store = test_store
     itinerary_lineage_repository._branches = {}
     itinerary_lineage_repository._revisions = {}
+    # P0: the Local JSON signup / sign-in attempt counters are process memory.
+    auth_attempt_repository.reset()
     yield
 
 
@@ -293,6 +297,18 @@ def _explicit_test_persistence_backend(request: pytest.FixtureRequest, monkeypat
     """
     if request.node.get_closest_marker("postgres_integration") is not None:
         monkeypatch.setenv("PERSISTENCE_BACKEND", "postgres")
+        # P0: every live-PostgreSQL test shares ONE database whose rows outlive the test that wrote
+        # them, so the deployment-wide limits (jobs per window, concurrent jobs, signups per window)
+        # would be reached by the suite's own leftovers. They are off here; a test of the limits sets
+        # the ones it exercises explicitly (tests/repositories/test_postgres_admission_p0_integration.py).
+        # Hermetic tests keep the production defaults: their store is new for every test.
+        for limit in (
+            "GENERATION_MAX_JOBS_PER_USER_PER_WINDOW",
+            "GENERATION_MAX_JOBS_GLOBAL_PER_WINDOW",
+            "GENERATION_MAX_CONCURRENT_JOBS",
+            "SIGNUP_MAX_PER_WINDOW_GLOBAL",
+        ):
+            monkeypatch.setenv(limit, "0")
     else:
         monkeypatch.setenv("PERSISTENCE_BACKEND", "local_json")
         monkeypatch.delenv("DATABASE_URL", raising=False)
@@ -329,6 +345,7 @@ def _reset_persistence_caches() -> None:
         _factory._postgres_user_repository,
         _factory._postgres_job_repository,
         _factory._postgres_lineage_repository,
+        _factory._postgres_auth_attempt_repository,
     ):
         cache.cache_clear()
 
@@ -492,6 +509,24 @@ def new_authenticated_client() -> TestClient:
     )
     assert signup_response.status_code == 201, signup_response.text
     return test_client
+
+
+def replace_session_cookie(test_client: TestClient, value: str) -> None:
+    """Make `value` the ONLY session cookie `test_client` sends.
+
+    `client.cookies.set(name, value)` does not replace the cookie the server set at sign-up: that one is
+    scoped to the test host's domain, the new one to no domain, so the jar then holds TWO same-name cookies
+    and the request carries both. Which one the application reads depends on the HTTP client's header order
+    (it changed between httpx2 2.13 and 2.16), so a test written that way passes or fails by luck. This
+    removes every session cookie first, then sets exactly one, and checks that it did.
+    """
+    name = get_settings().session_cookie_name
+    held = [cookie for cookie in test_client.cookies.jar if cookie.name == name]
+    for cookie in held:
+        test_client.cookies.delete(name, domain=cookie.domain, path=cookie.path)
+    test_client.cookies.set(name, value, domain=held[0].domain if held else "", path="/")
+    remaining = [cookie.value for cookie in test_client.cookies.jar if cookie.name == name]
+    assert remaining == [value], "the session cookie was not replaced"
 
 
 @pytest.fixture()

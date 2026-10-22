@@ -4,9 +4,12 @@ from typing import Any
 
 from app.core.config import get_settings
 from app.models.ai_itinerary_reasoning import (
+    AREA_INSTRUCTION,
+    DEFAULT_ITINERARY_REASONING_INSTRUCTIONS,
     AIItineraryReasoningRequest,
     CandidateOrigin,
     FactualContextSummary,
+    ItineraryAreaSummary,
     ItineraryCandidateReference,
     ItineraryReasoningCategory,
     TravelerContextSummary,
@@ -17,7 +20,13 @@ from app.models.candidate_grounding import GroundedCandidate
 from app.models.candidate_quality import CandidateQualityReport, CandidateQualityScore, CandidateQualityTier
 from app.models.common import DataStatus, GeoPoint
 from app.models.planning_state import PlanningState
+from app.services import candidate_universe as universe
+from app.services import candidate_usefulness as usefulness
+from app.services import day_composition as composition
 from app.services.ai_candidate_promotion_eligibility_service import find_quality_score
+from app.services.grounded_anchors import grounded_anchor_place_ids
+from app.services.must_visit_matching import must_visit_place_ids
+from app.services.pace_targets import PACE_TARGET_PER_DAY, pace_of
 
 # Section 193A (docs/14_backend_architecture.md section 141): builds the
 # bounded `AIItineraryReasoningRequest` contract from existing
@@ -44,6 +53,10 @@ from app.services.ai_candidate_promotion_eligibility_service import find_quality
 #    `AICandidatePromotionEligibilityService` itself already uses --
 #    never re-derived or guessed here.
 #
+# Q2: every reference then gets its planning signals by provider place id
+# (`must_visit`, `semantic_anchor`, `provider_evidence`) and the candidate
+# cap is filled in the canonical usefulness order -- see `_bounded`.
+#
 # Never included: an ungrounded proposal, a `discovery_query` with no
 # provider match, a `NOT_SEARCHED`/provider-failure attempt, an ambiguous/
 # rejected grounding result, or accommodation/flight inventory (those stay
@@ -57,9 +70,18 @@ _ACCEPTED_QUALITY_TIERS = {
     CandidateQualityTier.SECONDARY_CANDIDATE,
 }
 
-# Task 3's tier-first, score-second, id-third deterministic sort key for
-# Task 9's bounding -- never AI proposal confidence, never arbitrary
-# truncation order.
+# Tier order of the RESTAURANT references in the bound (tier, score, then a
+# neutral name/id tie-break). Attractions are ordered by the canonical
+# usefulness key (`app.services.candidate_usefulness`, Q2) -- never by AI
+# proposal confidence, never by arbitrary truncation order.
+_FOOD_INTEREST = "food"
+# How many attractions per requested interest the bound makes room for
+# (one before the anchors, the second only while space remains).
+_COVERAGE_CANDIDATES_PER_INTEREST = 2
+# The planner shows at most this many food suggestions per day.
+_MAX_RESTAURANTS_PER_DAY = 2
+# Q3: how many of an area's near areas a request names (nearest first).
+_MAX_NEAR_AREAS_LISTED = 3
 _TIER_SORT_ORDER: dict[CandidateQualityTier, int] = {
     CandidateQualityTier.PRIMARY_ANCHOR: 0,
     CandidateQualityTier.GOOD_CANDIDATE: 1,
@@ -111,6 +133,7 @@ class AIItineraryReasoningRequestBuilder:
 
     def build_request(self, planning_state: PlanningState) -> AIItineraryReasoningRequest:
         trip_request = planning_state.trip_request
+        allowed_candidates, areas = self._allowed_candidates_and_areas(planning_state)
 
         return AIItineraryReasoningRequest(
             trip_id=planning_state.trip_id,
@@ -121,7 +144,13 @@ class AIItineraryReasoningRequestBuilder:
             traveler_context=self._traveler_context(planning_state),
             trip_strategy_summary=self._trip_strategy_summary(planning_state),
             factual_context=self._factual_context(planning_state),
-            allowed_candidates=self._allowed_candidates(planning_state),
+            allowed_candidates=allowed_candidates,
+            areas=areas,
+            # Q3: the area instruction travels only with a request that has areas.
+            reasoning_instructions=[
+                *DEFAULT_ITINERARY_REASONING_INSTRUCTIONS,
+                *([AREA_INSTRUCTION] if areas else []),
+            ],
         )
 
     @staticmethod
@@ -195,30 +224,130 @@ class AIItineraryReasoningRequestBuilder:
         )
 
     def _allowed_candidates(self, planning_state: PlanningState) -> list[ItineraryCandidateReference]:
-        candidates: list[ItineraryCandidateReference] = []
+        return self._allowed_candidates_and_areas(planning_state)[0]
+
+    def _allowed_candidates_and_areas(
+        self, planning_state: PlanningState
+    ) -> tuple[list[ItineraryCandidateReference], list[ItineraryAreaSummary]]:
+        """The bounded candidates and, with day composition on, the
+        geographic areas they fall in (Q3). Areas come only from the
+        candidates' verified coordinates (`day_composition.build_areas`):
+        the eligible attractions are grouped first, so the bound can keep
+        both companions and geographic alternatives, and the RETAINED
+        attractions are then grouped again so the ids and nearness the model
+        sees describe exactly the candidates it was given. Restaurants carry
+        no area: a model-chosen restaurant is only a preference among a
+        day's nearby food."""
+        attractions, restaurants = self._candidate_universe(planning_state)
+        interests = usefulness.requested_canonical_interests(planning_state)
+        trip_days = self._trip_duration_days(planning_state)
+        if not get_settings().day_composition_enabled:
+            return self._bounded(attractions, restaurants, interests, trip_days), []
+
+        eligible_areas = composition.build_areas(
+            [
+                composition.Located(candidate.candidate_id, candidate.coordinates, assessed.sort_key)
+                for candidate, assessed in attractions
+            ]
+        )
+        bounded = self._bounded(
+            attractions,
+            restaurants,
+            interests,
+            trip_days,
+            area_of=eligible_areas.area_of,
+            per_day=PACE_TARGET_PER_DAY[pace_of(planning_state)],
+        )
+        # `bounded` lists the attractions in canonical usefulness order.
+        shown = composition.build_areas(
+            [
+                composition.Located(candidate.candidate_id, candidate.coordinates, (index,))
+                for index, candidate in enumerate(bounded)
+                if candidate.category == ItineraryReasoningCategory.ATTRACTION
+            ]
+        )
+        summaries = [
+            ItineraryAreaSummary(
+                area_id=area_id,
+                candidate_count=len(members),
+                near_area_ids=list(shown.near.get(area_id, ()))[:_MAX_NEAR_AREAS_LISTED],
+            )
+            for area_id, members in shown.members.items()
+        ]
+        return (
+            [
+                candidate.model_copy(update={"area": shown.area_of.get(candidate.candidate_id)})
+                for candidate in bounded
+            ],
+            summaries,
+        )
+
+    def must_visit_overflow(self, planning_state: PlanningState) -> int:
+        """How many eligible grounded must-visits do NOT fit the candidate
+        cap (0 = they all fit). A bounded request can only be presented as
+        complete when this is 0: the caller must not send one otherwise."""
+        attractions, _ = self._candidate_universe(planning_state)
+        must_visits = sum(1 for _, assessed in attractions if assessed.must_visit)
+        return max(0, must_visits - get_settings().ai_itinerary_reasoning_max_candidates)
+
+    def _candidate_universe(
+        self, planning_state: PlanningState
+    ) -> tuple[list[tuple[ItineraryCandidateReference, usefulness.CandidateUsefulness]], list[ItineraryCandidateReference]]:
+        """`(attractions with their usefulness, restaurants)`: every eligible
+        reference once, enriched with its Q2 planning signals."""
+        scored: list[tuple[ItineraryCandidateReference, CandidateQualityScore]] = []
         seen_ids: set[str] = set()
-
-        for candidate in self._broad_pool_candidates(planning_state):
+        # Task 10: a promoted AI-directed candidate that is the exact same
+        # real place (same provider + provider id) as one already in the
+        # broad pool -- the broad-pool entry (first, below) wins; never a
+        # conflicting duplicate reference.
+        for candidate, score in (*self._broad_pool_candidates(planning_state), *self._promoted_candidates(planning_state)):
             if candidate.candidate_id in seen_ids:
                 continue
             seen_ids.add(candidate.candidate_id)
-            candidates.append(candidate)
+            scored.append((candidate, score))
 
-        for candidate in self._promoted_candidates(planning_state):
-            if candidate.candidate_id in seen_ids:
-                # Task 10: a promoted AI-directed candidate that turns out
-                # to be the exact same real place (same provider +
-                # provider id) as one already in the broad pool -- the
-                # broad-pool entry (already added first, above) wins;
-                # never a conflicting duplicate reference.
+        # Q2: the signals are attached AFTER duplicate suppression and by
+        # provider place id alone, so the reference that survived carries
+        # them wherever it came from -- a broad-pool reference that is also
+        # a grounded anchor is marked exactly like a targeted-lookup one.
+        must_visit_ids = must_visit_place_ids(planning_state)
+        anchor_ids = grounded_anchor_place_ids(planning_state)
+        interests = usefulness.requested_canonical_interests(planning_state)
+        attractions: list[tuple[ItineraryCandidateReference, usefulness.CandidateUsefulness]] = []
+        restaurants: list[ItineraryCandidateReference] = []
+        for candidate, score in scored:
+            if candidate.category == ItineraryReasoningCategory.RESTAURANT:
+                restaurants.append(candidate)
                 continue
-            seen_ids.add(candidate.candidate_id)
-            candidates.append(candidate)
-
-        return self._bounded(candidates)
+            assessed = usefulness.assess(
+                usefulness.evidence_from_score(score),
+                must_visit=candidate.provider_place_id in must_visit_ids,
+                grounded_anchor=candidate.provider_place_id in anchor_ids,
+                canonical_interests=interests,
+                name=candidate.name,
+                place_id=candidate.provider_place_id,
+            )
+            attractions.append(
+                (
+                    candidate.model_copy(
+                        update={
+                            "normalized_category": score.normalized_category,
+                            "matched_interests": list(score.matched_interests),
+                            "must_visit": assessed.must_visit,
+                            "semantic_anchor": assessed.semantic_anchor,
+                            "provider_evidence": list(assessed.provider_evidence),
+                        }
+                    ),
+                    assessed,
+                )
+            )
+        return attractions, restaurants
 
     @staticmethod
-    def _broad_pool_candidates(planning_state: PlanningState) -> list[ItineraryCandidateReference]:
+    def _broad_pool_candidates(
+        planning_state: PlanningState,
+    ) -> list[tuple[ItineraryCandidateReference, CandidateQualityScore]]:
         destination_context = planning_state.destination_context
         quality_report = planning_state.candidate_quality_report
         if destination_context is None or quality_report is None:
@@ -227,7 +356,7 @@ class AIItineraryReasoningRequestBuilder:
         pois_by_id = _index_by_place_id(destination_context.candidate_pois)
         restaurants_by_id = _index_by_place_id(destination_context.candidate_restaurants)
 
-        candidates: list[ItineraryCandidateReference] = []
+        candidates: list[tuple[ItineraryCandidateReference, CandidateQualityScore]] = []
         candidates.extend(
             _references_from_scores(
                 quality_report.attraction_scores,
@@ -247,7 +376,9 @@ class AIItineraryReasoningRequestBuilder:
         return candidates
 
     @staticmethod
-    def _promoted_candidates(planning_state: PlanningState) -> list[ItineraryCandidateReference]:
+    def _promoted_candidates(
+        planning_state: PlanningState,
+    ) -> list[tuple[ItineraryCandidateReference, CandidateQualityScore]]:
         promotion_report = planning_state.ai_candidate_promotion_report
         quality_report = planning_state.candidate_quality_report
         grounding_batch = planning_state.candidate_grounding_batch
@@ -261,8 +392,11 @@ class AIItineraryReasoningRequestBuilder:
                 for candidate in grounding_batch.result.grounded_candidates
             }
 
-        candidates: list[ItineraryCandidateReference] = []
-        for promoted in promotion_report.promoted_candidates:
+        candidates: list[tuple[ItineraryCandidateReference, CandidateQualityScore]] = []
+        # Only the promoted candidates the planner itself will schedule
+        # (`candidate_universe`, the one decision both read): the model is
+        # never offered an id the planner would not resolve.
+        for promoted in universe.resolve_promoted_candidates(planning_state).accepted:
             if promoted.coordinates is None or promoted.provider_place_id is None:
                 # No usable coordinates/provider id -- not schedulable,
                 # never a guessed location (mirrors ExperiencePlannerService's
@@ -280,7 +414,9 @@ class AIItineraryReasoningRequestBuilder:
                 # practice; skip defensively rather than invent one.
                 continue
 
-            provider_name = promoted.provider_source or "unknown_provider"
+            # The same source the planner's own candidate dict carries, so
+            # both build the identical candidate_id.
+            provider_name = promoted.provider_source or promoted.source or "unknown_provider"
             candidate_id = build_candidate_id(provider_name, promoted.provider_place_id)
             category_hint = (promoted.category or "").strip().lower()
             category = (
@@ -290,36 +426,160 @@ class AIItineraryReasoningRequestBuilder:
             )
 
             candidates.append(
-                ItineraryCandidateReference(
-                    candidate_id=candidate_id,
-                    name=promoted.name,
-                    category=category,
-                    provider_name=provider_name,
-                    provider_place_id=promoted.provider_place_id,
-                    coordinates=promoted.coordinates,
-                    data_status=_coerce_data_status(promoted.data_status),
-                    quality_score=score.total_score,
-                    quality_tier=score.quality_tier.value,
-                    origin=CandidateOrigin.AI_DIRECTED_PROVIDER_DISCOVERY,
+                (
+                    ItineraryCandidateReference(
+                        candidate_id=candidate_id,
+                        name=promoted.name,
+                        category=category,
+                        provider_name=provider_name,
+                        provider_place_id=promoted.provider_place_id,
+                        coordinates=promoted.coordinates,
+                        data_status=_coerce_data_status(promoted.data_status),
+                        quality_score=score.total_score,
+                        quality_tier=score.quality_tier.value,
+                        origin=CandidateOrigin.AI_DIRECTED_PROVIDER_DISCOVERY,
+                    ),
+                    score,
                 )
             )
         return candidates
 
+    @staticmethod
     def _bounded(
-        self, candidates: list[ItineraryCandidateReference]
+        attractions: list[tuple[ItineraryCandidateReference, usefulness.CandidateUsefulness]],
+        restaurants: list[ItineraryCandidateReference],
+        canonical_interests: list[str],
+        trip_days: int,
+        *,
+        area_of: dict[str, str] | None = None,
+        per_day: int = 0,
     ) -> list[ItineraryCandidateReference]:
-        max_candidates = get_settings().ai_itinerary_reasoning_max_candidates
-        ordered = sorted(
-            candidates,
+        """Q2: the usefulness-aware bound. The cap is hard; every step below
+        appends in canonical usefulness order, skips what is already
+        retained, and stops at its limit -- so the result is total and
+        deterministic whatever the sizes of the reserved sets:
+
+          A. every eligible grounded must-visit;
+          B. first coverage pass -- each requested interest with verified
+             supply is served by at least ONE retained attraction;
+          C. eligible grounded semantic anchors (those the usefulness band
+             gate lets count);
+          --  the restaurant allowance is fixed here, from the space A-C left
+          D. second coverage pass -- a second attraction per interest;
+          E. the remaining attractions;
+          F. restaurants.
+
+        Q3 (`area_of` given): step E is geography-aware, A-D are untouched.
+        The space E has is filled in three parts, each in usefulness order:
+
+          E1. companions -- at most HALF of the space: the areas that
+              already hold a retained candidate get further members, one
+              area after another, until each holds a day's worth
+              (`per_day`), so a protected place is offered with places it
+              can share a day with;
+          E2. alternatives -- at most half of what is then left: one
+              candidate for every area that does not hold a day's worth yet,
+              best area first, so the model also sees other parts of the
+              destination;
+          E3. the rest by usefulness, exactly as before.
+
+        No area can take the whole discretionary bound, and a compact
+        destination (one area) is filled exactly as without areas.
+
+        A-C are never displaced by a restaurant. When the must-visits alone
+        exceed the cap this still returns `cap` references, but
+        `must_visit_overflow` is then non-zero and the reasoning service
+        does not send the request.
+        """
+        cap = get_settings().ai_itinerary_reasoning_max_candidates
+        ordered = sorted(attractions, key=lambda item: item[1].sort_key)
+        retained: list[tuple[ItineraryCandidateReference, usefulness.CandidateUsefulness]] = []
+        retained_ids: set[str] = set()
+
+        def keep(item: tuple[ItineraryCandidateReference, usefulness.CandidateUsefulness], limit: int) -> None:
+            if len(retained) < limit and item[0].candidate_id not in retained_ids:
+                retained.append(item)
+                retained_ids.add(item[0].candidate_id)
+
+        def cover(per_interest: int, limit: int) -> None:
+            # Food is served by real nearby food, never by scheduling a
+            # market for it (the planner's own coverage rule).
+            for interest in canonical_interests:
+                if interest == _FOOD_INTEREST:
+                    continue
+                serving = [item for item in ordered if interest in item[0].matched_interests]
+                missing = per_interest - sum(1 for item in serving if item[0].candidate_id in retained_ids)
+                for item in [item for item in serving if item[0].candidate_id not in retained_ids][: max(0, missing)]:
+                    keep(item, limit)
+
+        for item in ordered:
+            if item[1].must_visit:
+                keep(item, cap)
+        cover(1, cap)
+        for item in ordered:
+            if item[1].semantic_anchor:
+                keep(item, cap)
+
+        # A model-chosen restaurant is only a PREFERENCE among a day's
+        # nearby food (the planner still applies its radius, no-repeat and
+        # per-day rules), so one per trip day is all the model can use --
+        # taken only from the space the protected attractions left.
+        reserved_for_restaurants = min(trip_days, len(restaurants), cap - len(retained))
+        attraction_limit = cap - reserved_for_restaurants
+        cover(_COVERAGE_CANDIDATES_PER_INTEREST, attraction_limit)
+        if area_of and per_day > 0:
+
+            def area(item: tuple[ItineraryCandidateReference, usefulness.CandidateUsefulness]) -> str | None:
+                return area_of.get(item[0].candidate_id)
+
+            def held(area_id: str) -> int:
+                return sum(1 for item in retained if area(item) == area_id)
+
+            def next_of(area_id: str) -> Any:
+                return next(
+                    (item for item in ordered if area(item) == area_id and item[0].candidate_id not in retained_ids),
+                    None,
+                )
+
+            companion_limit = len(retained) + (attraction_limit - len(retained)) // 2
+            retained_areas = list(dict.fromkeys(a for a in (area(item) for item in retained) if a is not None))
+            progressed = True
+            while progressed and len(retained) < companion_limit:
+                progressed = False
+                for area_id in retained_areas:
+                    item = next_of(area_id) if held(area_id) < per_day else None
+                    if item is not None and len(retained) < companion_limit:
+                        keep(item, companion_limit)
+                        progressed = True
+
+            alternative_limit = len(retained) + (attraction_limit - len(retained)) // 2
+            visited: set[str] = set()
+            for item in ordered:
+                area_id = area(item)
+                if area_id is None or area_id in visited or item[0].candidate_id in retained_ids:
+                    continue
+                visited.add(area_id)
+                if held(area_id) < per_day:
+                    keep(item, alternative_limit)
+        for item in ordered:
+            keep(item, attraction_limit)
+
+        # Space the attractions did not need (a thin pool) may also go to
+        # restaurants, never beyond the planner's own per-day suggestion count.
+        restaurant_count = min(len(restaurants), cap - len(retained), _MAX_RESTAURANTS_PER_DAY * trip_days)
+        ordered_restaurants = sorted(
+            restaurants,
             key=lambda candidate: (
-                _TIER_SORT_ORDER.get(
-                    CandidateQualityTier(candidate.quality_tier), len(_TIER_SORT_ORDER)
-                ),
+                _TIER_SORT_ORDER.get(CandidateQualityTier(candidate.quality_tier), len(_TIER_SORT_ORDER)),
                 -candidate.quality_score,
+                " ".join(candidate.name.casefold().split()),
                 candidate.candidate_id,
             ),
         )
-        return ordered[:max_candidates]
+        return [
+            *(item[0] for item in sorted(retained, key=lambda item: item[1].sort_key)),
+            *ordered_restaurants[:restaurant_count],
+        ]
 
 
 def _index_by_place_id(raw_candidates: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
@@ -336,8 +596,8 @@ def _references_from_scores(
     raw_by_id: dict[str, dict[str, Any]],
     category: ItineraryReasoningCategory,
     origin: CandidateOrigin,
-) -> list[ItineraryCandidateReference]:
-    references: list[ItineraryCandidateReference] = []
+) -> list[tuple[ItineraryCandidateReference, CandidateQualityScore]]:
+    references: list[tuple[ItineraryCandidateReference, CandidateQualityScore]] = []
     for score in scores:
         if score.quality_tier not in _ACCEPTED_QUALITY_TIERS:
             continue
@@ -355,19 +615,22 @@ def _references_from_scores(
         provider_name = str(raw.get("source") or "unknown_provider")
         provider_place_id = str(raw.get("place_id") or score.candidate_id)
         references.append(
-            ItineraryCandidateReference(
-                candidate_id=build_candidate_id(provider_name, provider_place_id),
-                name=score.candidate_name,
-                category=category,
-                provider_name=provider_name,
-                provider_place_id=provider_place_id,
-                coordinates=coordinates,
-                data_status=_coerce_data_status(raw.get("data_status")),
-                quality_score=score.total_score,
-                quality_tier=score.quality_tier.value,
-                origin=origin,
-                normalized_category=score.normalized_category,
-                matched_interests=list(score.matched_interests),
+            (
+                ItineraryCandidateReference(
+                    candidate_id=build_candidate_id(provider_name, provider_place_id),
+                    name=score.candidate_name,
+                    category=category,
+                    provider_name=provider_name,
+                    provider_place_id=provider_place_id,
+                    coordinates=coordinates,
+                    data_status=_coerce_data_status(raw.get("data_status")),
+                    quality_score=score.total_score,
+                    quality_tier=score.quality_tier.value,
+                    origin=origin,
+                    normalized_category=score.normalized_category,
+                    matched_interests=list(score.matched_interests),
+                ),
+                score,
             )
         )
     return references

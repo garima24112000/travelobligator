@@ -19,6 +19,7 @@ this step needs.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from typing import Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, Field, field_validator
@@ -127,3 +128,41 @@ class AuthResponse(BaseModel):
     `PublicUser`."""
 
     user: PublicUser
+
+
+class DeleteAccountRequest(BaseModel):
+    """`POST /auth/delete-account` (P1-A). Both fields are required: the current password proves the
+    request comes from the account holder and not merely from an open session, and `confirm` must be
+    literally `true` so nothing is deleted by a request that did not mean it. No length constraint on
+    the password, for the same reason as `LoginRequest`."""
+
+    password: str = Field(min_length=1, max_length=1024)
+    confirm: Literal[True]
+
+
+class AccountDeletedResponseData(BaseModel):
+    deleted: bool = True
+    trips_deleted: int
+
+
+class RegistrationAccessRequest(BaseModel):
+    """`POST /auth/registration-access`: the token from a shareable beta link, sent in the BODY (never a
+    URL). Bounded so an oversized value is refused before any comparison."""
+
+    token: str = Field(min_length=1, max_length=256)
+
+
+class RegistrationAccessResponseData(BaseModel):
+    """The link was accepted: sign-up is allowed from this browser for `expires_in_seconds`. Carries
+    nothing about the token."""
+
+    authorized: bool = True
+    expires_in_seconds: int
+
+
+class RegistrationStatusData(BaseModel):
+    """`GET /auth/registration`: `open`, `invite_link` or `closed`, and whether this browser may sign up
+    now (`authorized`). Never the token."""
+
+    mode: str
+    authorized: bool

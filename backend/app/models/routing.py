@@ -202,6 +202,12 @@ class RouteResult(BaseModel):
     # `malformed_request`, `provider_bad_request`, or a request failure kind
     # such as `timeout`). Never provider text. None for a success.
     failure_reason: str | None = None
+    # Q4: whether the provider's own route for this leg includes a ferry (its
+    # per-step `ferry` flag). True / False only when the provider said so;
+    # None when it did not (no step data, another adapter, a cached leg from
+    # before this field). Never inferred from geometry, and never a claim
+    # about a timetable, a fare or availability.
+    includes_ferry: bool | None = None
 
 
 # Factual transfer modes of one itinerary leg (Section 203C.2B). `drive` is
@@ -306,6 +312,9 @@ class RouteLegFeasibility(BaseModel):
     # `RouteResult.failure_reason`). None for a routed leg and for legs
     # stored before this field existed.
     failure_reason: str | None = None
+    # Q4: copied from `RouteResult.includes_ferry` (the provider's own
+    # statement, or None when it made none).
+    includes_ferry: bool | None = None
 
 
 class RouteFeasibilityReport(BaseModel):

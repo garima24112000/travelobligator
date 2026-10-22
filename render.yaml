@@ -44,6 +44,39 @@ services:
       # the proxy in front of this service.
       - key: ASYNC_GENERATION_ENABLED
         value: "true"
+      # P0 abuse / cost limits (docs/22_free_tier_deployment.md section 13A). These are the application
+      # defaults, written out so the deployed limits are visible here; production refuses to start with any
+      # of them at 0. Counted in PostgreSQL when a generation job is created; never Redis.
+      - key: GENERATION_MAX_JOBS_PER_USER_PER_WINDOW
+        value: "5"
+      - key: GENERATION_MAX_JOBS_GLOBAL_PER_WINDOW
+        value: "25"
+      - key: GENERATION_MAX_CONCURRENT_JOBS
+        value: "2"
+      - key: GENERATION_LIMIT_WINDOW_SECONDS
+        value: "86400"
+      - key: MAX_TRIPS_PER_USER
+        value: "20"
+      - key: MAX_TRIP_DAYS
+        value: "7"
+      - key: SIGNUP_MAX_PER_WINDOW_GLOBAL
+        value: "30"
+      - key: LOGIN_MAX_FAILURES_PER_ACCOUNT
+        value: "10"
+      # Limited beta (docs/29_release_readiness_checklist.md section 8). New accounts need the shareable
+      # invitation link, whose token BETA_REGISTRATION_TOKEN is set in the dashboard below; production refuses
+      # SIGNUP_MODE=open. Emergency switches: SIGNUP_MODE=closed stops new accounts; GENERATION_ENABLED=false
+      # stops new itineraries. Both take effect when the service restarts.
+      - key: SIGNUP_MODE
+        value: invite_link
+      - key: REGISTRATION_ACCESS_TTL_SECONDS
+        value: "1800"
+      - key: GENERATION_ENABLED
+        value: "true"
+      # No client address is trusted until the proxy chain in front of this service has been checked against
+      # real request headers (section 13A); until then the per-address limits do not apply.
+      - key: CLIENT_IP_TRUSTED_PROXY_HOPS
+        value: "0"
       # Small bounded pool for a single free instance (max connections = 3 + 2, plus one readiness probe).
       - key: DB_POOL_SIZE
         value: "3"
@@ -81,6 +114,33 @@ services:
         value: "16"
       - key: AI_DIRECTED_PROVIDER_DISCOVERY_MAX_EXTRA_SEARCHES
         value: "4"
+      # P1-B: the rest of the release's model configuration, written out so a service rebuilt from this file
+      # plans exactly as the evaluated system did (docs/22_free_tier_deployment.md section 13C). These are the
+      # values the quality evaluation ran with; none is a secret. Production refuses to start when one of the
+      # four generation stages is off, has no provider, or lacks its credential -- it never comes up quietly
+      # without them.
+      - key: AI_ITINERARY_REASONING_ENABLED
+        value: "true"
+      - key: AI_ITINERARY_REASONING_PROVIDER
+        value: groq
+      - key: AI_ITINERARY_REPAIR_ENABLED
+        value: "true"
+      - key: ITINERARY_NARRATOR_ENABLED
+        value: "true"
+      - key: ITINERARY_NARRATOR_PROVIDER
+        value: groq
+      - key: GROQ_MODEL
+        value: openai/gpt-oss-20b
+      # Groq first, Gemini second, then each stage's deterministic fallback. Both providers must be configured
+      # while failover is on.
+      - key: LLM_FAILOVER_ENABLED
+        value: "true"
+      - key: LLM_PRIMARY_PROVIDER
+        value: groq
+      - key: LLM_SECONDARY_PROVIDER
+        value: gemini
+      - key: GEMINI_MODEL
+        value: gemini-3.5-flash-lite
       # ---- secrets (dashboard only)
       - key: DATABASE_URL
         sync: false
@@ -89,7 +149,13 @@ services:
       # ---- provider credential (dashboard only)
       - key: GROQ_API_KEY
         sync: false
+      - key: GEMINI_API_KEY
+        sync: false
       - key: GEOAPIFY_API_KEY
+        sync: false
+      # ---- the shareable beta link's token (dashboard only; at least 32 random characters; replace it to
+      # revoke every link and registration authorization issued for it)
+      - key: BETA_REGISTRATION_TOKEN
         sync: false
       # ---- generated secrets
       - key: SESSION_SECRET_KEY

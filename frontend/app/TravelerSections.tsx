@@ -97,7 +97,12 @@ function SeverityBadge({ severity }: { severity: IssueSeverity }) {
  * from the backend report.
  */
 export function TravelerLimitationsSection({ report }: { report: ValidationReport }) {
-  const findings = travelerFindings([...report.critical_issues, ...report.warnings]);
+  // The backend's classification decides which warnings are material (always shown).
+  const findings = travelerFindings(
+    [...report.critical_issues, ...report.warnings],
+    undefined,
+    report.review_code_classification,
+  );
   const bySeverity = (severity: IssueSeverity) =>
     findings.filter((finding) => finding.severity === severity);
   const dataNotes = unavailableDataLabels(report.unavailable_data_notes);

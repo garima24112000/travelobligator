@@ -21,13 +21,14 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.db.models import TripRow
 from app.db.session import get_session_factory
 from app.db.transactions import session_scope
+from app.repositories.admission import TRIP_LIMIT_ADVISORY_LOCK_KEY, TripLimitReachedError
 from app.repositories.trip_repository import TripRecord
 
 
@@ -81,6 +82,22 @@ class PostgresTripRepository:
         return TripRecord(
             trip_id=trip_id, owner_id=owner_id, status="draft", created_at=now, updated_at=now
         )
+
+    def create_within_owner_limit(self, trip_id: str, owner_id: str, max_trips: int) -> TripRecord:
+        """`create`, refused with `TripLimitReachedError` when `owner_id` already holds `max_trips`
+        trips. The count and the insert share the caller's transaction under an advisory lock keyed
+        on the owner, so two simultaneous requests of one account cannot both take the last place."""
+        with session_scope(self._session_factory, self._session) as session:
+            session.execute(
+                select(func.pg_advisory_xact_lock(TRIP_LIMIT_ADVISORY_LOCK_KEY, func.hashtext(owner_id)))
+            )
+            held = session.execute(
+                select(func.count()).select_from(TripRow).where(TripRow.owner_id == owner_id)
+            ).scalar_one()
+            if held >= max_trips:
+                raise TripLimitReachedError(max_trips)
+            # Same session: the insert joins this transaction (a standalone call commits on exit).
+            return PostgresTripRepository(session=session).create(trip_id, owner_id=owner_id)
 
     def get(self, trip_id: str) -> TripRecord | None:
         with session_scope(self._session_factory, self._session) as session:

@@ -24,7 +24,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.db.models import GenerationJobRow
+from app.db.models import DeletedJobUsageRow, GenerationJobRow, TripRow
 from app.db.session import get_session_factory
 from app.db.transactions import record_conflict, session_scope
 from app.models.generation_job import (
@@ -33,13 +33,22 @@ from app.models.generation_job import (
     GenerationJob,
     GenerationJobStatus,
 )
-from app.repositories.errors import UNSET, JobAlreadyActiveError
+from app.repositories.admission import (
+    ADMISSION_ADVISORY_LOCK_KEY,
+    AdmissionPolicy,
+    AdmissionRefusedError,
+)
+from app.repositories.errors import UNSET, JobAlreadyActiveError, TripNoLongerExistsError
 from app.models.targeted_regeneration_diff import TargetedRegenerationDiff
 
 _RUNNING_STATUSES = frozenset(
     {GenerationJobStatus.QUEUED.value, GenerationJobStatus.RUNNING.value}
 )
 _ACTIVE_JOB_INDEX = "uq_generation_jobs_one_active_per_trip"
+# The two foreign keys of a job row (migration 6fabeaa6455e): its trip and its owner.
+_JOB_PARENT_FOREIGN_KEYS = frozenset(
+    {"fk_generation_jobs_trip_id_trips", "fk_generation_jobs_owner_id_users"}
+)
 
 
 def _row_to_job(row: GenerationJobRow) -> GenerationJob:
@@ -170,6 +179,64 @@ class PostgresJobRepository:
             if constraint == _ACTIVE_JOB_INDEX:
                 record_conflict("job_active")
                 raise JobAlreadyActiveError(job.trip_id) from None
+            raise
+        return job
+
+    def admit(self, job: GenerationJob, policy: AdmissionPolicy, *, now: datetime) -> GenerationJob:
+        """Store a NEW queued job only if `policy` allows it (see `app.repositories.admission`).
+
+        One transaction: `pg_advisory_xact_lock` first, so admissions are decided one at a time
+        across every backend process; then the three counts; then the insert. The lock is released
+        by the transaction's own commit/rollback. A refusal raises `AdmissionRefusedError` and the
+        rollback leaves no row; a second active job for the trip is still `JobAlreadyActiveError`
+        (the unique index), also with no row. `now` is the caller's clock, the same one that stamped
+        `job.created_at`, so the window is measured consistently."""
+        window_start = policy.window_start(now)
+        in_window = GenerationJobRow.created_at > window_start
+        try:
+            with self._scope() as session:
+                session.execute(select(func.pg_advisory_xact_lock(ADMISSION_ADVISORY_LOCK_KEY)))
+                # P1-A: a deletion of this trip (or of its owner's account) takes the same lock, so
+                # by now it has either not started or fully committed. If it committed, the trip is
+                # gone: say so, instead of letting the insert below fail on its foreign key.
+                trip_exists = session.execute(
+                    select(func.count()).select_from(TripRow).where(TripRow.trip_id == job.trip_id)
+                ).scalar_one()
+                if not trip_exists:
+                    raise TripNoLongerExistsError(job.trip_id)
+                user_jobs, global_jobs, active_jobs = session.execute(
+                    select(
+                        func.count().filter(in_window, GenerationJobRow.owner_id == job.owner_id),
+                        func.count().filter(in_window),
+                        func.count().filter(GenerationJobRow.status.in_(set(_RUNNING_STATUSES))),
+                    ).select_from(GenerationJobRow)
+                ).one()
+                # Jobs whose trip or account was deleted still count in their window (P1-A). Deletion
+                # takes this same advisory lock, so a job is never seen in both places or in neither.
+                deleted_in_window = DeletedJobUsageRow.created_at > window_start
+                deleted_user_jobs, deleted_global_jobs = session.execute(
+                    select(
+                        func.count().filter(deleted_in_window, DeletedJobUsageRow.owner_id == job.owner_id),
+                        func.count().filter(deleted_in_window),
+                    ).select_from(DeletedJobUsageRow)
+                ).one()
+                refusal = policy.refusal(
+                    user_jobs_in_window=user_jobs + deleted_user_jobs,
+                    global_jobs_in_window=global_jobs + deleted_global_jobs,
+                    active_jobs=active_jobs,
+                )
+                if refusal is not None:
+                    raise AdmissionRefusedError(refusal)
+                session.execute(pg_insert(GenerationJobRow.__table__).values(**_job_values(job)))
+        except IntegrityError as exc:
+            constraint = getattr(getattr(getattr(exc, "orig", None), "diag", None), "constraint_name", None)
+            if constraint == _ACTIVE_JOB_INDEX:
+                record_conflict("job_active")
+                raise JobAlreadyActiveError(job.trip_id) from None
+            if constraint in _JOB_PARENT_FOREIGN_KEYS:
+                # Belt and braces for the check above: the trip (or its owner) vanished by a path
+                # that did not take the admission lock. Still "the trip is gone", never a 503.
+                raise TripNoLongerExistsError(job.trip_id) from None
             raise
         return job
 

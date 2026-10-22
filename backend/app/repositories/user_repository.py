@@ -35,7 +35,8 @@ class UserRepository:
             _COLLECTION,
             {
                 user_id: record.model_dump(mode="json")
-                for user_id, record in self._users.items()
+                # a snapshot: never the live dict another thread may add to
+                for user_id, record in list(self._users.items())
             },
         )
 
@@ -51,12 +52,19 @@ class UserRepository:
         self._persist()
         return user
 
+    def delete_user(self, user_id: str) -> bool:
+        """P1-A deletion (development backend). Returns whether an account was removed."""
+        if self._users.pop(user_id, None) is None:
+            return False
+        self._persist()
+        return True
+
     def get_by_user_id(self, user_id: str) -> UserRecord | None:
         return self._users.get(user_id)
 
     def get_by_email(self, email: str) -> UserRecord | None:
         normalized = email.strip().lower()
-        for record in self._users.values():
+        for record in list(self._users.values()):  # a snapshot: a sign-up may be adding a user
             if record.email == normalized:
                 return record
         return None

@@ -1842,7 +1842,9 @@ def test_experience_plan_handles_missing_coordinates_without_crashing(
     # candidate is excluded entirely (Step 156C: missing coordinates is a
     # severe candidate-quality reject reason, so it is never scheduled)
     # instead of crashing planning or being guessed at geographically.
-    assert scheduled_names == ["Start Point", "Near Point"]
+    # Q2: the two candidates are equal in every usefulness respect, so the day
+    # starts from the neutral name tie-break -- never from provider order.
+    assert scheduled_names == ["Near Point", "Start Point"]
     assert "No Coordinates Point" not in scheduled_names
 
 
@@ -2280,8 +2282,10 @@ def test_experience_plan_groups_nearby_attractions_into_the_same_day(
     # Each geographic cluster (Landmark + its ~11km-away Annex) is grouped
     # onto the same day, proving grouping follows distance to the day's
     # anchor rather than the provider's original interleaved order.
-    assert day1_names == ["Cluster One Landmark", "Cluster One Annex"]
-    assert day2_names == ["Cluster Two Landmark", "Cluster Two Annex"]
+    # Q2: within a cluster the two equal candidates start from the neutral
+    # name tie-break, not from provider order.
+    assert day1_names == ["Cluster One Annex", "Cluster One Landmark"]
+    assert day2_names == ["Cluster Two Annex", "Cluster Two Landmark"]
 
     # The grouping/ordering step must not invent any route/timing/walking/
     # cost facts.

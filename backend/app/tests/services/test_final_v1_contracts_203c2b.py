@@ -754,7 +754,8 @@ def test_must_visits_are_grounded_pinned_by_the_users_term_and_disclosed_when_un
     DestinationContextService(gateway=gateway).run(state)
 
     # bounded, trip-derived pool sizes were passed to the sizing provider (T = 9 -> max(60, 45))
-    assert places.calls[0] == {"pool_size": 60}
+    # ... and, the trip having must-visits, the provider is asked to hold back part of its local share
+    assert places.calls[0] == {"pool_size": 60, "hold_back_for_must_visits": True}
     assert places.lookups == ["the big tower", "an invented palace"]
 
     pois = state.destination_context.candidate_pois
@@ -897,7 +898,8 @@ def test_production_wiring_builds_a_useful_grounded_plan_within_the_credit_budge
     # accounting: one generation, one isolated budget, never exceeded
     usage = state["provider_usage_report"]
     assert usage["credits_by_api"]["geocoding"] == len(seen["geocode"]) == 1
-    assert usage["calls_by_api"]["places"] == len(seen["places"]) == 6  # 4 attraction groups + food + accommodation
+    # 4 attraction groups and food, each as a broad and a local request, + accommodation
+    assert usage["calls_by_api"]["places"] == len(seen["places"]) == 11
     assert usage["calls_by_api"]["routing"] == len(seen["routing"])
     assert usage["credits_used"] == sum(usage["credits_by_api"].values()) <= usage["budget"] == 100
     assert usage["refused_calls"] == 0

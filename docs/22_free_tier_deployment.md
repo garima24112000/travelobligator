@@ -199,6 +199,10 @@ Backend (Render):
 | `BACKEND_CORS_ORIGINS` | public | `<VERCEL_FRONTEND_ORIGIN>` |
 | `METRICS_ENABLED` | public | `false` |
 | `OPS_TOKEN` | generated | at least 24 characters; gates `/ready` (and `/metrics` if enabled) |
+| `SIGNUP_MODE` | public | `invite_link` (limited beta; production refuses `open`; `closed` stops new accounts) |
+| `BETA_REGISTRATION_TOKEN` | secret | at least 32 random characters; the shareable link's token (`docs/29` section 8) |
+| `REGISTRATION_ACCESS_TTL_SECONDS` | public | `1800` (an accepted link allows sign-up for at most 30 minutes) |
+| `GENERATION_ENABLED` | public | `true`; `false` pauses all new generation (emergency switch) |
 | `ASYNC_GENERATION_ENABLED` | public | `true` (generation as a polled background job) |
 | `DB_POOL_SIZE` | public | `3` |
 | `DB_MAX_OVERFLOW` | public | `2` |
@@ -237,9 +241,11 @@ development (`PLACES_PROVIDER=openstreetmap`) and production refuses to start wi
 | `AI_DIRECTED_PROVIDER_DISCOVERY_MAX_SEARCHES` / `..._MAX_EXTRA_SEARCHES` | `16` / `4` | bounded named lookups |
 
 Itinerary reasoning, repair and the narrator (`AI_ITINERARY_REASONING_ENABLED`, `AI_ITINERARY_REPAIR_ENABLED`,
-`ITINERARY_NARRATOR_ENABLED` and their `*_PROVIDER=groq` selectors) are part of the same engine and are set in the
-Render dashboard alongside `GROQ_API_KEY`. With the Gemini variables also set, each of these stages fails over
-from Groq to Gemini and then to its deterministic fallback.
+`ITINERARY_NARRATOR_ENABLED` and their `*_PROVIDER=groq` selectors) are part of the same engine. Up to the V1
+deployment they were typed into the Render dashboard; since P1-B they are written in `render.yaml` with the
+model names and the failover settings, and only the two API keys stay in the dashboard (section 13C). With
+both providers configured, each of these stages fails over from Groq to Gemini and then to its deterministic
+fallback.
 
 *Verified provider facts (checked 2026-10-01 against Geoapify's documentation).* Category identifiers used are
 listed in `backend/app/providers/places/geoapify_categories.py` and checked by a contract test against a snapshot
@@ -288,8 +294,11 @@ V1 was released on that basis. Full figures: [`23_v1_release_reference.md`](23_v
 
 The AI feature switches (`AI_ITINERARY_REASONING_ENABLED`, `AI_FEEDBACK_INTERPRETER_ENABLED`,
 `TARGETED_REGENERATION_ENABLED`, `ITINERARY_NARRATOR_ENABLED` and their `*_PROVIDER` selectors) are public
-configuration and default to off / `not_connected`. The ones the release uses are set in the Render
-dashboard, not in `render.yaml`. `PORT` is injected by Render and must not be set.
+configuration and default to off / `not_connected` in the code. The ones the generation pipeline uses are set
+in `render.yaml` since P1-B (section 13C). `AI_FEEDBACK_INTERPRETER_ENABLED` and `TARGETED_REGENERATION_ENABLED`
+are not: they are outside the evaluated generation pipeline, stay at their defaults (off) in a service built
+from `render.yaml`, and are a deliberate dashboard choice if wanted. `PORT` is injected by Render and must not
+be set.
 
 Frontend (Vercel):
 
@@ -320,7 +329,10 @@ method.
 ## 11. Deployment checklist (executed in 203C)
 
 This checklist was carried out for the V1 release and is kept as the procedure for a fresh deployment or a
-redeploy. Step G.7 (cold-start recovery) is the one item still pending. Order matters: the backend needs the database migrated first, the frontend build needs the backend origin, and
+redeploy. **For a redeploy of the existing system** (backup first, then migrations, backend, frontend, smoke
+test), for rolling one back and for restoring data, follow
+[docs/25_operations_runbook.md](25_operations_runbook.md); this section stays the record of how the system
+was first set up. Step G.7 (cold-start recovery) is the one item still pending. Order matters: the backend needs the database migrated first, the frontend build needs the backend origin, and
 the backend's CORS value needs the frontend origin.
 
 **A. Neon**
@@ -405,7 +417,10 @@ With `APP_ENV=production`, `validate_runtime_configuration` (`app/core/operation
 with fixed messages that never echo a value, for: Local JSON persistence; a missing or non-PostgreSQL
 `DATABASE_URL`; the SQLite provider cache; a malformed `REDIS_URL`; `APP_DEBUG=true`; a missing or short
 `SESSION_SECRET_KEY`; a non-`Secure`, non-`HttpOnly` or `SameSite=none` session cookie; a non-`https` CORS
-origin; a short `OPS_TOKEN`. A wildcard or credentialed CORS origin is rejected in every environment, and an
+origin; a short `OPS_TOKEN`; `ASYNC_GENERATION_ENABLED=false`; any of the abuse limits of section 13A that
+need no client address set to 0; and an incomplete model configuration (section 13C): a release model stage
+switched off, a stage without a connected provider, a missing provider credential, or failover on with only
+one provider configured. A wildcard or credentialed CORS origin is rejected in every environment, and an
 unknown `PROVIDER_CACHE_BACKEND` / `PERSISTENCE_BACKEND` is rejected when settings load.
 
 Tests (no remote service needed): `backend/app/tests/core/test_production_config_203b.py`,
@@ -456,6 +471,317 @@ trickles in slowly could still run somewhat past the budget.
 The canary (`backend/scripts/canary_city.py`) prints, per run, the stage and provider wall time, the
 concurrent batches and both Geoapify concurrency peaks, and for each model stage its attempts, retries,
 whether its deadline was exceeded and how it ended. These are reported, never acceptance checks.
+
+## 13A. Abuse and cost limits (P0)
+
+Added after the V1 production-readiness audit. **Not yet deployed:** the verification record in section 14
+describes the system before these limits existed. Deploying them needs the migration `e52b7c1a9f04`
+(section 11-B) before the backend deploy.
+
+Nothing here changes how a trip is planned. Every limit is a validated setting with a documented default
+(`.env.example`); the production values are written out in `render.yaml`.
+
+**Trip request bounds** (checked when a trip is created; a stored trip always loads):
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `MAX_TRIP_DAYS` | `7` | Calendar days, counting the first and the last day. |
+| `TRIP_REQUEST_MAX_LIST_ITEMS` | `20` | Entries in each of interests, must-visit, must-avoid, constraints. |
+| `TRIP_REQUEST_MAX_ITEM_LENGTH` | `120` | Characters per entry. |
+| `MAX_TRIPS_PER_USER` | `20` | Saved trips one account may hold. |
+
+A request over a bound is HTTP 422 (`VALIDATION_ERROR`, naming the field); a 21st trip is HTTP 429
+(`TRIP_LIMIT_REACHED`). There is no way to delete a trip yet, so an account that reaches the trip limit
+stays there until deletion is added.
+
+**Generation admission** (first generations and regenerations alike):
+
+| Variable | Default | Refusal (HTTP 429) |
+|---|---|---|
+| `GENERATION_MAX_JOBS_PER_USER_PER_WINDOW` | `5` | `GENERATION_USER_LIMIT_REACHED` |
+| `GENERATION_MAX_JOBS_GLOBAL_PER_WINDOW` | `25` | `GENERATION_GLOBAL_LIMIT_REACHED` |
+| `GENERATION_MAX_CONCURRENT_JOBS` | `2` | `GENERATION_CAPACITY_REACHED` |
+| `GENERATION_LIMIT_WINDOW_SECONDS` | `86400` | the rolling window of the first two |
+
+- The decision is made in PostgreSQL when the job row is created: one transaction takes a
+  transaction-scoped advisory lock, counts, and inserts. Simultaneous requests, from any process, are
+  decided one at a time; the lock is released by the commit or rollback itself. Redis and process memory
+  are not involved.
+- A window counts every job admitted in it, whatever became of it (succeeded, failed, interrupted). A
+  refused request creates no job, starts no background task and calls no provider.
+- Before counting concurrent jobs, jobs whose owner is gone are closed across all trips: a running job whose
+  lease expired (`GENERATION_JOB_LEASE_SECONDS`, 120 s) and a queued job nobody claimed within
+  `GENERATION_JOB_STALE_AFTER_SECONDS` (3600 s). A healthy running job is never closed to make room.
+- The existing rule of one active job per trip (HTTP 409 `JOB_ALREADY_RUNNING`) is unchanged and is
+  checked first.
+- The limits are enforced where a job is created, so `APP_ENV=production` now requires
+  `ASYNC_GENERATION_ENABLED=true`. The synchronous development path creates no job and is not limited.
+- 25 generations a day at the 100-credit cap is at most 2,500 Geoapify credits, inside the free plan's
+  3,000 a day.
+
+**Signup and sign-in attempts:**
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `SIGNUP_MAX_PER_WINDOW_GLOBAL` | `30` | Accounts created by the whole deployment per `SIGNUP_LIMIT_WINDOW_SECONDS` (86400). 429 `SIGNUP_LIMIT_REACHED`. |
+| `LOGIN_MAX_FAILURES_PER_ACCOUNT` | `10` | Failed sign-ins for one email per `LOGIN_FAILURE_WINDOW_SECONDS` (900). 429 `TOO_MANY_ATTEMPTS`. |
+| `SIGNUP_MAX_PER_WINDOW_PER_IP` | `5` | Per client address; only with a trusted address. |
+| `LOGIN_MAX_FAILURES_PER_IP` | `50` | Per client address; only with a trusted address. |
+| `CLIENT_IP_TRUSTED_PROXY_HOPS` | `0` | Trusted proxies in front of the backend. |
+
+- Counters are rows in `auth_attempts` holding keyed hashes only: no email address, IP address or user id.
+  Rows older than the longest window are deleted when a new one is written.
+- The sign-in lock is keyed on the email as typed, whether or not an account exists, and is the same 429
+  for a right and a wrong password; an unknown email also costs one real password verification. Neither
+  the status, the body nor the timing says whether an account exists.
+- These checks are "count, then act", not a lock: a burst of simultaneous requests can pass a limit by the
+  number in flight. The generation limits are the atomic ones.
+
+**Client address.** `X-Forwarded-For` is read only when `CLIENT_IP_TRUSTED_PROXY_HOPS` is greater than 0,
+and then only the entry that many places from the right; anything further left is client-supplied. With
+`0` (the deployed value) no header is read, the socket peer is not used either (behind a proxy it is the
+proxy), and the two per-address limits do not apply. Before raising it, check what the backend actually
+receives through the Vercel rewrite and Render's proxy. Because the Render origin is also reachable
+directly, an entry written by the Vercel edge cannot be told apart from one a direct caller wrote: a hop
+count that reaches past Render's own entry is spoofable, and one that stops at it sees the Vercel edge, not
+the visitor. The per-address limits are therefore a secondary measure; the deployment-wide limits do not
+depend on any address.
+
+**What these limits do not do.**
+
+- There is no email verification, so one person can open several accounts (up to the signup limit). The
+  per-user generation limit is a fairness measure; the global limit is the cost control.
+- Anyone can use up the day's signups or generations for everyone else. That is a deliberate trade for a
+  free-tier deployment with a fixed provider allowance.
+- Signup still answers 409 for an email that is already registered, which reveals that it is.
+- An attacker who knows an email can keep it locked out of sign-in by failing on purpose.
+- A queued job orphaned by a hard kill between its creation and its first claim holds a concurrent slot for
+  up to `GENERATION_JOB_STALE_AFTER_SECONDS`.
+
+**Development-only endpoints.** With `APP_ENV=production`, `/docs`, `/redoc`, `/openapi.json` and
+`POST /trips/{id}/langgraph-shadow-run` answer the same 404 as an unknown path. The shadow run executes the
+whole planning graph inside the request and outside the admission limits; outside production it is
+unchanged.
+
+Tests (no remote service needed unless marked): `tests/api/test_trip_request_bounds_p0.py`,
+`tests/api/test_generation_admission_p0.py`, `tests/api/test_auth_abuse_p0.py`,
+`tests/api/test_public_exposure_203b.py`, `tests/core/test_production_config_203b.py`,
+`tests/db/test_migration_schema_admission_p0.py`, and against real PostgreSQL
+`tests/repositories/test_postgres_admission_p0_integration.py`.
+
+## 13B. Deleting a trip or an account (P1-A)
+
+**Not yet deployed.** Needs the migration `a94c0e7d2b61` (section 11-B) before the backend deploy.
+
+**Endpoints.**
+
+| Endpoint | Success | Refusals |
+|---|---|---|
+| `DELETE /trips/{trip_id}` | 200 `{trip_id, deleted: true}` | 401 no session; 404 unknown trip; 403 not the owner (says nothing about the trip); 409 `TRIP_DELETION_BLOCKED` |
+| `POST /auth/delete-account` with `{password, confirm: true}` | 200 `{deleted: true, trips_deleted}`; the session cookie is cleared | 401 no session; 422 without both fields; 401 `INVALID_CREDENTIALS` wrong password; 429 `TOO_MANY_ATTEMPTS`; 409 `ACCOUNT_DELETION_BLOCKED` |
+
+Account deletion needs the current password as well as a session: there is no email verification or
+second factor, so the password is the only proof of identity the application has. A wrong password counts
+towards the sign-in attempt limit of section 13A.
+
+**What is deleted** (`services/data_deletion_service.py`), in one PostgreSQL transaction:
+
+| Table | Trip deletion | Account deletion |
+|---|---|---|
+| `itinerary_revisions`, `itinerary_branches` | the trip's rows | all rows of the account's trips |
+| `generation_jobs` | the trip's rows | all rows of the account |
+| `planning_states` | the trip's plan (request, itinerary, feedback text, locks, versions) | all of the account's plans |
+| `trips` | the row | all of the account's rows |
+| `auth_attempts` | — | the failed sign-in rows stored under the hash of the account's email |
+| `users` | — | the row |
+
+Every table is deleted explicitly. The foreign keys would cascade from `trips` to the four tables under it,
+but `trips.owner_id` is `ON DELETE SET NULL`: deleting only the user would leave every trip in place,
+ownerless. A database failure at any step rolls the whole deletion back.
+
+**Generation in progress.** A trip with a queued or running job is not deleted, and neither is an account
+that has one; no job is cancelled. The transaction first takes the advisory lock that every job admission
+takes (section 13A), so a job cannot be created for a trip while it is being deleted. Jobs whose owner is
+gone (expired lease, never claimed) are closed first, so an abandoned job does not block deletion.
+
+The opposite order -- a generation or regeneration request that passed its ownership check and then lost
+to a deletion of the trip or of the whole account -- is answered 404 `TRIP_NOT_FOUND`. Job admission checks,
+under the same lock, that the trip still exists before it counts or inserts anything; the job's own foreign
+keys are a second line behind that check. It is not a 409 (nothing conflicts once the trip is gone) and not
+a 503: a second job for a live trip is still 409 `JOB_ALREADY_RUNNING`, a limit is still 429, and a real
+database failure is still 503. No job row, usage row or background task results from it.
+
+**Limits.** Deleting a trip frees one place of `MAX_TRIPS_PER_USER`. It does not hand back generation
+allowance: a deleted job that is still inside `GENERATION_LIMIT_WINDOW_SECONDS` leaves a row in
+`deleted_job_usage` holding its admission time and, while the account exists, the account id. When the
+account is deleted the id is cleared, so the row counts only towards the deployment-wide limit and refers
+to nobody. These rows are removed once they are older than the window. Signup counters carry no reference
+to an account and are not changed by a deletion.
+
+**What deletion does not reach.**
+
+- Anything already sent to the external travel-data and AI providers.
+- Logs. The application's own structured logs record account and trip identifiers and are designed (field
+  allowlist plus redaction, checked in code and tests) to leave out emails, passwords and trip text; that has
+  not been confirmed by inspecting production logs, and an error traceback could still carry fragments of a
+  request. The hosting platforms keep their own request logs (typically IP addresses and requested paths,
+  which contain trip identifiers); what they record and for how long has not been independently verified.
+- Any backups the hosting providers keep. This project has set no retention period for logs or backups and
+  has not verified theirs.
+- The Redis provider cache, which holds provider answers keyed by the query (a destination or a place), not
+  by account or trip. Entries expire by TTL.
+- A copy of the session cookie held elsewhere is not revoked individually; it stops working because its
+  user no longer exists.
+- The synchronous development path (`ASYNC_GENERATION_ENABLED=false`) creates no job, so a generation
+  running there does not block a deletion. Production cannot run that path.
+
+The privacy notice shown in the application is `frontend/lib/privacy-notice.ts`; change it only together
+with the behaviour described here. Password reset is not implemented: an account whose password is
+forgotten cannot be signed in to, and so cannot be deleted by its owner.
+
+Tests: `tests/api/test_data_deletion_p1a.py`, `tests/db/test_migration_schema_deletion_p1a.py`,
+`frontend/tests/data-deletion.test.mjs`, and against real PostgreSQL
+`tests/repositories/test_postgres_data_deletion_p1a_integration.py`.
+
+## 13C. Security headers and a reproducible production configuration (P1-B)
+
+**Not yet deployed.** Nothing in this section has been checked in a real browser or against the hosted
+platforms; what was checked, and how, is stated per item.
+
+### Response headers
+
+| Header | Value | Sent by | On |
+|---|---|---|---|
+| `X-Content-Type-Options` | `nosniff` | frontend and backend | every response of each |
+| `X-Frame-Options` | `DENY` | frontend and backend | every response of each |
+| `Referrer-Policy` | `strict-origin-when-cross-origin` (frontend), `no-referrer` (backend) | each | every response of each |
+| `Permissions-Policy` | every feature the app does not use switched off (camera, microphone, geolocation, payment, ...) | frontend | every response it produces |
+| `Content-Security-Policy` | `default-src 'none'; frame-ancestors 'none'` -- **enforced** | backend | every response except `/docs` and `/redoc` |
+| `Content-Security-Policy-Report-Only` | the page policy below -- **not enforced** | frontend (`proxy.ts`) | documents (pages and error pages) |
+| `Strict-Transport-Security` | `max-age=<n>` | frontend, only when `FRONTEND_HSTS_MAX_AGE_SECONDS` is set at build time | pages |
+| `Cache-Control` | `no-store` | backend | every response (unchanged) |
+
+- Frontend headers: `frontend/lib/security-headers.ts`, applied in `frontend/next.config.ts` (`headers()`) and
+  `frontend/proxy.ts`. Backend headers: `backend/app/core/security_headers_middleware.py`.
+- **The API responses are protected by the backend, not by the frontend's proxy.** Measured on Next.js's own
+  production server: a response forwarded by the `/api/*` rewrite is passed on as the backend sent it, and the
+  headers configured in `next.config.ts` are NOT added to it. That includes the `Cache-Control: no-store` rule
+  for `/api/*` that has been in `next.config.ts` since 203B: it has no effect there, and `no-store` on API
+  responses has always come from the backend. Whether Vercel's edge adds configured headers to rewritten
+  responses was not tested. Either way an API response now carries the backend's own headers.
+- The referrer policy is not `no-referrer` on pages because the map tiles are requested from OpenStreetMap,
+  whose tile usage policy expects a browser to identify the referring site. Other sites receive the origin
+  only, never the path or the `?trip=` id.
+- **HSTS is opt-in and is not set by this change.** It is a promise about a hostname. The production
+  frontend is on a `*.vercel.app` hostname, which the project does not own and for which the platform
+  already sends the header; the backend sends none. Set `FRONTEND_HSTS_MAX_AGE_SECONDS` only for a hostname
+  the project controls. It never adds `includeSubDomains` or `preload`.
+
+### The page Content Security Policy (Report-Only)
+
+```text
+default-src 'self';
+script-src 'self' 'nonce-<per response>' 'strict-dynamic';
+style-src 'self' 'nonce-<per response>';
+style-src-attr 'unsafe-inline';
+img-src 'self' data: blob: https://*.tile.openstreetmap.org;
+font-src 'self';
+connect-src 'self' [+ the backend origin when API_BASE_URL is an absolute URL];
+object-src 'none'; frame-src 'none'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'
+```
+
+- **Report-Only blocks nothing.** The browser logs to its console what the policy would have blocked. The
+  enforced protections are the headers in the table above. `frame-ancestors` in particular is ignored in
+  Report-Only mode; clickjacking protection is `X-Frame-Options: DENY`.
+- There is no report endpoint, so violations are visible only in the browser console of whoever is testing.
+- Scripts: no `unsafe-inline` and no `unsafe-eval` in production. Next.js puts the nonce on its own scripts;
+  `app/layout.tsx` puts it on the one inline script (the runtime API base URL). In development only,
+  `unsafe-eval` (React's debugging overlay) and `unsafe-inline` for styles are added.
+- `style-src-attr 'unsafe-inline'` allows inline `style` attributes only: the numbered map markers and the
+  progress bar set one. It does not allow inline scripts or `<style>` blocks.
+- Known limits: the policy has not been exercised in a browser; Leaflet and the tile images are allowed by
+  reading the code, not by loading a map; the nonce makes every page response dynamic (it already was).
+
+**Promoting the policy to enforcing** -- do all of this first, in a real browser, on a deployment preview:
+
+1. Open the sign-in page, sign up, create a trip, wait for the itinerary, open a day with a map, open
+   "My trips", delete a trip, open the privacy notice, sign out. Do it once in a Chromium browser and once
+   in Firefox or Safari, at desktop and at phone width.
+2. With the developer console open throughout, there must be **no** "Content Security Policy" report.
+   For each report: decide whether the resource is legitimate. If it is, add exactly that source to the one
+   directive in `contentSecurityPolicy()`; if it is not, remove what loads it.
+3. Check specifically: map tiles and numbered markers render; fonts render; the loading progress bar moves;
+   API calls succeed locally (absolute `API_BASE_URL`) and on the preview (`/api`).
+4. Decide whether `style-src-attr 'unsafe-inline'` can go (it needs the marker and progress-bar styles moved
+   to classes).
+5. Only then change `CSP_HEADER_NAME` in `frontend/lib/security-headers.ts` to `Content-Security-Policy`,
+   and, if every environment that will serve it is HTTPS, consider adding `upgrade-insecure-requests`.
+   Update `frontend/tests/security-headers.test.mjs` and `scripts/check-production-headers.mjs`, which
+   assert Report-Only on purpose.
+6. Deploy to a preview, repeat step 1, and keep the previous build ready to roll back.
+
+### Production configuration
+
+`render.yaml` is now a complete description of the backend's non-secret configuration. A service created
+from it, plus the secrets below, starts and plans as the evaluated system did
+(`tests/core/test_production_completeness_p1b.py` builds the settings from the file and validates them).
+
+Added to `render.yaml` in P1-B (the values the quality evaluation recorded; none is a secret):
+
+| Variable | Value |
+|---|---|
+| `AI_ITINERARY_REASONING_ENABLED` / `AI_ITINERARY_REASONING_PROVIDER` | `true` / `groq` |
+| `AI_ITINERARY_REPAIR_ENABLED` | `true` |
+| `ITINERARY_NARRATOR_ENABLED` / `ITINERARY_NARRATOR_PROVIDER` | `true` / `groq` |
+| `GROQ_MODEL` | `openai/gpt-oss-20b` |
+| `LLM_FAILOVER_ENABLED` / `LLM_PRIMARY_PROVIDER` / `LLM_SECONDARY_PROVIDER` | `true` / `groq` / `gemini` |
+| `GEMINI_MODEL` | `gemini-3.5-flash-lite` |
+| `GEMINI_API_KEY` | named, value in the dashboard |
+
+Not in `render.yaml`, deliberately: the quality-phase switches and every planner, routing and model-stage
+budget. They stay at the code defaults the evaluation ran with.
+
+**Secrets and deployment-specific values** (dashboard or platform; never in the repository):
+
+| Variable | Where | Needed for |
+|---|---|---|
+| `DATABASE_URL` | Render dashboard | PostgreSQL (Neon direct connection string) |
+| `REDIS_URL` | Render dashboard | provider cache (Upstash `rediss://`) |
+| `GROQ_API_KEY` | Render dashboard | primary model provider |
+| `GEMINI_API_KEY` | Render dashboard | secondary model provider (failover) |
+| `GEOAPIFY_API_KEY` | Render dashboard | geocoding, places, routing |
+| `BACKEND_CORS_ORIGINS` | Render dashboard | the frontend's `https://` origin (not a secret) |
+| `BETA_REGISTRATION_TOKEN` | Render dashboard | the limited-beta invitation link (`SIGNUP_MODE=invite_link`) |
+| `SESSION_SECRET_KEY`, `OPS_TOKEN` | generated by Render | sessions; `/ready` access |
+| `BACKEND_ORIGIN` (build), `API_BASE_URL=/api` (runtime) | Vercel | the `/api/*` rewrite (not secrets) |
+| `FRONTEND_HSTS_MAX_AGE_SECONDS` | Vercel, optional | leave unset on a `*.vercel.app` hostname |
+
+**Startup refuses, naming the variable and never a value, when** (in addition to section 12): one of the
+four generation stages is off; a stage that is on has `not_connected` as its provider; `GROQ_API_KEY`,
+`GEMINI_API_KEY` or `GEMINI_MODEL` is missing for a provider a stage selects; or `LLM_FAILOVER_ENABLED=true`
+with only one of the two providers configured. Only presence is checked: whether a key is valid is known
+when the provider first answers. `PRODUCTION_ALLOW_AI_STAGES_DISABLED=true` is the explicit way to run with a
+stage off; `LLM_FAILOVER_ENABLED=false` the explicit way to run one provider.
+
+**Before the next deploy** (this is stricter than what is running):
+
+1. In the Render dashboard confirm that `GROQ_API_KEY`, `GEMINI_API_KEY` and `GEOAPIFY_API_KEY` are set. If
+   `GEMINI_API_KEY` is absent the new backend will not start.
+2. Sync the Blueprint (or copy the table above into the dashboard). A sync sets the listed variables to
+   these values; if the dashboard currently holds a different `GROQ_MODEL` or `GEMINI_MODEL`, decide which
+   is intended before syncing.
+3. If `AI_FEEDBACK_INTERPRETER_ENABLED` or `TARGETED_REGENERATION_ENABLED` is set in the dashboard, it is
+   not touched by a sync; an enabled feedback interpreter needs its provider and that provider's key.
+4. Apply the pending migrations (sections 13A, 13B), deploy the backend, then check
+   `curl -sI <RENDER_BACKEND_ORIGIN>/health` for the four backend headers.
+5. Deploy the frontend, then check `curl -sI <VERCEL_FRONTEND_ORIGIN>/` for the page headers and
+   `curl -sI <VERCEL_FRONTEND_ORIGIN>/api/health` for `no-store` and the backend headers.
+
+Checks: `frontend/tests/security-headers.test.mjs` (policy and header builders), `npm run check:headers`
+(the real production server against a stub backend: pages, an error page, a static asset, proxied API
+responses, and no secret in the browser assets), `tests/api/test_security_headers_p1b.py`,
+`tests/core/test_production_completeness_p1b.py`, and the header assertions in
+`scripts/ci/container_smoke.sh`.
 
 ## 14. Production verification record
 

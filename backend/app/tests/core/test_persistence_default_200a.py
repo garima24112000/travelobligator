@@ -204,6 +204,7 @@ def test_every_repository_kind_switches_together_on_the_single_selector(monkeypa
 
     getters = [n for n, f in inspect.getmembers(factory_module, inspect.isfunction) if n.startswith("get_") and n.endswith("_repository")]
     assert sorted(getters) == [
+        "get_auth_attempt_repository",  # P0 signup / sign-in attempt counters
         "get_job_repository",
         "get_lineage_repository",
         "get_planning_state_repository",

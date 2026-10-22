@@ -153,7 +153,165 @@ def production_configuration_problems(settings: Settings) -> list[str]:
         )
     if settings.ops_token is not None and len(settings.ops_token) < MIN_OPS_TOKEN_LENGTH:
         problems.append(f"OPS_TOKEN must be at least {MIN_OPS_TOKEN_LENGTH} characters when set.")
+    problems.extend(_production_abuse_limit_problems(settings))
+    problems.extend(_production_model_stage_problems(settings))
     return problems
+
+
+# P1-B. The generation-time model stages of the release: (name, enabled setting, its env name, the
+# stage's provider selector, its env name). Itinerary repair has no selector of its own: it runs on the
+# reasoning stage's provider.
+_RELEASE_MODEL_STAGES = (
+    ("anchor discovery", "ai_candidate_discovery_enabled", "AI_CANDIDATE_DISCOVERY_ENABLED",
+     "ai_candidate_proposal_provider", "AI_CANDIDATE_PROPOSAL_PROVIDER"),
+    ("itinerary reasoning", "ai_itinerary_reasoning_enabled", "AI_ITINERARY_REASONING_ENABLED",
+     "ai_itinerary_reasoning_provider", "AI_ITINERARY_REASONING_PROVIDER"),
+    ("itinerary repair", "ai_itinerary_repair_enabled", "AI_ITINERARY_REPAIR_ENABLED",
+     "ai_itinerary_reasoning_provider", "AI_ITINERARY_REASONING_PROVIDER"),
+    ("narrator", "itinerary_narrator_enabled", "ITINERARY_NARRATOR_ENABLED",
+     "itinerary_narrator_provider", "ITINERARY_NARRATOR_PROVIDER"),
+)
+# A model stage outside the generation pipeline: off by default, never required, but if it is switched on
+# it needs the same things.
+_OPTIONAL_MODEL_STAGES = (
+    ("feedback interpreter", "ai_feedback_interpreter_enabled", "AI_FEEDBACK_INTERPRETER_ENABLED",
+     "ai_feedback_interpreter_provider", "AI_FEEDBACK_INTERPRETER_PROVIDER"),
+)
+_NOT_CONNECTED = "not_connected"
+
+
+def _has(value: str | None) -> bool:
+    return bool((value or "").strip())
+
+
+def _production_model_stage_problems(settings: Settings) -> list[str]:
+    """Production must not come up with an AI capability silently missing. Config-only (no network, no
+    model call), fixed messages that name variables and never echo a value:
+
+      * each release stage is switched on, unless `PRODUCTION_ALLOW_AI_STAGES_DISABLED=true` says a
+        disabled stage is deliberate;
+      * a stage that is on has a connected provider (`not_connected` would make it do nothing);
+      * the credential of every provider a stage selects is present (Groq: `GROQ_API_KEY`; Gemini:
+        `GEMINI_API_KEY` and `GEMINI_MODEL`; Anthropic: `ANTHROPIC_API_KEY`);
+      * with `LLM_FAILOVER_ENABLED=true` and a Groq/Gemini stage on, BOTH providers are configured --
+        otherwise the stage would quietly run without its failover. Running one provider on purpose is
+        `LLM_FAILOVER_ENABLED=false`.
+
+    This checks presence only. Whether a key is valid is only known when a provider answers; that is
+    reported at run time by the existing provider-health and stage diagnostics, never at startup.
+    """
+    problems: list[str] = []
+    selected: set[str] = set()
+
+    for name, enabled_field, enabled_env, provider_field, provider_env in _RELEASE_MODEL_STAGES:
+        if not getattr(settings, enabled_field):
+            if not settings.production_allow_ai_stages_disabled:
+                problems.append(
+                    f"APP_ENV=production requires {enabled_env}=true (the {name} stage of the release). "
+                    "To run production without it on purpose, set PRODUCTION_ALLOW_AI_STAGES_DISABLED=true."
+                )
+            continue
+        selected.add(_stage_provider(settings, name, provider_field, provider_env, problems))
+
+    for name, enabled_field, _enabled_env, provider_field, provider_env in _OPTIONAL_MODEL_STAGES:
+        if getattr(settings, enabled_field):
+            selected.add(_stage_provider(settings, name, provider_field, provider_env, problems))
+
+    has_groq = _has(settings.groq_api_key)
+    has_gemini = _has(settings.gemini_api_key) and _has(settings.gemini_model)
+    if "groq" in selected and not has_groq:
+        problems.append("APP_ENV=production with a stage on the Groq provider requires GROQ_API_KEY.")
+    if "gemini" in selected and not has_gemini:
+        problems.append(
+            "APP_ENV=production with a stage on the Gemini provider requires GEMINI_API_KEY and GEMINI_MODEL."
+        )
+    if "anthropic" in selected and not _has(settings.anthropic_api_key):
+        problems.append("APP_ENV=production with a stage on the Anthropic provider requires ANTHROPIC_API_KEY.")
+
+    routed = selected & {"groq", "gemini"}
+    if routed and settings.llm_failover_enabled:
+        if "groq" not in selected and not has_groq:
+            problems.append(
+                "LLM_FAILOVER_ENABLED=true requires GROQ_API_KEY as well (the other provider of the failover "
+                "pair). To run a single provider on purpose, set LLM_FAILOVER_ENABLED=false."
+            )
+        if "gemini" not in selected and not has_gemini:
+            problems.append(
+                "LLM_FAILOVER_ENABLED=true requires GEMINI_API_KEY and GEMINI_MODEL as well (the other "
+                "provider of the failover pair). To run a single provider on purpose, set "
+                "LLM_FAILOVER_ENABLED=false."
+            )
+    return list(dict.fromkeys(problems))
+
+
+def _stage_provider(
+    settings: Settings, name: str, provider_field: str, provider_env: str, problems: list[str]
+) -> str:
+    provider = (getattr(settings, provider_field) or "").strip().lower()
+    if not provider or provider == _NOT_CONNECTED:
+        problems.append(
+            f"APP_ENV=production: the {name} stage is switched on but {provider_env} is not set to a "
+            "connected provider, so it would do nothing."
+        )
+        return _NOT_CONNECTED
+    return provider
+
+
+# P0: limits that a public deployment may not switch off (0 = off). The two per-address limits are not
+# listed: they apply only when a trusted client address exists (`CLIENT_IP_TRUSTED_PROXY_HOPS`).
+_REQUIRED_PRODUCTION_LIMITS = (
+    ("generation_max_jobs_per_user_per_window", "GENERATION_MAX_JOBS_PER_USER_PER_WINDOW"),
+    ("generation_max_jobs_global_per_window", "GENERATION_MAX_JOBS_GLOBAL_PER_WINDOW"),
+    ("generation_max_concurrent_jobs", "GENERATION_MAX_CONCURRENT_JOBS"),
+    ("max_trips_per_user", "MAX_TRIPS_PER_USER"),
+    ("signup_max_per_window_global", "SIGNUP_MAX_PER_WINDOW_GLOBAL"),
+    ("login_max_failures_per_account", "LOGIN_MAX_FAILURES_PER_ACCOUNT"),
+)
+
+
+def _production_abuse_limit_problems(settings: Settings) -> list[str]:
+    """The generation limits are enforced where a JOB is created, so production must run generation as
+    jobs; and none of the limits that need no client address may be disabled."""
+    problems: list[str] = []
+    if not settings.async_generation_enabled:
+        problems.append(
+            "APP_ENV=production requires ASYNC_GENERATION_ENABLED=true: the generation admission limits "
+            "are enforced when a generation job is created, and the synchronous path creates none."
+        )
+    disabled = [env for field, env in _REQUIRED_PRODUCTION_LIMITS if getattr(settings, field) <= 0]
+    if disabled:
+        problems.append(
+            "APP_ENV=production requires these limits to be greater than 0: " + ", ".join(disabled) + "."
+        )
+    if settings.generation_max_jobs_per_user_per_window > settings.generation_max_jobs_global_per_window > 0:
+        problems.append(
+            "GENERATION_MAX_JOBS_PER_USER_PER_WINDOW must not exceed GENERATION_MAX_JOBS_GLOBAL_PER_WINDOW."
+        )
+    problems.extend(_production_registration_problems(settings))
+    return problems
+
+
+# The shortest acceptable shareable-link token: the same bar as `SESSION_SECRET_KEY`.
+MIN_BETA_REGISTRATION_TOKEN_LENGTH = 32
+
+
+def _production_registration_problems(settings: Settings) -> list[str]:
+    """Limited beta: production never runs with open registration, and an invitation link needs a
+    long, unguessable token. Names the variable, never its value."""
+    if settings.signup_mode == "open":
+        return [
+            "APP_ENV=production does not allow SIGNUP_MODE=open: use invite_link (the shareable beta link) "
+            "or closed."
+        ]
+    token = settings.beta_registration_token or ""
+    if settings.signup_mode == "invite_link" and len(token) < MIN_BETA_REGISTRATION_TOKEN_LENGTH:
+        return [
+            f"SIGNUP_MODE=invite_link requires BETA_REGISTRATION_TOKEN of at least "
+            f"{MIN_BETA_REGISTRATION_TOKEN_LENGTH} characters."
+        ]
+    if token and token == (settings.session_secret_key or ""):
+        return ["BETA_REGISTRATION_TOKEN must not be the same value as SESSION_SECRET_KEY."]
+    return []
 
 
 _PUBLIC_NOMINATIM_HOST = "nominatim.openstreetmap.org"

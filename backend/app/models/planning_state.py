@@ -870,6 +870,51 @@ class ValidationIssue(BaseModel):
     claim_sources: list[ClaimSource] = Field(default_factory=list)
 
 
+class InterestCoverageEntry(BaseModel):
+    """Whether the FINAL itinerary covers one thing the traveller asked for
+    (V1 disclosure contract). A restatement of what the validator already
+    computes for its `interest_undercoverage` / `interest_supply_limited`
+    findings -- never a second coverage rule, and never an input to
+    readiness, a review code or the planner."""
+
+    # The canonical interest, or the traveller's own term when the taxonomy
+    # does not recognise it.
+    interest: str
+    # The traveller's own term(s) that mean this interest.
+    requested_as: list[str] = Field(default_factory=list)
+    # `covered`; `not_covered_supply_available` (the inventory that was
+    # searched held eligible verified places serving it, but none is
+    # scheduled -- not a statement that one can be fitted in);
+    # `not_covered_no_supply` (the searched inventory held no eligible
+    # verified place serving it -- not a statement that the destination has
+    # none); `not_tracked` (the term is not recognised, so coverage is
+    # unknown -- never reported as covered).
+    status: str
+    # Phase 2 (presentation only): for a `covered` interest, what the
+    # coverage rests on (`interest_coverage.coverage_basis`):
+    # `scheduled_place` (the coverage comes from a scheduled stop the taxonomy
+    # matched on its provider categories -- the source of the decision, not
+    # an independent check of relevance), `nearby_suggestions_only` (food:
+    # only restaurant suggestions near
+    # the stops, no scheduled food experience) or `museum_subject_unrecorded`
+    # (history / art: only museums whose subject the place data does not
+    # record). `None` when not covered, and on an entry stored before this
+    # field. Never changes `status`, a finding, readiness or the planner.
+    basis: str | None = None
+
+
+class OverLimitWalkingLeg(BaseModel):
+    """A scheduled leg whose provider route, in its final mode, is a WALK
+    longer than the walking-leg limit (`route_burden.over_limit_walking_legs`):
+    no faster way of making the transfer is on the plan. Presentation only
+    (Phase 1): it restates a fact `long_travel_day` is raised from, so a
+    client can mark that leg; never read by the planner, readiness or a code."""
+
+    day_number: int
+    from_experience_id: str
+    to_experience_id: str
+
+
 class ValidationReport(BaseModel):
     validation_report_id: str = Field(default_factory=lambda: _new_id("validation_report"))
 
@@ -891,6 +936,21 @@ class ValidationReport(BaseModel):
     # UNDERFILLED_PLAN). Empty for every report stored before this section.
     blocking_codes: list[str] = Field(default_factory=list)
     review_codes: list[str] = Field(default_factory=list)
+    # V1 disclosure contract (presentation only): `{code: "informational" |
+    # "material"}` for every blocking / review code and every finding
+    # category of this report (`services/review_classification`). It never
+    # changes `readiness_status` or a code; a client uses it to show material
+    # findings prominently. Empty for a report stored before this field.
+    review_code_classification: dict[str, str] = Field(default_factory=dict)
+    # V1 disclosure contract (presentation only): one entry per requested
+    # interest saying whether the final itinerary covers it. `None` means
+    # coverage is UNKNOWN (no plan to judge, or a report stored before this
+    # field) -- a client must never read that as "covered".
+    interest_coverage: list[InterestCoverageEntry] | None = None
+    # Phase 1 (presentation only): the scheduled legs that are walks beyond
+    # the walking-leg limit, in day and leg order. `None` when there is no
+    # route report to read (and on a report stored before this field).
+    over_limit_walking_legs: list[OverLimitWalkingLeg] | None = None
 
     validated_at: datetime = Field(default_factory=_utc_now)
 

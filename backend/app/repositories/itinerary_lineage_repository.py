@@ -46,7 +46,8 @@ class ItineraryLineageRepository:
             _BRANCHES_COLLECTION,
             {
                 branch_id: branch.model_dump(mode="json")
-                for branch_id, branch in self._branches.items()
+                # a snapshot: never the live dict another thread may add to
+                for branch_id, branch in list(self._branches.items())
             },
         )
 
@@ -55,9 +56,25 @@ class ItineraryLineageRepository:
             _REVISIONS_COLLECTION,
             {
                 revision_id: revision.model_dump(mode="json")
-                for revision_id, revision in self._revisions.items()
+                # a snapshot: never the live dict another thread may add to
+                for revision_id, revision in list(self._revisions.items())
             },
         )
+
+    def delete_for_trips(self, trip_ids: set[str]) -> tuple[int, int]:
+        """P1-A deletion (development backend): every branch and revision of `trip_ids`. Returns
+        (branches removed, revisions removed)."""
+        revisions = [rid for rid, revision in list(self._revisions.items()) if revision.trip_id in trip_ids]
+        branches = [bid for bid, branch in list(self._branches.items()) if branch.trip_id in trip_ids]
+        for revision_id in revisions:
+            del self._revisions[revision_id]
+        for branch_id in branches:
+            del self._branches[branch_id]
+        if revisions:
+            self._persist_revisions()
+        if branches:
+            self._persist_branches()
+        return len(branches), len(revisions)
 
     # -- branches -------------------------------------------------------
 
@@ -70,13 +87,13 @@ class ItineraryLineageRepository:
         return self._branches.get(branch_id)
 
     def get_default_branch(self, trip_id: str) -> ItineraryBranch | None:
-        for branch in self._branches.values():
+        for branch in list(self._branches.values()):  # a snapshot: never the live dict
             if branch.trip_id == trip_id and branch.is_default:
                 return branch
         return None
 
     def list_branches_for_trip(self, trip_id: str) -> list[ItineraryBranch]:
-        matches = [branch for branch in self._branches.values() if branch.trip_id == trip_id]
+        matches = [branch for branch in list(self._branches.values()) if branch.trip_id == trip_id]
         return sorted(matches, key=lambda branch: (branch.created_at, branch.branch_id))
 
     def get_or_create_default_branch(self, branch: ItineraryBranch) -> ItineraryBranch:
@@ -112,7 +129,7 @@ class ItineraryLineageRepository:
 
     def list_revisions_for_branch(self, branch_id: str) -> list[ItineraryRevision]:
         matches = [
-            revision for revision in self._revisions.values() if revision.branch_id == branch_id
+            revision for revision in list(self._revisions.values()) if revision.branch_id == branch_id
         ]
         return sorted(matches, key=lambda revision: (revision.created_at, revision.revision_id))
 
@@ -124,7 +141,7 @@ class ItineraryLineageRepository:
         `RevisionLineageService.record_current_revision` before creating
         a new one, so a retried/duplicate call never creates a second
         historical revision for the same real version."""
-        for revision in self._revisions.values():
+        for revision in list(self._revisions.values()):  # a snapshot: never the live dict
             if revision.branch_id == branch_id and revision.version_label == version_label:
                 return revision
         return None

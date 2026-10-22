@@ -46,6 +46,24 @@ if importlib.util.find_spec("pytest") is not None:
     problems.append("pytest is installed in the runtime image")
 if os.access("/app/app", os.W_OK):
     problems.append("application code is writable by the runtime user")
+# Phase 1A: no setuid/setgid file (the only way for uid 10001 to gain privileges in the container) and no pip.
+import stat
+
+privileged = []
+for top in ("/usr", "/bin", "/sbin", "/lib", "/opt", "/etc"):
+    for directory, _, files in os.walk(top):
+        for name in files:
+            path = os.path.join(directory, name)
+            try:
+                mode = os.lstat(path).st_mode
+            except OSError:
+                continue
+            if stat.S_ISREG(mode) and mode & (stat.S_ISUID | stat.S_ISGID):
+                privileged.append(path)
+if privileged:
+    problems.append("setuid/setgid files present: %s" % privileged[:5])
+if importlib.util.find_spec("pip") is not None:
+    problems.append("pip is installed in the runtime image")
 
 # Section 203B: managed PostgreSQL/Redis are reached over TLS (sslmode=require, rediss://), verified against
 # the system trust store -- which must therefore exist in the image.
@@ -71,7 +89,7 @@ for problem in problems:
     print("  - " + problem)
 sys.exit(1 if problems else 0)
 ' || fail "backend image contents/runtime options"
-echo "backend: uid 10001, exec-form python -m app.serve, one worker on 0.0.0.0, no reload, PORT honoured, system CA store, no .env/tests/local state"
+echo "backend: uid 10001, exec-form python -m app.serve, one worker on 0.0.0.0, no reload, PORT honoured, system CA store, no .env/tests/local state, no setuid/setgid file, no pip"
 
 # ---------------------------------------------------------------- frontend
 echo "== frontend image: ${FRONTEND_IMAGE}"

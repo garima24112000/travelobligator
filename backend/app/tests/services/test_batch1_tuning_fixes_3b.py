@@ -435,17 +435,23 @@ def _anchors(count: int) -> list[PromotedAICandidate]:
     ]
 
 
-def test_several_grounded_anchors_seed_a_three_day_plan_but_not_every_anchor_is_scheduled() -> None:
+def test_several_grounded_anchors_seed_a_three_day_plan_and_outrank_the_long_tail() -> None:
     state = _plan_state(_broad_museums(), _anchors(5))
     ExperiencePlannerService().run(state)
 
     names = [name for day in _scheduled(state) for name in day]
     scheduled_anchors = [name for name in names if name.startswith("Castle")]
     assert len(names) == 9  # T is unchanged: 3 days x balanced
-    # one seed per day -- several anchors, never all of them, never a quota by city
+    # one seed per day -- the seed count is unchanged, never a quota by city
     assert planner_module.anchor_seed_count(3, 9) == 3
-    assert scheduled_anchors == sorted(scheduled_anchors) and len(scheduled_anchors) == 3
-    assert set(scheduled_anchors) == {"Castle 0", "Castle 1", "Castle 2"}  # the best-ranked ones, in rank order
+    # Q2: beyond the seeds an anchor competes on usefulness like any candidate. Each castle here is a
+    # grounded semantic anchor that serves the requested interest (two evidences); each museum only
+    # serves the interest (one). Being a castle earns nothing: the kind of place is not usefulness
+    # evidence, and the same castles without the promotion report rank level with the museums. So all
+    # five take a slot because they were proposed AND grounded -- by evidence, not by a quota or a
+    # place type -- and the museums fill the rest.
+    assert sorted(scheduled_anchors) == [f"Castle {index}" for index in range(5)]
+    assert sum(name.startswith("Museum") for name in names) == 4
     # every scheduled anchor carries its provider identity
     for day in state.experience_plan.daily_plans:
         for stop in day.experiences:
@@ -477,9 +483,11 @@ def test_identical_inputs_give_an_identical_plan() -> None:
 
 def test_an_anchor_that_kept_its_broad_pool_identity_is_seeded_too() -> None:
     pois = _broad_museums()
-    # the lowest-ranked broad candidate: on ranking alone it would not be scheduled
+    # the lowest-ranked broad candidate: on ranking alone it would not be scheduled. Q2: it carries no
+    # strong provider significance (a plain historic building), so without the anchor it has no more
+    # planning evidence than the museums and loses to them on quality.
     weak = {**_poi("weak", "Old Fort", _point(50.003, 10.003)), "category": "attraction", "confidence": 0.35,
-            "provider_tags": {"historic": "fort"}}
+            "provider_tags": {"historic": "building"}}
     baseline = _plan_state([*copy.deepcopy(pois), copy.deepcopy(weak)])
     ExperiencePlannerService().run(baseline)
     assert "Old Fort" not in [name for day in _scheduled(baseline) for name in day]
@@ -522,7 +530,7 @@ def test_a_promoted_anchor_is_ranked_on_its_own_quality_score() -> None:
          "candidate_name": "Castle One", "total_score": 0.93, "quality_tier": "primary_anchor"}
     )
     state.candidate_quality_report = state.candidate_quality_report.model_copy(update={"ai_directed_scores": [scored]})
-    promoted_pois, _ = planner_module._build_promoted_candidate_pois(state, state.destination_context.candidate_pois)
+    promoted_pois, _ = planner_module._build_promoted_candidate_pois(state)
     scores = planner_module._promoted_quality_scores(promoted_pois, state.candidate_quality_report)
     profile = planner_module._candidate_profile(promoted_pois[0], scores.get(id(promoted_pois[0])), ["history"])
     assert profile.score == 0.93 and profile.tier == "primary_anchor"

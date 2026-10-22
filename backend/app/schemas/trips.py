@@ -3,14 +3,81 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, ValidationInfo, field_validator
 
-from app.models.planning_state import PlanningState
+from app.core.config import get_settings
+from app.models.planning_state import PlanningState, TripRequest
+
+
+_BOUNDED_TEXT_LISTS = {
+    "interests": "interests",
+    "must_visit": "must-visit places",
+    "must_avoid": "places to avoid",
+    "constraints": "constraints",
+}
+_BOUNDED_CHOICE_LISTS = ("preferred_accommodation_types", "transport_preferences")
+
+
+class TripCreateRequest(TripRequest):
+    """The body of `POST /trips`: a `TripRequest` plus the size limits of a NEW request.
+
+    The limits live here, at the request boundary, and not on `TripRequest` itself: `TripRequest` is
+    also how a stored trip is read back, and a trip saved before a limit existed (or under a larger
+    configured one) must still load. Every limit comes from `Settings`; a violation is an ordinary
+    HTTP 422 naming the field, worded for the traveller. Nothing here changes how a trip is planned.
+    """
+
+    @field_validator("end_date", mode="after")
+    @classmethod
+    def _limit_trip_length(cls, value: date, info: ValidationInfo) -> date:
+        start = info.data.get("start_date")
+        max_days = get_settings().max_trip_days
+        # Calendar days including both the start and the end date.
+        if isinstance(start, date) and (value - start).days + 1 > max_days:
+            raise ValueError(
+                f"A trip can be at most {max_days} days long, counting the first and the last day. "
+                "Choose an earlier end date."
+            )
+        return value
+
+    @field_validator(*_BOUNDED_TEXT_LISTS, mode="after")
+    @classmethod
+    def _limit_text_lists(cls, value: list[str], info: ValidationInfo) -> list[str]:
+        settings = get_settings()
+        label = _BOUNDED_TEXT_LISTS[info.field_name or ""]
+        if len(value) > settings.trip_request_max_list_items:
+            raise ValueError(
+                f"Please list at most {settings.trip_request_max_list_items} {label}."
+            )
+        if any(len(item) > settings.trip_request_max_item_length for item in value):
+            raise ValueError(
+                f"Each entry in {label} can be at most "
+                f"{settings.trip_request_max_item_length} characters long."
+            )
+        return value
+
+    @field_validator(*_BOUNDED_CHOICE_LISTS, mode="after")
+    @classmethod
+    def _limit_choice_lists(cls, value: list[Any]) -> list[Any]:
+        if len(value) > get_settings().trip_request_max_list_items:
+            raise ValueError("Too many options were selected.")
+        return value
+
+    def to_trip_request(self) -> TripRequest:
+        """The plain `TripRequest` that is stored and planned from."""
+        return TripRequest.model_validate(self.model_dump())
 
 
 class TripResponseData(BaseModel):
     trip_id: str
     planning_state: PlanningState
+
+
+class TripDeletedResponseData(BaseModel):
+    """`DELETE /trips/{trip_id}` (P1-A): the trip and everything stored for it are gone."""
+
+    trip_id: str
+    deleted: bool = True
 
 
 class TripListItem(BaseModel):

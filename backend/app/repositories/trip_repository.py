@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import threading
 from datetime import datetime, timezone
 
 from pydantic import BaseModel, Field
 
 from app.core.config import get_settings
+from app.repositories.admission import TripLimitReachedError
 from app.storage.local_json_store import LocalJsonStore, get_local_json_store
 
 _COLLECTION = "trips"
+_OWNER_LIMIT_LOCK = threading.Lock()
 
 
 class TripRecord(BaseModel):
@@ -53,7 +56,8 @@ class TripRepository:
             _COLLECTION,
             {
                 trip_id: record.model_dump(mode="json")
-                for trip_id, record in self._trips.items()
+                # a snapshot: never the live dict another thread may add to
+                for trip_id, record in list(self._trips.items())
             },
         )
 
@@ -72,6 +76,23 @@ class TripRepository:
         self._persist()
         return record
 
+    def create_within_owner_limit(self, trip_id: str, owner_id: str, max_trips: int) -> TripRecord:
+        """`create`, refused with `TripLimitReachedError` when `owner_id` already holds `max_trips`
+        trips (same contract as the PostgreSQL repository; in-process only)."""
+        with _OWNER_LIMIT_LOCK:
+            if len(self.list_by_owner_id(owner_id)) >= max_trips:
+                raise TripLimitReachedError(max_trips)
+            return self.create(trip_id, owner_id=owner_id)
+
+    def delete_many(self, trip_ids: set[str]) -> int:
+        """P1-A deletion (development backend). Returns the number of trips removed."""
+        removed = [trip_id for trip_id in list(self._trips) if trip_id in trip_ids]
+        for trip_id in removed:
+            del self._trips[trip_id]
+        if removed:
+            self._persist()
+        return len(removed)
+
     def get(self, trip_id: str) -> TripRecord | None:
         return self._trips.get(trip_id)
 
@@ -89,7 +110,8 @@ class TripRepository:
         """Returns every trip owned by `owner_id` -- `GET /trips`'s "My
         Trips" data source (Step 184D). Never returns a trip with a
         `None` or different `owner_id`."""
-        return [record for record in self._trips.values() if record.owner_id == owner_id]
+        # a snapshot: another request thread may be adding a trip right now
+        return [record for record in list(self._trips.values()) if record.owner_id == owner_id]
 
 
 trip_repository = TripRepository()

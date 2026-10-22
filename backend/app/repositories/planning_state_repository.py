@@ -29,14 +29,30 @@ class PlanningStateRepository:
 
     def save(self, planning_state: PlanningState) -> PlanningState:
         self._states[planning_state.trip_id] = planning_state
+        # Phase 3: serialise a SNAPSHOT of the dict. Iterating the live dict
+        # while another request thread adds a trip raised "dictionary changed
+        # size during iteration" (and failed that generation job); `list()`
+        # of a dict's items is one C-level copy under the GIL.
         self._store.write_collection(
             _COLLECTION,
             {
                 trip_id: state.model_dump(mode="json")
-                for trip_id, state in self._states.items()
+                for trip_id, state in list(self._states.items())
             },
         )
         return planning_state
+
+    def delete_for_trips(self, trip_ids: set[str]) -> int:
+        """P1-A deletion (development backend). Returns the number of states removed."""
+        removed = [trip_id for trip_id in list(self._states) if trip_id in trip_ids]
+        for trip_id in removed:
+            del self._states[trip_id]
+        if removed:
+            self._store.write_collection(
+                _COLLECTION,
+                {trip_id: state.model_dump(mode="json") for trip_id, state in list(self._states.items())},
+            )
+        return len(removed)
 
     def get_by_trip_id(self, trip_id: str, *, for_update: bool = False) -> PlanningState | None:
         # `for_update` exists for interface parity with the PostgreSQL repository (row lock);

@@ -46,7 +46,7 @@ def test_200a_database_upgrades_to_200c_with_legacy_data_and_round_trips(monkeyp
         monkeypatch.setenv("DATABASE_URL", scratch_url)
         get_settings.cache_clear()
         config = Config(str(Path(__file__).resolve().parents[3] / "alembic.ini"))
-        assert ScriptDirectory.from_config(config).get_heads() == [NEW_HEAD]  # exactly one head
+        assert len(ScriptDirectory.from_config(config).get_heads()) == 1  # exactly one head
 
         command.upgrade(config, PREVIOUS_HEAD)  # a genuine 200A database
         engine = create_engine(scratch_url)
@@ -98,7 +98,9 @@ def test_200a_database_upgrades_to_200c_with_legacy_data_and_round_trips(monkeyp
         assert "lease_owner" not in {c["name"] for c in inspect(engine).get_columns("generation_jobs")}
         command.upgrade(config, "head")  # re-upgrade
         with engine.begin() as c:
-            assert c.execute(text("select version_num from alembic_version")).scalar_one() == NEW_HEAD
+            # the head has moved on since 200C (later migrations chain after NEW_HEAD)
+            (head,) = ScriptDirectory.from_config(config).get_heads()
+            assert c.execute(text("select version_num from alembic_version")).scalar_one() == head
     finally:
         if engine is not None:
             engine.dispose()

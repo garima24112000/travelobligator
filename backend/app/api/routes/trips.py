@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, BackgroundTasks, Depends, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from fastapi.responses import JSONResponse
 
 from app.auth.dependencies import get_current_user
@@ -34,15 +34,20 @@ from app.core.errors import (
     regeneration_provider_unavailable_error,
     revision_not_found_error,
     revision_snapshot_unavailable_error,
+    trip_deletion_blocked_error,
+    trip_limit_error,
     trip_not_found_error,
 )
+from app.core.operational_config import is_production
 from app.core.response import success_response
 from app.models.common import ReadinessStatus
 from app.models.generation_job import GenerationJob
 from app.models.itinerary_lineage import ItineraryBranch, ItineraryRevision
-from app.models.planning_state import GenerationProgress, TripRequest
+from app.models.planning_state import GenerationProgress
 from app.models.targeted_regeneration_runtime import TargetedRegenerationRuntimeStatus
 from app.models.user import PublicUser
+from app.repositories.admission import TripLimitReachedError
+from app.repositories.errors import GenerationInProgressError, NothingToDeleteError
 from app.repositories.factory import (
     get_lineage_repository,
     get_planning_state_repository,
@@ -78,12 +83,14 @@ from app.schemas.trips import (
     FeedbackRequest,
     LockRequest,
     RegenerateRequest,
+    TripCreateRequest,
+    TripDeletedResponseData,
     TripListItem,
     TripListResponseData,
     TripResponseData,
 )
 from app.schemas.validation_report import ValidationReportResponseData
-from app.services import generation_job_service
+from app.services import data_deletion_service, generation_job_service
 from app.services.ai_candidate_promotion_service import ai_candidate_promotion_service
 from app.services.ai_candidate_review_service import ai_candidate_review_service
 from app.services.feedback_service import derive_pending_affected_stages, pending_feedback_events
@@ -142,6 +149,7 @@ def _regenerate_targeted(trip_id: str, background_tasks: BackgroundTasks, curren
     ultimately call the exact same service method (Task 28: semantic
     parity by construction).
     """
+    generation_job_service.ensure_generation_enabled()  # the owner's switch, both branches
     if get_settings().async_generation_enabled:
         job = generation_job_service.start_targeted_regenerate_job(
             trip_id=trip_id,
@@ -213,16 +221,27 @@ router = APIRouter(prefix="/trips", tags=["trips"])
     status_code=status.HTTP_201_CREATED,
 )
 def create_trip(
-    trip_request: TripRequest, current_user: PublicUser = Depends(get_current_user)
+    trip_request: TripCreateRequest, current_user: PublicUser = Depends(get_current_user)
 ) -> ApiResponse[TripResponseData]:
     """Step 184D: requires a real session (401 if missing/invalid/expired)
     and assigns the new trip to `current_user.user_id` -- no route ever
     creates an unowned trip. `owner_id` lives only on the `TripRecord`
     (`app/repositories/trip_repository.py`); `PlanningState`, and so this
-    response's shape, is completely unchanged."""
-    planning_state = planning_orchestrator.create_trip(
-        trip_request, owner_id=current_user.user_id
-    )
+    response's shape, is completely unchanged.
+
+    P0: the body is `TripCreateRequest` (trip length and list sizes bounded,
+    HTTP 422 otherwise), and an account that already holds
+    `MAX_TRIPS_PER_USER` trips gets `TRIP_LIMIT_REACHED` (429) with nothing
+    stored."""
+    max_trips = get_settings().max_trips_per_user
+    try:
+        planning_state = planning_orchestrator.create_trip(
+            trip_request.to_trip_request(),
+            owner_id=current_user.user_id,
+            max_trips_for_owner=max_trips,
+        )
+    except TripLimitReachedError:
+        raise trip_limit_error(max_trips) from None
     data = TripResponseData(trip_id=planning_state.trip_id, planning_state=planning_state)
     return success_response(data)
 
@@ -275,6 +294,32 @@ def get_trip(
     return success_response(data)
 
 
+@router.delete(
+    "/{trip_id}",
+    response_model=ApiResponse[TripDeletedResponseData],
+)
+def delete_trip(
+    trip_id: str, current_user: PublicUser = Depends(require_trip_owner)
+) -> ApiResponse[TripDeletedResponseData]:
+    """P1-A: delete one of the caller's trips and everything stored for it (plan, feedback, locks,
+    versions, branches, revisions, jobs) in one transaction -- `services.data_deletion_service`.
+
+    Same access rules as every trip route (`require_trip_owner`): 401 without a session, 404 for an
+    unknown trip, the generic 403 for someone else's -- which never says anything about the trip. A
+    trip whose itinerary is being built (a queued or running job) is refused with 409
+    `TRIP_DELETION_BLOCKED` and nothing is deleted; no job is cancelled. Deleting frees one place of the
+    saved-trip limit; it does not hand back generation allowance. Deleting twice is 404 the second time.
+    """
+    try:
+        data_deletion_service.delete_trip(trip_id, owner_id=current_user.user_id)
+    except GenerationInProgressError:
+        raise trip_deletion_blocked_error() from None
+    except NothingToDeleteError:
+        # Deleted by a simultaneous request between the ownership check and the transaction.
+        raise trip_not_found_error(trip_id) from None
+    return success_response(TripDeletedResponseData(trip_id=trip_id), message="Trip deleted.")
+
+
 @router.post(
     "/{trip_id}/generate",
     response_model=ApiResponse[TripResponseData],
@@ -306,6 +351,8 @@ def generate_trip_plan(
     second one. The default, synchronous behavior below is completely
     unchanged either way.
     """
+    # The owner's switch applies to both branches (the job path checks it again at admission).
+    generation_job_service.ensure_generation_enabled()
     if get_settings().async_generation_enabled:
         job = generation_job_service.start_generate_job(
             trip_id=trip_id, owner_id=current_user.user_id, background_tasks=background_tasks
@@ -494,6 +541,8 @@ def regenerate_trip_plan(
 
     applied_feedback_event_ids = [event.feedback_event_id for event in pending_events]
 
+    # Planning would start here: the owner's switch applies (after every refusal above, unchanged).
+    generation_job_service.ensure_generation_enabled()
     if get_settings().async_generation_enabled:
         job = generation_job_service.start_regenerate_job(
             trip_id=trip_id,
@@ -1347,9 +1396,19 @@ def promote_ai_candidates(
     return success_response(data)
 
 
+def _development_only() -> None:
+    """P0: a development/inspection endpoint does not exist in production. It answers exactly as an
+    unknown path does (FastAPI's own 404), and -- as a path-decorator dependency -- before the session
+    or the trip is even looked at, so it reveals nothing and runs nothing."""
+    if is_production(get_settings()):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+
+
 @router.post(
     "/{trip_id}/langgraph-shadow-run",
     response_model=ApiResponse[LangGraphShadowRunResponseData],
+    # The whole planning graph, run inside the request and outside the job admission limits.
+    dependencies=[Depends(_development_only)],
 )
 def run_langgraph_shadow(
     trip_id: str, current_user: PublicUser = Depends(require_trip_owner)

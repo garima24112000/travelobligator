@@ -311,6 +311,12 @@ _PRODUCTION = {
     # and keeps the inventory sufficiency gate on.
     "PLACES_PROVIDER": "geoapify",
     "INVENTORY_SUFFICIENCY_GATE_ENABLED": "true",
+    # P0: generation runs as jobs in production (the admission limits are enforced there)
+    "ASYNC_GENERATION_ENABLED": "true",
+    # P1-B: this file is about the geocoder; the model stages are covered in test_production_config_203b.py
+    "PRODUCTION_ALLOW_AI_STAGES_DISABLED": "true",
+    # Limited beta: production never runs with open registration (covered in test_beta_registration_access.py)
+    "SIGNUP_MODE": "closed",
 }
 
 

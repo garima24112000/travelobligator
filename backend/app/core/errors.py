@@ -390,6 +390,154 @@ def concurrent_update_error() -> AppError:
     )
 
 
+# P0 admission / abuse limits. All HTTP 429 with a fixed message: no count, no identifier, and nothing
+# about anyone else's usage. The window is described in words ("24 hours") only when it is whole hours.
+
+
+def _window_phrase(window_seconds: int) -> str:
+    hours, remainder = divmod(window_seconds, 3600)
+    if remainder == 0 and hours >= 1:
+        return f"{hours} hours" if hours > 1 else "hour"
+    minutes = max(1, round(window_seconds / 60))
+    return f"{minutes} minutes" if minutes > 1 else "minute"
+
+
+def generation_user_limit_error(limit: int, window_seconds: int) -> AppError:
+    """429 -- this account already started `limit` itineraries (first generations and updates) in the
+    rolling window. A later attempt is admitted once the oldest one leaves the window."""
+    return AppError(
+        code=ErrorCode.GENERATION_USER_LIMIT_REACHED,
+        message=(
+            f"You have reached the limit of {limit} itineraries per {_window_phrase(window_seconds)}. "
+            "Please try again later."
+        ),
+        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+    )
+
+
+def generation_global_limit_error() -> AppError:
+    """429 -- the whole deployment's allowance for the rolling window is used up."""
+    return AppError(
+        code=ErrorCode.GENERATION_GLOBAL_LIMIT_REACHED,
+        message=(
+            "TravelObligator has reached its limit for new itineraries for now. "
+            "Your trip is saved. Please try again later."
+        ),
+        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+    )
+
+
+def generation_capacity_error() -> AppError:
+    """429 -- every concurrent slot is in use right now; the same request can succeed in a minute."""
+    return AppError(
+        code=ErrorCode.GENERATION_CAPACITY_REACHED,
+        message=(
+            "Other itineraries are being built right now. Your trip is saved. "
+            "Please try again in a minute."
+        ),
+        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+    )
+
+
+def trip_limit_error(limit: int) -> AppError:
+    """429 -- this account already holds `limit` saved trips; no trip was created."""
+    return AppError(
+        code=ErrorCode.TRIP_LIMIT_REACHED,
+        message=f"You have reached the limit of {limit} saved trips for one account.",
+        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+    )
+
+
+def registration_closed_error() -> AppError:
+    """403 -- the deployment is not creating new accounts at all (`SIGNUP_MODE=closed`, or an invitation
+    link with no token configured). Existing accounts can still sign in."""
+    return AppError(
+        code=ErrorCode.REGISTRATION_CLOSED,
+        message="New accounts are not being created right now. If you already have an account, log in.",
+        status_code=status.HTTP_403_FORBIDDEN,
+    )
+
+
+def registration_link_required_error() -> AppError:
+    """403 -- sign-up needs the shareable beta link, and this browser has no valid authorization from
+    it (never opened, expired, or issued for a link that has since been replaced)."""
+    return AppError(
+        code=ErrorCode.REGISTRATION_LINK_REQUIRED,
+        message=(
+            "Creating an account needs a beta invitation link. Open the link you were given, then sign up "
+            "soon after. If you already have an account, log in."
+        ),
+        status_code=status.HTTP_403_FORBIDDEN,
+    )
+
+
+def registration_link_invalid_error() -> AppError:
+    """403 -- the link's token is not the current one (mistyped, revoked or replaced). Says nothing about
+    what the right token is."""
+    return AppError(
+        code=ErrorCode.REGISTRATION_LINK_INVALID,
+        message="This beta invitation link is not valid. It may have been replaced; ask for a new one.",
+        status_code=status.HTTP_403_FORBIDDEN,
+    )
+
+
+def generation_disabled_error() -> AppError:
+    """503 -- the owner has paused new itineraries (`GENERATION_ENABLED=false`). Nothing was started."""
+    return AppError(
+        code=ErrorCode.GENERATION_DISABLED,
+        message="Building new itineraries is paused right now. Your trips are saved. Please try again later.",
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+    )
+
+
+def signup_limit_error() -> AppError:
+    """429 -- new accounts are temporarily not being created (a deployment-wide or per-address limit;
+    the answer never says which, and never whether the email is already registered)."""
+    return AppError(
+        code=ErrorCode.SIGNUP_LIMIT_REACHED,
+        message="New accounts cannot be created right now. Please try again later.",
+        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+    )
+
+
+def too_many_attempts_error() -> AppError:
+    """429 -- too many failed sign-ins. Identical for a registered and an unregistered email, and for a
+    right and a wrong password, so it reveals nothing about the account."""
+    return AppError(
+        code=ErrorCode.TOO_MANY_ATTEMPTS,
+        message="Too many sign-in attempts. Please wait a few minutes and try again.",
+        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+    )
+
+
+# P1-A deletion. A queued or running job is never cancelled to make a deletion possible (a running job
+# cannot be stopped safely); the request is refused and nothing is deleted.
+
+
+def trip_deletion_blocked_error() -> AppError:
+    """409 -- the trip has an itinerary being built right now."""
+    return AppError(
+        code=ErrorCode.TRIP_DELETION_BLOCKED,
+        message=(
+            "This trip's itinerary is being built right now, so it cannot be deleted yet. "
+            "Please try again when it has finished."
+        ),
+        status_code=status.HTTP_409_CONFLICT,
+    )
+
+
+def account_deletion_blocked_error() -> AppError:
+    """409 -- one of the account's trips has an itinerary being built right now."""
+    return AppError(
+        code=ErrorCode.ACCOUNT_DELETION_BLOCKED,
+        message=(
+            "One of your itineraries is being built right now, so your account cannot be deleted yet. "
+            "Please try again when it has finished. Nothing was deleted."
+        ),
+        status_code=status.HTTP_409_CONFLICT,
+    )
+
+
 def job_already_running_error(trip_id: str) -> AppError:
     """409 -- a new generate/regenerate job was requested for `trip_id`
     while `Settings.generation_job_max_running_per_trip` genuinely active

@@ -7,6 +7,7 @@ from typing import Any
 import httpx
 import pytest
 
+from app.core.config import get_settings
 from app.models.common import GeoPoint
 from app.models.inventory_sufficiency import InventorySufficiencyReport, InventorySufficiencyStatus
 from app.models.planning_state import DailyPlan, ExperienceItem, PlanningState, TripPace, UserLock
@@ -457,6 +458,10 @@ def test_an_active_user_lock_leaves_the_plan_untouched() -> None:
 
 
 def test_the_deterministic_path_never_runs_the_pass(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Q3: with day composition on, the shared composition objective stands in for this pass
+    # (`test_day_composition_q3`). This test pins the pre-Q3 wiring, which the rollback switch restores.
+    monkeypatch.setenv("DAY_COMPOSITION_ENABLED", "false")
+    get_settings.cache_clear()
     calls: list[int] = []
     original = planner_module._limit_ai_day_spread
     monkeypatch.setattr(

@@ -27,7 +27,7 @@ from typing import Any
 
 import httpx
 
-from app.core import performance
+from app.core import generation_diagnostics, performance
 from app.core.bounded_concurrency import DRIVE_ROUTE_BATCH_LIMIT, WALK_ROUTE_BATCH_LIMIT, run_bounded
 from app.core.config import get_settings
 from app.models.common import ProviderStatus
@@ -65,6 +65,18 @@ _DEFINITIVE_FAILURE_REASONS = frozenset({REASON_NO_ROUTE, REASON_UNROUTABLE_ENDP
 _UNAVAILABLE_MESSAGE = "The routing provider (Geoapify) returned no usable route."
 
 Point = tuple[float, float]  # (lat, lon)
+
+
+def _includes_ferry(raw_leg: Any) -> bool | None:
+    """Whether the provider's route for one leg includes a ferry, from the
+    documented per-step `ferry` flag of the Routing API response ("True if
+    includes a ferry"). None when the leg carries no step data, so a missing
+    statement is never read as "no ferry". Nothing is inferred from geometry
+    and nothing about a timetable, a fare or availability is implied."""
+    steps = raw_leg.get("steps") if isinstance(raw_leg, dict) else None
+    if not isinstance(steps, list) or not steps or not all(isinstance(step, dict) for step in steps):
+        return None
+    return any(step.get("ferry") is True for step in steps)
 
 
 @dataclass
@@ -165,6 +177,7 @@ class GeoapifyRoutingAdapter(RoutingProvider):
 
         known = [self._known_leg(origin, destination, mode) for origin, destination in legs]
         if all(result is not None for result in known):
+            generation_diagnostics.route_request("served_from_known_legs")
             return [result for result in known if result is not None]
 
         context = self._context
@@ -175,11 +188,13 @@ class GeoapifyRoutingAdapter(RoutingProvider):
             remembered = context.route_failure_memo.get(self._request_key(points, mode))
             if remembered is not None:
                 performance.count("route_memo_hits")
+                generation_diagnostics.route_request("served_from_failure_memo")
                 return [remembered] * len(legs)
             # An alternate-mode request draws on its own per-generation cap,
             # never on the day-route allowance.
             if alternate:
                 if context.alternate_mode_requests_left <= 0:
+                    generation_diagnostics.route_request("alternate_mode_refused_by_allowance")
                     # Refused locally, no request: the fixed code only names
                     # the cause for the report (same code as a credit-cap
                     # refusal); the cap and what happens next are unchanged.
@@ -188,10 +203,13 @@ class GeoapifyRoutingAdapter(RoutingProvider):
                 context.alternate_mode_requests_left -= 1
             else:
                 if context.route_requests_left <= 0:
+                    generation_diagnostics.route_request("refused_by_allowance")
                     return [
                         self._result(ProviderStatus.UNAVAILABLE, _FAILURE_MESSAGES["budget_exhausted"])
                     ] * len(legs)
                 context.route_requests_left -= 1
+        # Diagnostic only (a no-op unless the evaluation tooling is recording).
+        generation_diagnostics.route_request("live_alternate_mode" if alternate else "live")
         return _RouteRequestPlan(points=list(points), legs=legs, alternate=alternate, mode=mode)
 
     def _fetch_sequence(self, plan: "_RouteRequestPlan") -> "dict[str, Any] | ProviderRequestError":
@@ -251,6 +269,7 @@ class GeoapifyRoutingAdapter(RoutingProvider):
                 # Generation memory only: a failure is never written to the
                 # provider cache, and a new generation asks the provider again.
                 self._context.route_failure_memo[self._request_key(plan.points, plan.mode)] = failed
+                generation_diagnostics.route_request("live_definitive_failure")
             return [failed] * len(plan.legs)
 
         results = self._normalize(fetched, len(plan.legs), plan.mode)
@@ -301,6 +320,7 @@ class GeoapifyRoutingAdapter(RoutingProvider):
                     confidence=0.8,
                     message=f"{mode} route from Geoapify Routing.",
                     mode=mode,
+                    includes_ferry=_includes_ferry(raw_leg),
                 )
             )
         return results
@@ -356,6 +376,9 @@ class GeoapifyRoutingAdapter(RoutingProvider):
                 confidence=0.8,
                 message=f"{mode} route from Geoapify Routing (cached).",
                 mode=mode,
+                # None for an entry cached before the flag was kept: unknown,
+                # never "no ferry".
+                includes_ferry=payload.get("includes_ferry"),
             )
         except Exception:
             logger.warning("Route cache read failed; falling back to live request.")
@@ -379,6 +402,7 @@ class GeoapifyRoutingAdapter(RoutingProvider):
                     "distance_meters": result.distance_meters,
                     "duration_seconds": result.duration_seconds,
                     "geometry": [point.model_dump() for point in result.geometry] if result.geometry else None,
+                    "includes_ferry": result.includes_ferry,
                 },
                 ttl_seconds=self._route_cache_ttl_seconds,
             )

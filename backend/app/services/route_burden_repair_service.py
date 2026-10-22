@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import logging
 
+from app.core import generation_diagnostics
 from app.core.config import get_settings
 from app.core.provider_usage import GenerationProviderContext
 from app.models.common import GeoPoint, ProviderStatus
@@ -337,11 +338,28 @@ def apply_route_burden_repair_safely(
     report. Never lets a repair problem fail generation: on an unexpected
     error the report is cleared and the plan keeps its long-travel warning."""
     planning_state.route_burden_repair_report = None
-    if not get_settings().route_burden_repair_enabled:
+    settings = get_settings()
+    if not settings.route_burden_repair_enabled:
         return
     try:
+        if settings.route_recomposition_enabled:
+            # Q4: the route-aware recomposition stage stands in for the single
+            # attempt below (imported here: it builds on this module's peers).
+            from app.services.route_recomposition_service import RouteRecompositionService
+
+            planning_state.route_burden_repair_report = RouteRecompositionService(
+                route_feasibility_service
+            ).recompose(planning_state, provider_context)
+            return
         planning_state.route_burden_repair_report = RouteBurdenRepairService(
             route_feasibility_service
         ).repair(planning_state, provider_context)
     except Exception:
         logger.warning("Route-burden repair failed unexpectedly; leaving the plan unchanged.", exc_info=True)
+    finally:
+        # Diagnostic only (a no-op unless the evaluation tooling is recording).
+        generation_diagnostics.schedule_from_state("route_burden_repair", planning_state)
+        generation_diagnostics.allowances("route_burden_repair", provider_context)
+        generation_diagnostics.route_checkpoint(
+            generation_diagnostics.ROUTE_STAGE_BURDEN_REPAIR, planning_state, provider_context
+        )

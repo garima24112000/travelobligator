@@ -62,6 +62,7 @@ _ALLOWED_LOG_LEVELS = frozenset({"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"
 # attribute values are conventionally capitalized ("Lax"/"Strict"/"None")
 # but env vars are easiest to write in lowercase.
 _ALLOWED_SESSION_COOKIE_SAMESITE_VALUES = frozenset({"lax", "strict", "none"})
+_ALLOWED_SIGNUP_MODES = frozenset({"open", "invite_link", "closed"})
 
 # backend/app/core/config.py -> parents[2] is the backend/ project root, so
 # a relative local_storage_path resolves the same way whether the app is
@@ -195,6 +196,14 @@ class Settings(BaseSettings):
     llm_secondary_provider: str = Field(default="gemini", alias="LLM_SECONDARY_PROVIDER")
     # False = every stage uses exactly its selected provider, as before.
     llm_failover_enabled: bool = Field(default=True, alias="LLM_FAILOVER_ENABLED")
+    # P1-B: with `APP_ENV=production` the four generation-time model stages of the release (anchor
+    # discovery, itinerary reasoning, itinerary repair, narrator) must be switched on with a connected
+    # provider, so a rebuilt service cannot come up quietly planning without them. `true` is the explicit,
+    # deliberate way to run production with a stage off (its deterministic fallback then plans). It only
+    # relaxes that startup check: it changes nothing about how any stage behaves.
+    production_allow_ai_stages_disabled: bool = Field(
+        default=False, alias="PRODUCTION_ALLOW_AI_STAGES_DISABLED"
+    )
     # A provider whose known remaining quota is at or under this share of its
     # limit is DRAINING: later stages prefer the other provider.
     llm_quota_reserve_ratio: float = Field(default=0.10, alias="LLM_QUOTA_RESERVE_RATIO", ge=0.0, lt=1.0)
@@ -296,11 +305,10 @@ class Settings(BaseSettings):
     # Section 193A (docs/14_backend_architecture.md section 141): bounds
     # how many `ItineraryCandidateReference` entries
     # `AIItineraryReasoningRequestBuilder.build_request` includes in one
-    # `AIItineraryReasoningRequest` -- selected deterministically by
-    # quality tier then score (never by AI proposal confidence, never
-    # arbitrary truncation). Contract-only in this step: nothing calls a
-    # live LLM #2 provider yet, so this setting has no runtime effect
-    # until Section 193B exists.
+    # `AIItineraryReasoningRequest` -- a hard cap, filled deterministically
+    # in the candidate-usefulness order (Q2, `candidate_usefulness`; never
+    # by AI proposal confidence, never arbitrary truncation). When the
+    # grounded must-visits alone exceed it the request is not sent.
     ai_itinerary_reasoning_max_candidates: int = Field(
         default=40,
         ge=1,
@@ -554,6 +562,13 @@ class Settings(BaseSettings):
     ai_day_spatial_regrouping_enabled: bool = Field(
         default=True, alias="AI_DAY_SPATIAL_REGROUPING_ENABLED"
     )
+    # Q3 (`services/day_composition`): one composition objective improves the
+    # complete multi-day assignment -- the deterministic selection and a plan
+    # the reasoning model chose alike -- and the bounded reasoning request
+    # carries opaque geographic area ids. A TEMPORARY rollback switch: off,
+    # the planner, the request and the prompts are exactly what they were
+    # before Q3 (the regrouping and spread passes above run instead).
+    day_composition_enabled: bool = Field(default=True, alias="DAY_COMPOSITION_ENABLED")
     # Route-burden quality thresholds (walking, from the routing provider's
     # own leg data; never an estimate). A day beyond its pace's total, or a
     # single leg beyond the leg limit, gets a long-travel warning and the
@@ -575,6 +590,19 @@ class Settings(BaseSettings):
     route_burden_repair_enabled: bool = Field(default=True, alias="ROUTE_BURDEN_REPAIR_ENABLED")
     route_burden_repair_min_improvement_ratio: float = Field(
         default=0.15, alias="ROUTE_BURDEN_REPAIR_MIN_IMPROVEMENT_RATIO", gt=0.0, lt=1.0
+    )
+    # Q4 (`services/route_recomposition_service.py`): a day whose VERIFIED
+    # provider legs are severe is recomposed -- reorder, move/swap between
+    # days, or replace a discretionary stop -- from a shortlist of at most
+    # three candidates, each verified with real routing. Off, the single
+    # attempt above runs exactly as before. `ROUTE_BURDEN_REPAIR_ENABLED`
+    # remains the master switch for both.
+    route_recomposition_enabled: bool = Field(default=True, alias="ROUTE_RECOMPOSITION_ENABLED")
+    # The most routing requests that stage may make in one generation. A
+    # SUB-CAP only: every one of them also draws on the generation's shared
+    # route-request allowance and provider-credit cap, which are unchanged.
+    route_recomposition_max_requests_per_generation: int = Field(
+        default=8, alias="ROUTE_RECOMPOSITION_MAX_REQUESTS_PER_GENERATION", ge=0, le=8
     )
     # Mixed-mode transfers (Section 203C.2B). A walking leg longer than
     # `ROUTE_BURDEN_MAX_LEG_SECONDS` gets ONE driving-route request for that
@@ -1311,6 +1339,98 @@ class Settings(BaseSettings):
         default=120, alias="GENERATION_JOB_LEASE_SECONDS", ge=3
     )
 
+    # Generation admission limits (P0 abuse / cost control). Decided in PostgreSQL when a job is
+    # CREATED (`JobRepository.admit`): the counts and the insert share one transaction under an advisory
+    # lock, so simultaneous requests cannot both take the last slot. Never Redis, never process memory.
+    # A window counts every job admitted in it -- first generations and regenerations alike, whatever
+    # became of them (succeeded, failed, interrupted); a refused request creates no job and counts for
+    # nothing. They apply to the job path (`ASYNC_GENERATION_ENABLED=true`, required in production); the
+    # synchronous development path creates no job and is not limited. `0` switches one limit off, which
+    # production rejects at startup.
+    generation_max_jobs_per_user_per_window: int = Field(
+        default=5, alias="GENERATION_MAX_JOBS_PER_USER_PER_WINDOW", ge=0, le=1000
+    )
+    generation_max_jobs_global_per_window: int = Field(
+        default=25, alias="GENERATION_MAX_JOBS_GLOBAL_PER_WINDOW", ge=0, le=100000
+    )
+    # Queued + running jobs across every trip and user of the deployment.
+    generation_max_concurrent_jobs: int = Field(
+        default=2, alias="GENERATION_MAX_CONCURRENT_JOBS", ge=0, le=100
+    )
+    # The rolling window of the two limits above.
+    generation_limit_window_seconds: int = Field(
+        default=86400, alias="GENERATION_LIMIT_WINDOW_SECONDS", ge=60, le=2592000
+    )
+    # Saved trips one account may hold (`POST /trips`). `0` switches it off (rejected in production).
+    max_trips_per_user: int = Field(default=20, alias="MAX_TRIPS_PER_USER", ge=0, le=10000)
+
+    # Limited-beta access and emergency switches (`app/auth/registration.py`). Owner-configured, no
+    # code change needed to use any of them; a change takes effect when the service restarts.
+    #   * `SIGNUP_MODE`: `open` (anyone may create an account -- the development default; production
+    #     refuses it at startup), `invite_link` (a new account needs the shareable beta link: its token
+    #     is exchanged for a short-lived registration cookie that sign-up requires) or `closed` (no new
+    #     account at all). Existing accounts sign in in every mode. An unrecognised value means `closed`.
+    #   * `BETA_REGISTRATION_TOKEN`: the secret in the shareable link. Set in the host's dashboard only,
+    #     never committed or logged. Changing it revokes the old link AND every registration cookie
+    #     issued for it; unsetting it closes registration.
+    #   * `REGISTRATION_ACCESS_TTL_SECONDS`: how long an accepted link allows sign-up (at most 30 min).
+    #   * `GENERATION_ENABLED`: `false` refuses every new generation / regeneration (503
+    #     `GENERATION_DISABLED`); existing trips and itineraries stay readable.
+    signup_mode: str = Field(default="open", alias="SIGNUP_MODE")
+    beta_registration_token: str | None = Field(default=None, alias="BETA_REGISTRATION_TOKEN")
+    registration_access_ttl_seconds: int = Field(
+        default=1800, alias="REGISTRATION_ACCESS_TTL_SECONDS", ge=60, le=1800
+    )
+    generation_enabled: bool = Field(default=True, alias="GENERATION_ENABLED")
+
+    # Trip request bounds, enforced at the request boundary only (`schemas.trips.TripCreateRequest`) so a
+    # stored trip always loads. Days are calendar days INCLUDING the start and the end date.
+    max_trip_days: int = Field(default=7, alias="MAX_TRIP_DAYS", ge=1, le=60)
+    trip_request_max_list_items: int = Field(
+        default=20, alias="TRIP_REQUEST_MAX_LIST_ITEMS", ge=1, le=200
+    )
+    trip_request_max_item_length: int = Field(
+        default=120, alias="TRIP_REQUEST_MAX_ITEM_LENGTH", ge=1, le=1000
+    )
+
+    # Signup / sign-in attempt limits (P0 abuse control; `app/auth/abuse.py`). Counted in the
+    # authoritative store from a small attempts table that holds keyed hashes only -- never an email
+    # address or an IP address. `0` switches one limit off (production rejects that for the two that
+    # need no client address).
+    #   * new accounts, whole deployment, per `SIGNUP_LIMIT_WINDOW_SECONDS`;
+    #   * failed sign-ins for ONE email, per `LOGIN_FAILURE_WINDOW_SECONDS` (applies whether or not the
+    #     account exists, so the answer never reveals that);
+    #   * the two per-address limits apply only when a client address can be trusted (see below) and
+    #     are deliberately generous: a shared address (office, campus, mobile carrier) must not lock
+    #     out unrelated people.
+    signup_max_per_window_global: int = Field(
+        default=30, alias="SIGNUP_MAX_PER_WINDOW_GLOBAL", ge=0, le=100000
+    )
+    signup_max_per_window_per_ip: int = Field(
+        default=5, alias="SIGNUP_MAX_PER_WINDOW_PER_IP", ge=0, le=100000
+    )
+    signup_limit_window_seconds: int = Field(
+        default=86400, alias="SIGNUP_LIMIT_WINDOW_SECONDS", ge=60, le=2592000
+    )
+    login_max_failures_per_account: int = Field(
+        default=10, alias="LOGIN_MAX_FAILURES_PER_ACCOUNT", ge=0, le=100000
+    )
+    login_max_failures_per_ip: int = Field(
+        default=50, alias="LOGIN_MAX_FAILURES_PER_IP", ge=0, le=100000
+    )
+    login_failure_window_seconds: int = Field(
+        default=900, alias="LOGIN_FAILURE_WINDOW_SECONDS", ge=60, le=86400
+    )
+    # How many trusted reverse proxies stand between the client and this process, each APPENDING the
+    # address it received the request from to `X-Forwarded-For`. `0` (default): the header is never
+    # read and NO per-address limit applies -- behind a proxy the socket peer is the proxy, shared by
+    # everyone. `N > 0`: the client address is the Nth entry from the RIGHT of the header; entries
+    # further left are client-supplied and never trusted. A request with fewer than N entries has no
+    # trusted address. Set it only to what the deployment really has in front of it.
+    client_ip_trusted_proxy_hops: int = Field(
+        default=0, alias="CLIENT_IP_TRUSTED_PROXY_HOPS", ge=0, le=5
+    )
+
     # Section 200D: operational observability / readiness.
     # `GET /metrics` (Prometheus text, low-cardinality, no user content). No authentication exists in
     # this app, so deployments should keep /metrics on a private network (see docs section 163).
@@ -1522,6 +1642,20 @@ class Settings(BaseSettings):
                 "(sub-second timeouts would cancel healthy work)."
             )
         return value
+
+    @field_validator("signup_mode", mode="after")
+    @classmethod
+    def _normalize_signup_mode(cls, value: str) -> str:
+        # A misspelt mode must never open registration: anything unrecognised is `closed`.
+        lowered = value.strip().lower()
+        return lowered if lowered in _ALLOWED_SIGNUP_MODES else "closed"
+
+    @field_validator("beta_registration_token", mode="after")
+    @classmethod
+    def _blank_token_is_none(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return value.strip() or None
 
     @field_validator("session_cookie_samesite", mode="after")
     @classmethod

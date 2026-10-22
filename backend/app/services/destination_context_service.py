@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import logging
 from functools import partial
 from typing import Any
 
 from app.core.bounded_concurrency import CONTEXT_PROVIDER_BATCH_LIMIT, run_bounded
+from app.models.common import GeoPoint
 from app.models.providers import ProviderResponse
 from app.models.planning_state import (
     CurrencyContext,
@@ -19,15 +21,19 @@ from app.providers.gateway import ProviderGateway, provider_gateway
 from app.providers.holidays.nager_date_adapter import infer_country_code
 from app.core import performance
 from app.core.provider_usage import GenerationProviderContext
+from app.services import place_taxonomy as taxonomy
 from app.services.base import PlanningStageService
 from app.services.entity_collisions import apply_suspect_collisions
 from app.services.pace_targets import pace_targets_for
 from app.services.must_visit_matching import (
     MUST_VISIT_GROUNDING_VERSION,
     exact_name_candidates,
+    grounded_terms,
     record_grounded_term,
 )
 from app.services.provider_coverage_service import ProviderCoverageService, provider_coverage_service
+
+logger = logging.getLogger(__name__)
 
 
 class DestinationContextService(PlanningStageService):
@@ -131,7 +137,24 @@ class DestinationContextService(PlanningStageService):
         if getattr(places, "supports_inventory_sizing", False):
             targets = pace_targets_for(planning_state)
             attraction_filters = {"pool_size": max(60, min(5 * targets.target_stops, 110))}
+            # A requested interest the broad search does not look for by
+            # itself (the waterfront family) is named, so the provider can
+            # search its own verified categories for it within the same pool.
+            profile = planning_state.traveler_profile
+            interest_groups = taxonomy.discovery_interests(
+                taxonomy.canonical_interests(profile.interests if profile else planning_state.trip_request.interests)
+            )
+            if interest_groups:
+                attraction_filters["interest_groups"] = interest_groups
             food_filters = {"pool_size": max(20, min(8 * targets.trip_days, 40))}
+            # Mixed local / broad discovery: when the trip has must-visits,
+            # the provider is asked to hold back part of its LOCAL share. It
+            # is requested around the grounded must-visit points below -- the
+            # same pool, the same stage, the existing grounding order.
+            must_visit_terms = profile.must_visit if profile else planning_state.trip_request.must_visit
+            if any(term and term.strip() for term in must_visit_terms or []):
+                attraction_filters["hold_back_for_must_visits"] = True
+                food_filters["hold_back_for_must_visits"] = True
 
         # Section 1A (measurement only): the `performance.stage` blocks in
         # this method only time what they enclose.
@@ -224,6 +247,17 @@ class DestinationContextService(PlanningStageService):
             if restaurants_response.data
             else []
         )
+        # Mixed local / broad discovery, follow-up: the local share held back
+        # above is now requested around the GROUNDED must-visit points (or
+        # released to the destination anchor when none is distinct). Only
+        # identities the pool does not already hold are added, after it, so
+        # a grounded must-visit keeps the identity grounding gave it.
+        search_local = getattr(places, "search_must_visit_local_inventory", None)
+        if callable(search_local) and (attraction_filters or {}).get("hold_back_for_must_visits"):
+            with performance.stage("places_broad"):
+                candidate_pois, candidate_restaurants = self._append_must_visit_local_inventory(
+                    search_local, destination_name, candidate_pois, candidate_restaurants
+                )
         # Open-data location candidates only. Do not attach price, availability,
         # rating, or booking link fields to these — OSM does not supply them.
         candidate_accommodation_pois = (
@@ -487,6 +521,42 @@ class DestinationContextService(PlanningStageService):
             assumptions=assumptions,
             warnings=warnings,
         )
+
+    @staticmethod
+    def _append_must_visit_local_inventory(
+        search_local: Any,
+        destination_name: str,
+        candidate_pois: list[dict[str, Any]],
+        candidate_restaurants: list[dict[str, Any]],
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """Adds the follow-up batch's places to the pools. The anchors are the
+        coordinates of the candidates that carry a grounded must-visit term,
+        in pool order -- nothing is grounded here and no identity changes. A
+        record whose provider id a pool already holds is not added: the
+        existing candidate (a grounded must-visit included) stands. A
+        follow-up that fails or returns nothing leaves both pools as they
+        were; it never fails the stage."""
+        anchors: list[GeoPoint] = []
+        for poi in candidate_pois:
+            coordinates = poi.get("coordinates") or {}
+            if grounded_terms(poi) and coordinates.get("lat") is not None and coordinates.get("lng") is not None:
+                anchors.append(GeoPoint(lat=coordinates["lat"], lng=coordinates["lng"]))
+        try:
+            attractions, restaurants = search_local(destination_name, anchors)
+        except Exception:  # noqa: BLE001 - an optional refinement of the pool, never a reason to fail
+            logger.warning("Must-visit local inventory follow-up failed; the pools are left as they were.")
+            return candidate_pois, candidate_restaurants
+
+        def merged(pool: list[dict[str, Any]], found: list[Any]) -> list[dict[str, Any]]:
+            held = {poi.get("place_id") for poi in pool}
+            for place in found:
+                record = place.model_dump(mode="json")
+                if record.get("place_id") and record["place_id"] not in held:
+                    held.add(record["place_id"])
+                    pool.append(record)
+            return pool
+
+        return merged(candidate_pois, attractions), merged(candidate_restaurants, restaurants)
 
     def _append_must_visit_candidates(
         self,

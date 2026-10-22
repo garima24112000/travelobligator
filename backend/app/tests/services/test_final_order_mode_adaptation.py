@@ -484,11 +484,14 @@ def test_the_labels_never_decide_anything() -> None:
         if "tests" not in path.parts
         and ("mode_adaptation_outcome" in path.read_text() or "hard_walking_violation_remains" in path.read_text())
     ]
-    # only the two models that carry them, the two services that WRITE them, and a comment
-    # on the provider context -- no validator, planner, repair decision or acceptance code
+    # only the two models that carry them, the services that WRITE them (Q4: the route-aware
+    # recomposition stage writes the same diagnostic), and a comment on the provider context --
+    # no validator, planner, repair decision or acceptance code
     assert sorted(readers) == [
         "core/provider_usage.py", "models/route_burden_repair.py", "models/routing.py",
         "services/route_burden_repair_service.py", "services/route_feasibility_service.py",
+        "services/route_recomposition_service.py",
     ]
-    repair_source = (app_root / "services" / "route_burden_repair_service.py").read_text()
-    assert repair_source.count("hard_walking_violation_remains") == 1  # written once, never read
+    for writer in ("route_burden_repair_service.py", "route_recomposition_service.py"):
+        source = (app_root / "services" / writer).read_text()
+        assert source.count("hard_walking_violation_remains") == 1  # written once, never read

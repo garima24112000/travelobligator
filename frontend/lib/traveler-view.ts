@@ -93,13 +93,100 @@ export function travelerMovementLine(leg: {
   mode: string | null | undefined;
   durationSeconds: number | null | undefined;
   distanceMeters: number | null | undefined;
+  // True only when the routing provider's own route for the leg uses a ferry.
+  includesFerry?: boolean | null;
+  // True only when the backend lists the leg as a walk beyond the usual
+  // walking limit with no faster way on the plan (`over_limit_walking_legs`).
+  overLimitWalk?: boolean;
 }): string | null {
   const figures = [
     formatTravelDuration(leg.durationSeconds),
     formatTravelDistance(leg.distanceMeters),
   ].filter((part): part is string => part !== null);
   if (figures.length === 0) return null;
+  if (leg.includesFerry === true) {
+    // Never "Walk" alone, and never the figures as a ferry time: they are a
+    // route estimate that knows nothing of the crossing's schedule.
+    return [FERRY_LEG_LABEL, `route estimate ${figures.join(" · ")}`, FERRY_LEG_CAVEAT].join(" · ");
+  }
+  if (leg.overLimitWalk === true) {
+    // Never "Walk" alone: the walking route is all the plan has for this
+    // transfer, not a recommendation, and no other mode is claimed.
+    return [OVER_LIMIT_WALK_LABEL, ...figures, OVER_LIMIT_WALK_CAVEAT].join(" · ");
+  }
   return [movementModeLabel(leg.mode), ...figures].join(" · ");
+}
+
+export const OVER_LIMIT_WALK_LABEL = "Long walking route";
+export const OVER_LIMIT_WALK_CAVEAT =
+  "longer than a usual walk between stops; no faster way of making this transfer was verified";
+
+/**
+ * True only when the backend listed the leg between two scheduled stops as
+ * a walk beyond the usual walking limit (`over_limit_walking_legs`). No
+ * threshold is kept here; a report without the list marks no leg.
+ */
+export function legIsOverLimitWalk(
+  report: Pick<ValidationReport, "over_limit_walking_legs"> | null | undefined,
+  fromExperienceId: string,
+  toExperienceId: string,
+): boolean {
+  return (report?.over_limit_walking_legs ?? []).some(
+    (leg) => leg.from_experience_id === fromExperienceId && leg.to_experience_id === toExperienceId,
+  );
+}
+
+export const FERRY_LEG_LABEL = "Includes a ferry crossing";
+export const FERRY_LEG_CAVEAT = "excludes waiting; ferry times, tickets and availability not verified";
+export const FERRY_DAY_NOTICE =
+  "Part of this day's travel involves a ferry crossing. Ferry schedules, waiting times, tickets and operating availability are not verified.";
+export const UNVERIFIED_LEG_LINE =
+  "Travel between these stops could not be verified. No route or travel time is shown.";
+export const UNVERIFIED_DAY_NOTICE =
+  "Travel between some of this day's stops could not be verified. Check how you would get between them.";
+
+/** True only for a leg the routing provider positively flagged as using a ferry. */
+export function legIncludesFerry(
+  report: RouteFeasibilityReport | null | undefined,
+  fromExperienceId: string,
+  toExperienceId: string,
+): boolean {
+  return findRouteLeg(report, fromExperienceId, toExperienceId)?.includes_ferry === true;
+}
+
+/**
+ * True when the leg between two scheduled stops has no verified route WHILE
+ * other legs of the trip do: the missing one is then a specific gap worth a
+ * row of its own. When the trip has no routed leg at all, the single
+ * trip-level note says so once and no row is repeated between every stop.
+ */
+export function legIsUnverified(
+  report: RouteFeasibilityReport | null | undefined,
+  fromExperienceId: string,
+  toExperienceId: string,
+): boolean {
+  const legs = report?.legs ?? [];
+  if (!legs.some((leg) => leg.status === "success")) return false;
+  const leg = findRouteLeg(report, fromExperienceId, toExperienceId);
+  return !leg || leg.status !== "success";
+}
+
+/**
+ * Day-level route notices for a day's stops in order: a ferry crossing the
+ * provider flagged, and travel that could not be verified. Derived only from
+ * the stored legs; an empty list when there is nothing to say.
+ */
+export function travelerDayRouteNotices(
+  experienceIds: string[],
+  report: RouteFeasibilityReport | null | undefined,
+): { ferry: boolean; unverified: boolean } {
+  let ferry = false;
+  let unverified = false;
+  for (let index = 0; index + 1 < experienceIds.length; index += 1) {
+    ferry = ferry || legIncludesFerry(report, experienceIds[index], experienceIds[index + 1]);
+    unverified = unverified || legIsUnverified(report, experienceIds[index], experienceIds[index + 1]);
+  }
+  return { ferry, unverified };
 }
 
 /** The Traveler movement row for one stored leg, or null when it has no successful route. */
@@ -109,12 +196,15 @@ export function travelerLegLine(
     "from_experience_id" | "to_experience_id" | "status" | "route_duration_seconds" | "route_distance_meters"
   > | null,
   report: RouteFeasibilityReport | null | undefined,
+  validationReport?: Pick<ValidationReport, "over_limit_walking_legs"> | null,
 ): string | null {
   if (!buffer || buffer.status !== "success") return null;
   return travelerMovementLine({
     mode: legMode(report, buffer.from_experience_id, buffer.to_experience_id),
     durationSeconds: buffer.route_duration_seconds,
     distanceMeters: buffer.route_distance_meters,
+    includesFerry: legIncludesFerry(report, buffer.from_experience_id, buffer.to_experience_id),
+    overLimitWalk: legIsOverLimitWalk(validationReport, buffer.from_experience_id, buffer.to_experience_id),
   });
 }
 
@@ -128,6 +218,22 @@ export function travelerRouteCoverageNote(
   }
   if (report.status === "success") return null;
   return "Travel times between stops are not available for this trip.";
+}
+
+/**
+ * Everything one day's card says needs review: the day's material findings
+ * (already worded for a traveler), then the ferry and unverified-travel
+ * notices its own legs call for. A ferry the findings already mention is not
+ * said twice.
+ */
+export function travelerDayNotices(
+  findingSentences: string[],
+  route: { ferry: boolean; unverified: boolean },
+): string[] {
+  const notices = [...findingSentences];
+  if (route.ferry && !notices.some((sentence) => /ferry/i.test(sentence))) notices.push(FERRY_DAY_NOTICE);
+  if (route.unverified) notices.push(UNVERIFIED_DAY_NOTICE);
+  return notices;
 }
 
 // -- getting around ---------------------------------------------------------------
@@ -166,18 +272,186 @@ export function tripSummarySourceNote(
 
 // -- readiness ----------------------------------------------------------------------
 
-export type ReadinessTone = "ok" | "review" | "blocked" | "unknown";
+export type ReadinessTone = "ok" | "review" | "review_material" | "blocked" | "unknown";
 
 export type TravelerReadiness = { tone: ReadinessTone; label: string; message: string };
 
-/** Plain-language restatement of the backend's readiness status; never the raw value. */
-export function travelerReadiness(status: string | null | undefined): TravelerReadiness {
+/** How strongly a `needs_review` plan is presented. Presentation only: the status is unchanged. */
+export type ReviewSeverity = "informational" | "material";
+
+/**
+ * Whether a report's review / blocking codes include a MATERIAL one,
+ * according to the backend's own classification. A code the classification
+ * does not list is unknown to the backend's list and counts as material; a
+ * report with codes but no classification at all (stored before the field)
+ * is presented as material too -- never played down on a guess.
+ */
+export function reviewSeverity(
+  validation:
+    | Pick<ValidationReport, "blocking_codes" | "review_codes" | "review_code_classification">
+    | null
+    | undefined,
+): ReviewSeverity {
+  const codes = [...(validation?.blocking_codes ?? []), ...(validation?.review_codes ?? [])];
+  const classification = validation?.review_code_classification ?? {};
+  return codes.some((code) => (classification[code] ?? "material") === "material")
+    ? "material"
+    : "informational";
+}
+
+// -- requested-interest coverage -----------------------------------------------------
+
+/**
+ * What is known about whether the itinerary covers what the traveler asked
+ * for: everything, not everything, or not known. "unknown" is never worded
+ * as covered.
+ */
+export type CoverageState = "all_covered" | "some_uncovered" | "unknown";
+
+export type TravelerInterestCoverage = { state: CoverageState; notices: string[] };
+
+export const COVERAGE_UNKNOWN_NOTICE =
+  "We couldn't confirm whether this itinerary covers everything you asked for.";
+
+// The two "not covered" sentences. Each says only what the evidence supports:
+//   - no supply: the places WE SEARCHED held none that fit -- not that the
+//     destination has none;
+//   - supply available: matching places were found -- not that one can be
+//     fitted into this schedule.
+function noSupplyNotice(label: string): string {
+  // "identified by our place data": the match is only as good as the place
+  // categories, which can miss a place that does fit (Phase 2).
+  return `Nothing in this itinerary covers ${label}. None of the verified places we searched is identified by our place data as fitting it. That does not mean there are none in this destination.`;
+}
+
+// Phase 2: a "covered" interest whose coverage is weaker than the word. Each
+// sentence restates the backend's `basis`; nothing is re-judged here.
+function suggestionsOnlyNotice(label: string): string {
+  return `${label} is covered only by restaurant suggestions near your stops. No food experience, such as a food market, is scheduled.`;
+}
+
+function museumSubjectNotice(label: string): string {
+  return `${label} is covered only by museums whose subject our place data does not record, so they may not be about ${label}.`;
+}
+
+function supplyAvailableNotice(label: string): string {
+  return `Nothing in this itinerary covers ${label}, although the places we searched included some that fit it. You can request a change, but one may not fit this schedule.`;
+}
+
+function interestLabel(entry: { interest: string; requested_as?: string[] | null }): string {
+  const terms = (entry.requested_as ?? []).filter((term) => typeof term === "string" && term.trim());
+  return terms.length > 0 ? terms.join(" / ") : entry.interest.replace(/_/g, " ");
+}
+
+/**
+ * The traveler's view of requested-interest coverage, from the backend's
+ * own per-interest entries (`ValidationReport.interest_coverage`). Nothing
+ * is decided here: an entry is restated, never re-judged.
+ *
+ *   - no supply:        no verified place for it was found at all;
+ *   - supply available: suitable places existed but none is scheduled;
+ *   - not tracked / an unrecognised status: coverage could not be checked;
+ *   - covered, but only by nearby restaurant suggestions or only by museums
+ *     whose subject is not recorded (`basis`): said so, never "covered".
+ *
+ * A report without the entries (stored before the field) is read from its
+ * coverage findings when it has any; otherwise coverage is UNKNOWN.
+ */
+export function travelerInterestCoverage(
+  validation: Pick<ValidationReport, "interest_coverage" | "warnings"> | null | undefined,
+): TravelerInterestCoverage {
+  const entries = validation?.interest_coverage;
+  if (Array.isArray(entries)) {
+    const notices: string[] = [];
+    let unknown = false;
+    for (const entry of entries) {
+      if (!entry || typeof entry.interest !== "string") {
+        unknown = true;
+        continue;
+      }
+      const label = interestLabel(entry);
+      if (entry.status === "covered") {
+        if (entry.basis === "nearby_suggestions_only") notices.push(suggestionsOnlyNotice(`"${label}"`));
+        else if (entry.basis === "museum_subject_unrecorded") notices.push(museumSubjectNotice(`"${label}"`));
+        continue;
+      }
+      if (entry.status === "not_covered_no_supply") {
+        notices.push(noSupplyNotice(`"${label}"`));
+      } else if (entry.status === "not_covered_supply_available") {
+        notices.push(supplyAvailableNotice(`"${label}"`));
+      } else {
+        notices.push(`We couldn't check whether this itinerary covers "${label}".`);
+      }
+    }
+    if (notices.length > 0) return { state: "some_uncovered", notices };
+    return unknown ? { state: "unknown", notices: [COVERAGE_UNKNOWN_NOTICE] } : { state: "all_covered", notices: [] };
+  }
+
+  // A report stored before the entries existed: its findings are the evidence.
+  const notices: string[] = [];
+  for (const issue of validation?.warnings ?? []) {
+    const category = (issue.category ?? "").toLowerCase();
+    if (category !== "interest_supply_limited" && category !== "interest_undercoverage") continue;
+    const named = /interest '([^']+)'/.exec(issue.message ?? "");
+    const label = named ? `"${named[1]}"` : "something you asked for";
+    const notice = category === "interest_supply_limited" ? noSupplyNotice(label) : supplyAvailableNotice(label);
+    if (!notices.includes(notice)) notices.push(notice);
+  }
+  if (notices.length > 0) return { state: "some_uncovered", notices };
+  return { state: "unknown", notices: [] };
+}
+
+/**
+ * Plain-language restatement of the backend's readiness status; never the
+ * raw value. `severity` only changes how a `needs_review` plan is worded and
+ * toned: it is still a plan that needs review, never "Checks passed".
+ * `coverage` keeps the informational wording honest: it says coverage is
+ * fine only when the backend said every requested interest is covered.
+ */
+export function travelerReadiness(
+  status: string | null | undefined,
+  severity?: ReviewSeverity,
+  coverage?: CoverageState,
+): TravelerReadiness {
   if (status === "ready") {
     return {
       tone: "ok",
       label: "Checks passed",
       message:
         "This itinerary passed our automated checks. Still confirm opening hours, prices and bookings yourself before you travel.",
+    };
+  }
+  if (status === "needs_review" && severity === "material") {
+    return {
+      tone: "review_material",
+      label: "Review needed before you follow this",
+      message:
+        "Parts of this itinerary need your attention before you rely on it. The affected days are marked below.",
+    };
+  }
+  if (status === "needs_review" && severity === "informational") {
+    if (coverage === "some_uncovered") {
+      return {
+        tone: "review",
+        label: "Planning draft — not everything you asked for is covered",
+        message:
+          "No travel problem was flagged for this schedule, but it does not cover everything you asked for. What is missing is listed below.",
+      };
+    }
+    if (coverage === "all_covered") {
+      return {
+        tone: "review",
+        label: "Planning draft — some details not checked",
+        message:
+          "No travel or coverage problem was flagged for this schedule, but some supporting information has not been applied to it. Confirm those details yourself.",
+      };
+    }
+    // Coverage unknown: say nothing about coverage being fine.
+    return {
+      tone: "review",
+      label: "Planning draft — some details not checked",
+      message:
+        "No travel problem was flagged for this schedule. Whether it covers everything you asked for could not be confirmed, and some supporting information has not been applied to it.",
     };
   }
   if (status === "needs_review") {
@@ -224,7 +498,18 @@ const REVIEW_CODE_NOTICES: Record<string, string> = {
   HOLIDAYS: HOLIDAY_NOT_APPLIED_NOTICE,
   LONG_TRAVEL_DAY: "At least one day involves a lot of travel between stops.",
   FEASIBILITY: "Travel between some stops could not be fully checked.",
+  MOVEMENT_DATA: "Travel times between some stops are not available.",
+  GEOGRAPHIC_DISPERSION: "At least one day's attractions are spread across a large area.",
+  GEOGRAPHIC_SPREAD: "At least one day's attractions are spread across a large area.",
+  ROUTE_INCLUDES_FERRY:
+    "At least one day involves a ferry crossing. Ferry schedules, waiting times and tickets are not verified.",
+  INTEREST_UNDERCOVERAGE: "Something you asked for is not covered by the scheduled places.",
 };
+
+// A material code without a sentence of its own (including one the backend
+// added after this page was built) is still announced.
+export const OTHER_MATERIAL_NOTICE =
+  "Something else in this itinerary needs your review. See Important limitations below.";
 
 const UNAVAILABLE_DATA_STATUSES = new Set(["unavailable", "not_connected", "failed"]);
 
@@ -235,7 +520,10 @@ const UNAVAILABLE_DATA_STATUSES = new Set(["unavailable", "not_connected", "fail
  * signals say.
  */
 export function travelerReviewNotices(
-  validation: Pick<ValidationReport, "blocking_codes" | "review_codes"> | null | undefined,
+  validation:
+    | Pick<ValidationReport, "blocking_codes" | "review_codes" | "review_code_classification">
+    | null
+    | undefined,
   context?: {
     weather?: Pick<WeatherContext, "daily_weather" | "data_status"> | null;
     holiday?: Pick<HolidayContext, "data_status"> | null;
@@ -263,7 +551,10 @@ export function travelerReviewNotices(
     // Never say "available" about data the page can see is absent.
     if (code === "WEATHER" && weatherAbsent) continue;
     if (code === "HOLIDAYS" && holidayAbsent) continue;
-    add(REVIEW_CODE_NOTICES[code]);
+    add(
+      REVIEW_CODE_NOTICES[code] ??
+        (validation?.review_code_classification?.[code] === "material" ? OTHER_MATERIAL_NOTICE : undefined),
+    );
   }
   if (weatherAbsent) add(WEATHER_NOTICE);
   if (holidayAbsent) add(HOLIDAY_NOTICE);
@@ -405,6 +696,38 @@ export const SESSION_ENDED_MESSAGE = "Your session has ended. Please log in agai
 // Frontend-only codes (never sent by the backend).
 export const BACKEND_UNREACHABLE = "BACKEND_UNREACHABLE";
 export const PLAN_NOT_GENERATED = "PLAN_NOT_GENERATED";
+export const PLAN_UNUSABLE = "PLAN_UNUSABLE";
+export const PLAN_INCOMPLETE = "PLAN_INCOMPLETE";
+
+/**
+ * What a trip's summary says can be shown for it (P1C-2). Read from the backend's own fields only:
+ *
+ *   not_generated         no plan was judged yet (never generated, or still being built)
+ *   displayable           a plan exists and can be rendered -- ready, needing review or blocked alike; the
+ *                         validation banner, not this function, says which
+ *   no_usable_itinerary   generation finished, the validation report says `blocked`, nothing was scheduled
+ *                         and there is no destination information to render: there is no itinerary at all
+ *   incomplete            generation finished but the destination information is missing although the
+ *                         report does not say the plan is empty: it cannot be rendered, and nothing here
+ *                         claims to know why
+ *
+ * A finished generation is never worded as "not generated yet / may still be in progress".
+ */
+export type PlanAvailability = "not_generated" | "displayable" | "no_usable_itinerary" | "incomplete";
+
+export function planAvailability(summary: {
+  destination_context_generated: boolean;
+  experience_plan_generated: boolean;
+  validation_report_generated: boolean;
+  scheduled_experiences_count: number;
+  validation_status: string | null;
+}): PlanAvailability {
+  if (!summary.experience_plan_generated || !summary.validation_report_generated) return "not_generated";
+  if (summary.destination_context_generated) return "displayable";
+  return summary.validation_status === "blocked" && summary.scheduled_experiences_count === 0
+    ? "no_usable_itinerary"
+    : "incomplete";
+}
 
 const GENERATION_FAILED_MESSAGE =
   "We couldn't finish building this itinerary. Please try again in a moment.";
@@ -462,6 +785,26 @@ export function travelerErrorMessage(input: TravelerErrorInput): TravelerError {
           "This trip doesn't have an itinerary yet. If you just created it, it may still be in progress. Open it from My trips in a minute.",
         retryable: true,
       };
+    // Generation finished, and there is no itinerary to follow. Building it again may or may not work,
+    // so a retry is offered right after a generation and never promised; reopening cannot change it.
+    case PLAN_UNUSABLE:
+      return operation === "generate"
+        ? {
+            message:
+              "We couldn't build an itinerary for this trip: no places could be scheduled, so there is no plan to follow. Your trip is saved. You can try again, but it may not work if place information is unavailable right now.",
+            retryable: true,
+          }
+        : {
+            message:
+              "This trip has no usable itinerary: when it was built, no places could be scheduled. You can delete it under My trips and create it again.",
+            retryable: false,
+          };
+    case PLAN_INCOMPLETE:
+      return {
+        message:
+          "This trip's itinerary is incomplete and can't be shown. Your trip is saved. You can delete it under My trips and create it again.",
+        retryable: false,
+      };
     case "JOB_ALREADY_RUNNING":
       return {
         message: "This trip is already being worked on. Please wait for it to finish.",
@@ -485,6 +828,82 @@ export function travelerErrorMessage(input: TravelerErrorInput): TravelerError {
           'We couldn\'t find that destination with confidence, so no itinerary was planned. Try including the city and country, for example "Lisbon, Portugal".',
         retryable: false,
       };
+    // Limits (HTTP 429). Nothing was started; repeating at once cannot help, except when
+    // every slot was merely busy.
+    case "GENERATION_USER_LIMIT_REACHED":
+      return {
+        message: isSafeForTraveler(message)
+          ? message.trim()
+          : "You have reached the limit for new itineraries for now. Please try again later.",
+        retryable: false,
+      };
+    case "GENERATION_GLOBAL_LIMIT_REACHED":
+      return {
+        message:
+          "TravelObligator has reached its limit for new itineraries for now. Your trip is saved. Please try again later.",
+        retryable: false,
+      };
+    case "GENERATION_CAPACITY_REACHED":
+      return {
+        message:
+          "Other itineraries are being built right now. Your trip is saved. Please try again in a minute.",
+        retryable: true,
+      };
+    // Limited beta: the owner paused new itineraries (HTTP 503). Nothing was started; retrying now cannot help.
+    case "GENERATION_DISABLED":
+      return {
+        message: "Building new itineraries is paused right now. Your trips are saved. Please try again later.",
+        retryable: false,
+      };
+    case "TRIP_LIMIT_REACHED":
+      return {
+        message: isSafeForTraveler(message)
+          ? message.trim()
+          : "You have reached the limit of saved trips for one account.",
+        retryable: false,
+      };
+    case "SIGNUP_LIMIT_REACHED":
+      return {
+        message: "New accounts cannot be created right now. Please try again later.",
+        retryable: false,
+      };
+    case "TOO_MANY_ATTEMPTS":
+      return {
+        message: "Too many sign-in attempts. Please wait a few minutes and try again.",
+        retryable: false,
+      };
+    // Deletion (P1-A). Nothing was removed when one of these is returned.
+    case "TRIP_DELETION_BLOCKED":
+      return {
+        message:
+          "This trip's itinerary is being built right now, so it cannot be deleted yet. Please try again when it has finished.",
+        retryable: true,
+      };
+    case "ACCOUNT_DELETION_BLOCKED":
+      return {
+        message:
+          "One of your itineraries is being built right now, so your account cannot be deleted yet. Nothing was deleted. Please try again when it has finished.",
+        retryable: true,
+      };
+    case "INVALID_CREDENTIALS":
+      return {
+        message:
+          operation === "delete_account"
+            ? "That password is not correct. Nothing was deleted."
+            : "Invalid email or password.",
+        retryable: false,
+      };
+    case "VALIDATION_ERROR": {
+      // The backend words a rejected trip request for the traveller (a date or list-size
+      // problem); only its fixed "Value error, " prefix is not for display.
+      const detail = (message ?? "").replace(/^value error,\s*/i, "");
+      return {
+        message: isSafeForTraveler(detail)
+          ? detail.trim()
+          : "Some of the trip details could not be accepted. Please check the dates and lists and try again.",
+        retryable: false,
+      };
+    }
     default:
       break;
   }

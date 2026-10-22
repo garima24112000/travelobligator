@@ -144,7 +144,16 @@ docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
 pip install -r backend/requirements.txt -r backend/requirements-dev.txt
 pytest                      # backend suite, from the repo root; needs no database, cache or API key
 cd frontend && npm ci && npm test
+
+# Browser tests (Playwright, Chromium): the production frontend build against an offline backend.
+# Needs the backend dependencies above; no database, cache or API key.
+npx playwright install chromium    # once
+npm run e2e
 ```
+
+The browser tests are described in [frontend/e2e/README.md](frontend/e2e/README.md), including what they do
+not establish (they are not a WCAG conformance statement, and screen readers, real devices and other
+browsers are not automated).
 
 The local defaults use open development providers and need no API key. The production pipeline needs
 `GEOAPIFY_API_KEY` and at least one of `GROQ_API_KEY` or `GEMINI_API_KEY`; every setting is documented in
@@ -165,6 +174,8 @@ The full list is in [docs/23_v1_release_reference.md](docs/23_v1_release_referen
 - [docs/23_v1_release_reference.md](docs/23_v1_release_reference.md) — V1 scope, architecture, evaluation,
   production evidence, limitations.
 - [docs/22_free_tier_deployment.md](docs/22_free_tier_deployment.md) — deployment contract and procedure.
+- [docs/25_operations_runbook.md](docs/25_operations_runbook.md) — backup and restore, deployment order,
+  rollback, monitoring and the incident checklist.
 - [ARCHITECTURE.md](ARCHITECTURE.md) and [PLANNING_ENGINE.md](PLANNING_ENGINE.md) — design background and
   history; the release reference above is the authoritative V1 current-state document.
 - [docs/14_backend_architecture.md](docs/14_backend_architecture.md) — backend internals.

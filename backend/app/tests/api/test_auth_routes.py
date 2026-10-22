@@ -6,6 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.core.config import get_settings
+from app.tests.conftest import replace_session_cookie
 
 # Full end-to-end tests for /auth/signup, /auth/login, /auth/logout,
 # /auth/me (Step 184C) through the real ASGI app.
@@ -212,11 +213,33 @@ def test_me_returns_401_when_no_cookie() -> None:
 
 
 def test_me_returns_401_when_cookie_invalid(client: TestClient) -> None:
-    client.cookies.set("travelobligator_session", "not-a-real-token")
+    replace_session_cookie(client, "not-a-real-token")
 
     response = client.get("/auth/me")
 
     assert response.status_code == 401
+
+
+def test_only_the_invalid_session_is_sent_and_it_is_refused_then_the_real_one_works_again(client: TestClient) -> None:
+    """The request really carries ONE session cookie, the invalid one (not the real one beside it), and is
+    refused; putting the real token back proves the replacement replaced rather than appended."""
+    name = get_settings().session_cookie_name
+    real_token = client.cookies.get(name)
+    sent: list[str] = []
+    client.event_hooks["request"] = [lambda request: sent.append(request.headers.get("cookie", ""))]
+
+    replace_session_cookie(client, "not-a-real-token")
+    response = client.get("/auth/me")
+    assert response.status_code == 401
+    assert response.json()["errors"][0]["code"] == "AUTHENTICATION_REQUIRED"
+    assert [part.strip() for part in sent[-1].split(";") if part.strip().startswith(f"{name}=")] == [f"{name}=not-a-real-token"]
+
+    tampered = real_token[:-4] + ("AAAA" if not real_token.endswith("AAAA") else "BBBB")
+    replace_session_cookie(client, tampered)
+    assert client.get("/auth/me").status_code == 401  # a valid-looking token with a broken signature
+
+    replace_session_cookie(client, real_token)
+    assert client.get("/auth/me").status_code == 200  # the genuine session still works
 
 
 def test_me_returns_401_when_cookie_expired(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:

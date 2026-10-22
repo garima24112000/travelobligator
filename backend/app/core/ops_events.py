@@ -41,6 +41,8 @@ JOB_INTERRUPTED = "job.interrupted"
 JOB_CLAIM_CONFLICT = "job.claim_conflict"
 JOB_CREATE_CONFLICT = "job.create_conflict"
 JOB_STALE_OWNER_REJECTED = "job.stale_owner_rejected"
+# A new job was refused by an admission limit (per user / global / concurrent); nothing was created.
+JOB_ADMISSION_REFUSED = "job.admission_refused"
 # providers
 PROVIDER_SUCCESS = "provider.success"
 PROVIDER_FAILURE = "provider.failure"

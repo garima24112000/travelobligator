@@ -5,6 +5,7 @@ import logging
 from datetime import date, datetime, timezone
 from datetime import time as time_of_day
 
+from app.core import generation_diagnostics
 from app.core.config import get_settings
 from app.models.common import GeoPoint, ProviderStatus
 from app.models.planning_state import ExperienceItem, PlanningState
@@ -177,6 +178,7 @@ def _walking_result_of(leg: RouteLegFeasibility) -> RouteResult:
         source=leg.provider,
         mode=leg.mode,
         failure_reason=leg.failure_reason,
+        includes_ferry=leg.includes_ferry,
     )
 
 
@@ -191,6 +193,8 @@ def build_route_report(
     final order itself and the service supports that; otherwise exactly the
     ordinary call (the report then already carries its adaptation, and the
     later `adapt_route_modes_safely` finds nothing left to do)."""
+    # Diagnostic only (a no-op unless the evaluation tooling is recording).
+    generation_diagnostics.route_checkpoint(generation_diagnostics.ROUTE_STAGE_BEGIN, planning_state, provider_context)
     kwargs = context_kwargs(provider_context)
     if defer_mode_adaptation and "adapt_modes" in inspect.signature(service.build_report).parameters:
         return service.build_report(planning_state, adapt_modes=False, **kwargs)
@@ -290,9 +294,10 @@ class RouteFeasibilityService:
         """The bounded per-leg mode adaptation, applied ONCE to the stored
         report for the days as they are now ordered. Every long walking leg
         that has not been offered a driving route yet gets the same single
-        driving request `build_report` would have made for it, in day and
-        leg order; the leg is replaced in place. The walking results already
-        in the report are reused -- no walking request is made -- and a leg
+        driving request `build_report` would have made for it (longest walk
+        first, see `_alternate_mode_routes`); the leg is replaced in place.
+        The walking results already in the report are reused -- no walking
+        request is made -- and a leg
         that was already adapted or already attempted is left alone, so the
         pass is idempotent. Driving requests draw on the generation's
         unchanged alternate-mode allowance; nothing here adds to it."""
@@ -489,14 +494,23 @@ class RouteFeasibilityService:
     ) -> dict[_LegKey, RouteResult | Exception | None] | None:
         """The driving results for every over-long walking leg of the
         report, fetched as one bounded concurrent batch -- only after every
-        walking leg is known, and requested in day and leg order (so the
-        alternate-mode allowance is spent on the same legs as leg-by-leg
-        requests would spend it). None when there is nothing to batch; the
-        legs then ask one at a time, as before."""
+        walking leg is known. None when there is nothing to batch; the legs
+        then ask one at a time, as before.
+
+        The batch is requested LONGEST WALK FIRST: by the provider's own
+        walking duration, descending, across every day passed in; equal
+        durations keep day and leg order. The routing adapter takes one unit
+        of the alternate-mode allowance per request in list order before it
+        dispatches anything, so when the allowance left is smaller than the
+        number of over-long legs it goes to the longest walks of this report
+        rather than to the earliest days. The set of legs asked for, the
+        number of requests and the cap are unchanged, and the results are
+        applied to their own legs in day and leg order. It cannot reach
+        allowance already spent by an earlier report of the same generation."""
         alternates = getattr(self.gateway, "get_alternate_mode_routes", None)
         if not callable(alternates) or not callable(getattr(self.gateway, "get_alternate_mode_route", None)):
             return None
-        wanted: list[_LegKey] = []
+        wanted: dict[_LegKey, float] = {}
         for experiences, day_results in zip(days, walked):
             if day_results is None:
                 continue
@@ -508,17 +522,20 @@ class RouteFeasibilityService:
                 if provider_context is not None and key in provider_context.alternate_mode_failed_legs:
                     continue
                 if key not in wanted:
-                    wanted.append(key)
+                    # `_needs_alternate_mode` guarantees a provider duration.
+                    wanted[key] = float(walking.duration_seconds or 0.0)
         if len(wanted) < 2:
             return None
+        # A stable sort: insertion (day, leg) order breaks ties.
+        ordered = sorted(wanted, key=lambda leg: -wanted[leg])
         try:
-            return dict(zip(wanted, alternates(wanted, **context_kwargs(provider_context))))
+            return dict(zip(ordered, alternates(ordered, **context_kwargs(provider_context))))
         except Exception:
             logger.warning(
                 "The alternate-mode route request raised unexpectedly; keeping the walking leg.",
                 exc_info=True,
             )
-            return {key: None for key in wanted}
+            return {key: None for key in ordered}
 
     def _route_day(
         self,
@@ -610,6 +627,7 @@ class RouteFeasibilityService:
             walking_distance_meters=walking.distance_meters if drive is not None else None,
             walking_duration_seconds=walking.duration_seconds if drive is not None else None,
             failure_reason=result.failure_reason if result.status != ProviderStatus.SUCCESS else None,
+            includes_ferry=result.includes_ferry if result.status == ProviderStatus.SUCCESS else None,
             from_experience_id=from_experience.experience_id,
             from_experience_name=from_experience.name,
             to_experience_id=to_experience.experience_id,

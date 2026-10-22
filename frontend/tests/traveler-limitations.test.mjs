@@ -244,7 +244,10 @@ test("the optional-suggestion count covers only traveler-visible suggestions", (
 
   // the control's count is the length of exactly that filtered list
   const section = componentSource(travelerSections, "TravelerLimitationsSection");
-  assert.match(section, /const findings = travelerFindings\(\[\.\.\.report\.critical_issues, \.\.\.report\.warnings\]\);/);
+  assert.match(
+    section,
+    /const findings = travelerFindings\(\s*\[\.\.\.report\.critical_issues, \.\.\.report\.warnings\],\s*undefined,\s*report\.review_code_classification,\s*\);/,
+  );
   assert.match(section, /const suggestions = bySeverity\("suggestion"\);/);
   assert.match(section, /<SuggestionsDisclosure count=\{suggestions\.length\}>\{renderRows\(suggestions\)\}<\/SuggestionsDisclosure>/);
   // no other path renders a raw report finding in this section

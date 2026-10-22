@@ -166,7 +166,10 @@ def test_reconciling_a_trip_uses_leases_not_job_age_in_postgres_mode(monkeypatch
 
 def test_database_uniqueness_violation_becomes_the_friendly_409(monkeypatch: pytest.MonkeyPatch) -> None:
     repo = get_job_repository()
-    monkeypatch.setattr(repo, "create", lambda job: (_ for _ in ()).throw(JobAlreadyActiveError(job.trip_id)))
+    # P0: a job is created through `admit` (the admission limits + the insert, one decision).
+    monkeypatch.setattr(
+        repo, "admit", lambda job, policy, now: (_ for _ in ()).throw(JobAlreadyActiveError(job.trip_id))
+    )
     job = create_queued_job(trip_id="trip_race", owner_id="u", job_type=GenerationJobType.GENERATE)
     with pytest.raises(AppError) as excinfo:
         svc._create_job_or_conflict(job)

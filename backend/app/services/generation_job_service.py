@@ -18,7 +18,13 @@ from app.core.errors import (
     REGENERATION_FEEDBACK_NOT_INTERPRETABLE_MESSAGE,
     REGENERATION_NO_EFFECT_MESSAGE,
     REGENERATION_NOT_AVAILABLE_MESSAGE,
+    AppError,
+    generation_capacity_error,
+    generation_disabled_error,
+    generation_global_limit_error,
+    generation_user_limit_error,
     job_already_running_error,
+    trip_not_found_error,
 )
 from app.models.generation_job import (
     GenerationJob,
@@ -31,7 +37,12 @@ from app.models.generation_job import (
 )
 from app.models.planning_state import PlanningStage
 from app.models.targeted_regeneration_runtime import TargetedRegenerationRuntimeStatus
-from app.repositories.errors import ConcurrentStateUpdateError, JobAlreadyActiveError
+from app.repositories.admission import AdmissionPolicy, AdmissionRefusal, AdmissionRefusedError
+from app.repositories.errors import (
+    ConcurrentStateUpdateError,
+    JobAlreadyActiveError,
+    TripNoLongerExistsError,
+)
 from app.repositories.factory import get_job_repository, get_planning_state_repository
 from app.schemas.errors import ErrorCode
 from app.services.planning_orchestrator import planning_orchestrator
@@ -440,18 +451,85 @@ def _adjust_running_gauge(delta: int) -> None:
         registry.set("travelobligator_jobs_running_local", _RUNNING_LOCAL)
 
 
+def admission_policy() -> AdmissionPolicy:
+    """The configured admission limits (P0). Read on every call, like every other setting here."""
+    settings = get_settings()
+    return AdmissionPolicy(
+        max_jobs_per_user_per_window=settings.generation_max_jobs_per_user_per_window,
+        max_jobs_global_per_window=settings.generation_max_jobs_global_per_window,
+        max_concurrent_jobs=settings.generation_max_concurrent_jobs,
+        window_seconds=settings.generation_limit_window_seconds,
+    )
+
+
+def _admission_refused_error(reason: AdmissionRefusal, policy: AdmissionPolicy) -> AppError:
+    if reason == AdmissionRefusal.USER_WINDOW:
+        return generation_user_limit_error(policy.max_jobs_per_user_per_window, policy.window_seconds)
+    if reason == AdmissionRefusal.GLOBAL_WINDOW:
+        return generation_global_limit_error()
+    return generation_capacity_error()
+
+
+def ensure_generation_enabled() -> None:
+    """Raises `generation_disabled_error()` (503) when the owner has switched new generation off
+    (`GENERATION_ENABLED=false`). Read at call time, so a restart with the new value is all it takes."""
+    if not get_settings().generation_enabled:
+        logger.warning(
+            "Refused a generation request: new generation is switched off.",
+            extra={"error_code": ErrorCode.GENERATION_DISABLED.value},
+        )
+        raise generation_disabled_error()
+
+
 def _create_job_or_conflict(job: GenerationJob) -> None:
-    """Insert a queued job; the DATABASE's one-active-job-per-trip index is the final arbiter --
-    losing that race is the same friendly 409 the pre-check produces."""
+    """Admit and insert a queued job -- the ONE way a generate / regenerate / targeted-regenerate job
+    comes into existence, so every admission limit applies to all three.
+
+    The repository decides and inserts atomically (`app.repositories.admission`): over a limit nothing
+    is stored and the caller gets a typed 429 before any background task is scheduled, so no provider
+    is ever called for a refused request. Jobs whose owner is gone (expired lease, never claimed) are
+    closed across ALL trips first, so an abandoned job never keeps a concurrent slot. The DATABASE's
+    one-active-job-per-trip index stays the final arbiter of the per-trip rule -- losing that race is
+    the same friendly 409 the pre-check produces."""
+    # The owner's emergency switch comes first: nothing is counted, stored or scheduled.
+    ensure_generation_enabled()
+    policy = admission_policy()
+    if policy.max_concurrent_jobs > 0:
+        _reconcile_stale_jobs(None)
     try:
-        get_job_repository().create(job)
+        get_job_repository().admit(job, policy, now=job.created_at)
     except JobAlreadyActiveError:
         _count_job(_job_type_of(job), ops_events.JOB_CREATE_CONFLICT)
         raise job_already_running_error(job.trip_id) from None
+    except TripNoLongerExistsError:
+        # P1-A: the trip (or the whole account) was deleted between this request's ownership check
+        # and the admission. An expected race: the ordinary 404 for a trip that does not exist --
+        # the caller had just been verified as its owner, so this says nothing they did not know --
+        # never a 409 (nothing conflicts any more) and never a 503 (the database is fine). No job
+        # was written and no background task is scheduled.
+        logger.info(
+            "No job was created: the trip was deleted while the request was being admitted.",
+            extra={"trip_id": job.trip_id, "owner_id": job.owner_id, "error_code": "TRIP_NOT_FOUND"},
+        )
+        raise trip_not_found_error(job.trip_id) from None
+    except AdmissionRefusedError as refused:
+        error = _admission_refused_error(refused.reason, policy)
+        _count_job(_job_type_of(job), ops_events.JOB_ADMISSION_REFUSED)
+        ops_events.log_event(
+            logger,
+            logging.WARNING,
+            ops_events.JOB_ADMISSION_REFUSED,
+            "Refused a new job: an admission limit was reached.",
+            trip_id=job.trip_id,
+            owner_id=job.owner_id,
+            job_type=_job_type_of(job),
+            error_code=error.code.value,
+        )
+        raise error from None
     _count_job(_job_type_of(job), ops_events.JOB_CREATED)
 
 
-def _reconcile_stale_jobs(trip_id: str) -> None:
+def _reconcile_stale_jobs(trip_id: str | None) -> None:
     """Marks any `queued`/`running` job for `trip_id` older than
     `Settings.generation_job_stale_after_seconds` as interrupted/failed
     (`mark_job_interrupted`) -- called before any duplicate-job check so
@@ -482,11 +560,14 @@ def _reconcile_stale_jobs(trip_id: str) -> None:
             logger.warning(
                 "Marked job %s for trip %s as interrupted (its lease expired / it was never claimed).",
                 interrupted_job.job_id,
-                trip_id,
+                interrupted_job.trip_id,
                 extra=_job_log_fields(interrupted_job),
             )
         return
-    for job in job_repo.list_running_by_trip_id(trip_id):
+    running = (
+        job_repo.list_non_terminal() if trip_id is None else job_repo.list_running_by_trip_id(trip_id)
+    )
+    for job in running:
         reference_time = job.started_at or job.created_at
         age_seconds = (now - reference_time).total_seconds()
         if age_seconds > stale_after_seconds:
@@ -497,7 +578,7 @@ def _reconcile_stale_jobs(trip_id: str) -> None:
                 "(queued/running for %.0fs, past the %ds staleness window).",
                 job.job_type.value,
                 job.job_id,
-                trip_id,
+                job.trip_id,
                 age_seconds,
                 stale_after_seconds,
                 extra=_job_log_fields(interrupted_job),
