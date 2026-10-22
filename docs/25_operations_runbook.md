@@ -825,4 +825,6 @@ The notice describes the process; it reaches visitors only with the release. Bef
 - [x] **Rehearsal:** done by the owner on 2026-10-21, passed (recorded in `docs/29` section 7). The whole of section 8.1 against a disposable database (a local one or a new Neon
       branch, never production) with a synthetic account: a wrong code, the right code, a dry run, the
       deletion, and a second attempt with the used request (refused). Record it in `docs/29` section 7.
-- [ ] The contact mailbox has two-step verification enabled, and the two message texts above are saved.
+- [x] The contact mailbox has two-step verification enabled, and the two message texts above are saved:
+      confirmed by the owner on 2026-10-21 (2-Step Verification on for garimaprachi2411@gmail.com; both texts
+      of section 8.1 saved as Gmail drafts; recorded in `docs/29` section 7).

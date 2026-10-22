@@ -113,6 +113,26 @@ this image and no exploit analysis was done. Nothing below says a finding cannot
 and two CRITICAL ones first — until a Debian fix ships and the base image is rebuilt. No base-image or
 dependency upgrade was made: none has a fix, and an upgrade needs evidence and approval.
 
+The table above is from the scan of `efa1546`. The later reachability review of the hardened image (setuid /
+setgid bits and `pip` removed, Phase 1A, commit `179df2c`) is in `docs/29` section 5. Its "read-only root
+filesystem" mitigation holds in `docker-compose.yml`; it is **not verified on Render**.
+
+### Owner decision D5 (2026-10-21): OWNER-ACCEPTED FOR RESTRICTED M1 ONLY
+
+The owner's words: "I approve D5 for the restricted M1 deployment only. D1 remains deferred."
+
+| | |
+| --- | --- |
+| Accepted | The hardened backend image with **2 CRITICAL and 61 HIGH** residual Debian OS findings, none currently fixable upstream according to the documented scan, with the exposure stated per finding in `docs/29` section 5 |
+| Scope | The restricted M1 deployment only: merge, migration and deployment of this release, and the operator's own smoke test. No invitation is shared under this acceptance |
+| Not accepted | The **111 MEDIUM** OS findings, which remain unreviewed one by one; sharing the beta invitation link; unrestricted public registration |
+| Unverified | A read-only root filesystem and `no-new-privileges` on Render |
+| Conditions | Re-check Trivy (a fresh result, recorded in `docs/29` section 7) before the beta invitation link is shared; rebuild the image when upstream fixes become available |
+
+This acceptance says nothing about exploitability beyond what `docs/29` section 5 records, and does not
+change the itinerary-quality result: the quality gate remains **FAILED** (section 1), and D1, the quality
+exception for a limited beta, remains **DEFERRED**.
+
 ## 5. Independent evaluation plan
 
 Three sets are kept apart, and their roles never change:

@@ -54,28 +54,29 @@ this list; manual device, browser and screen-reader testing; a new acceptance ev
 | # | Blocker | Resolved by |
 | --- | --- | --- |
 | B1 | Production (per the repository) runs pre-P0 code with no generation or sign-up limits on a public URL | A0 below, then a deployment of a reviewed commit (`docs/25` section 3) — or, until then, restricting public generation (`docs/25` section 4.3 lists three ways) |
-| B2 | This branch is not merged; `docs/25` section 3 step 1 requires the deployed commit to be green on `main` | Owner merges after review; CI re-runs on `main` |
+| B2 | This branch is not merged; `docs/25` section 3 step 1 requires the deployed commit to be green on `main`. (PR #6: six CI checks green, no conflicts, owner 2026-10-21; still unmerged) | Owner merges after review; CI re-runs on `main` |
 | B3 | **Restricted registration exists in code, not yet in production.** The shareable beta link (section 8) makes new accounts possible only for holders of the link, and production refuses open registration; it takes effect only once a commit containing it is deployed (B1, B2). It restricts registration to *link holders*, not to named people (section 8.4) | Deployment, then section 8 |
-| B4 | No Neon restore drill. (The owner reports that the first automated, encrypted production backup was downloaded and restored with the local drill of `docs/30` section 5.1; the restore into a disposable **Neon** branch of A1 is still not recorded.) | A1 |
+| B4 | **OPEN — partly deferred, not complete.** No restore of a backup into a disposable **Neon** branch (A1) has been done. Recovery evidence so far (owner-reported, section 7): an earlier automated, encrypted S3 backup was restored into an isolated local PostgreSQL with the drill of `docs/30` section 5.1; a Neon point-in-time recovery branch was created and inspected; a fresh encrypted S3 backup completed on 2026-10-21 and the production monitor passed (four valid backups, newest 0.1 h old). **Owner decision, 2026-10-21 (D10):** the full S3-to-Neon-branch restore drill is deferred **for the M1 controlled deployment only** (merge, migration and backend/frontend deployment of this release, with the smoke test of section 9.5), on the conditions in section 9.5. **The drill is still required before the beta invitation link is shared with anyone, and before unrestricted public registration** (`docs/28` section 2 item 2; `docs/25` section 2.5). M1 pre-migration conditions 1 (export verified against production) and 2 (restore-point branch `pre-m1-20261021`) are done (section 7); conditions 3–6 and the drill are not. | A1, before the link is shared; M1 pre-migration conditions in section 9.5 |
 | B5 | Monitoring: merged and activated (owner), but delivery of an alert to the owner has not been shown to arrive, and nothing independent of GitHub notices scheduled workflows stopping (no heartbeat). The frontend uptime workflow is not on `main` (B2) | A3 steps 5–6; heartbeat decision D8 |
 | B6 | Backup storage: the automated backups are in S3 (client-side encrypted, 7-day expiry, role-restricted; `docs/25` section 2.6) and the privacy notice now describes them ("about seven days"). **Before release:** confirm bucket versioning is off or a noncurrent-version expiry exists (otherwise "about seven days" is untrue), and that nobody else can read `neon/*`. Manual exports (`docs/25` section 2.2) are as before | A2 |
-| B7 | Deletion for someone who cannot sign in: **decided and implemented** (D3a–D3c; `docs/25` section 8.1, `backend/scripts/locked_out_account_deletion.py`, uncommitted), and described in the privacy notice. **Rehearsed by the owner on a disposable database on 2026-10-21: passed** (section 7). **Not yet usable:** the other prerequisites of `docs/25` section 8.2 are open — the release must be deployed, the operator must be able to obtain the production direct URL and `SESSION_SECRET_KEY`, and the contact mailbox needs two-step verification | `docs/25` section 8.2 |
-| B8 | Unfixed container findings not risk-accepted (2 CRITICAL, 61 HIGH, 111 MEDIUM OS findings, none fixable). The setuid path and the `pip` findings are removed by the uncommitted Phase 1A Dockerfile change (section 5), which takes effect only once that change is merged and deployed | DECISION D5 (section 5) |
+| B7 | Deletion for someone who cannot sign in: **decided and implemented** (D3a–D3c; `docs/25` section 8.1, `backend/scripts/locked_out_account_deletion.py`, commit `179df2c`), and described in the privacy notice. **Rehearsed by the owner on a disposable database on 2026-10-21: passed** (section 7). **Contact mailbox ready (owner, 2026-10-21):** 2-Step Verification enabled and both message texts of `docs/25` section 8.1 saved as Gmail drafts. **Not yet usable:** two prerequisites of `docs/25` section 8.2 remain open — the release must be deployed, and the operator must be able to obtain, securely, Neon's direct connection string and Render's `SESSION_SECRET_KEY` | `docs/25` section 8.2 |
+| B8 | Unfixed container findings (2 CRITICAL, 61 HIGH, 111 MEDIUM OS findings, none fixable). The setuid path and the `pip` findings are removed by the Phase 1A Dockerfile change (section 5, commit `179df2c`), which takes effect only once that change is merged and deployed. **Resolved for the restricted M1 deployment only:** D5 owner-accepted 2026-10-21 for the 2 CRITICAL and 61 HIGH. **Still open** for sharing invitations (fresh Trivy re-check) and for unrestricted public registration (the 111 MEDIUM unreviewed; read-only root and `no-new-privileges` unverified on Render) | DECISION D5 (section 5) |
 | B9 | Quality gate NOT MET | DECISION D1 (beta exception), and a new evaluation (D6) before any wider release |
 
 ## 3. Required decisions (owner)
 
 | # | Decision | Options the repository gives | Record it in |
 | --- | --- | --- | --- |
-| D1 | Explicit exception for a limited beta despite the failed quality result | Accept, naming median 2.0 and eight plans "poor" (`docs/27` section 8); or do not release | `docs/25` section 7 |
+| D1 | Explicit exception for a limited beta despite the failed quality result | **DEFERRED (owner, 2026-10-21); not accepted.** Not needed for the restricted M1 deployment, which invites no one; required before the beta invitation link is shared. Options: accept, naming median 2.0 and eight plans "poor" (`docs/27` section 8); or do not release. The quality gate stays **FAILED** | `docs/25` section 7 |
 | D2 | Backup retention | **Automated backups:** 7-day S3 expiry is in force and stated in the notice ("about seven days"); approve the wording (section 9.8) after the versioning check of B6. **Manual exports:** the recommendation is 30 days on encrypted, access-restricted storage; it becomes policy only after A2's four checks, and until then the notice states no period for them | `docs/25` sections 2.2, 2.6 and 7; the privacy notice in the same commit |
 | D3 | Deletion for someone who cannot sign in | **Decided 2026-10-21:** **D3a** contact `garimaprachi2411@gmail.com` (the owner's Gmail; published in the notice); **D3b** a manual mailbox challenge — a code sent **to** the account's registered address must come back, never a message merely *from* it (residual risk accepted: it proves control of the mailbox, not who registered); **D3c** the operator command `locked_out_account_deletion.py`, which calls the application's own deletion service. **Still open:** whether this hand-run procedure suffices for *unrestricted* registration, or password recovery (V1.1) must come first | `docs/25` sections 7, 8.1, 8.2 |
 | D4 | Whether link-holder registration is restrictive enough (B3) | (a) the shareable link of section 8 (implemented; anyone the link is forwarded to can sign up, bounded by the signup cap); (b) in addition, access control for the whole site at the frontend host — check in Vercel whether Deployment Protection can cover **Production** on the current plan (not verified here); (c) do not open the beta | `docs/25` section 7 |
-| D5 | Risk acceptance per container finding | Section 5 (each row says what is verified, what is assumed, and the available mitigation) | `docs/28` section 4 |
+| D5 | Risk acceptance per container finding | **OWNER-ACCEPTED FOR RESTRICTED M1 ONLY (2026-10-21).** Owner's words: "I approve D5 for the restricted M1 deployment only. D1 remains deferred." Scope: the hardened backend image (setuid/setgid bits and `pip` removed) with its **2 CRITICAL and 61 HIGH** residual Debian OS findings, none fixable upstream per the documented scan, with the exposure stated per row in section 5. **Not accepted:** the **111 MEDIUM** findings (unreviewed one by one); anything beyond M1. **Unverified on Render:** read-only root filesystem and `no-new-privileges`. **Conditions:** re-check Trivy before the beta invitation link is shared (a fresh result, recorded in section 7); rebuild when upstream fixes are published. Sharing invitations and unrestricted public registration need their own decision | `docs/28` section 4 |
 | D6 | New acceptance evaluation: scenarios and budget | `docs/28` section 5 (≤ 1,000 Geoapify credits and ≤ 80 model requests for ten scenarios) | A new document next to `docs/27` |
 | D7 | Whether to merge and deploy | — | `docs/22` section 14, `docs/23` |
 | D9 | Model features outside the evaluated configuration | `AI_FEEDBACK_INTERPRETER_*` and `TARGETED_REGENERATION_ENABLED` exist in the Render dashboard but not in `render.yaml`: keep them off, or switch them on deliberately (the release refuses to start with the interpreter on but no connected provider and key) | `docs/25` section 7 |
 | D8 | Monitoring scope | (a) scheduled backend health checks (`MONITOR_BACKEND_HEALTH_ENABLED=true`): hourly, each wakes the free-tier backend, which reverses the recorded "scheduled backend check stays off" decision (`docs/25` section 7, `Claude.md`); (b) an external heartbeat (free healthchecks.io check, secret `MONITOR_HEARTBEAT_URL`) as the only watchdog for GitHub no longer running workflows (`docs/31` section 4); (c) neither | `docs/25` section 7 and `Claude.md` for (a); `docs/31` section 7 |
+| D10 | Whether the Neon-branch restore drill (A1, B4) must precede the M1 deployment | **Decided 2026-10-21 by the owner: deferred for the M1 controlled deployment only.** Basis: the encrypted S3 backup restored into an isolated local PostgreSQL; the Neon point-in-time recovery branch inspection; the fresh 2026-10-21 S3 backup and the passing backup monitor; the release's migrations are additive (two tables, two indexes). What stays untested is restoring a dump **into Neon** (network duration, client vs server version, what a new Neon database pre-creates, `pg_control_system()` permission, objects outside `public`; `docs/25` section 2.5). That matters on the path where the Neon project or its history is lost, which M1 does not make more likely. **Not deferred:** the drill before the beta link is shared and before unrestricted public registration; and the M1 pre-migration conditions of section 9.5 | Section 7; B4 |
 
 ## 4. Operator procedures
 
@@ -96,6 +97,10 @@ secret, a connection string, an email address or itinerary text.**
   production; none is executed by this document.
 
 ### A1. Neon history retention and the restore drill (`docs/25` sections 2.1–2.5)
+
+**Timing (D10, 2026-10-21):** the restore drill below is deferred for the M1 controlled deployment only. Do
+it **before the beta invitation link is shared** (section 8.3) and before unrestricted public registration.
+The M1 pre-migration conditions that replace it for now are in section 9.5.
 
 **Read the retention value**
 1. `console.neon.tech` → the project → **Settings** → the history / restore-window setting (named
@@ -298,10 +303,11 @@ no network was needed to import the application. **Not verified on Render:** a r
 1. Strip setuid/setgid bits: **done in Phase 1A** (uncommitted; `scripts/ci/image_audit.sh` now fails a
    built image that has one, and `test_container_config_audit_200e.py` checks the Dockerfile).
 2. Remove `pip` from the runtime image: **done in Phase 1A** (same two checks).
-3. **Still the owner's decision (D5):** accept, in writing, the remaining OS findings (2 CRITICAL, 61 HIGH,
-   111 MEDIUM, none fixable) with the exposure stated in each row, or wait for Debian fixes; rebuild
-   regularly so that the Trivy gate reports fixes as they ship. The 111 MEDIUM OS findings remain unreviewed
-   one by one.
+3. **D5: owner-accepted for the restricted M1 deployment only (2026-10-21).** Accepted: the 2 CRITICAL and
+   61 HIGH OS findings of the hardened image, none fixable, with the exposure stated in each row above. Not
+   accepted: the 111 MEDIUM OS findings, which remain unreviewed one by one; any use beyond M1. Read-only root
+   and `no-new-privileges` remain unverified on Render. Conditions: re-check Trivy before the beta invitation
+   link is shared, and rebuild when upstream fixes are published so that the Trivy gate reports them.
 
 No Python dependency, application code or base-image tag was changed.
 
@@ -351,9 +357,17 @@ Record the results in a new table in `docs/28` section 3, replacing a checkbox o
 
 | Item | Date | Who | Result | Evidence (no secrets) |
 | --- | --- | --- | --- | --- |
-| A0 production commit / migration head | | | | |
+| A0 production commit / migration head | 2026-10-21 | Owner | Backend (Render) live commit `f55401c`; Auto-Deploy Off; Blueprint Auto Sync No; Neon production migration `d41a7e2c9b53`. Vercel project-level Ignored Build Step: "Don't build anything". **The Vercel production commit is not recorded yet** | Owner's dashboard reading; not independently verifiable from the repository |
 | A1 Neon retention value | | | | |
-| A1 restore drill | | | | |
+| A1 restore drill into a disposable Neon branch | 2026-10-21 (decision) | Owner | **Not done; deferred for the M1 controlled deployment only (D10).** Still required before the beta link is shared and before unrestricted public registration. B4 stays OPEN | D10 in section 3 |
+| Recovery evidence behind D10: encrypted S3 backup restored locally | Before 2026-10-21 (exact date not recorded here) | Owner | **Passed.** An earlier automated, encrypted S3 backup was decrypted and restored into an isolated local PostgreSQL (`docs/30` section 5.1) | Owner's report; not independently verifiable from the repository |
+| Recovery evidence behind D10: Neon point-in-time recovery branch inspection | Before 2026-10-21 (exact date not recorded here) | Owner | **Passed.** A Neon point-in-time recovery branch was created and inspected successfully. This is not the A1 drill: no dump was restored into Neon. The Neon history-retention value is still not recorded (A1 retention row) | Owner's report |
+| Recovery evidence behind D10: fresh backup and monitor | 2026-10-21 | Owner | **Passed.** A fresh encrypted S3 backup completed; the production monitor reported four valid backups, the newest 0.1 h old | Owner's report; the monitor run is in GitHub Actions |
+| M1 pre-migration 1: fresh export, `verify --manifest` against production (exit 0, revision `d41a7e2c9b53`, all tables match), dump SHA-256 equals the manifest | 2026-10-22 00:19 UTC (export) | Owner, on their Mac (PostgreSQL 16.15 client tools, Python 3.11.14) | **Passed.** At a quiet moment (read-only query: 0 running, 0 queued, 0 with a live lease). Export `travelobligator-20261022T001901Z.dump` with manifest `travelobligator-20261022T001901Z.manifest.json`, both mode 0600, in a private (0700) directory outside the repository. `verify --manifest` against production (read-only): **VERIFICATION PASSED, exit code 0**, revision `d41a7e2c9b53`. The dump's SHA-256 equals the manifest's `dump_sha256` | Owner's terminal output (counts and revision only); no connection string, email address or itinerary text recorded. The files themselves are personal data and are not in the repository |
+| M1 pre-migration 2: temporary Neon restore-point branch created (name, time); later deleted (time) | 2026-10-21 (created) | Owner | **Created:** branch `pre-m1-20261021` from the production branch, with data and schema; its Alembic revision verified as `d41a7e2c9b53`. **This is a restore point, not the A1 restore drill:** no dump was restored into Neon. **Not yet deleted**: delete it once the release is accepted (section 9.5 step 2) and record the time here. It holds a copy of personal data while it exists | Owner's Neon console reading |
+| M1 preconditions: PR #6 CI and deployment holds | 2026-10-21 | Owner | PR #6: all six CI checks green, no merge conflicts, **not merged**. Render Auto-Deploy Off; Blueprint Auto Sync No. Vercel project-level Ignored Build Step "Don't build anything" (build hold of section 9.4; whether the empty Production Override can bypass it is confirmed only by the first deployment after the merge showing as Canceled) | Owner's reading of GitHub, Render and Vercel |
+| M1 3–5: migration `d41a7e2c9b53` → `a94c0e7d2b61`; backup-role grants; backend deployed immediately (`Application started.` with the new head) | | | | |
+| M1 6: post-migration backup run by hand succeeded; monitor reports it fresh | | | | |
 | A2 backup storage (four checks) | | | | |
 | A3 first scheduled uptime run | | | | |
 | A3 failure notification received | | | | |
@@ -365,8 +379,12 @@ Record the results in a new table in `docs/28` section 3, replacing a checkbox o
 | 8 first link-holder sign-up checked | | | | |
 | A4 configuration and model names | | | | |
 | A6 rollback pre-checks | | | | |
-| D1–D9 decisions (D3a–D3c recorded 2026-10-21) | | | | |
+| D1–D10 decisions (D3a–D3c and D10 recorded 2026-10-21) | | | | |
+| D5 container findings: restricted M1 only | 2026-10-21 | Owner | **Accepted for restricted M1 only**: "I approve D5 for the restricted M1 deployment only. D1 remains deferred." 2 CRITICAL + 61 HIGH accepted; 111 MEDIUM not reviewed and not accepted; Render read-only root / `no-new-privileges` unverified. Before sharing invitations: fresh Trivy re-check, recorded here | Owner's approval in the session; section 3 D5; `docs/28` section 4 |
+| D1 quality exception | 2026-10-21 | Owner | **Deferred; not accepted.** The quality gate stays FAILED. Required before the beta invitation link is shared | Owner's statement in the session |
+| Trivy re-check before sharing invitations (D5 condition) | | | | |
 | `docs/25` 8.2 locked-out deletion rehearsal on a disposable database (wrong code, right code, dry run, deletion, reused request refused) | 2026-10-21 | Owner, personally, on their Mac | **Passed.** Disposable local PostgreSQL 16 container (127.0.0.1 only), migrated to `a94c0e7d2b61`; two synthetic `.test` accounts (one with 2 trips + 1 failed sign-in to delete, one with 1 trip + 1 failed sign-in to keep). `challenge`: request created, 72 h expiry; unknown address: no request, no code. `verify`: two wrong codes refused and counted, then verified (3 of 5 attempts). `status`: verified. Dry run: all checks passed, nothing deleted. Other account's address: refused. Real `delete` (rehearsal session secret): account, its 2 trips and its failed-sign-in counter removed. Reuse of the request: refused. After: unrelated account unchanged (present, 1 trip, 1 failed sign-in); request `consumed`, outcome `deleted`. Cleanup: container and temporary challenge store removed; the real default store was never created | Owner's terminal output reviewed in the session; no production system, credential or real address used. Habit noted for real use: the code was pasted once into a chat during the rehearsal (harmless for synthetic data; in real use, start again with `challenge --replace`) |
+| `docs/25` 8.2 contact mailbox: 2-Step Verification and the two message texts saved | 2026-10-21 | Owner (confirmed in the session) | **Done.** 2-Step Verification enabled for garimaprachi2411@gmail.com; both message texts of `docs/25` section 8.1 (the neutral reply and the code message) saved as Gmail drafts | Owner's confirmation; not independently verifiable from the repository. Still open in 8.2: release deployment, and secure operator access to Neon's direct connection string and Render's `SESSION_SECRET_KEY` |
 | Section 6 manual tests | | | | |
 
 ## 8. Limited-beta access: the shareable link and the emergency switches
@@ -407,6 +425,11 @@ the Render service restarts.
 - *Record:* the date it was set — never the value.
 
 ### 8.3 Share the link
+
+**Precondition (B4, D10, D1, D5):** the A1 restore drill into a disposable Neon branch is recorded in
+section 7; the M1 post-migration backup test (section 9.5 step 6) has passed; D1 (the quality exception) is
+accepted and recorded; and a fresh Trivy result has been re-checked under D5 and recorded. Until then, do not
+send the link to anyone.
 
 - Send `https://travelobligator.vercel.app/#beta=<token>` directly to the person (a message to them, not a
   public post). Open it yourself once in a private window: the address bar must show the site without
@@ -546,6 +569,37 @@ unticked), then restore the previous command.
 Prepare variables → hold Vercel → quiet moment and fresh backup → merge → migrate → grant → **deploy the
 backend immediately** → check `/health`, `/ready`, the startup line → deploy the frontend → smoke test with a
 disposable account through the invitation link → run the backup workflow by hand → cold start → record.
+
+**M1 pre-migration conditions (D10).** The Neon-branch restore drill (A1) is deferred for M1 only, so these
+steps are required, in this order, and each is recorded in section 7 (no secret, connection string, email
+address or itinerary text):
+
+1. **Fresh export, manifest verified** (`docs/25` sections 2.2 and 2.4), at a quiet moment
+   (`ops_report.py`: no queued or running job). Take the backup with `db_backup_restore.py backup`. Then,
+   straight away, run `db_backup_restore.py verify --manifest <the new manifest>` read-only against
+   production's **direct** connection string (as `VERIFY_DATABASE_URL`). Pass when `verify` exits 0, reports
+   revision `d41a7e2c9b53`, and every table's row count and fingerprint match. Then unset the variable. A
+   mismatch means something was written in between: take a new export and verify again. Also check that
+   `shasum -a 256` of the `.dump` equals `dump_sha256` in the manifest. Keep both files on encrypted storage
+   (B6/D2).
+2. **Temporary Neon restore-point branch.** Neon → **Branches** → **New branch** from the production branch,
+   named e.g. `pre-m1-<YYYYMMDD>`, created **after** step 1 and **before** the migration. It is a point to
+   go back to, not a drill. Record its name and creation time. Delete it once the release is accepted
+   (`docs/25` section 3 step 11) and record the deletion. It holds a copy of personal data while it exists.
+3. **Merge, then migrate** (`docs/25` section 3 step 5): `alembic current` shows `d41a7e2c9b53` before and
+   `a94c0e7d2b61` after.
+4. **Backup-role grants**, immediately, as the owner of the tables:
+   `GRANT SELECT ON auth_attempts, deleted_job_usage TO travelobligator_backup;`
+5. **Deploy the backend immediately.** Render → Manual Deploy of the merged commit, with nothing else between
+   the migration and this step except the grant. The old backend cannot start on the migrated schema. Check
+   for one `Application started.` line with `migration_head=a94c0e7d2b61`.
+6. **Post-migration backup test.** After the frontend deploy and the smoke test, run **Actions → Neon backup**
+   by hand. Pass when it succeeds, which also proves the grant of step 4, and the next production-monitor run
+   reports the new backup as fresh. A failure here is a blocker to sharing the link.
+
+**Before the beta invitation link is shared** (section 8.3), and again before unrestricted public
+registration: the full A1 restore drill into a disposable Neon branch, recorded in `docs/25` section 2.5 and
+in section 7. Using the link yourself in a private window for the smoke test is not sharing it.
 
 ### 9.6 No straightforward rollback to the old backend after the migration
 
