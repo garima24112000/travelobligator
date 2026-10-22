@@ -17,8 +17,11 @@ from app.models.planning_state import (
     PlanningState,
     WeatherContext,
 )
+from app.models.common import ProviderStatus
+from app.providers import missing_data_reasons
 from app.providers.gateway import ProviderGateway, provider_gateway
 from app.providers.holidays.nager_date_adapter import infer_country_code
+from app.providers.places.country_identity import normalized_country_code
 from app.core import performance
 from app.core.provider_usage import GenerationProviderContext
 from app.services import place_taxonomy as taxonomy
@@ -34,6 +37,20 @@ from app.services.must_visit_matching import (
 from app.services.provider_coverage_service import ProviderCoverageService, provider_coverage_service
 
 logger = logging.getLogger(__name__)
+
+
+def _missing_reason(response: ProviderResponse[Any]) -> str | None:
+    """M2 Phase 1 (D5): the structured reason a context provider returned no
+    data. An adapter that names one is trusted; otherwise a failed request is
+    `request_failed`, a provider that is not connected has no reason (its
+    `data_status` already says so), and anything else is `no_usable_data`."""
+    if response.failure_reason in missing_data_reasons.MISSING_DATA_REASONS:
+        return response.failure_reason
+    if response.status == ProviderStatus.NOT_CONNECTED:
+        return None
+    if response.status == ProviderStatus.FAILED:
+        return missing_data_reasons.REQUEST_FAILED
+    return missing_data_reasons.NO_USABLE_DATA
 
 
 class DestinationContextService(PlanningStageService):
@@ -203,6 +220,16 @@ class DestinationContextService(PlanningStageService):
             "start_date": trip_request.start_date.isoformat(),
             "end_date": trip_request.end_date.isoformat(),
         }
+        # Section 202B.2 (Task 33): how the provider interpreted the
+        # destination text (only when the places provider can say). M2 Phase
+        # 1 (D1): its ISO country code also drives the holiday and currency
+        # lookups. This reuses the cached resolution of the searches above:
+        # it is not a new geocoding request.
+        describe = getattr(places, "describe_destination", None)
+        resolved_destination = describe(destination_name) if callable(describe) else None
+        country_code = normalized_country_code((resolved_destination or {}).get("country_code"))
+        country_kwargs = {"country_code": country_code.upper()} if country_code else {}
+
         with performance.stage("weather_holiday"):
             coordinates = places.resolve_coordinates(destination_name)
             weather_outcome, holiday_outcome, currency_outcome = run_bounded(
@@ -214,9 +241,17 @@ class DestinationContextService(PlanningStageService):
                         dict(trip_dates),
                         coordinates=coordinates,
                     ),
-                    partial(self.gateway.holiday.get_public_holidays, destination_name, dict(trip_dates)),
                     partial(
-                        self.gateway.currency.get_exchange_rate, trip_request.budget_currency, destination_name
+                        self.gateway.holiday.get_public_holidays,
+                        destination_name,
+                        dict(trip_dates),
+                        **country_kwargs,
+                    ),
+                    partial(
+                        self.gateway.currency.get_exchange_rate,
+                        trip_request.budget_currency,
+                        destination_name,
+                        **country_kwargs,
                     ),
                 ],
                 CONTEXT_PROVIDER_BATCH_LIMIT,
@@ -224,7 +259,9 @@ class DestinationContextService(PlanningStageService):
             weather_context = self._build_weather_context(planning_state, destination_name, weather_outcome.unwrap())
             planning_state.weather_context = weather_context
 
-            holiday_context = self._build_holiday_context(planning_state, destination_name, holiday_outcome.unwrap())
+            holiday_context = self._build_holiday_context(
+                planning_state, destination_name, holiday_outcome.unwrap(), country_code
+            )
             planning_state.holiday_context = holiday_context
 
         with performance.stage("currency"):
@@ -297,11 +334,6 @@ class DestinationContextService(PlanningStageService):
                 f"Must-visit '{term}' could not be matched to a verified place in this "
                 "destination, so it was not scheduled."
             )
-
-        # Section 202B.2 (Task 33): show how the provider interpreted the
-        # destination text (only when the places provider can say).
-        describe = getattr(places, "describe_destination", None)
-        resolved_destination = describe(destination_name) if callable(describe) else None
 
         context = DestinationContext(
             destination_name=destination_name,
@@ -388,10 +420,15 @@ class DestinationContextService(PlanningStageService):
             confidence=weather_response.confidence,
             assumptions=assumptions,
             warnings=warnings,
+            missing_reason=None if daily_weather else _missing_reason(weather_response),
         )
 
     def _build_holiday_context(
-        self, planning_state: PlanningState, destination_name: str, holiday_response: ProviderResponse[Any]
+        self,
+        planning_state: PlanningState,
+        destination_name: str,
+        holiday_response: ProviderResponse[Any],
+        resolved_country_code: str | None = None,
     ) -> HolidayContext:
         """Plan-level provider-backed public holiday context for the trip's
         date range (docs/12_provider_architecture.md section 16).
@@ -455,13 +492,16 @@ class DestinationContextService(PlanningStageService):
             destination=destination_name,
             start_date=trip_request.start_date,
             end_date=trip_request.end_date,
-            country_code=infer_country_code(destination_name),
+            country_code=(
+                resolved_country_code.upper() if resolved_country_code else infer_country_code(destination_name)
+            ),
             holidays=holidays,
             source=holiday_response.provider_name if provider_succeeded else None,
             data_status=holiday_response.data_status,
             confidence=holiday_response.confidence,
             assumptions=assumptions,
             warnings=warnings,
+            missing_reason=None if provider_succeeded else _missing_reason(holiday_response),
         )
 
     def _build_currency_context(
@@ -520,6 +560,7 @@ class DestinationContextService(PlanningStageService):
             confidence=exchange_rate_response.confidence,
             assumptions=assumptions,
             warnings=warnings,
+            missing_reason=None if rate_data else _missing_reason(exchange_rate_response),
         )
 
     @staticmethod

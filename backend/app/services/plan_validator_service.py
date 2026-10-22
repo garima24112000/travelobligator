@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from app.models.accommodation import AccommodationSearchResult, AccommodationSearchStatus
 from app.models.common import DataStatus, ProviderStatus, ReadinessStatus, ValidationSeverity
-from app.models.flight import FlightSearchResult, FlightSearchStatus
+from app.models.flight import FlightAvailabilityReason, FlightSearchResult, FlightSearchStatus
 from app.models.hotel_ratings import HotelRatingsStatus
 from app.models.planning_state import (
     DailyPlan,
@@ -1509,6 +1509,24 @@ _FLIGHT_UNAVAILABLE_MESSAGE_TEMPLATE = (
     "available ({detail}). No airline, flight number, schedule, price, "
     "availability, baggage, or booking link data exists to review."
 )
+# M2 Phase 1 review: `unavailable` also covers "no flight source at all" and
+# "a search could not be sent" -- neither may say a source "was checked".
+_FLIGHT_NO_SOURCE_MESSAGE = (
+    "No flight source is set up, so no flight offers were available and no "
+    "flight search was made. No airline, flight number, schedule, price, "
+    "availability, baggage, or booking link data exists to review."
+)
+_FLIGHT_SEARCH_NOT_POSSIBLE_MESSAGE_TEMPLATE = (
+    "A flight search could not be made for this trip ({detail}), so no flight "
+    "offers were available. No airline, flight number, schedule, price, "
+    "availability, baggage, or booking link data exists to review."
+)
+_FLIGHT_RESPONSE_UNUSABLE_MESSAGE = (
+    "The flight source answered, but its response could not be used, so no "
+    "flight offers were available. This does not mean no flights exist. No "
+    "airline, flight number, schedule, price, availability, baggage, or "
+    "booking link data exists to review."
+)
 _FLIGHT_SUCCESS_MESSAGE_TEMPLATE = (
     "{count} provider-backed flight offer(s) were found via {provider}, but "
     "these have not been reviewed for schedule, price, availability, "
@@ -1584,7 +1602,19 @@ def _build_flight_inventory_warning(
     ):
         message = _FLIGHT_NOT_CONNECTED_MESSAGE
     elif flight_inventory_report.status == FlightSearchStatus.FAILED:
-        message = _FLIGHT_FAILED_MESSAGE
+        message = (
+            _FLIGHT_RESPONSE_UNUSABLE_MESSAGE
+            if flight_inventory_report.availability_reason == FlightAvailabilityReason.RESPONSE_UNUSABLE
+            else _FLIGHT_FAILED_MESSAGE
+        )
+    elif flight_inventory_report.availability_reason == FlightAvailabilityReason.NO_SOURCE_CONFIGURED:
+        message = _FLIGHT_NO_SOURCE_MESSAGE
+    elif flight_inventory_report.availability_reason == FlightAvailabilityReason.SEARCH_NOT_POSSIBLE:
+        message = _FLIGHT_SEARCH_NOT_POSSIBLE_MESSAGE_TEMPLATE.format(
+            detail=flight_inventory_report.message or "required trip details were missing"
+        )
+    elif flight_inventory_report.availability_reason == FlightAvailabilityReason.RESPONSE_UNUSABLE:
+        message = _FLIGHT_RESPONSE_UNUSABLE_MESSAGE
     elif (
         flight_inventory_report.status == FlightSearchStatus.UNAVAILABLE
         or not flight_inventory_report.offers

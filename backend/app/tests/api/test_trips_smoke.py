@@ -4428,6 +4428,7 @@ def test_weather_context_exists_after_generate(
         "confidence",
         "assumptions",
         "warnings",
+        "missing_reason",  # M2 Phase 1
     }
     assert weather_context["destination"]
     assert weather_context["start_date"] == "2026-08-10"
@@ -4439,6 +4440,7 @@ def test_weather_context_exists_after_generate(
     # unavailable in this default test environment -- never invented.
     assert weather_context["daily_weather"] == []
     assert weather_context["data_status"] == "unavailable"
+    assert weather_context["missing_reason"] == "destination_coordinates_unavailable"
 
 
 def test_weather_context_has_usable_daily_data_when_connected(
@@ -4638,6 +4640,7 @@ def test_holiday_context_exists_after_generate(
         "confidence",
         "assumptions",
         "warnings",
+        "missing_reason",  # M2 Phase 1
     }
     assert holiday_context["destination"]
     assert holiday_context["start_date"] == "2026-08-10"
@@ -4648,6 +4651,7 @@ def test_holiday_context_exists_after_generate(
     # adapter honestly can't infer a country code -- unavailable, never
     # invented.
     assert holiday_context["country_code"] is None
+    assert holiday_context["missing_reason"] == "country_unresolved"
     assert holiday_context["holidays"] == []
     assert holiday_context["data_status"] == "unavailable"
 
@@ -5125,6 +5129,7 @@ def test_currency_context_exists_after_generate(
         "confidence",
         "assumptions",
         "warnings",
+        "missing_reason",  # M2 Phase 1
     }
     assert currency_context["base_currency"] == "USD"
 
@@ -5134,6 +5139,7 @@ def test_currency_context_exists_after_generate(
     assert currency_context["destination_currency"] is None
     assert currency_context["exchange_rate"] is None
     assert currency_context["data_status"] == "unavailable"
+    assert currency_context["missing_reason"] == "country_unresolved"
 
     # This section is purely provider-backed and must never flip readiness
     # by itself; the deterministic test provider still leaves the plan

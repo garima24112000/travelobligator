@@ -9,7 +9,7 @@ from app.core.errors import trip_not_found_error
 from app.models.accommodation import AccommodationSearchResult, AccommodationSearchStatus
 from app.models.common import ProviderStatus
 from app.models.hotel_ratings import HotelRatingsStatus
-from app.models.flight import FlightSearchResult, FlightSearchStatus
+from app.models.flight import FlightAvailabilityReason, FlightSearchResult, FlightSearchStatus
 from app.models.planning_state import (
     GENERATION_STAGE_KEYS,
     GenerationProgress,
@@ -313,6 +313,7 @@ def _failed_flight_inventory_result(
         status=FlightSearchStatus.FAILED,
         offers=[],
         message="Flight inventory computation failed unexpectedly.",
+        availability_reason=FlightAvailabilityReason.PROVIDER_FAILED,
         destination=destination,
         departure_date=departure_date,
     )

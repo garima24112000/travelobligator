@@ -1178,3 +1178,41 @@ def test_an_unresolvable_co_located_pair_is_never_merged_but_is_marked_for_the_s
         assert groups["Tram Museum"] is None
         assert destination.suspect_entity_collisions == context.suspect_collisions
         assert "raw" not in destination.model_dump_json() and "datasource" not in destination.model_dump_json()
+
+
+# -- M2 Phase 1 (D4): a partial batch failure is told apart from a small result -------------------------
+
+
+def test_a_batch_with_failed_requests_is_marked_partial_request_failures(
+    monkeypatch: pytest.MonkeyPatch, configured: None, tmp_path: Path
+) -> None:
+    def sights_fail(request: httpx.Request) -> Any:
+        if "tourism.sights" in request.url.params["categories"]:
+            return httpx.Response(503)
+        return _by_category(request)
+
+    network = _Network(places=sights_fail)
+    adapter = _adapter(monkeypatch, network, ProviderCacheStore(tmp_path / "c.sqlite3"))
+    response = adapter.search_attractions("Fixtureville, Fixtureland", {"pool_size": 60})
+
+    assert response.status == ProviderStatus.PARTIAL and response.data
+    assert response.failure_reason == places_module.PARTIAL_REQUEST_FAILURES
+    entry = ProviderGateway.to_status_entry(response)
+    assert entry.failure_reason == places_module.PARTIAL_REQUEST_FAILURES
+
+
+def test_a_small_but_complete_result_carries_no_failure_reason(
+    monkeypatch: pytest.MonkeyPatch, configured: None, tmp_path: Path
+) -> None:
+    def one_place(request: httpx.Request) -> Any:
+        if "leisure.park" in request.url.params["categories"]:
+            return [_feature("p1", "Central Garden", ["leisure", "leisure.park"], 50.06, 10.06)]
+        return []
+
+    network = _Network(places=one_place)
+    adapter = _adapter(monkeypatch, network, ProviderCacheStore(tmp_path / "c.sqlite3"))
+    response = adapter.search_attractions("Fixtureville, Fixtureland", {"pool_size": 60})
+
+    # PARTIAL because it is small -- not because anything failed.
+    assert response.status == ProviderStatus.PARTIAL
+    assert response.failure_reason is None

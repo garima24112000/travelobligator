@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from app.models.planning_state import PlanningState, RegenerationReadiness
+from app.core.config import get_settings
+from app.models.planning_state import FeedbackEvent, PlanningState, RegenerationReadiness
+from app.providers.ai_feedback_interpreter.factory import feedback_interpreter_is_configured
 from app.services.feedback_service import derive_pending_affected_stages, pending_feedback_events
 
 # Fixed, honest description of what a real regeneration would need. This
@@ -11,6 +13,67 @@ _REQUIRED_INPUTS: tuple[str, ...] = (
     "pending_feedback",
     "regeneration_engine",
 )
+
+# M2 Phase 1 (D3): why this deployment cannot apply a change request.
+# Targeted regeneration is on, but no connected interpreter is configured.
+CHANGE_INTERPRETATION_UNAVAILABLE = "change_interpretation_unavailable"
+# Targeted regeneration is off and no deterministic operation can apply the
+# request(s) (with no registered operation at all, none ever could).
+CHANGE_APPLICATION_NOT_SUPPORTED = "change_application_not_supported"
+
+_CHANGE_UNAVAILABLE_BLOCKED_BY = (
+    "Change requests are saved, but this version of the app cannot apply them to the itinerary."
+)
+_CHANGE_UNAVAILABLE_NEXT_STEP = (
+    "Your request stays saved with the trip. Applying change requests is not available yet."
+)
+
+
+def change_application_unavailable_reason(pending_events: list[FeedbackEvent]) -> str | None:
+    """None when `POST /trips/{id}/regenerate` could apply `pending_events`
+    as far as the deployment's capabilities go; otherwise the reason it
+    would be refused whatever the request says. Mirrors the route's own
+    branching: `TARGETED_REGENERATION_ENABLED` picks the targeted path
+    (which needs the feedback interpreter), otherwise only the registered
+    deterministic legacy operations can apply anything. Configuration and
+    registry only -- no provider is called."""
+    if get_settings().targeted_regeneration_enabled:
+        return None if feedback_interpreter_is_configured() else CHANGE_INTERPRETATION_UNAVAILABLE
+    # Imported here: the mutation service imports this module.
+    from app.services.regeneration_mutation_service import (
+        LEGACY_SUPPORTED_OPERATIONS,
+        legacy_regeneration_can_apply,
+    )
+
+    if not LEGACY_SUPPORTED_OPERATIONS:
+        return CHANGE_APPLICATION_NOT_SUPPORTED
+    if pending_events and not legacy_regeneration_can_apply(pending_events):
+        return CHANGE_APPLICATION_NOT_SUPPORTED
+    return None
+
+
+def apply_change_capability(
+    readiness: RegenerationReadiness, pending_events: list[FeedbackEvent]
+) -> RegenerationReadiness:
+    """A copy of `readiness` stating the deployment's CURRENT change-request
+    capability. A readiness that said "ready" while the capability is
+    missing is turned into a refusal: an action that would certainly be
+    refused is never offered. Nothing else about the readiness changes."""
+    reason = change_application_unavailable_reason(pending_events)
+    update: dict[str, object] = {
+        "change_requests_applicable": reason is None,
+        "change_requests_unavailable_reason": reason,
+    }
+    if reason is not None and readiness.can_regenerate:
+        update.update(
+            status="blocked",
+            can_regenerate=False,
+            available_inputs=[item for item in readiness.available_inputs if item != "regeneration_engine"],
+            missing_capabilities=["regeneration_engine"],
+            blocked_by=[_CHANGE_UNAVAILABLE_BLOCKED_BY],
+            next_step=_CHANGE_UNAVAILABLE_NEXT_STEP,
+        )
+    return readiness.model_copy(update=update)
 
 
 class RegenerationReadinessService:
@@ -94,7 +157,12 @@ class RegenerationReadinessService:
                 ],
                 next_step="Remove active locks before requesting regeneration.",
             )
-        elif not derive_pending_affected_stages(planning_state.feedback_history):
+        elif not get_settings().targeted_regeneration_enabled and not derive_pending_affected_stages(
+            planning_state.feedback_history
+        ):
+            # The targeted path does not need a deterministic classification
+            # (the route sends it there before this check), so this refusal
+            # applies to the legacy path only.
             readiness = RegenerationReadiness(
                 current_version=planning_state.metadata.current_version,
                 would_create_version=f"v{len(version_history) + 1}",
@@ -138,7 +206,7 @@ class RegenerationReadinessService:
                 next_step="Call POST /trips/{trip_id}/regenerate with confirm=true.",
             )
 
-        planning_state.regeneration_readiness = readiness
+        planning_state.regeneration_readiness = apply_change_capability(readiness, pending_events)
         planning_state.touch()
         return planning_state
 

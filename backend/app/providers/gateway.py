@@ -575,6 +575,7 @@ class ProviderGateway:
             error_message=response.message,
             confidence=response.confidence,
             retrieved_at=response.retrieved_at.isoformat(),
+            failure_reason=response.failure_reason,
         )
 
     def default_provider_coverage(self) -> ProviderCoverage:

@@ -789,6 +789,23 @@ def test_nager_200_with_valid_json_is_a_success(monkeypatch: pytest.MonkeyPatch,
     assert len(sent) == 2 and response.failure_reason is None  # one request per calendar year
 
 
+def _year_requests(sent: list[httpx.Request]) -> list[httpx.Request]:
+    return [request for request in sent if "/PublicHolidays/" in request.url.path]
+
+
+def _covered_country_answering(empty: httpx.Response) -> Any:
+    """Nager.Date for a COVERED country (IN) with no data for the trip's years.
+    M2 Phase 1: an empty answer is classified against Nager.Date's own list of
+    covered countries, so that list is served as the real service does."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/AvailableCountries"):
+            return httpx.Response(200, json=[{"countryCode": "IN", "name": "India"}])
+        return httpx.Response(empty.status_code, content=empty.content)
+
+    return handler
+
+
 @pytest.mark.parametrize(
     "empty", [httpx.Response(204), httpx.Response(200, content=b""), httpx.Response(200, content=b"  \n")],
     ids=["204", "200-empty-body", "200-whitespace-body"],
@@ -796,9 +813,7 @@ def test_nager_200_with_valid_json_is_a_success(monkeypatch: pytest.MonkeyPatch,
 def test_nager_successful_empty_answer_is_unavailable_not_a_failure_and_is_not_retried(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog: pytest.LogCaptureFixture, empty: httpx.Response
 ) -> None:
-    adapter, sent = _nager(
-        monkeypatch, tmp_path, lambda request: httpx.Response(empty.status_code, content=empty.content)
-    )
+    adapter, sent = _nager(monkeypatch, tmp_path, _covered_country_answering(empty))
     with caplog.at_level(logging.INFO, logger=nager_date_adapter.__name__):
         response = adapter.get_public_holidays("Jaipur, India", _DATES)
 
@@ -806,17 +821,19 @@ def test_nager_successful_empty_answer_is_unavailable_not_a_failure_and_is_not_r
     assert response.status == ProviderStatus.UNAVAILABLE and response.data is None
     assert response.failure_reason == HOLIDAY_DATA_NOT_PROVIDED
     assert "no public holiday data" in response.message and "IN" in response.message
-    assert len(sent) == 2  # one request per calendar year: nothing was retried
+    assert len(_year_requests(sent)) == 2  # one request per calendar year: nothing was retried
+    assert len(sent) == 3  # plus ONE look-up of the covered-country list
     # no exception-style warning, no parse error, no destination text
     assert [record.levelname for record in caplog.records] == ["INFO"]
     logged = caplog.records[0].getMessage()
     assert logged == "Nager.Date returned no holiday data (country=IN, status=holiday_data_not_provided)."
     assert "Jaipur" not in logged and "Expecting value" not in caplog.text
 
-    # remembered briefly: the next generation does not ask again
+    # remembered briefly: the next generation does not ask again (the year
+    # answers nor the covered-country list)
     again = adapter.get_public_holidays("Jaipur, India", _DATES)
     assert again.status == ProviderStatus.UNAVAILABLE and again.failure_reason == HOLIDAY_DATA_NOT_PROVIDED
-    assert len(sent) == 2
+    assert len(sent) == 3
 
 
 def test_nager_no_data_is_not_remembered_when_the_negative_cache_is_disabled(
@@ -824,10 +841,10 @@ def test_nager_no_data_is_not_remembered_when_the_negative_cache_is_disabled(
 ) -> None:
     monkeypatch.setenv("NAGER_DATE_NO_DATA_CACHE_TTL_SECONDS", "0")
     get_settings.cache_clear()
-    adapter, sent = _nager(monkeypatch, tmp_path, lambda request: httpx.Response(204))
+    adapter, sent = _nager(monkeypatch, tmp_path, _covered_country_answering(httpx.Response(204)))
     adapter.get_public_holidays("Jaipur, India", _DATES)
     adapter.get_public_holidays("Jaipur, India", _DATES)
-    assert len(sent) == 4
+    assert len(_year_requests(sent)) == 4
 
 
 @pytest.mark.parametrize(
@@ -845,7 +862,11 @@ def test_nager_real_failures_are_still_failures_and_are_never_cached(
     adapter, sent = _nager(monkeypatch, tmp_path, handler)
     with caplog.at_level(logging.INFO, logger=nager_date_adapter.__name__):
         response = adapter.get_public_holidays("Jaipur, India", _DATES)
-    assert response.status == ProviderStatus.FAILED and response.failure_reason is None
+    # M2 Phase 1: a real failure now names its request-failure reason -- and
+    # is still never the neutral "no holiday data" reason.
+    assert response.status == ProviderStatus.FAILED
+    assert response.failure_reason in {"request_failed", "malformed_response"}
+    assert response.failure_reason != nager_date_adapter.HOLIDAY_DATA_NOT_PROVIDED
     assert [record.levelname for record in caplog.records] == ["WARNING"]
     # fixed identifiers only: never the destination, the URL or the exception text
     assert "Jaipur" not in caplog.text and "http" not in caplog.text.lower().replace("http 503", "")

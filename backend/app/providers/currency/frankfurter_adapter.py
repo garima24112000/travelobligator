@@ -9,12 +9,15 @@ import httpx
 from app.core.config import get_settings
 from app.models.common import DataStatus, ProviderStatus
 from app.models.providers import NormalizedExchangeRate, ProviderResponse
+from app.providers import missing_data_reasons as reasons
 from app.providers.base import CurrencyProvider, failed_response, unavailable_response
+from app.providers.places.country_identity import normalized_country_code
 from app.storage.provider_cache_store import (
     ProviderCacheStore,
     get_provider_cache_store,
     make_query_hash,
 )
+from app.utils.country_currency import CURRENCY_AMBIGUOUS, currency_for_country
 from app.utils.destination_inference import infer_us_country_code_from_state_segment
 
 logger = logging.getLogger(__name__)
@@ -152,21 +155,41 @@ class FrankfurterCurrencyAdapter(CurrencyProvider):
         return self._cache_store
 
     def get_exchange_rate(
-        self, base_currency: str, destination: str
+        self, base_currency: str, destination: str, country_code: str | None = None
     ) -> ProviderResponse[Any]:
+        """M2 Phase 1 (D1): `country_code` is the ISO alpha-2 code the
+        destination geocoder resolved, when the caller has it; its currency
+        comes from the ISO 4217 table in `app.utils.country_currency`. A
+        country with more than one circulating currency, or none, gets no
+        rate and no request. Without a code, the conservative
+        destination-text inference below still applies."""
         field_name = "exchange_rate"
         base_currency = base_currency.strip().upper()
 
-        destination_currency = infer_destination_currency(destination)
+        resolved_code = normalized_country_code(country_code)
+        if resolved_code is not None:
+            resolution = currency_for_country(resolved_code)
+            if resolution.currency is None:
+                return self._no_data(
+                    field_name,
+                    resolution.reason or reasons.CURRENCY_NOT_DETERMINED_REASON,
+                    (
+                        f"{resolved_code.upper()} has more than one circulating currency, so no "
+                        "single exchange rate is requested."
+                        if resolution.reason == CURRENCY_AMBIGUOUS
+                        else f"No single national currency is listed for {resolved_code.upper()}, "
+                        "so no exchange rate is requested."
+                    ),
+                )
+            destination_currency = resolution.currency
+        else:
+            destination_currency = infer_destination_currency(destination)
         if destination_currency is None:
-            return unavailable_response(
-                self.provider_name,
-                self.provider_type,
-                unavailable_fields=[field_name],
-                message=(
-                    f"Could not conservatively infer a destination currency from "
-                    f"'{destination}', so Frankfurter exchange rate cannot be requested."
-                ),
+            return self._no_data(
+                field_name,
+                reasons.COUNTRY_UNRESOLVED,
+                f"Could not conservatively infer a destination currency from "
+                f"'{destination}', so Frankfurter exchange rate cannot be requested.",
             )
 
         if destination_currency == base_currency:
@@ -232,13 +255,27 @@ class FrankfurterCurrencyAdapter(CurrencyProvider):
                 response.raise_for_status()
                 payload = response.json()
         except (httpx.HTTPError, ValueError) as exc:
+            if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code in (404, 422):
+                # Frankfurter answers "not found" for a currency it does not
+                # publish: a coverage limit of the source, not a failure.
+                logger.info(
+                    "Frankfurter does not publish this pair (%s -> %s).", base_currency, destination_currency
+                )
+                return self._no_data(
+                    field_name,
+                    reasons.CURRENCY_NOT_SUPPORTED,
+                    f"Frankfurter does not provide an exchange rate for {base_currency} -> "
+                    f"{destination_currency}.",
+                )
             logger.warning(
                 "Frankfurter request failed for %s -> %s: %s",
                 base_currency,
                 destination_currency,
-                exc,
+                f"HTTP {exc.response.status_code}"
+                if isinstance(exc, httpx.HTTPStatusError)
+                else type(exc).__name__,
             )
-            return failed_response(
+            failed = failed_response(
                 self.provider_name,
                 self.provider_type,
                 unavailable_fields=[field_name],
@@ -247,17 +284,17 @@ class FrankfurterCurrencyAdapter(CurrencyProvider):
                     f"{destination_currency}."
                 ),
             )
+            failed.failure_reason = reasons.reason_for_request_error(exc)
+            return failed
 
         exchange_rate = self._normalize(payload, destination_currency)
         if exchange_rate is None:
-            return unavailable_response(
-                self.provider_name,
-                self.provider_type,
-                unavailable_fields=[field_name],
-                message=(
-                    f"Frankfurter returned no usable exchange rate for "
-                    f"{base_currency} -> {destination_currency}."
-                ),
+            well_formed = isinstance(payload, dict) and isinstance(payload.get("rates"), dict)
+            return self._no_data(
+                field_name,
+                reasons.NO_USABLE_DATA if well_formed else reasons.MALFORMED_RESPONSE,
+                f"Frankfurter returned no usable exchange rate for "
+                f"{base_currency} -> {destination_currency}.",
             )
 
         if cache_store is not None:
@@ -275,6 +312,13 @@ class FrankfurterCurrencyAdapter(CurrencyProvider):
                 f"{destination_currency}."
             ),
         )
+
+    def _no_data(self, field_name: str, reason: str, message: str) -> ProviderResponse[Any]:
+        response = unavailable_response(
+            self.provider_name, self.provider_type, unavailable_fields=[field_name], message=message
+        )
+        response.failure_reason = reason
+        return response
 
     def _read_cache(
         self, cache_store: ProviderCacheStore, query_hash: str

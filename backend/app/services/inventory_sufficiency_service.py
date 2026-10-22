@@ -20,14 +20,21 @@ import logging
 from typing import Any
 
 from app.core.config import get_settings
+from app.models.common import DataStatus, ProviderStatus, ProviderStatusEntry
 from app.models.inventory_sufficiency import InventorySufficiencyReport, InventorySufficiencyStatus
 from app.models.planning_state import PlanningState
 from app.providers.gateway import ProviderGateway, provider_gateway
+from app.providers.missing_data_reasons import PLACES_PARTIAL_REQUEST_FAILURES
 from app.core.provider_usage import GenerationProviderContext
 from app.services.candidate_quality_service import CandidateQualityService
 from app.services.entity_collisions import apply_suspect_collisions
 from app.services.pace_targets import PaceTargets, pace_targets_for
-from app.services.usefulness_contract import count_viable_candidates, inventory_status
+from app.services.usefulness_contract import (
+    PLACES_EXPANSION_STATUS_SUFFIX,
+    count_viable_candidates,
+    inventory_status,
+    place_lookup_incomplete,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +50,11 @@ _MESSAGES = {
         "Not enough verified places were found for a useful itinerary of this length and pace."
     ),
 }
+# M2 Phase 1 (D4): the same status when part of the place search failed.
+_INCOMPLETE_LOOKUP_MESSAGE = (
+    "Not enough verified places could be looked up for a useful itinerary, because part of the "
+    "place search did not complete. This does not mean the destination has little to see."
+)
 
 
 def _normalize_name(name: Any) -> str:
@@ -78,7 +90,11 @@ class InventorySufficiencyService:
             viable_candidates=viable,
             expansion_attempted=expansion_attempted,
             viable_before_expansion=viable_before_expansion,
-            message=_MESSAGES[status],
+            message=(
+                _INCOMPLETE_LOOKUP_MESSAGE
+                if status == InventorySufficiencyStatus.INSUFFICIENT and place_lookup_incomplete(planning_state)
+                else _MESSAGES[status]
+            ),
         )
 
     def run(
@@ -124,11 +140,27 @@ class InventorySufficiencyService:
 
         context = planning_state.destination_context
         pool_size = max(60, min(5 * targets.target_stops, 110))
+        # M2 Phase 1 review (D4): an expansion page that failed, in whole or in
+        # part, is recorded so an insufficient result is not worded as a
+        # destination with little to see. A complete page records nothing.
+        status_key = f"{getattr(places, 'provider_name', 'places_provider')}{PLACES_EXPANSION_STATUS_SUFFIX}"
         try:
             response = places.search_attractions(context.destination_name, {"pool_size": pool_size, "page": 1})
         except Exception:
             logger.warning("Inventory expansion request failed unexpectedly; keeping the current pool.", exc_info=True)
+            planning_state.provider_status[status_key] = ProviderStatusEntry(
+                provider_name=getattr(places, "provider_name", "places_provider"),
+                provider_type="places",
+                status=ProviderStatus.FAILED,
+                data_status=DataStatus.FAILED,
+                failure_reason="places_expansion_error",
+            )
             return True
+        if (
+            response.status == ProviderStatus.FAILED
+            or response.failure_reason == PLACES_PARTIAL_REQUEST_FAILURES
+        ):
+            planning_state.provider_status[status_key] = ProviderGateway.to_status_entry(response)
 
         seen_ids = {poi.get("place_id") for poi in context.candidate_pois if poi.get("place_id")}
         seen_names = {_normalize_name(poi.get("name")) for poi in context.candidate_pois}

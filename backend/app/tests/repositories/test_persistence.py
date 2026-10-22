@@ -562,7 +562,9 @@ def test_plan_diff_preview_is_persisted_and_reloadable(client: TestClient) -> No
     assert preview.to_version is None
 
 
-def test_regeneration_readiness_is_persisted_and_reloadable(client: TestClient) -> None:
+def test_regeneration_readiness_is_persisted_and_reloadable(
+    client: TestClient, synthetic_legacy_regeneration_support: None
+) -> None:
     """End-to-end: the regeneration readiness gate (Step 135) recomputed
     after generating a trip and submitting feedback survives a simulated
     backend process restart, recoverable by a brand-new repository

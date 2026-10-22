@@ -46,3 +46,20 @@ def get_ai_feedback_interpreter_provider(
 
     provider_cls = _SUPPORTED_PROVIDERS.get(resolved_name, NotConnectedAIFeedbackInterpreterProvider)
     return provider_cls()
+
+
+# The credential each connected interpreter provider needs (presence only).
+_PROVIDER_KEY_FIELDS = {"anthropic": "anthropic_api_key", "groq": "groq_api_key"}
+
+
+def feedback_interpreter_is_configured() -> bool:
+    """M2 Phase 1 (D3): True when a change request could reach a connected
+    interpreter -- the stage is switched on, its provider is a connected one,
+    and that provider's credential is present. Configuration only: no
+    provider is constructed or called, and a present key is not proof it is
+    valid (that is only known when the provider answers)."""
+    settings = get_settings()
+    if not settings.ai_feedback_interpreter_enabled:
+        return False
+    key_field = _PROVIDER_KEY_FIELDS.get(settings.ai_feedback_interpreter_provider)
+    return key_field is not None and bool((getattr(settings, key_field, None) or "").strip())

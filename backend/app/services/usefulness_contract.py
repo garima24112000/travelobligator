@@ -25,13 +25,14 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from app.models.candidate_quality import CandidateQualityTier
-from app.models.common import ValidationSeverity
+from app.models.common import ProviderStatus, ValidationSeverity
 from app.models.inventory_sufficiency import (
     INSUFFICIENT_VERIFIED_INVENTORY,
     UNDERFILLED_PLAN,
     InventorySufficiencyStatus,
 )
 from app.models.planning_state import ExperienceItem, PlanningState, ValidationIssue
+from app.providers.missing_data_reasons import PLACES_PARTIAL_REQUEST_FAILURES
 from app.services.pace_targets import PaceTargets, pace_targets_for
 
 _VIABLE_TIERS = frozenset(
@@ -85,6 +86,11 @@ class UsefulnessVerdict:
     scheduled_meaningful_stops: int
     empty_days: tuple[int, ...]
     duplicate_place_ids: tuple[str, ...] = field(default_factory=tuple)
+    # M2 Phase 1 (D4): place discovery did not complete (a request failed or
+    # was refused), so `viable` may understate the destination's supply.
+    # Changes only how an insufficient result is WORDED -- never the status,
+    # the code, readiness, or what is scheduled.
+    place_lookup_incomplete: bool = False
 
     @property
     def enforced(self) -> bool:
@@ -142,7 +148,29 @@ def evaluate_usefulness(planning_state: PlanningState) -> UsefulnessVerdict:
         scheduled_meaningful_stops=meaningful,
         empty_days=tuple(empty_days),
         duplicate_place_ids=tuple(duplicates),
+        place_lookup_incomplete=place_lookup_incomplete(planning_state),
     )
+
+
+# `provider_status` key suffix of a failed inventory-expansion page
+# (`InventorySufficiencyService`); recorded only when that page failed.
+PLACES_EXPANSION_STATUS_SUFFIX = ":places_expansion"
+
+
+def place_lookup_incomplete(planning_state: PlanningState) -> bool:
+    """True when the attraction discovery this plan was built from did not
+    complete: its places request failed outright, or part of its batch
+    failed (`partial_request_failures`) -- the broad search or the
+    inventory-expansion page. A merely SMALL answer is not incomplete. Reads
+    the recorded provider status only."""
+    for key, entry in (planning_state.provider_status or {}).items():
+        if not (key.endswith(":places") or key.endswith(PLACES_EXPANSION_STATUS_SUFFIX)):
+            continue
+        if entry.status == ProviderStatus.FAILED:
+            return True
+        if entry.failure_reason == PLACES_PARTIAL_REQUEST_FAILURES:
+            return True
+    return False
 
 
 def usefulness_findings(
@@ -156,17 +184,30 @@ def usefulness_findings(
     targets = verdict.targets
 
     if not verdict.enforced:
+        if verdict.place_lookup_incomplete:
+            # M2 Phase 1 (D4): part of the place search did not complete, so
+            # the count says nothing about what the destination offers.
+            message = (
+                f"Only {verdict.viable} verified place(s) suitable for an itinerary could be looked up, "
+                f"because part of the place search did not complete; a {targets.trip_days}-day "
+                f"{targets.pace.value} trip needs at least {targets.minimum_useful}. This does not mean "
+                "the destination has little to see. The plan was not padded with unverified places."
+            )
+            suggested_fix = "Try generating the plan again later."
+        else:
+            message = (
+                f"Only {verdict.viable} verified place(s) suitable for an itinerary were found for this "
+                f"destination; a {targets.trip_days}-day {targets.pace.value} trip needs at least "
+                f"{targets.minimum_useful}. The plan was not padded with unverified places."
+            )
+            suggested_fix = "Try a shorter trip, a more relaxed pace, or a nearby larger destination."
         critical.append(
             ValidationIssue(
                 severity=ValidationSeverity.CRITICAL,
                 category="insufficient_verified_inventory",
-                message=(
-                    f"Only {verdict.viable} verified place(s) suitable for an itinerary were found for this "
-                    f"destination; a {targets.trip_days}-day {targets.pace.value} trip needs at least "
-                    f"{targets.minimum_useful}. The plan was not padded with unverified places."
-                ),
+                message=message,
                 affected_section="experience_plan",
-                suggested_fix="Try a shorter trip, a more relaxed pace, or a nearby larger destination.",
+                suggested_fix=suggested_fix,
             )
         )
         blocking_codes.append(INSUFFICIENT_VERIFIED_INVENTORY)

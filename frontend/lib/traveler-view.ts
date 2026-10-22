@@ -7,8 +7,11 @@
 // Node's built-in test runner (frontend/tests).
 
 import type {
+  CurrencyContext,
+  FlightInventoryReport,
   HolidayContext,
   ItineraryNarrativeReport,
+  RegenerationReadiness,
   RouteFeasibilityReport,
   TravelTimeBuffer,
   ValidationReport,
@@ -525,8 +528,8 @@ export function travelerReviewNotices(
     | null
     | undefined,
   context?: {
-    weather?: Pick<WeatherContext, "daily_weather" | "data_status"> | null;
-    holiday?: Pick<HolidayContext, "data_status"> | null;
+    weather?: Pick<WeatherContext, "daily_weather" | "data_status" | "missing_reason"> | null;
+    holiday?: Pick<HolidayContext, "data_status" | "missing_reason"> | null;
   },
 ): string[] {
   const notices: string[] = [];
@@ -556,9 +559,145 @@ export function travelerReviewNotices(
         (validation?.review_code_classification?.[code] === "material" ? OTHER_MATERIAL_NOTICE : undefined),
     );
   }
-  if (weatherAbsent) add(WEATHER_NOTICE);
-  if (holidayAbsent) add(HOLIDAY_NOTICE);
+  if (weatherAbsent) add(weatherMissingNotice(weather));
+  if (holidayAbsent) add(holidayMissingNotice(holiday));
   return notices;
+}
+
+// -- why travel context is missing (M2 Phase 1) ------------------------------------------
+
+// The backend's `missing_reason` (app.providers.missing_data_reasons) names
+// WHY weather / holidays / an exchange rate is missing. Each is worded for a
+// traveler; a reason this page does not know, or none (an older trip), falls
+// back to the general notice. Never a claim about the destination itself:
+// "the service couldn't be reached" is not "there are no holidays".
+const SERVICE_UNREACHABLE_REASONS = new Set([
+  "request_failed",
+  "request_timed_out",
+  "malformed_response",
+  "provider_reported_error",
+]);
+
+const WEATHER_MISSING_NOTICES: Record<string, string> = {
+  forecast_not_yet_available:
+    "A weather forecast isn't available yet for these dates. Forecasts only cover about the next two weeks.",
+  destination_coordinates_unavailable:
+    "Weather couldn't be looked up because the destination's location couldn't be pinned down.",
+  invalid_dates: "Weather couldn't be looked up for these dates.",
+  no_usable_data: "No weather forecast came back for these dates.",
+};
+
+const HOLIDAY_MISSING_NOTICES: Record<string, string> = {
+  country_unresolved:
+    "Public holidays couldn't be checked because the destination's country couldn't be determined.",
+  country_not_supported: "Public holiday information isn't available for this country.",
+  holiday_data_not_provided: "No public holiday calendar was available for this country and year.",
+  invalid_dates: "Public holidays couldn't be checked for these dates.",
+  no_usable_data: "No public holiday information came back for these dates.",
+};
+
+export const CURRENCY_NOTICE = "Currency exchange rate is not available for this destination.";
+
+const CURRENCY_MISSING_NOTICES: Record<string, string> = {
+  country_unresolved:
+    "No exchange rate is shown because the destination's country couldn't be determined.",
+  currency_ambiguous:
+    "More than one currency is in common use at this destination, so no single exchange rate is shown.",
+  currency_not_determined:
+    "No single national currency is listed for this destination, so no exchange rate is shown.",
+  // The rate source may lack either side of the pair (the local currency or
+  // the trip's budget currency), so neither is blamed.
+  currency_not_supported:
+    "An exchange rate between your budget currency and the local currency isn't available in this app yet.",
+  no_usable_data: "No exchange rate came back for this destination's currency.",
+};
+
+function missingNotice(
+  reason: string | null | undefined,
+  notices: Record<string, string>,
+  service: string,
+  fallback: string,
+): string {
+  if (!reason) return fallback;
+  if (SERVICE_UNREACHABLE_REASONS.has(reason)) {
+    return `The ${service} service couldn't be reached for this trip. Please try again later.`;
+  }
+  return notices[reason] ?? fallback;
+}
+
+export function weatherMissingNotice(
+  weather: Pick<WeatherContext, "missing_reason"> | null | undefined,
+): string {
+  return missingNotice(weather?.missing_reason, WEATHER_MISSING_NOTICES, "weather", WEATHER_NOTICE);
+}
+
+export function holidayMissingNotice(
+  holiday: Pick<HolidayContext, "missing_reason"> | null | undefined,
+): string {
+  return missingNotice(holiday?.missing_reason, HOLIDAY_MISSING_NOTICES, "public holiday", HOLIDAY_NOTICE);
+}
+
+export function currencyMissingNotice(
+  currency: Pick<CurrencyContext, "missing_reason"> | null | undefined,
+): string {
+  return missingNotice(currency?.missing_reason, CURRENCY_MISSING_NOTICES, "exchange rate", CURRENCY_NOTICE);
+}
+
+// -- flights (M2 Phase 1) ------------------------------------------------------------------
+
+// Only a completed live search with zero offers may be described as having
+// found none. Every other cause says what really happened -- and nothing
+// tells a traveler to "connect" or "enable" anything.
+export const FLIGHTS_SEARCHED_NO_OFFERS = "No flight offers were found for this trip's route and dates.";
+export const FLIGHTS_NOT_SHOWN = "No flight options are shown for this trip.";
+
+const FLIGHT_AVAILABILITY_NOTICES: Record<string, string> = {
+  no_source_configured: "Flight search isn't part of this app yet, so no flight options are shown.",
+  local_source_no_matching_offers: FLIGHTS_NOT_SHOWN,
+  search_not_possible: "Flights couldn't be searched with this trip's details, so no flight options are shown.",
+  search_completed_no_offers: FLIGHTS_SEARCHED_NO_OFFERS,
+  response_unusable: "Flight search is temporarily unavailable. Please try again later.",
+  provider_failed: "Flight search is temporarily unavailable. Please try again later.",
+};
+
+// -- route coverage summary (Developer view, M2 Phase 1 D6) ---------------------------------
+
+/**
+ * One line stating what the route report actually verified, or null when
+ * there is no report or no routing provider is connected (the plan-time
+ * summary already says so). "All ... have a route" is said only when EVERY
+ * leg has a successful route; any other leg is counted as not verified,
+ * whatever the reason.
+ */
+export function routeReportSummary(
+  report: Pick<RouteFeasibilityReport, "status" | "legs" | "provider"> | null | undefined,
+): string | null {
+  if (!report || report.status === "not_connected") return null;
+  const legs = report.legs ?? [];
+  const via = report.provider ? ` (routing provider: ${report.provider})` : "";
+  if (legs.length === 0) {
+    return `No transfers between stops were routed${via}; route status: ${report.status}.`;
+  }
+  const verified = legs.filter((leg) => leg.status === "success").length;
+  if (verified === legs.length) {
+    return `All ${legs.length} transfers between stops have a route from the routing provider${via}.`;
+  }
+  const unverified = legs.length - verified;
+  return (
+    `${verified} of ${legs.length} transfers between stops have a verified route${via}; ` +
+    `${unverified} ${unverified === 1 ? "does" : "do"} not and ${unverified === 1 ? "is" : "are"} not verified ` +
+    `(route status: ${report.status}).`
+  );
+}
+
+/** The line Traveler view shows instead of flight offers, or null when the
+ * report has offers to show. */
+export function travelerFlightAvailabilityNotice(
+  report: Pick<FlightInventoryReport, "status" | "offers" | "availability_reason"> | null | undefined,
+): string | null {
+  if (report && report.status === "success" && report.offers.length > 0) return null;
+  const reason = report?.availability_reason;
+  return (reason && FLIGHT_AVAILABILITY_NOTICES[reason]) || FLIGHTS_NOT_SHOWN;
 }
 
 // -- applying requested changes ---------------------------------------------------------
@@ -589,9 +728,11 @@ const CHANGE_REFUSALS: Record<string, ChangeRefusal> = {
     detail:
       "This does not mean the place doesn't exist. Your request is still saved, so you can try again later.",
   },
+  // M2 Phase 1: no "try rewording" -- this refusal comes from a path that
+  // cannot apply free-text requests at all, so rewording would not help.
   REGENERATION_FEEDBACK_NOT_INTERPRETABLE: {
-    title: "We couldn't work out what to change",
-    detail: `Try rewording your request, for example by naming the place or the day. ${STILL_SAVED}`,
+    title: "This request can't be applied automatically",
+    detail: `The app can apply only some kinds of requests automatically, and this isn't one of them yet. ${STILL_SAVED}`,
   },
   REGENERATION_NO_EFFECT: {
     title: "Nothing to change",
@@ -622,6 +763,36 @@ const DEFAULT_CHANGE_REFUSAL: ChangeRefusal = {
 
 export function travelerChangeRefusal(code: string | null | undefined): ChangeRefusal {
   return (code && CHANGE_REFUSALS[code]) || DEFAULT_CHANGE_REFUSAL;
+}
+
+// M2 Phase 1: when the backend says change requests cannot be applied in
+// this deployment at all, Traveler view explains that instead of offering an
+// "apply" action that would certainly be refused. Requests still save.
+const CHANGES_UNAVAILABLE: Record<string, ChangeRefusal> = {
+  change_interpretation_unavailable: {
+    title: "Changes can't be applied right now",
+    detail:
+      "Your requests are saved with the trip, but the part of the app that applies them isn't available right now. Your itinerary stays as it is.",
+  },
+};
+
+const DEFAULT_CHANGES_UNAVAILABLE: ChangeRefusal = {
+  title: "Changes can't be applied yet",
+  detail:
+    "Your requests are saved with the trip, but the app can't apply them to the itinerary yet. Your itinerary stays as it is.",
+};
+
+/** Explanation for Traveler view when applying change requests is not
+ * possible at all, or null when it may be (including when unknown). */
+export function travelerChangesUnavailable(
+  readiness:
+    | Pick<RegenerationReadiness, "change_requests_applicable" | "change_requests_unavailable_reason">
+    | null
+    | undefined,
+): ChangeRefusal | null {
+  if (readiness?.change_requests_applicable !== false) return null;
+  const reason = readiness.change_requests_unavailable_reason;
+  return (reason && CHANGES_UNAVAILABLE[reason]) || DEFAULT_CHANGES_UNAVAILABLE;
 }
 
 // -- loading ------------------------------------------------------------------------

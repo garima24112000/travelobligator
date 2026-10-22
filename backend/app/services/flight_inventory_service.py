@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import logging
 
-from app.models.flight import FlightSearchRequest, FlightSearchResult, FlightSearchStatus
+from app.models.flight import (
+    FlightAvailabilityReason,
+    FlightSearchRequest,
+    FlightSearchResult,
+    FlightSearchStatus,
+)
 from app.models.planning_state import PlanningState
 from app.providers.gateway import ProviderGateway, provider_gateway
 
@@ -85,11 +90,28 @@ class FlightInventoryService:
                 status=FlightSearchStatus.FAILED,
                 offers=[],
                 message=_UNEXPECTED_FAILURE_MESSAGE,
+                availability_reason=FlightAvailabilityReason.PROVIDER_FAILED,
                 destination=trip_request.primary_destination,
                 departure_date=trip_request.start_date,
             )
 
-        return _safe_search_flights(self.gateway, request)
+        return ensure_availability_reason(_safe_search_flights(self.gateway, request))
+
+
+def ensure_availability_reason(result: FlightSearchResult) -> FlightSearchResult:
+    """M2 Phase 1 (D2): a result whose adapter did not name a cause gets one
+    only where its status alone proves it. An `unavailable` result without a
+    reason stays unclassified -- it is never assumed to be a completed
+    search with zero offers."""
+    if result.availability_reason is not None:
+        return result
+    if result.status == FlightSearchStatus.SUCCESS and result.offers:
+        return result.with_reason(FlightAvailabilityReason.OFFERS_FOUND)
+    if result.status == FlightSearchStatus.NOT_CONNECTED:
+        return result.with_reason(FlightAvailabilityReason.NO_SOURCE_CONFIGURED)
+    if result.status == FlightSearchStatus.FAILED:
+        return result.with_reason(FlightAvailabilityReason.PROVIDER_FAILED)
+    return result
 
 
 def _provider_name(gateway: ProviderGateway) -> str:
@@ -111,6 +133,7 @@ def _safe_search_flights(
             status=FlightSearchStatus.FAILED,
             offers=[],
             message=_UNEXPECTED_FAILURE_MESSAGE,
+            availability_reason=FlightAvailabilityReason.PROVIDER_FAILED,
             origin=request.origin,
             destination=request.destination,
             departure_date=request.departure_date,
