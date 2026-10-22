@@ -219,8 +219,17 @@ test("the nonce reaches Next.js and the one inline script", () => {
   assert.match(proxy, /requestHeaders\.set\(CSP_HEADER_NAME, policy\);/);
   assert.match(proxy, /requestHeaders\.set\("x-nonce", nonce\);/);
   assert.match(proxy, /response\.headers\.set\(CSP_HEADER_NAME, policy\);/);
+  // Next.js 16.4 moved the request-header parsing out of app-render.js into
+  // parse-request-headers.js (same expression); the renderer takes the nonce
+  // from that parsed result. The real server's behaviour is checked
+  // end-to-end by `npm run check:headers`.
+  const nextHeaders = read(
+    root, "node_modules", "next", "dist", "server", "route-modules", "app-page", "parse-request-headers.js",
+  );
+  assert.match(nextHeaders, /headers\['content-security-policy'\] \|\| headers\['content-security-policy-report-only'\]/);
+  assert.match(nextHeaders, /getScriptNonceFromHeader\)\(csp\)/);
   const nextRender = read(root, "node_modules", "next", "dist", "server", "app-render", "app-render.js");
-  assert.match(nextRender, /headers\['content-security-policy'\] \|\| headers\['content-security-policy-report-only'\]/);
+  assert.match(nextRender, /const \{ flightRouterState, isPrefetchRequest, nonce \} = parsedRequestHeaders;/);
   // the layout puts the nonce on the application's own inline script, and is rendered per request
   assert.match(layout, /const nonce = \(await headers\(\)\)\.get\("x-nonce"\) \?\? undefined;/);
   assert.match(layout, /<script\s+nonce=\{nonce\}\s+dangerouslySetInnerHTML=/);
