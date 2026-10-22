@@ -10,6 +10,7 @@ from app.services.experience_identity import deterministic_experience_id
 from app.core import generation_diagnostics
 from app.core import performance
 from app.core.config import get_settings
+from app.providers.routing.factory import routing_provider_is_configured
 from app.models.ai_candidate_promotion import PromotedAICandidate
 from app.models.ai_itinerary_reasoning import (
     AIItineraryReasoningResult,
@@ -1160,7 +1161,7 @@ class ExperiencePlannerService(PlanningStageService):
         readiness_checklist = _build_readiness_checklist(
             planning_state, candidate_pois, candidate_restaurants, candidate_accommodation_pois
         )
-        route_feasibility_context = _build_route_feasibility_context()
+        route_feasibility_context = _build_route_feasibility_context(routing_provider_is_configured())
 
         experience_plan = ExperiencePlan(
             schedule_diversity=schedule_diversity,
@@ -3808,7 +3809,9 @@ def _build_implementation_gaps(planning_state: PlanningState) -> ImplementationG
             "not a booking-capable accommodation provider."
         )
 
-    if coverage.routes not in _CONNECTED_COVERAGE_STATUSES:
+    # M2 Phase 1 (D6): drafted before routing runs, so a configured routing
+    # provider has no coverage recorded YET -- that is not "not connected".
+    if coverage.routes not in _CONNECTED_COVERAGE_STATUSES and not routing_provider_is_configured():
         missing_data.append(
             f"{_provider_missing_explanation('routes/transit provider', 'route/transit data', coverage.routes)} "
             f"(coverage: routes={coverage.routes})."
@@ -4024,7 +4027,16 @@ def _build_readiness_checklist(
     )
 
     routes_connected = coverage.routes in _CONNECTED_COVERAGE_STATUSES
-    route_times_status = _not_yet_checked_status(routes_connected)
+    # M2 Phase 1 (D6): this checklist is drafted before routing runs. With a
+    # routing provider configured, route times and walking are measured
+    # afterwards (route feasibility report + validation findings) -- never
+    # "not connected", and never claimed as checked here.
+    routing_configured = routing_provider_is_configured()
+    measured_after_drafting = (
+        "Route times and walking are measured by the routing step after the day order is final, "
+        "not in this draft checklist; see the route feasibility report and the route findings."
+    )
+    route_times_status = _not_yet_checked_status(routes_connected or routing_configured)
     items.append(
         ReadinessChecklistItem(
             label="Route times checked",
@@ -4033,6 +4045,8 @@ def _build_readiness_checklist(
                 f"{_provider_missing_explanation('routes provider', 'route data', coverage.routes)}, "
                 "so route time cannot be checked."
                 if route_times_status == ChecklistItemStatus.MISSING_DATA
+                else measured_after_drafting
+                if routing_configured
                 else "Route ordering and timing are not implemented yet, so route time is not checked."
             ),
         )
@@ -4049,7 +4063,7 @@ def _build_readiness_checklist(
         )
     )
 
-    walking_status = _not_yet_checked_status(routes_connected)
+    walking_status = _not_yet_checked_status(routes_connected or routing_configured)
     items.append(
         ReadinessChecklistItem(
             label="Walking feasibility checked",
@@ -4058,6 +4072,8 @@ def _build_readiness_checklist(
                 f"{_provider_missing_explanation('routes provider', 'route data', coverage.routes)}, "
                 "so walking feasibility cannot be checked."
                 if walking_status == ChecklistItemStatus.MISSING_DATA
+                else measured_after_drafting
+                if routing_configured
                 else "Walking-distance feasibility is not implemented yet, so it is not checked."
             ),
         )
@@ -4173,17 +4189,35 @@ def _build_readiness_checklist(
     return ReadinessChecklist(summary=summary, items=items)
 
 
-def _build_route_feasibility_context() -> RouteFeasibilityContext:
+def _build_route_feasibility_context(routing_configured: bool = False) -> RouteFeasibilityContext:
     """Plan-level route/walking feasibility context -- a data-model
-    foundation only, so the app is ready for a real RoutesProvider later
-    (docs/12_provider_architecture.md section 12). No routes provider is
-    connected in this deployment, so `daily_route_feasibility` always
-    stays empty: no straight-line distance is ever presented as route
-    distance, no walking time is ever calculated, and no travel mode is
-    ever inferred. This never marks route times or walking feasibility as
-    checked in `readiness_checklist`, and never affects validation
-    readiness by itself.
+    foundation only (docs/12_provider_architecture.md section 12).
+    `daily_route_feasibility` always stays empty: no straight-line distance
+    is ever presented as route distance, no walking time is ever
+    calculated, and no travel mode is ever inferred. This never marks route
+    times or walking feasibility as checked in `readiness_checklist`, and
+    never affects validation readiness by itself.
+
+    M2 Phase 1 (D6): this is built when the plan is drafted, BEFORE any
+    route is requested. With a routing provider configured it therefore
+    must not say that none is connected: the per-transfer results live in
+    `route_feasibility_report`, built after the day order is final, and
+    this summary says only that it holds none of them.
     """
+    if routing_configured:
+        return RouteFeasibilityContext(
+            source="routes_provider",
+            data_status=DataStatus.UNAVAILABLE,
+            confidence=0.0,
+            daily_route_feasibility=[],
+            assumptions=[
+                "This summary is written when the plan is drafted, before any route is requested, "
+                "so it holds no route data. Per-transfer route results are in the route feasibility "
+                "report, built after the day order is final; a transfer without a verified route "
+                "there is not verified."
+            ],
+            warnings=[],
+        )
     return RouteFeasibilityContext(
         source="routes_provider",
         data_status=DataStatus.NOT_CONNECTED,

@@ -236,7 +236,7 @@ class HolidayProvider(BaseProvider):
     provider_type = ProviderType.HOLIDAY
 
     def get_public_holidays(
-        self, destination: str, dates: dict[str, Any]
+        self, destination: str, dates: dict[str, Any], country_code: str | None = None
     ) -> ProviderResponse[Any]:
         """Matches docs/12_provider_architecture.md section 16's
         `get_public_holidays(country, dates)`, but takes the raw trip
@@ -244,7 +244,9 @@ class HolidayProvider(BaseProvider):
         country code -- concrete adapters (e.g. NagerDateHolidaysAdapter)
         infer a country code from it themselves, conservatively and without
         an LLM, the same way WeatherProvider.get_weather_forecast takes a
-        raw `destination` rather than pre-resolved coordinates.
+        raw `destination` rather than pre-resolved coordinates. M2 Phase 1:
+        `country_code`, when given, is the ISO alpha-2 code the destination
+        geocoder already resolved, and is preferred over that inference.
         """
         return self.not_connected(unavailable_fields=["public_holidays"])
 
@@ -262,7 +264,7 @@ class CurrencyProvider(BaseProvider):
         return self.not_connected(unavailable_fields=["converted_amount"])
 
     def get_exchange_rate(
-        self, base_currency: str, destination: str
+        self, base_currency: str, destination: str, country_code: str | None = None
     ) -> ProviderResponse[Any]:
         """Matches docs/12_provider_architecture.md section 17's
         `get_exchange_rate(from_currency, to_currency)`, but takes the raw
@@ -271,7 +273,9 @@ class CurrencyProvider(BaseProvider):
         FrankfurterCurrencyAdapter) infer a destination currency from it
         themselves, conservatively and without an LLM, the same way
         WeatherProvider.get_weather_forecast and HolidayProvider.
-        get_public_holidays take a raw `destination`.
+        get_public_holidays take a raw `destination`. M2 Phase 1:
+        `country_code`, when given, is the ISO alpha-2 code the destination
+        geocoder already resolved, and is preferred over that inference.
         """
         return self.not_connected(unavailable_fields=["exchange_rate"])
 

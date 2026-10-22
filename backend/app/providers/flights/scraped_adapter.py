@@ -5,7 +5,13 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from app.core.config import Settings, get_settings
-from app.models.flight import FlightOffer, FlightSearchRequest, FlightSearchResult, FlightSearchStatus
+from app.models.flight import (
+    FlightAvailabilityReason,
+    FlightOffer,
+    FlightSearchRequest,
+    FlightSearchResult,
+    FlightSearchStatus,
+)
 from app.models.scraping import ScrapingSourcePolicy, ScrapingSourceType
 from app.providers.flights.base import FlightInventoryProvider
 from app.providers.flights.source_parsers import (
@@ -296,6 +302,7 @@ class ScrapedLocalFlightProvider(FlightInventoryProvider):
                 request,
                 FlightSearchStatus.NOT_CONNECTED,
                 "Scraped flight provider is not enabled.",
+                reason=FlightAvailabilityReason.NO_SOURCE_CONFIGURED,
             )
 
         slots = _resolve_slots(settings)
@@ -376,6 +383,10 @@ class ScrapedLocalFlightProvider(FlightInventoryProvider):
         # below), never joined into a user-facing message; see
         # docs/14_backend_architecture.md section 134.
         checked_source_ids: list[str] = []
+        # M2 Phase 1 (D2): how many configured local files actually exist --
+        # "no file at all" is no flight source; a file without a matching
+        # offer is a source that had nothing for this trip.
+        files_present = 0
 
         for slot in slots:
             state = file_states[slot]
@@ -392,6 +403,7 @@ class ScrapedLocalFlightProvider(FlightInventoryProvider):
                 warnings.append(reason)
                 checked_slot_messages.append(reason)
                 continue
+            files_present += 1
 
             try:
                 html = slot.path.read_text(encoding="utf-8")
@@ -469,6 +481,7 @@ class ScrapedLocalFlightProvider(FlightInventoryProvider):
                 offers=success_offers,
                 message=message,
                 warnings=warnings,
+                availability_reason=FlightAvailabilityReason.OFFERS_FOUND,
                 origin=request.origin,
                 destination=request.destination,
                 departure_date=request.departure_date,
@@ -487,7 +500,11 @@ class ScrapedLocalFlightProvider(FlightInventoryProvider):
                     f"{', '.join(failed_labels)}."
                 )
             return self._empty_result(
-                request, FlightSearchStatus.FAILED, message, warnings=warnings
+                request,
+                FlightSearchStatus.FAILED,
+                message,
+                warnings=warnings,
+                reason=FlightAvailabilityReason.PROVIDER_FAILED,
             )
 
         if not checked_paths:
@@ -507,7 +524,15 @@ class ScrapedLocalFlightProvider(FlightInventoryProvider):
             )
 
         return self._empty_result(
-            request, FlightSearchStatus.UNAVAILABLE, message, warnings=warnings
+            request,
+            FlightSearchStatus.UNAVAILABLE,
+            message,
+            warnings=warnings,
+            reason=(
+                FlightAvailabilityReason.LOCAL_SOURCE_NO_MATCHING_OFFERS
+                if files_present
+                else FlightAvailabilityReason.NO_SOURCE_CONFIGURED
+            ),
         )
 
     def _build_source_policy(self, settings: Settings, slot: _ResolvedSlot) -> ScrapingSourcePolicy:
@@ -546,6 +571,7 @@ class ScrapedLocalFlightProvider(FlightInventoryProvider):
         status: FlightSearchStatus,
         message: str,
         warnings: list[str] | None = None,
+        reason: FlightAvailabilityReason | None = None,
     ) -> FlightSearchResult:
         return FlightSearchResult(
             provider=self.provider_name,
@@ -553,6 +579,7 @@ class ScrapedLocalFlightProvider(FlightInventoryProvider):
             offers=[],
             message=message,
             warnings=warnings or [],
+            availability_reason=reason,
             origin=request.origin,
             destination=request.destination,
             departure_date=request.departure_date,

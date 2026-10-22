@@ -12,6 +12,7 @@ from app.core import performance
 from app.core.config import get_settings
 from app.models.common import DataStatus, GeoPoint, ProviderStatus
 from app.models.providers import NormalizedDailyWeather, ProviderResponse
+from app.providers import missing_data_reasons as reasons
 from app.providers.base import WeatherProvider, failed_response, unavailable_response
 from app.storage.provider_cache_store import (
     ProviderCacheStore,
@@ -44,8 +45,14 @@ _RETRY_BACKOFF_SECONDS = 0.5
 
 # Section 203C.2B (canary correction): machine-readable reason for a trip
 # whose dates are beyond the forecast horizon. Non-blocking for generation.
-FORECAST_NOT_YET_AVAILABLE = "forecast_not_yet_available"
+FORECAST_NOT_YET_AVAILABLE = reasons.FORECAST_NOT_YET_AVAILABLE
 _RETRYABLE_CLIENT_STATUS_CODES = frozenset({408, 429})
+
+
+def _with_reason(response: ProviderResponse[Any], reason: str) -> ProviderResponse[Any]:
+    """M2 Phase 1 (D5): every no-data answer carries its reason."""
+    response.failure_reason = reason
+    return response
 
 
 def _today() -> date_cls:
@@ -148,24 +155,30 @@ class OpenMeteoWeatherAdapter(WeatherProvider):
         field_name = "weather_forecast"
 
         if coordinates is None:
-            return unavailable_response(
-                self.provider_name,
-                self.provider_type,
-                unavailable_fields=[field_name],
-                message=(
-                    f"No coordinates are available for '{destination}', so Open-Meteo "
-                    "weather cannot be requested."
+            return _with_reason(
+                unavailable_response(
+                    self.provider_name,
+                    self.provider_type,
+                    unavailable_fields=[field_name],
+                    message=(
+                        f"No coordinates are available for '{destination}', so Open-Meteo "
+                        "weather cannot be requested."
+                    ),
                 ),
+                reasons.COORDINATES_UNAVAILABLE,
             )
 
         start_date = dates.get("start_date")
         end_date = dates.get("end_date")
         if not start_date or not end_date:
-            return unavailable_response(
-                self.provider_name,
-                self.provider_type,
-                unavailable_fields=[field_name],
-                message="Trip start/end dates are required to request Open-Meteo weather.",
+            return _with_reason(
+                unavailable_response(
+                    self.provider_name,
+                    self.provider_type,
+                    unavailable_fields=[field_name],
+                    message="Trip start/end dates are required to request Open-Meteo weather.",
+                ),
+                reasons.INVALID_DATES,
             )
 
         # Section 203C.2B (canary correction): the forecast endpoint only
@@ -272,37 +285,59 @@ class OpenMeteoWeatherAdapter(WeatherProvider):
                 attempts_made,
             )
             retried = attempts_made > 1
-            return failed_response(
-                self.provider_name,
-                self.provider_type,
-                unavailable_fields=[field_name],
-                message=(
-                    f"Open-Meteo request failed for '{destination}' after retrying once."
-                    if retried
-                    else f"Open-Meteo could not provide a forecast for '{destination}' for these dates."
+            return _with_reason(
+                failed_response(
+                    self.provider_name,
+                    self.provider_type,
+                    unavailable_fields=[field_name],
+                    message=(
+                        f"Open-Meteo request failed for '{destination}' after retrying once."
+                        if retried
+                        else f"Open-Meteo could not provide a forecast for '{destination}' for these dates."
+                    ),
                 ),
+                reasons.reason_for_request_error(request_error),
+            )
+
+        if not isinstance(payload, dict):
+            # A body that is not a JSON object cannot be a forecast; it is
+            # reported, never raised out of the adapter.
+            return _with_reason(
+                unavailable_response(
+                    self.provider_name,
+                    self.provider_type,
+                    unavailable_fields=[field_name],
+                    message=f"Open-Meteo returned an unreadable forecast response for '{destination}'.",
+                ),
+                reasons.MALFORMED_RESPONSE,
             )
 
         if payload.get("error"):
-            return unavailable_response(
-                self.provider_name,
-                self.provider_type,
-                unavailable_fields=[field_name],
-                message=(
-                    f"Open-Meteo reported an error for '{destination}': "
-                    f"{payload.get('reason') or 'unknown reason'}."
+            return _with_reason(
+                unavailable_response(
+                    self.provider_name,
+                    self.provider_type,
+                    unavailable_fields=[field_name],
+                    message=(
+                        f"Open-Meteo reported an error for '{destination}': "
+                        f"{payload.get('reason') or 'unknown reason'}."
+                    ),
                 ),
+                reasons.PROVIDER_REPORTED_ERROR,
             )
 
         daily_weather = self._normalize(payload)
         if not daily_weather:
-            return unavailable_response(
-                self.provider_name,
-                self.provider_type,
-                unavailable_fields=[field_name],
-                message=(
-                    f"Open-Meteo returned no usable daily forecast data for '{destination}'."
+            return _with_reason(
+                unavailable_response(
+                    self.provider_name,
+                    self.provider_type,
+                    unavailable_fields=[field_name],
+                    message=(
+                        f"Open-Meteo returned no usable daily forecast data for '{destination}'."
+                    ),
                 ),
+                reasons.NO_USABLE_DATA,
             )
 
         if cache_store is not None:

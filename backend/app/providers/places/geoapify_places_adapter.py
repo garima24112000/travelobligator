@@ -50,6 +50,7 @@ from app.providers.base import (
 )
 from app.providers.errors import ProviderRequestError
 from app.providers.geoapify_client import geoapify_get
+from app.providers.missing_data_reasons import PLACES_PARTIAL_REQUEST_FAILURES
 from app.providers.geocoding.base import GeocoderError, GeocodingProvider
 from app.providers.geocoding.factory import get_geocoding_provider
 from app.providers.places.destination_resolution import (
@@ -116,6 +117,10 @@ _MAX_FOOD_POOL = 40
 _ACCOMMODATION_POOL = 20
 _MIN_GROUP_LIMIT = 5
 _PARTIAL_RESULT_THRESHOLD = 3
+# M2 Phase 1 (D4): a PARTIAL answer means either "few places" or "some
+# requests failed". Only the second carries this reason, so a thin pool from
+# a service fault is never presented as a destination with little to see.
+PARTIAL_REQUEST_FAILURES = PLACES_PARTIAL_REQUEST_FAILURES
 _CONTAINMENT_RADIUS_METERS = 25000
 _SAME_PLACE_METERS = 100
 _POOL_MATCH_METERS = 150
@@ -594,6 +599,7 @@ class GeoapifyPlacesAdapter(DestinationResolutionMixin, PlacesProvider):
                 unavailable_fields=[],
                 confidence=0.4 if is_partial else 0.65,
                 message=f"{len(contained)} {field_label} found via {self.display_name}.",
+                failure_reason=PARTIAL_REQUEST_FAILURES if failures else None,
             )
         if failures:
             return self._places_failure_response(failures[0], field_name)

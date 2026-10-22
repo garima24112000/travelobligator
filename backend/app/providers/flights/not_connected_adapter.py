@@ -1,6 +1,11 @@
 from __future__ import annotations
 
-from app.models.flight import FlightSearchRequest, FlightSearchResult, FlightSearchStatus
+from app.models.flight import (
+    FlightAvailabilityReason,
+    FlightSearchRequest,
+    FlightSearchResult,
+    FlightSearchStatus,
+)
 from app.providers.flights.base import FlightInventoryProvider
 
 # Default flight inventory adapter (Step 169B, mirroring
@@ -29,6 +34,7 @@ class NotConnectedFlightProvider(FlightInventoryProvider):
             status=FlightSearchStatus.NOT_CONNECTED,
             offers=[],
             message="Flight inventory provider is not connected.",
+            availability_reason=FlightAvailabilityReason.NO_SOURCE_CONFIGURED,
             origin=request.origin,
             destination=request.destination,
             departure_date=request.departure_date,

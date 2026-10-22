@@ -286,6 +286,9 @@ class WeatherContext(BaseModel):
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
     assumptions: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
+    # M2 Phase 1: why no forecast is shown (`app.providers.missing_data_reasons`);
+    # None when data is present, or on a state stored before this field existed.
+    missing_reason: str | None = None
 
 
 class Holiday(BaseModel):
@@ -335,6 +338,8 @@ class HolidayContext(BaseModel):
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
     assumptions: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
+    # M2 Phase 1: why no holiday data is shown; None when data is present.
+    missing_reason: str | None = None
 
 
 class CurrencyContext(BaseModel):
@@ -363,6 +368,8 @@ class CurrencyContext(BaseModel):
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
     assumptions: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
+    # M2 Phase 1: why no exchange rate is shown; None when a rate is present.
+    missing_reason: str | None = None
 
 
 class RouteSegment(BaseModel):
@@ -1172,6 +1179,13 @@ class RegenerationReadiness(BaseModel):
         ]
     )
     next_step: str = "Generate the initial plan first."
+    # M2 Phase 1 (D3): whether THIS deployment can apply a change request at
+    # all, independent of this trip's state (feature switches and the
+    # registered deterministic operations, the same ones the regenerate route
+    # uses). False means asking would be refused whatever the request says;
+    # None only on a readiness stored before these fields existed.
+    change_requests_applicable: bool | None = None
+    change_requests_unavailable_reason: str | None = None
 
 
 class RegenerationAttempt(BaseModel):

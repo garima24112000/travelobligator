@@ -111,7 +111,10 @@ from app.services.regeneration_mutation_service import (
     apply_regeneration_mutation,
     legacy_regeneration_can_apply,
 )
-from app.services.regeneration_readiness_service import regeneration_readiness_service
+from app.services.regeneration_readiness_service import (
+    apply_change_capability,
+    regeneration_readiness_service,
+)
 from app.services.revision_lineage_service import (
     BranchActivationStatus,
     revision_lineage_service,
@@ -936,9 +939,17 @@ def get_regeneration_readiness(
     if planning_state is None:
         raise trip_not_found_error(trip_id)
 
+    # M2 Phase 1 (D3): the stored value, with the deployment's CURRENT
+    # change-request capability stated on it (configuration only; nothing is
+    # saved). A readiness stored as "ready" before the capability was
+    # switched off -- or before these fields existed -- never offers an
+    # action the regenerate route would certainly refuse.
     data = RegenerationReadinessResponseData(
         trip_id=trip_id,
-        regeneration_readiness=planning_state.regeneration_readiness,
+        regeneration_readiness=apply_change_capability(
+            planning_state.regeneration_readiness,
+            pending_feedback_events(planning_state.feedback_history),
+        ),
     )
     return success_response(data)
 

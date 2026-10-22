@@ -10,7 +10,9 @@ from app.core import performance
 from app.core.config import get_settings
 from app.models.common import DataStatus, ProviderStatus
 from app.models.providers import NormalizedHoliday, ProviderResponse
+from app.providers import missing_data_reasons as reasons
 from app.providers.base import HolidayProvider, failed_response, unavailable_response
+from app.providers.places.country_identity import normalized_country_code
 from app.storage.provider_cache_store import (
     ProviderCacheStore,
     get_provider_cache_store,
@@ -23,7 +25,7 @@ logger = logging.getLogger(__name__)
 # Section 1B: machine-readable reason for "the provider answered, with no
 # holiday data" (HTTP 204 / an empty body). Neutral on purpose -- it is not
 # a failure, and not a statement that the country has no public holidays.
-HOLIDAY_DATA_NOT_PROVIDED = "holiday_data_not_provided"
+HOLIDAY_DATA_NOT_PROVIDED = reasons.HOLIDAY_DATA_NOT_PROVIDED
 
 _USER_AGENT = "TravelObligator/0.1 (dev; legit-data-only)"
 _REQUEST_TIMEOUT_SECONDS = 15.0
@@ -153,6 +155,59 @@ class NagerDateHolidaysAdapter(HolidayProvider):
         self._no_data_cache_ttl_seconds = settings.nager_date_no_data_cache_ttl_seconds
         self._cache_path = settings.resolved_provider_cache_path()
         self._cache_store = cache_store
+        # Nager.Date's own list of covered countries, once read successfully.
+        self._covered_countries: frozenset[str] | None = None
+
+    def _country_covered(self, cache_store: ProviderCacheStore | None, country_code: str) -> bool | None:
+        """True / False from Nager.Date's published list of covered countries
+        (`/api/v3/AvailableCountries`), or None when that list cannot be read.
+        Asked only after an empty answer; a successful list is kept in memory
+        and in the provider cache (holiday TTL), a failure is never cached."""
+        covered = self._available_countries(cache_store)
+        return None if covered is None else country_code.upper() in covered
+
+    def _available_countries(self, cache_store: ProviderCacheStore | None) -> frozenset[str] | None:
+        if self._covered_countries is not None:
+            return self._covered_countries
+        query_hash = make_query_hash({"kind": "available_countries", "schema": 1})
+        if cache_store is not None:
+            try:
+                entry = cache_store.get(self.provider_name, query_hash)
+            except Exception:
+                entry = None
+            codes = entry.payload.get("codes") if entry is not None and isinstance(entry.payload, dict) else None
+            if isinstance(codes, list) and codes:
+                self._covered_countries = frozenset(str(code) for code in codes)
+                return self._covered_countries
+        try:
+            with httpx.Client(timeout=_REQUEST_TIMEOUT_SECONDS, headers={"User-Agent": _USER_AGENT}) as client:
+                with performance.provider_call("nager_date"):
+                    response = client.get(f"{self._base_url}/api/v3/AvailableCountries")
+                response.raise_for_status()
+                payload = response.json() if response.content.strip() else None
+        except (httpx.HTTPError, ValueError):
+            return None
+        if not isinstance(payload, list):
+            return None
+        codes = sorted(
+            {
+                entry["countryCode"].upper()
+                for entry in payload
+                if isinstance(entry, dict)
+                and isinstance(entry.get("countryCode"), str)
+                and len(entry["countryCode"]) == 2
+                and entry["countryCode"].isalpha()
+            }
+        )
+        if not codes:
+            return None
+        self._covered_countries = frozenset(codes)
+        if cache_store is not None:
+            try:
+                cache_store.set(self.provider_name, query_hash, {"codes": codes}, ttl_seconds=self._cache_ttl_seconds)
+            except Exception:
+                logger.warning("Nager.Date provider cache write failed; returning live result anyway.")
+        return self._covered_countries
 
     def _resolve_cache_store(self) -> ProviderCacheStore | None:
         """Lazily resolves the shared cache store, or `None` when the cache
@@ -165,44 +220,40 @@ class NagerDateHolidaysAdapter(HolidayProvider):
         return self._cache_store
 
     def get_public_holidays(
-        self, destination: str, dates: dict[str, Any]
+        self, destination: str, dates: dict[str, Any], country_code: str | None = None
     ) -> ProviderResponse[Any]:
+        """M2 Phase 1 (D1): `country_code` is the ISO alpha-2 code the
+        destination geocoder resolved, when the caller has it. Without one,
+        the conservative destination-text inference below still applies."""
         field_name = "public_holidays"
 
-        country_code = infer_country_code(destination)
+        resolved_code = normalized_country_code(country_code)
+        country_code = resolved_code.upper() if resolved_code else infer_country_code(destination)
         if country_code is None:
-            return unavailable_response(
-                self.provider_name,
-                self.provider_type,
-                unavailable_fields=[field_name],
-                message=(
-                    f"Could not conservatively infer a country from '{destination}', "
-                    "so Nager.Date public holidays cannot be requested."
-                ),
+            return self._no_data(
+                field_name,
+                reasons.COUNTRY_UNRESOLVED,
+                f"Could not conservatively infer a country from '{destination}', "
+                "so Nager.Date public holidays cannot be requested.",
             )
 
         start_date_str = dates.get("start_date")
         end_date_str = dates.get("end_date")
         if not start_date_str or not end_date_str:
-            return unavailable_response(
-                self.provider_name,
-                self.provider_type,
-                unavailable_fields=[field_name],
-                message="Trip start/end dates are required to request Nager.Date holidays.",
+            return self._no_data(
+                field_name,
+                reasons.INVALID_DATES,
+                "Trip start/end dates are required to request Nager.Date holidays.",
             )
 
         try:
             start_date = date_cls.fromisoformat(start_date_str)
             end_date = date_cls.fromisoformat(end_date_str)
         except ValueError:
-            return unavailable_response(
-                self.provider_name,
-                self.provider_type,
-                unavailable_fields=[field_name],
-                message=(
-                    f"Trip start/end dates are not valid ISO dates: "
-                    f"{start_date_str}..{end_date_str}."
-                ),
+            return self._no_data(
+                field_name,
+                reasons.INVALID_DATES,
+                f"Trip start/end dates are not valid ISO dates: {start_date_str}..{end_date_str}.",
             )
 
         years = sorted({start_date.year, end_date.year})
@@ -257,6 +308,15 @@ class NagerDateHolidaysAdapter(HolidayProvider):
                     if cache_store is not None and year_holidays:
                         self._write_cache(cache_store, query_hash, year_holidays)
         except (httpx.HTTPError, ValueError) as exc:
+            if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 404:
+                # Nager.Date answers 404 for a country code it does not cover:
+                # a supported-country limit of the source, not a failure.
+                logger.info("Nager.Date does not cover this country (country=%s).", country_code)
+                return self._no_data(
+                    field_name,
+                    reasons.COUNTRY_NOT_SUPPORTED,
+                    f"Nager.Date does not provide public holidays for {country_code}.",
+                )
             # Fixed identifiers only: never the destination text, the URL or
             # the exception text.
             logger.warning(
@@ -266,14 +326,27 @@ class NagerDateHolidaysAdapter(HolidayProvider):
                 if isinstance(exc, httpx.HTTPStatusError)
                 else type(exc).__name__,
             )
-            return failed_response(
+            failed = failed_response(
                 self.provider_name,
                 self.provider_type,
                 unavailable_fields=[field_name],
                 message=f"Nager.Date request failed for '{destination}' ({country_code}).",
             )
+            failed.failure_reason = reasons.reason_for_request_error(exc)
+            return failed
 
         if not all_holidays and no_data_years:
+            # M2 Phase 1 (live verification): Nager.Date answers 204 BOTH for a
+            # country it does not cover and for a covered country without data
+            # for that year. Its own list of covered countries tells them apart;
+            # when that list cannot be read, nothing is claimed either way.
+            if self._country_covered(cache_store, country_code) is False:
+                logger.info("Nager.Date does not cover this country (country=%s).", country_code)
+                return self._no_data(
+                    field_name,
+                    reasons.COUNTRY_NOT_SUPPORTED,
+                    f"Nager.Date does not provide public holidays for {country_code}.",
+                )
             # Not a failure, and not a claim that the country has no public
             # holidays: the provider simply returned no holiday data.
             logger.info(
@@ -294,14 +367,10 @@ class NagerDateHolidaysAdapter(HolidayProvider):
             return no_data
 
         if not all_holidays:
-            return unavailable_response(
-                self.provider_name,
-                self.provider_type,
-                unavailable_fields=[field_name],
-                message=(
-                    f"Nager.Date returned no usable public holiday data for "
-                    f"{country_code} in {years}."
-                ),
+            return self._no_data(
+                field_name,
+                reasons.NO_USABLE_DATA,
+                f"Nager.Date returned no usable public holiday data for {country_code} in {years}.",
             )
 
         in_range_holidays = [
@@ -326,6 +395,13 @@ class NagerDateHolidaysAdapter(HolidayProvider):
                 f"found for {years}){cached_note}."
             ),
         )
+
+    def _no_data(self, field_name: str, reason: str, message: str) -> ProviderResponse[Any]:
+        response = unavailable_response(
+            self.provider_name, self.provider_type, unavailable_fields=[field_name], message=message
+        )
+        response.failure_reason = reason
+        return response
 
     def _read_cache(
         self, cache_store: ProviderCacheStore, query_hash: str

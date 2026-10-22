@@ -78,10 +78,13 @@ def test_recompute_after_generation_with_no_feedback() -> None:
     assert "regeneration_engine" in readiness.missing_capabilities
 
 
-def test_recompute_after_generation_with_feedback_is_ready() -> None:
+def test_recompute_after_generation_with_feedback_is_ready(
+    synthetic_legacy_regeneration_support: None,
+) -> None:
     """Step 174D: version exists, feedback exists and classifies to a real
     affected stage, zero active locks -- exactly the MVP scope
-    `POST /trips/{trip_id}/regenerate` now actually supports.
+    `POST /trips/{trip_id}/regenerate` now actually supports. M2 Phase 1:
+    with a deployment that can apply it (an explicitly registered operation).
     """
     planning_state = _planning_state()
     planning_state.experience_plan = ExperiencePlan()
@@ -191,7 +194,7 @@ def test_recompute_does_not_mutate_other_sections() -> None:
     assert result.plan_diff_preview == before_plan_diff_preview
 
 
-def test_recompute_never_invents_travel_facts() -> None:
+def test_recompute_never_invents_travel_facts(synthetic_legacy_regeneration_support: None) -> None:
     planning_state = _planning_state()
     planning_state.experience_plan = ExperiencePlan()
     planning_state = VersioningService().create_initial_version(planning_state)

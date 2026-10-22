@@ -4,7 +4,12 @@ import re
 from typing import Any
 
 from app.core.config import Settings, get_settings
-from app.models.flight import FlightSearchRequest, FlightSearchResult, FlightSearchStatus
+from app.models.flight import (
+    FlightAvailabilityReason,
+    FlightSearchRequest,
+    FlightSearchResult,
+    FlightSearchStatus,
+)
 from app.providers.flights.base import FlightInventoryProvider
 from app.providers.flights.kiwi_mcp_client import (
     KiwiMcpClient,
@@ -215,7 +220,12 @@ class KiwiMcpFlightProvider(FlightInventoryProvider):
         settings = get_settings()
 
         if not settings.kiwi_mcp_enabled:
-            return self._empty_result(request, FlightSearchStatus.NOT_CONNECTED, _NOT_ENABLED_MESSAGE)
+            return self._empty_result(
+                request,
+                FlightSearchStatus.NOT_CONNECTED,
+                _NOT_ENABLED_MESSAGE,
+                FlightAvailabilityReason.NO_SOURCE_CONFIGURED,
+            )
 
         client = self._resolve_client(settings)
         discovery_result = client.discover_tools()
@@ -227,11 +237,17 @@ class KiwiMcpFlightProvider(FlightInventoryProvider):
                 _DISCOVERY_FAILED_MESSAGE_TEMPLATE.format(
                     detail=discovery_result.message or "unknown error"
                 ),
+                FlightAvailabilityReason.PROVIDER_FAILED,
             )
 
         flight_tool = _find_flight_search_tool(discovery_result.tools, settings.kiwi_mcp_tool_name)
         if flight_tool is None:
-            return self._empty_result(request, FlightSearchStatus.UNAVAILABLE, _NO_FLIGHT_TOOL_MESSAGE)
+            return self._empty_result(
+                request,
+                FlightSearchStatus.UNAVAILABLE,
+                _NO_FLIGHT_TOOL_MESSAGE,
+                FlightAvailabilityReason.SEARCH_NOT_POSSIBLE,
+            )
 
         arguments, build_error_message = build_search_flight_arguments(
             request, flight_tool.input_schema
@@ -241,6 +257,7 @@ class KiwiMcpFlightProvider(FlightInventoryProvider):
                 request,
                 FlightSearchStatus.UNAVAILABLE,
                 build_error_message or "Kiwi MCP search arguments could not be safely built.",
+                FlightAvailabilityReason.SEARCH_NOT_POSSIBLE,
             )
 
         # Calls exactly the one tool discovery classified as flight-search
@@ -253,12 +270,14 @@ class KiwiMcpFlightProvider(FlightInventoryProvider):
         request: FlightSearchRequest,
         status: FlightSearchStatus,
         message: str,
+        reason: FlightAvailabilityReason,
     ) -> FlightSearchResult:
         return FlightSearchResult(
             provider=self.provider_name,
             status=status,
             offers=[],
             message=message,
+            availability_reason=reason,
             origin=request.origin,
             destination=request.destination,
             departure_date=request.departure_date,

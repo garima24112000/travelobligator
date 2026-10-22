@@ -53,11 +53,14 @@ def test_generated_trip_with_no_feedback_is_blocked_with_v1(
 
 
 def test_generated_trip_with_feedback_and_zero_locks_is_ready(
-    client: TestClient, generated_trip_id: str
+    client: TestClient, generated_trip_id: str, synthetic_legacy_regeneration_support: None
 ) -> None:
     """Step 174D: version exists, feedback exists and classifies to a real
     affected stage, zero active locks -- exactly the MVP scope
-    `POST /trips/{trip_id}/regenerate` now actually supports.
+    `POST /trips/{trip_id}/regenerate` now actually supports. M2 Phase 1:
+    "ready" also needs a deployment that can apply the request, so a
+    deterministic operation is registered explicitly (production registers
+    none -- see test_regeneration_change_capability_m2.py).
     """
     feedback_response = client.post(
         f"/trips/{generated_trip_id}/feedback",
@@ -191,4 +194,7 @@ def test_no_fake_travel_fields_in_regeneration_readiness(
         "missing_capabilities",
         "blocked_by",
         "next_step",
+        # M2 Phase 1: deployment capability, not a travel fact.
+        "change_requests_applicable",
+        "change_requests_unavailable_reason",
     }

@@ -46,3 +46,17 @@ def get_routing_provider(provider_name: str | None = None) -> RoutingProvider:
 
     provider_cls = _SUPPORTED_PROVIDERS.get(resolved_name, NotConnectedRoutingProvider)
     return provider_cls()
+
+
+def routing_provider_is_configured() -> bool:
+    """M2 Phase 1 (D6): True when the configured routing provider can make
+    requests at all -- a connected provider name plus what it needs (OSRM:
+    `OSRM_BASE_URL`; Geoapify: `GEOAPIFY_API_KEY`). Configuration only: it
+    says nothing about whether any route was, or will be, verified."""
+    settings = get_settings()
+    name = settings.routing_provider
+    if name == "osrm":
+        return bool((settings.osrm_base_url or "").strip())
+    if name == "geoapify":
+        return bool((settings.geoapify_api_key or "").strip())
+    return False

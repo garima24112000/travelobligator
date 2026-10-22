@@ -154,6 +154,9 @@ class ProviderStatusEntry(BaseModel):
     error_message: str | None = None
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
     retrieved_at: str | None = None
+    # M2 Phase 1 (D4): the response's machine-readable failure reason, when
+    # it named one (e.g. `partial_request_failures`, `places_rate_limited`).
+    failure_reason: str | None = None
 
 
 class ProviderCoverage(BaseModel):

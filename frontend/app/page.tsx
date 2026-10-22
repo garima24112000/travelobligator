@@ -81,8 +81,13 @@ import {
   loadingPatienceNote,
   loadingStageLabel,
   planAvailability,
+  currencyMissingNotice,
+  routeReportSummary,
   travelerChangeRefusal,
+  travelerChangesUnavailable,
   travelerErrorMessage,
+  travelerFlightAvailabilityNotice,
+  weatherMissingNotice,
   UNVERIFIED_LEG_LINE,
   legIncludesFerry,
   legIsOverLimitWalk,
@@ -1539,7 +1544,8 @@ function CurrencyContextSection({ currency }: { currency: CurrencyContext | null
  */
 function summarizeWeatherForTravelerView(weather: WeatherContext | null): string {
   if (!weather || weather.daily_weather.length === 0) {
-    return travelerReviewNotices(null, { weather: null })[0];
+    // M2 Phase 1: says WHY (beyond the forecast horizon, service down, ...).
+    return weatherMissingNotice(weather);
   }
   const temperatures = weather.daily_weather
     .flatMap((day) => [day.temperature_max_c, day.temperature_min_c])
@@ -1565,7 +1571,8 @@ function summarizeWeatherForTravelerView(weather: WeatherContext | null): string
  */
 function summarizeCurrencyForTravelerView(currency: CurrencyContext | null): string {
   if (!currency || currency.destination_currency === null || currency.exchange_rate === null) {
-    return "Currency exchange rate is not available for this destination.";
+    // M2 Phase 1: says WHY (unsupported currency, several currencies, ...).
+    return currencyMissingNotice(currency);
   }
   if (currency.destination_currency === currency.base_currency) {
     return `No currency conversion needed — both in ${currency.base_currency}.`;
@@ -1639,21 +1646,33 @@ function TravelerContextSummarySection({
 
 function RouteFeasibilitySection({
   routeFeasibility,
+  routeReport = null,
 }: {
   routeFeasibility: RouteFeasibilityContext;
+  // M2 Phase 1 (D6): the real per-transfer results, built after the day
+  // order is final. The context above is drafted before any route exists.
+  routeReport?: RouteFeasibilityReport | null;
 }) {
+  const reportSummary = routeReportSummary(routeReport);
   return (
     <div id="route-feasibility" className="rounded-2xl border border-white/10 bg-white/5 p-4 sm:p-5">
       <h2 className="text-lg font-semibold">Route feasibility</h2>
       <p className="mt-1 text-sm text-slate-300">
-        Status: <span className="font-semibold">{routeFeasibility.data_status}</span>
+        {/* The route report's status when routing ran; the plan-time summary's otherwise. */}
+        Status:{" "}
+        <span className="font-semibold">
+          {reportSummary && routeReport ? routeReport.status : routeFeasibility.data_status}
+        </span>
         {" · "}
         Confidence: <span className="font-semibold">{routeFeasibility.confidence}</span>
       </p>
 
       {routeFeasibility.daily_route_feasibility.length === 0 ? (
         <p className="mt-2 text-sm text-slate-400">
-          Route feasibility is unavailable because no route provider is connected.
+          {reportSummary ??
+            (routeFeasibility.data_status === "not_connected"
+              ? "Route feasibility is unavailable because no route provider is connected."
+              : "No per-transfer route results are recorded for this plan.")}
         </p>
       ) : (
         <ul className="mt-3 flex flex-col gap-2">
@@ -5076,6 +5095,10 @@ function RegenerationReadinessSection({
     }
   }
 
+  // M2 Phase 1 (D3): Traveler view only; Developer view keeps its diagnostic
+  // (the button there is already disabled whenever `can_regenerate` is false).
+  const changesUnavailable = mode === "user" ? travelerChangesUnavailable(readiness) : null;
+
   return (
     // Section 2B: Developer view renders the "Regeneration readiness"
     // diagnostic. Traveler view renders the same button and handler as a
@@ -5089,7 +5112,15 @@ function RegenerationReadinessSection({
       <h2 className="text-lg font-semibold">
         {mode === "user" ? "Apply your changes" : "Regeneration readiness"}
       </h2>
-      {mode === "user" ? (
+      {mode === "user" && changesUnavailable ? (
+        // M2 Phase 1 (D3): the backend says this app cannot apply change
+        // requests at all, so no apply action is offered -- it would
+        // certainly be refused. Requests still save.
+        <DisclaimerNote tone="amber">
+          <span className="font-semibold">{changesUnavailable.title}.</span>{" "}
+          {changesUnavailable.detail}
+        </DisclaimerNote>
+      ) : mode === "user" ? (
         <DisclaimerNote tone="amber">
           Your saved requests are applied one at a time, oldest first. If a
           request cannot be applied, nothing changes and it stays saved.
@@ -5108,7 +5139,7 @@ function RegenerationReadinessSection({
             ? "No saved requests yet."
             : `${readiness.pending_feedback_count} saved request${
                 readiness.pending_feedback_count === 1 ? "" : "s"
-              } waiting.`}
+              }${changesUnavailable ? "." : " waiting."}`}
           {readiness.active_lock_count > 0 &&
             ` ${readiness.active_lock_count} place${
               readiness.active_lock_count === 1 ? " is" : "s are"
@@ -5230,6 +5261,8 @@ function RegenerationReadinessSection({
       )}
 
       <div className="mt-4 border-t border-white/10 pt-4">
+        {!changesUnavailable && (
+        <>
         <button
           type="button"
           onClick={() => void handleRegenerate()}
@@ -5260,6 +5293,8 @@ function RegenerationReadinessSection({
                 : "Save a request under Request changes first."
             : "Regeneration is available only when feedback is pending and no active locks exist."}
         </p>
+        </>
+        )}
 
         <JobStatusCard job={activeJob} pollingError={jobPollingError} mode={mode} />
 
@@ -5602,6 +5637,7 @@ function FeedbackPanel({
   mode = "developer",
   pendingSummary = null,
   attempts = [],
+  changesUnavailable = false,
 }: {
   feedbackText: string;
   onFeedbackTextChange: (value: string) => void;
@@ -5613,14 +5649,22 @@ function FeedbackPanel({
   mode?: "user" | "developer";
   pendingSummary?: PendingFeedbackSummary | null;
   attempts?: RegenerationAttempt[];
+  // M2 Phase 1 (D3): the backend says change requests cannot be applied in
+  // this app at all. Requests still save; nothing promises they will apply.
+  changesUnavailable?: boolean;
 }) {
   const isTraveler = mode === "user";
-  const queue = buildFeedbackQueue(feedbackHistory, pendingSummary, attempts);
+  const applyUnavailable = isTraveler && changesUnavailable;
+  const builtQueue = buildFeedbackQueue(feedbackHistory, pendingSummary, attempts);
+  // No "Next to apply" order is shown for requests that cannot be applied.
+  const queue: typeof builtQueue = applyUnavailable ? new Map() : builtQueue;
   return (
     <div className="rounded-2xl border border-white/10 bg-white/5 p-4 sm:p-5">
       <h2 className="text-lg font-semibold">Request changes</h2>
       <p className="mt-1 text-xs text-slate-500">
-        {isTraveler
+        {applyUnavailable
+          ? "Tell us what to change. Your request is saved with the trip, but the app can't apply change requests to the itinerary yet."
+          : isTraveler
           ? "Tell us what to change. Your request is saved, and the itinerary changes only when you apply it below."
           : "Feedback is captured and classified automatically. See Regeneration readiness below to check whether regeneration can run on it yet."}
       </p>
@@ -5668,7 +5712,9 @@ function FeedbackPanel({
         {isTraveler ? "Your requests" : "Feedback history"} ({feedbackHistory.length})
       </p>
       <p className="mt-1 text-xs text-amber-300/90">
-        {isTraveler
+        {applyUnavailable
+          ? "Saved requests do not change the itinerary."
+          : isTraveler
           ? "Saved requests do not change the itinerary until you apply them."
           : "Interpretation is preliminary and rule-based. These requests are stored but not applied to the plan yet."}
       </p>
@@ -6358,17 +6404,11 @@ function UserModeFlightSummary({
   const offers = report?.offers ?? [];
   const hasOffers = status === "success" && offers.length > 0;
   const hasManualLocalOffers = offers.some((offer) => offer.scraped_provenance !== null);
-  // Step 182G: a real, connected/enabled flight provider that genuinely
-  // found nothing (or errored) for this route/date is a different, more
-  // accurate message than "not connected at all" -- confirmed live
-  // against a real Kiwi MCP call that returned zero offers for a real
-  // search, where the old copy read as if no provider were configured.
-  const noOfferMessage =
-    status === "unavailable"
-      ? "No flight offers were found for this trip's route and dates."
-      : status === "failed"
-        ? "Flight search is temporarily unavailable -- see Developer view for details."
-        : "Connect or enable a flight provider to show flight options for this trip.";
+  // M2 Phase 1 (D2): the message comes from the backend's structured
+  // `availability_reason`. "No flight offers were found" is said ONLY when a
+  // real search completed with zero offers -- `unavailable` alone also covers
+  // "no flight source at all", which must never read as a search result.
+  const noOfferMessage = travelerFlightAvailabilityNotice(report);
 
   return (
     <div className="rounded-2xl border border-white/10 bg-white/5 p-4 sm:p-5">
@@ -6379,7 +6419,7 @@ function UserModeFlightSummary({
             Concise flight offer summary -- not a booking. See Developer
             view for full schedule, baggage, and cancellation details.
             {hasManualLocalOffers &&
-              " Some or all of this comes from a manual/local HTML source, not official-provider data."}
+              " Some or all of these offers come from a manually supplied page and have not been verified."}
           </DisclaimerNote>
           <ul className="mt-3 flex flex-col gap-2">
             {offers
@@ -7919,7 +7959,9 @@ export default function Home() {
       setFeedbackText("");
       setFeedbackSuccessMessage(
         mode === "user"
-          ? tripData.planning_state.regeneration_readiness.can_regenerate
+          ? travelerChangesUnavailable(tripData.planning_state.regeneration_readiness)
+            ? "Request saved. The app can't apply change requests to the itinerary yet, so your itinerary stays as it is."
+            : tripData.planning_state.regeneration_readiness.can_regenerate
             ? "Request saved. Use Apply next change below to update the itinerary."
             : "Request saved. See Apply your changes below for what is needed before it can be applied."
           : tripData.planning_state.regeneration_readiness.can_regenerate
@@ -9480,7 +9522,10 @@ PY`}
 
                 <CurrencyContextSection currency={result.currencyContext} />
 
-                <RouteFeasibilitySection routeFeasibility={result.routeFeasibilityContext} />
+                <RouteFeasibilitySection
+                  routeFeasibility={result.routeFeasibilityContext}
+                  routeReport={result.routeFeasibilityReport}
+                />
 
                 <ResultGroupHeader
                   id="draft-itinerary"
@@ -9661,6 +9706,7 @@ PY`}
                     mode="user"
                     pendingSummary={result.pendingFeedbackSummary}
                     attempts={result.regenerationAttempts}
+                    changesUnavailable={travelerChangesUnavailable(result.regenerationReadiness) !== null}
                   />
 
                   <RegenerationReadinessSection
@@ -9716,7 +9762,7 @@ PY`}
                   <DisclosureSection
                     id="flights"
                     title="Flights"
-                    hint="Only shown if a flight source returned offers."
+                    hint="Flight offers appear here only when a flight search returned some."
                   >
                     <UserModeFlightSummary report={result.flightInventoryReport} />
                   </DisclosureSection>

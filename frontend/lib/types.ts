@@ -186,6 +186,10 @@ export type WeatherContext = {
   confidence: number;
   assumptions: string[];
   warnings: string[];
+  // M2 Phase 1: why no forecast is shown (backend
+  // app.providers.missing_data_reasons). Null/absent when data is present or
+  // on a trip stored before the field existed.
+  missing_reason?: string | null;
 };
 
 export type Holiday = {
@@ -211,6 +215,8 @@ export type HolidayContext = {
   confidence: number;
   assumptions: string[];
   warnings: string[];
+  // M2 Phase 1: why no holiday data is shown (see WeatherContext).
+  missing_reason?: string | null;
 };
 
 export type CurrencyContext = {
@@ -223,6 +229,8 @@ export type CurrencyContext = {
   confidence: number;
   assumptions: string[];
   warnings: string[];
+  // M2 Phase 1: why no exchange rate is shown (see WeatherContext).
+  missing_reason?: string | null;
 };
 
 // `promoted_from_ai`/`original_ai_candidate_id`/`provider_place_id`/
@@ -472,6 +480,10 @@ export type FlightInventoryReport = {
   offers: FlightOffer[];
   message: string | null;
   warnings: string[];
+  // M2 Phase 1 (backend app.models.flight.FlightAvailabilityReason): WHY the
+  // result has the offers it has. Only "search_completed_no_offers" means a
+  // live search ran and found nothing. Absent on reports stored before it.
+  availability_reason?: string | null;
 };
 
 export type DailyPlan = {
@@ -599,6 +611,8 @@ export type RouteAwareSequencingReport = {
 // `RouteLegFeasibility`, not declared here since nothing renders them).
 export type RouteFeasibilityReport = {
   status: string;
+  // The routing provider's name (Developer view only).
+  provider?: string;
   // Section 2: one entry per routed leg (backend: RouteLegFeasibility). Only
   // the fields Traveler view reads are declared. `mode` is the factual mode
   // the provider routed the leg in ("walk" / "drive"); a leg stored before
@@ -772,6 +786,8 @@ export type ProviderStatusEntry = {
   status: string;
   data_status: string;
   unavailable_fields: string[];
+  // M2 Phase 1: the provider response's machine-readable failure reason.
+  failure_reason?: string | null;
 };
 
 export type UnavailableDataItem = {
@@ -991,6 +1007,11 @@ export type RegenerationReadiness = {
   missing_capabilities: string[];
   blocked_by: string[];
   next_step: string;
+  // M2 Phase 1: whether this deployment can apply a change request at all.
+  // `false` = asking would be refused whatever the request says; absent/null
+  // on a readiness from before these fields existed.
+  change_requests_applicable?: boolean | null;
+  change_requests_unavailable_reason?: string | null;
 };
 
 export type RegenerationReadinessData = {

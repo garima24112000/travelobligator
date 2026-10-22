@@ -7,6 +7,7 @@ from typing import Any
 
 from app.models.common import DataStatus
 from app.models.flight import (
+    FlightAvailabilityReason,
     FlightOffer,
     FlightSearchRequest,
     FlightSearchResult,
@@ -68,13 +69,17 @@ _MAX_ERROR_DETAIL_LENGTH = 200
 
 
 def _empty_result(
-    request: FlightSearchRequest, status: FlightSearchStatus, message: str
+    request: FlightSearchRequest,
+    status: FlightSearchStatus,
+    message: str,
+    reason: FlightAvailabilityReason = FlightAvailabilityReason.PROVIDER_FAILED,
 ) -> FlightSearchResult:
     return FlightSearchResult(
         provider=_KIWI_PROVIDER_NAME,
         status=status,
         offers=[],
         message=message,
+        availability_reason=reason,
         origin=request.origin,
         destination=request.destination,
         departure_date=request.departure_date,
@@ -280,7 +285,12 @@ def parse_kiwi_mcp_search_result(
 
     payload = call_result.structured_content
     if not isinstance(payload, dict):
-        return _empty_result(request, FlightSearchStatus.FAILED, _MALFORMED_PAYLOAD_MESSAGE)
+        return _empty_result(
+            request,
+            FlightSearchStatus.FAILED,
+            _MALFORMED_PAYLOAD_MESSAGE,
+            FlightAvailabilityReason.RESPONSE_UNUSABLE,
+        )
 
     reported_error = payload.get("error")
     if isinstance(reported_error, str) and reported_error.strip():
@@ -292,7 +302,12 @@ def parse_kiwi_mcp_search_result(
 
     raw_itineraries = payload.get("itineraries")
     if not isinstance(raw_itineraries, list):
-        return _empty_result(request, FlightSearchStatus.FAILED, _MALFORMED_PAYLOAD_MESSAGE)
+        return _empty_result(
+            request,
+            FlightSearchStatus.FAILED,
+            _MALFORMED_PAYLOAD_MESSAGE,
+            FlightAvailabilityReason.RESPONSE_UNUSABLE,
+        )
 
     try:
         currency = _optional_str(payload.get("currency")) or request.currency
@@ -307,19 +322,31 @@ def parse_kiwi_mcp_search_result(
             "callers never crash on an unexpected payload shape.",
             exc_info=True,
         )
-        return _empty_result(request, FlightSearchStatus.FAILED, _MALFORMED_PAYLOAD_MESSAGE)
+        return _empty_result(
+            request,
+            FlightSearchStatus.FAILED,
+            _MALFORMED_PAYLOAD_MESSAGE,
+            FlightAvailabilityReason.RESPONSE_UNUSABLE,
+        )
 
     if not offers:
         results_count = payload.get("resultsCount")
-        detail = (
-            f" ({results_count} reported by Kiwi, but none could be safely parsed)"
-            if isinstance(results_count, int) and not isinstance(results_count, bool) and results_count > 0
-            else ""
+        reported_results = (
+            isinstance(results_count, int) and not isinstance(results_count, bool) and results_count > 0
         )
+        detail = f" ({results_count} reported by Kiwi, but none could be safely parsed)" if reported_results else ""
+        # M2 Phase 1 (D2): only an EMPTY itinerary list with no reported
+        # results is "the search found nothing". Itineraries (or a positive
+        # count) that could not be parsed are an unusable answer -- e.g. a
+        # renamed field -- never a claim that no flights exist.
+        searched_nothing = not raw_itineraries and not reported_results
         return _empty_result(
             request,
             FlightSearchStatus.UNAVAILABLE,
             _NO_OFFERS_MESSAGE_TEMPLATE.format(detail=detail),
+            FlightAvailabilityReason.SEARCH_COMPLETED_NO_OFFERS
+            if searched_nothing
+            else FlightAvailabilityReason.RESPONSE_UNUSABLE,
         )
 
     return FlightSearchResult(
@@ -327,6 +354,7 @@ def parse_kiwi_mcp_search_result(
         status=FlightSearchStatus.SUCCESS,
         offers=offers,
         message=_SUCCESS_MESSAGE_TEMPLATE.format(count=len(offers)),
+        availability_reason=FlightAvailabilityReason.OFFERS_FOUND,
         origin=request.origin,
         destination=request.destination,
         departure_date=request.departure_date,

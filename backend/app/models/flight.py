@@ -43,6 +43,29 @@ class FlightSearchStatus(str, Enum):
     FAILED = "failed"
 
 
+class FlightAvailabilityReason(str, Enum):
+    """M2 Phase 1 (D2): WHY a flight result has the offers it has. `status`
+    alone cannot say it: `unavailable` covers both "no flight source is set
+    up" and "a real search found nothing". Only
+    `SEARCH_COMPLETED_NO_OFFERS` means a live search ran and returned zero
+    offers."""
+
+    OFFERS_FOUND = "offers_found"
+    # No flight source is set up (not connected, switched off, or no local file).
+    NO_SOURCE_CONFIGURED = "no_source_configured"
+    # A manually supplied local file was read; it held no offer for this trip.
+    LOCAL_SOURCE_NO_MATCHING_OFFERS = "local_source_no_matching_offers"
+    # A source exists, but this trip's request could not be sent to it
+    # (e.g. no origin, or the source does not offer a flight search).
+    SEARCH_NOT_POSSIBLE = "search_not_possible"
+    # A live search completed and returned zero offers.
+    SEARCH_COMPLETED_NO_OFFERS = "search_completed_no_offers"
+    # The source answered, but nothing in the answer could be used.
+    RESPONSE_UNUSABLE = "response_unusable"
+    # The request to the source failed.
+    PROVIDER_FAILED = "provider_failed"
+
+
 class FlightSearchRequest(BaseModel):
     """A single flight inventory search request. `origin` is optional
     (some future providers/flows may search by destination + dates only);
@@ -163,6 +186,9 @@ class FlightSearchResult(BaseModel):
     message: str | None = None
     warnings: list[str] = Field(default_factory=list)
     searched_at: datetime | None = None
+    # M2 Phase 1 (D2): structured cause of this result. None only on a result
+    # stored before the field existed (or a status no rule can classify).
+    availability_reason: FlightAvailabilityReason | None = None
 
     origin: str | None = None
     destination: str
@@ -171,6 +197,9 @@ class FlightSearchResult(BaseModel):
     adults: int = Field(default=1, ge=0)
     children: int = Field(default=0, ge=0)
     currency: str | None = Field(default=None, min_length=3, max_length=3)
+
+    def with_reason(self, reason: FlightAvailabilityReason) -> "FlightSearchResult":
+        return self.model_copy(update={"availability_reason": reason})
 
     @model_validator(mode="after")
     def validate_offers_match_status(self) -> "FlightSearchResult":
