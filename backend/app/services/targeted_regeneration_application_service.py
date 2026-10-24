@@ -42,6 +42,7 @@ from app.services.targeted_regeneration_executor import targeted_regeneration_ex
 from app.services.targeted_regeneration_plan_builder import (
     targeted_regeneration_plan_builder as default_plan_builder,
 )
+from app.services.route_context_finalizer import finalize_route_feasibility_context
 from app.services.versioning_service import versioning_service as default_versioning_service
 
 logger = logging.getLogger(__name__)
@@ -634,6 +635,8 @@ class TargetedRegenerationApplicationService:
         resulting_state = self.feedback_service.recompute_pending_feedback_summary(resulting_state)
         resulting_state = self.plan_diff_preview_service.recompute(resulting_state)
         resulting_state = self.regeneration_readiness_service.recompute(resulting_state)
+        # M2 Phase 2: the changed plan's route context restates its final route report.
+        resulting_state = finalize_route_feasibility_context(resulting_state)
 
         # Task 4: the one successful outcome, recorded via the existing
         # service's own `record_applied_attempt` -- called only after

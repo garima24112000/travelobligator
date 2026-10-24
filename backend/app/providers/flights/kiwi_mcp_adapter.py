@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import re
+import time
+from datetime import date
 from typing import Any
 
+from app.core import performance
 from app.core.config import Settings, get_settings
 from app.models.flight import (
     FlightAvailabilityReason,
+    FlightLocationResolution,
     FlightSearchRequest,
     FlightSearchResult,
     FlightSearchStatus,
@@ -14,9 +18,18 @@ from app.providers.flights.base import FlightInventoryProvider
 from app.providers.flights.kiwi_mcp_client import (
     KiwiMcpClient,
     KiwiMcpDiscoveryStatus,
+    KiwiMcpToolDiscoveryResult,
     McpToolInfo,
 )
+
 from app.providers.flights.kiwi_mcp_parser import parse_kiwi_mcp_search_result
+
+# M2 Phase 2: endpoint -> (expires at, successful discovery). In-process only.
+_DISCOVERY_CACHE: dict[str, tuple[float, KiwiMcpToolDiscoveryResult]] = {}
+
+
+def clear_discovery_cache() -> None:
+    _DISCOVERY_CACHE.clear()
 
 # Kiwi MCP flight provider (Step 178B: tool discovery only; Step 178C:
 # real search-flight invocation, docs/12_provider_architecture.md,
@@ -116,6 +129,48 @@ _IATA_CODE_PATTERN = re.compile(r"^[A-Za-z]{3}$")
 _IATA_REQUIRED_MESSAGE = "Kiwi MCP requires pre-resolved airport codes for this build."
 _MISSING_ORIGIN_MESSAGE = "No origin was provided for this flight search."
 _ZERO_ADULTS_MESSAGE = "Kiwi MCP requires at least one adult traveler for a flight search."
+_PAST_DEPARTURE_MESSAGE = "The departure date is in the past, so no flight search was made."
+
+
+def place_query(text: str | None) -> str | None:
+    """M2 Phase 2: the place name sent to Kiwi -- the part before the first
+    comma ("Some City, ST" -> "Some City"), stripped. Kiwi resolves a city or
+    airport NAME itself; the recorded live search that returned offers sent
+    bare city names, while the recorded zero-offer search sent "City, ST"
+    text (docs/33_m2_phase2_external_integrations.md). Never an airport code
+    inferred from a name. A city name shared by several places is a known
+    limit."""
+    if not text:
+        return None
+    head = text.split(",", 1)[0].strip()
+    return head or None
+
+
+# M2 Phase 2 (Kiwi remediation): only an all-capitals three-letter entry is
+# treated as an airport code the traveller typed ("LHR"); a short place name
+# ("Ufa", "Bar") is a name. Kiwi confirms nothing about how it matched a name.
+_STRICT_AIRPORT_CODE = re.compile(r"^[A-Z]{3}$")
+
+_LOCATION_UNCONFIRMED_MESSAGE = (
+    "Kiwi found no flights for {origin} to {destination}. Kiwi does not say which airports it "
+    "matched to a place name, so this may mean a place was not matched to an airport rather "
+    "than that no flights exist."
+)
+
+
+def is_airport_code(value: str | None) -> bool:
+    return bool(value) and bool(_STRICT_AIRPORT_CODE.fullmatch(value.strip()))
+
+
+def _side_resolution(role: str, requested: str | None, searched: str) -> FlightLocationResolution:
+    code = is_airport_code(searched)
+    return FlightLocationResolution(
+        role=role,
+        requested=(requested or searched)[:160],
+        searched=searched,
+        method="airport_code" if code else "place_name",
+        airport_code=searched.strip() if code else None,
+    )
 
 
 def _schema_properties(tool_schema: dict[str, Any] | None) -> dict[str, Any]:
@@ -165,24 +220,35 @@ def build_search_flight_arguments(
             f"field(s) {', '.join(missing_fields)}; refusing to guess a different shape."
         )
 
-    if not request.origin:
+    origin = place_query(request.origin)
+    destination = place_query(request.destination_city) or place_query(request.destination)
+    if not origin:
         return None, _MISSING_ORIGIN_MESSAGE
+    if not destination:
+        return None, "No destination was provided for this flight search."
 
     if not _schema_accepts_free_form_places(properties) and not (
-        _looks_like_iata_code(request.origin) and _looks_like_iata_code(request.destination)
+        _looks_like_iata_code(origin) and _looks_like_iata_code(destination)
     ):
         return None, _IATA_REQUIRED_MESSAGE
 
     if request.adults < 1:
         return None, _ZERO_ADULTS_MESSAGE
 
+    if request.departure_date < date.today():
+        return None, _PAST_DEPARTURE_MESSAGE
+
     arguments: dict[str, Any] = {
-        _FLY_FROM_FIELD: request.origin,
-        _FLY_TO_FIELD: request.destination,
+        _FLY_FROM_FIELD: origin,
+        _FLY_TO_FIELD: destination,
         _DEPARTURE_DATE_FIELD: request.departure_date.strftime("%d/%m/%Y"),
-        _ADULTS_FIELD: request.adults,
-        _CHILDREN_FIELD: request.children,
     }
+    # Only fields the discovered schema declares (M2 Phase 2): a renamed or
+    # removed field is never sent under its old name.
+    if _ADULTS_FIELD in properties:
+        arguments[_ADULTS_FIELD] = request.adults
+    if _CHILDREN_FIELD in properties:
+        arguments[_CHILDREN_FIELD] = request.children
     if request.return_date is not None and _RETURN_DATE_FIELD in properties:
         arguments[_RETURN_DATE_FIELD] = request.return_date.strftime("%d/%m/%Y")
     if request.currency is not None and _CURRENCY_FIELD in properties:
@@ -195,6 +261,15 @@ def build_search_flight_arguments(
         arguments[_CABIN_CLASS_FIELD] = request.cabin_class
 
     return arguments, None
+
+
+def _add(total: int | None, sent: int | None) -> int | None:
+    """Sums observed HTTP request counts; also feeds the generation's
+    performance counter. None stays None (an unobservable exchange)."""
+    if sent is None:
+        return total
+    performance.count("kiwi_mcp_http_requests", sent)
+    return (total or 0) + sent
 
 
 class KiwiMcpFlightProvider(FlightInventoryProvider):
@@ -211,10 +286,31 @@ class KiwiMcpFlightProvider(FlightInventoryProvider):
         self._client = client
 
     def _resolve_client(self, settings: Settings) -> KiwiMcpClient:
+        # A fresh real client per search: its total time limit starts at its
+        # first use, so every search gets the whole limit.
         return self._client or KiwiMcpClient(
             endpoint=settings.kiwi_mcp_endpoint,
             timeout_seconds=settings.kiwi_mcp_timeout_seconds,
+            total_timeout_seconds=settings.kiwi_mcp_total_timeout_seconds,
+            max_http_requests_per_session=settings.kiwi_mcp_max_http_requests_per_session,
         )
+
+    def _discover(self, client: KiwiMcpClient, settings: Settings) -> KiwiMcpToolDiscoveryResult:
+        """Tool discovery, reusing a recent SUCCESSFUL discovery of the same
+        endpoint (tool names and input schemas only -- never flight data).
+        Only the real client is cached: an injected client always discovers."""
+        cacheable = self._client is None and settings.kiwi_mcp_discovery_cache_seconds > 0
+        key = settings.kiwi_mcp_endpoint
+        if cacheable:
+            cached = _DISCOVERY_CACHE.get(key)
+            if cached is not None and cached[0] > time.monotonic():
+                # A reused discovery sends nothing.
+                return cached[1].model_copy(update={"http_requests": 0})
+        with performance.provider_call("kiwi_mcp_discovery"):
+            result = client.discover_tools()
+        if cacheable and result.status == KiwiMcpDiscoveryStatus.SUCCESS and result.tools:
+            _DISCOVERY_CACHE[key] = (time.monotonic() + settings.kiwi_mcp_discovery_cache_seconds, result)
+        return result
 
     def search_flights(self, request: FlightSearchRequest) -> FlightSearchResult:
         settings = get_settings()
@@ -228,10 +324,12 @@ class KiwiMcpFlightProvider(FlightInventoryProvider):
             )
 
         client = self._resolve_client(settings)
-        discovery_result = client.discover_tools()
+        discovery_result = self._discover(client, settings)
+        # HTTP requests put on the wire for this search (None: not observable).
+        http_requests = _add(None, getattr(discovery_result, "http_requests", None))
 
         if discovery_result.status == KiwiMcpDiscoveryStatus.FAILED:
-            return self._empty_result(
+            failed = self._empty_result(
                 request,
                 FlightSearchStatus.FAILED,
                 _DISCOVERY_FAILED_MESSAGE_TEMPLATE.format(
@@ -239,6 +337,10 @@ class KiwiMcpFlightProvider(FlightInventoryProvider):
                 ),
                 FlightAvailabilityReason.PROVIDER_FAILED,
             )
+            return failed.model_copy(update={
+                "failure_kind": getattr(discovery_result, "failure_kind", None),
+                "provider_http_requests": http_requests,
+            })
 
         flight_tool = _find_flight_search_tool(discovery_result.tools, settings.kiwi_mcp_tool_name)
         if flight_tool is None:
@@ -262,8 +364,31 @@ class KiwiMcpFlightProvider(FlightInventoryProvider):
 
         # Calls exactly the one tool discovery classified as flight-search
         # -- never `feedback-to-devs` or any other discovered tool.
-        call_result = client.call_tool(flight_tool.name, arguments)
-        return parse_kiwi_mcp_search_result(call_result, request)
+        with performance.provider_call("kiwi_mcp_search"):
+            call_result = client.call_tool(flight_tool.name, arguments)
+        http_requests = _add(http_requests, getattr(call_result, "http_requests", None))
+        result = parse_kiwi_mcp_search_result(call_result, request)
+        origin, destination = arguments[_FLY_FROM_FIELD], arguments[_FLY_TO_FIELD]
+        resolution = [
+            _side_resolution("origin", request.origin, origin),
+            _side_resolution("destination", request.destination_city or request.destination, destination),
+        ]
+        update: dict[str, Any] = {
+            # The place names actually searched (M2 Phase 2), so a result can
+            # be read against what Kiwi was asked.
+            "origin": origin,
+            "destination": destination,
+            "location_resolution": resolution,
+            "search_attempts": 1,
+            "provider_http_requests": http_requests,
+        }
+        if result.availability_reason == FlightAvailabilityReason.SEARCH_COMPLETED_NO_OFFERS and not (
+            is_airport_code(origin) and is_airport_code(destination)
+        ):
+            # Zero offers for a NAME is not proof that no flight exists.
+            update["availability_reason"] = FlightAvailabilityReason.LOCATION_UNCONFIRMED
+            update["message"] = _LOCATION_UNCONFIRMED_MESSAGE.format(origin=origin, destination=destination)
+        return result.model_copy(update=update)
 
     def _empty_result(
         self,

@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
+from collections import Counter
+from contextlib import asynccontextmanager
 from enum import Enum
-from typing import Any, AsyncContextManager, Callable
+from typing import Any, AsyncContextManager, AsyncIterator, Callable
 
 from pydantic import BaseModel, Field
 
@@ -75,6 +78,12 @@ class KiwiMcpToolDiscoveryResult(BaseModel):
     status: KiwiMcpDiscoveryStatus
     tools: list[McpToolInfo] = Field(default_factory=list)
     message: str | None = None
+    # M2 Phase 2: why a FAILED discovery failed (`timeout` / `connection` /
+    # `request_cap`).
+    failure_kind: str | None = None
+    # M2 Phase 2: HTTP requests this exchange put on the wire (None when the
+    # transport was not observable, i.e. an injected test client).
+    http_requests: int | None = None
 
 
 class KiwiMcpToolCallStatus(str, Enum):
@@ -106,9 +115,74 @@ class KiwiMcpToolCallResult(BaseModel):
     structured_content: Any = None
     is_error: bool = False
     message: str | None = None
+    # M2 Phase 2: why a FAILED call failed (`timeout` / `connection` /
+    # `request_cap`).
+    failure_kind: str | None = None
+    # M2 Phase 2: HTTP requests this exchange put on the wire (see above).
+    http_requests: int | None = None
 
+
+# M2 Phase 2: fixed labels for why a Kiwi MCP exchange failed.
+FAILURE_TIMEOUT = "timeout"
+FAILURE_CONNECTION = "connection"
+FAILURE_REQUEST_CAP = "request_cap"
+_REQUEST_CAP_MESSAGE = "The Kiwi MCP exchange needed more HTTP requests than its per-session limit allows."
+
+
+class RequestCapReached(Exception):
+    """Raised by `HttpRequestMeter` before a request beyond the cap is sent."""
+
+
+class HttpRequestMeter:
+    """Counts the HTTP requests ONE MCP session puts on the wire and refuses
+    the request that would exceed `cap` before it is sent (M2 Phase 2).
+
+    The MCP SDK talks over `httpx2` (its own HTTP package, separate from the
+    `httpx` the rest of the app uses), so a guard on `httpx` never sees this
+    traffic; the meter sits in the transport the client itself builds, which
+    every MCP request (initialize, notifications, the GET stream, tool calls,
+    the closing DELETE) goes through. Status codes are kept as numbers only.
+    """
+
+    def __init__(self, cap: int | None) -> None:
+        self.cap = cap if cap is not None and cap > 0 else None
+        self.sent = 0
+        self.refused = 0
+        self.statuses: Counter = Counter()
+
+    def admit(self) -> None:
+        if self.cap is not None and self.sent >= self.cap:
+            self.refused += 1
+            raise RequestCapReached
+        self.sent += 1
+
+    def observe(self, status_code: int) -> None:
+        self.statuses[int(status_code)] += 1
+
+
+def counting_transport(inner: Any, meter: HttpRequestMeter) -> Any:
+    """An `httpx2.AsyncBaseTransport` that passes every request through
+    `meter` and then to `inner` (the real network transport)."""
+    import httpx2  # lazy, like `mcp` -- only a real connection needs it
+
+    class _CountingTransport(httpx2.AsyncBaseTransport):
+        async def __aenter__(self) -> Any:
+            await inner.__aenter__()
+            return self
+
+        async def handle_async_request(self, request: Any) -> Any:
+            meter.admit()
+            response = await inner.handle_async_request(request)
+            meter.observe(response.status_code)
+            return response
+
+        async def aclose(self) -> None:
+            await inner.aclose()
+
+    return _CountingTransport()
 
 _DISCOVERY_FAILED_MESSAGE = "Could not reach the Kiwi MCP endpoint or list its tools."
+_TIMED_OUT_MESSAGE = "The Kiwi MCP exchange did not finish within its total time limit."
 
 
 def _tool_call_failed_message(tool_name: str) -> str:
@@ -141,15 +215,83 @@ class KiwiMcpClient:
         timeout_seconds: float,
         *,
         client_factory: Callable[[], AsyncContextManager[Any]] | None = None,
+        total_timeout_seconds: float | None = None,
+        clock: Callable[[], float] = time.monotonic,
+        max_http_requests_per_session: int | None = None,
+        http_transport_factory: Callable[[], Any] | None = None,
     ) -> None:
         self._endpoint = endpoint
         self._timeout_seconds = timeout_seconds
         self._client_factory = client_factory
+        # M2 Phase 2: every session's HTTP requests are counted and capped in
+        # the client's own transport. `http_transport_factory` replaces only
+        # the innermost network transport (tests: an in-process server).
+        self._max_http_requests = max_http_requests_per_session
+        self._http_transport_factory = http_transport_factory
+        self._meter: HttpRequestMeter | None = None
+        self.http_requests_total = 0
+        self.http_statuses: Counter = Counter()
+        # M2 Phase 2: ONE wall-clock limit for everything this client does
+        # (connect, discovery, the search call), counted from its first use.
+        # `timeout_seconds` alone only bounds each read, so a slow connect or
+        # a stream of slow reads could hold a generation far longer.
+        self._total_timeout = total_timeout_seconds if total_timeout_seconds and total_timeout_seconds > 0 else None
+        self._clock = clock
+        self._deadline: float | None = None
 
-    def _default_client_factory(self) -> AsyncContextManager[Any]:
-        from mcp import Client  # lazy import -- see module docstring above.
+    def _remaining(self) -> float | None:
+        if self._total_timeout is None:
+            return None
+        if self._deadline is None:
+            self._deadline = self._clock() + self._total_timeout
+        return max(0.0, self._deadline - self._clock())
 
-        return Client(self._endpoint, read_timeout_seconds=self._timeout_seconds)
+    async def _bounded(self, coroutine: Any) -> Any:
+        """Runs `coroutine` within what is left of the total limit. A timeout
+        cancels it, which closes the MCP session (`async with`) on the way out."""
+        remaining = self._remaining()
+        if remaining is None:
+            return await coroutine
+        if remaining <= 0:
+            coroutine.close()
+            raise asyncio.TimeoutError
+        return await asyncio.wait_for(coroutine, timeout=remaining)
+
+    @asynccontextmanager
+    async def _default_client_factory(self) -> AsyncIterator[Any]:
+        """A real MCP session over an `httpx2` client whose transport counts
+        and caps every request (see `HttpRequestMeter`). Timeouts are the MCP
+        SDK's own defaults; the total limit (`_bounded`) still applies."""
+        import httpx2  # lazy imports -- see module docstring above.
+        from mcp import Client
+        from mcp.client.streamable_http import streamable_http_client
+        from mcp.shared._httpx_utils import MCP_DEFAULT_SSE_READ_TIMEOUT, MCP_DEFAULT_TIMEOUT
+
+        meter = self._meter if self._meter is not None else HttpRequestMeter(self._max_http_requests)
+        inner = self._http_transport_factory() if self._http_transport_factory else httpx2.AsyncHTTPTransport()
+        http_client = httpx2.AsyncClient(
+            transport=counting_transport(inner, meter),
+            timeout=httpx2.Timeout(MCP_DEFAULT_TIMEOUT, read=MCP_DEFAULT_SSE_READ_TIMEOUT),
+        )
+        async with http_client:
+            async with Client(
+                streamable_http_client(self._endpoint, http_client=http_client),
+                read_timeout_seconds=self._timeout_seconds,
+            ) as client:
+                yield client
+
+    def _start_session(self) -> HttpRequestMeter | None:
+        """A fresh meter for one real session; None for an injected client
+        (its transport is not observable, so nothing is claimed about it)."""
+        self._meter = None if self._client_factory is not None else HttpRequestMeter(self._max_http_requests)
+        return self._meter
+
+    def _end_session(self, meter: HttpRequestMeter | None) -> int | None:
+        if meter is None:
+            return None
+        self.http_requests_total += meter.sent
+        self.http_statuses.update(meter.statuses)
+        return meter.sent
 
     async def _discover_tools_async(self) -> KiwiMcpToolDiscoveryResult:
         factory = self._client_factory or self._default_client_factory
@@ -180,17 +322,28 @@ class KiwiMcpClient:
         result with a generic, safe message (never raw exception text,
         which could echo connection/auth details).
         """
+        meter = self._start_session()
         try:
-            return asyncio.run(self._discover_tools_async())
+            result = asyncio.run(self._bounded(self._discover_tools_async()))
+            failed = None
+        except asyncio.TimeoutError:
+            failed = (FAILURE_TIMEOUT, _TIMED_OUT_MESSAGE)
         except Exception:
-            logger.warning(
-                "Kiwi MCP tool discovery failed unexpectedly.", exc_info=True
-            )
-            return KiwiMcpToolDiscoveryResult(
-                status=KiwiMcpDiscoveryStatus.FAILED,
-                tools=[],
-                message=_DISCOVERY_FAILED_MESSAGE,
-            )
+            failed = (FAILURE_CONNECTION, _DISCOVERY_FAILED_MESSAGE)
+        sent = self._end_session(meter)
+        if failed is None:
+            return result.model_copy(update={"http_requests": sent})
+        if meter is not None and meter.refused:
+            # The cap, not the network, ended the exchange.
+            failed = (FAILURE_REQUEST_CAP, _REQUEST_CAP_MESSAGE)
+        logger.warning("Kiwi MCP tool discovery failed (kind=%s).", failed[0])
+        return KiwiMcpToolDiscoveryResult(
+            status=KiwiMcpDiscoveryStatus.FAILED,
+            tools=[],
+            message=failed[1],
+            failure_kind=failed[0],
+            http_requests=sent,
+        )
 
     async def _call_tool_async(
         self, tool_name: str, arguments: dict[str, Any]
@@ -220,15 +373,25 @@ class KiwiMcpClient:
         interprets the response itself; that is
         `app.providers.flights.kiwi_mcp_parser`'s job.
         """
+        meter = self._start_session()
         try:
-            return asyncio.run(self._call_tool_async(tool_name, arguments))
+            result = asyncio.run(self._bounded(self._call_tool_async(tool_name, arguments)))
+            failed = None
+        except asyncio.TimeoutError:
+            failed = (FAILURE_TIMEOUT, _TIMED_OUT_MESSAGE)
         except Exception:
-            logger.warning(
-                "Kiwi MCP tool call to '%s' failed unexpectedly.", tool_name, exc_info=True
-            )
-            return KiwiMcpToolCallResult(
-                status=KiwiMcpToolCallStatus.FAILED,
-                structured_content=None,
-                is_error=True,
-                message=_tool_call_failed_message(tool_name),
-            )
+            failed = (FAILURE_CONNECTION, _tool_call_failed_message(tool_name))
+        sent = self._end_session(meter)
+        if failed is None:
+            return result.model_copy(update={"http_requests": sent})
+        if meter is not None and meter.refused:
+            failed = (FAILURE_REQUEST_CAP, _REQUEST_CAP_MESSAGE)
+        logger.warning("Kiwi MCP tool call to '%s' failed (kind=%s).", tool_name, failed[0])
+        return KiwiMcpToolCallResult(
+            status=KiwiMcpToolCallStatus.FAILED,
+            structured_content=None,
+            is_error=True,
+            message=failed[1],
+            failure_kind=failed[0],
+            http_requests=sent,
+        )

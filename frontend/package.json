@@ -9,7 +9,8 @@
     "lint": "eslint",
     "test": "node --experimental-strip-types --test tests/*.test.mjs",
     "check:headers": "node scripts/check-production-headers.mjs",
-    "e2e": "playwright test"
+    "e2e": "playwright test",
+    "e2e:replay": "playwright test -c playwright.m2p2-replay.config.ts"
   },
   "dependencies": {
     "leaflet": "^1.9.4",

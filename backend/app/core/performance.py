@@ -352,7 +352,9 @@ _LLM_RESULTS = frozenset({"success", "fallback", "failed"})
 # Section 3B: the only labels a stage may report (see `providers/ai_failure`
 # and `providers/ai_stage_budget`).
 _LLM_TRANSPORT_FAILURES = frozenset({"rate_limit", "timeout", "network", "server_error", "other_transport"})
-_LLM_RETRY_AFTER = frozenset({"obeyed", "clamped", "skipped"})
+_LLM_RETRY_AFTER = frozenset(
+    {"obeyed", "clamped", "skipped", "quota_reset_obeyed", "quota_reset_skipped"}  # M2 Phase 2: quota-reset waits
+)
 
 
 def note_llm_stage(

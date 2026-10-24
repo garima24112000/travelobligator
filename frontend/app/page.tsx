@@ -87,6 +87,7 @@ import {
   travelerChangesUnavailable,
   travelerErrorMessage,
   travelerFlightAvailabilityNotice,
+  travelerFlightAirportNotes,
   weatherMissingNotice,
   UNVERIFIED_LEG_LINE,
   legIncludesFerry,
@@ -1667,13 +1668,23 @@ function RouteFeasibilitySection({
         Confidence: <span className="font-semibold">{routeFeasibility.confidence}</span>
       </p>
 
-      {routeFeasibility.daily_route_feasibility.length === 0 ? (
-        <p className="mt-2 text-sm text-slate-400">
-          {reportSummary ??
-            (routeFeasibility.data_status === "not_connected"
-              ? "Route feasibility is unavailable because no route provider is connected."
-              : "No per-transfer route results are recorded for this plan.")}
+      {/* M2 Phase 2: what the final route report verified, ALWAYS when there is
+          one -- the per-day context below is restated from that same report, so
+          a routed plan always has days and the line must not depend on them. */}
+      {reportSummary && (
+        <p data-testid="route-report-summary" className="mt-2 text-sm text-slate-300">
+          {reportSummary}
         </p>
+      )}
+
+      {routeFeasibility.daily_route_feasibility.length === 0 ? (
+        !reportSummary && (
+          <p className="mt-2 text-sm text-slate-400">
+            {routeFeasibility.data_status === "not_connected"
+              ? "Route feasibility is unavailable because no route provider is connected."
+              : "No per-transfer route results are recorded for this plan."}
+          </p>
+        )
       ) : (
         <ul className="mt-3 flex flex-col gap-2">
           {routeFeasibility.daily_route_feasibility.map((day) => (
@@ -3039,7 +3050,7 @@ function ProvenanceBadge({
 // so it is never rendered as a bare, context-free number.
 function legacyOfferRatingLabel(offer: AccommodationOffer): string {
   return offer.scraped_provenance
-    ? "Rating from scraped/manual source"
+    ? "Rating from a manually supplied local file"
     : "Rating from lodging source";
 }
 
@@ -3249,6 +3260,9 @@ function AccommodationInventorySection({
       <p className="mt-2 text-sm text-slate-200">
         Bookable lodging inventory: {accommodationInventoryStatusLabel(status)}
       </p>
+      {report?.availability_reason && (
+        <p className="mt-1 text-xs text-slate-400">Reason: {report.availability_reason}</p>
+      )}
 
       {/* Developer Mode surfaces the backend's own message/warnings
           verbatim (Step 185F) -- e.g. a missing/malformed local file
@@ -3619,6 +3633,31 @@ function FlightInventorySection({
       <p className="mt-2 text-sm text-slate-200">
         Flight inventory: {flightInventoryStatusLabel(status, hasScrapedOffers, hasKiwiMcpOffers)}
       </p>
+      {report?.availability_reason && (
+        <p className="mt-1 text-xs text-slate-400">
+          Reason: {report.availability_reason}
+          {report.failure_kind ? ` (${report.failure_kind})` : ""}
+        </p>
+      )}
+      {report?.search_attempts != null && (
+        <p className="mt-1 text-xs text-slate-400">
+          Searches: {report.search_attempts}; HTTP requests observed:{" "}
+          {report.provider_http_requests ?? "not observable"}
+        </p>
+      )}
+      {(report?.location_resolution ?? []).map((entry) => (
+        <p key={entry.role} className="mt-1 break-words text-xs text-slate-400">
+          {entry.role}: &quot;{entry.requested}&quot; → {entry.searched ?? "not searched"} ({entry.method}
+          {entry.straight_line_km !== null ? `, ${entry.straight_line_km} km straight-line` : ""}
+          {entry.lookup_source ? `, source ${entry.lookup_source}` : ""}
+          {entry.airport_type ? `, ${entry.airport_type}` : ""}
+          {entry.method === "nearby_airport"
+            ? `, commercial-service evidence: ${entry.commercial_service_evidence ?? "none"}`
+            : ""}
+          {entry.dataset_version ? `, data ${entry.dataset_version}` : ""})
+          {entry.selection_rationale ? ` ${entry.selection_rationale}` : ""}
+        </p>
+      ))}
 
       {/* Developer Mode surfaces the backend's own message/warnings
           verbatim (Step 185F) -- e.g. a missing/malformed local file
@@ -6135,10 +6174,13 @@ function TravelerFlightOfferCard({ offer }: { offer: FlightOffer }) {
   return (
     <li className="rounded-lg border border-white/10 bg-slate-900/60 p-3 text-sm">
       {firstOutboundSegment && <FlightSegmentSummary segment={firstOutboundSegment} />}
-      {offer.total_price_amount !== null && offer.currency && (
+      {offer.total_price_amount !== null && offer.currency ? (
         <p className="mt-1 text-xs text-slate-300">
           {offer.total_price_amount} {offer.currency}
         </p>
+      ) : (
+        // M2 Phase 2: a price is shown only in the currency the source stated.
+        <p className="mt-1 text-xs text-slate-400">Price not provided by the flight source.</p>
       )}
       {offer.booking_url && (
         <p className="mt-1 text-[11px] uppercase tracking-wide text-slate-500">
@@ -6409,10 +6451,17 @@ function UserModeFlightSummary({
   // real search completed with zero offers -- `unavailable` alone also covers
   // "no flight source at all", which must never read as a search result.
   const noOfferMessage = travelerFlightAvailabilityNotice(report);
+  // M2 Phase 2: where a nearby airport was searched instead of a place name.
+  const airportNotes = travelerFlightAirportNotes(report);
 
   return (
     <div className="rounded-2xl border border-white/10 bg-white/5 p-4 sm:p-5">
       <h2 className="text-lg font-semibold">Flights</h2>
+      {airportNotes.map((note) => (
+        <p key={note} className="mt-2 text-sm text-slate-200">
+          {note}
+        </p>
+      ))}
       {hasOffers ? (
         <>
           <DisclaimerNote tone="amber" spacingClassName="mt-2">

@@ -338,7 +338,7 @@ class ScrapedLocalHotelRatingsProvider(HotelRatingsProvider):
         if not settings.scraping_enabled or not settings.scraped_hotel_ratings_provider_enabled:
             return self._empty_result(
                 HotelRatingsStatus.NOT_CONNECTED,
-                "Scraped hotel ratings provider is not enabled.",
+                "The manually supplied local hotel-rating file source is switched off (no live site is ever fetched).",
             )
 
         slots = _resolve_slots(settings)
@@ -428,7 +428,7 @@ class ScrapedLocalHotelRatingsProvider(HotelRatingsProvider):
             checked_source_ids.append(slot.source_id)
 
             if not state.exists:
-                reason = f"{slot.source_id}: configured local manual scrape file was not found."
+                reason = f"{slot.source_id}: the configured manually supplied local file was not found."
                 warnings.append(reason)
                 checked_slot_messages.append(reason)
                 continue

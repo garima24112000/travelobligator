@@ -64,6 +64,14 @@ class FlightAvailabilityReason(str, Enum):
     RESPONSE_UNUSABLE = "response_unusable"
     # The request to the source failed.
     PROVIDER_FAILED = "provider_failed"
+    # M2 Phase 2 (Kiwi remediation): a search by place NAME returned zero
+    # offers. The source does not say which airports it matched to a name, so
+    # this is never reported as "no flights" -- the name may simply not have
+    # been matched to an airport.
+    LOCATION_UNCONFIRMED = "location_unconfirmed"
+    # No searchable airport could be found for a place (the place itself was
+    # not found, or no international airport lies within the lookup radius).
+    NO_SEARCHABLE_AIRPORT = "no_searchable_airport"
 
 
 class FlightSearchRequest(BaseModel):
@@ -81,6 +89,10 @@ class FlightSearchRequest(BaseModel):
     cabin_class: str | None = None
     currency: str | None = Field(default=None, min_length=3, max_length=3)
     trip_id: str | None = None
+    # M2 Phase 2: the destination's city name as the destination geocoder
+    # resolved it (no new request), when known. A provider that resolves place
+    # names itself (Kiwi MCP) is sent this instead of the trip's free text.
+    destination_city: str | None = Field(default=None, max_length=160)
 
     @model_validator(mode="after")
     def validate_return_date(self) -> "FlightSearchRequest":
@@ -161,6 +173,39 @@ class FlightOffer(BaseModel):
         return self
 
 
+class FlightLocationResolution(BaseModel):
+    """M2 Phase 2 (Kiwi remediation): how ONE side of a flight search was
+    turned into what the flight source was asked -- the provenance of every
+    substituted airport. Facts only from the traveller's own input or the
+    airport-lookup provider's answer; `straight_line_km` is a straight-line
+    distance between two provider coordinates, never a travel distance."""
+
+    role: str = Field(pattern="^(origin|destination)$")
+    requested: str = Field(max_length=160)
+    searched: str | None = Field(default=None, max_length=160)
+    # `airport_code` (the traveller typed a code), `place_name` (sent as a
+    # name for the source to resolve), `nearby_airport` (an airport the lookup
+    # provider found near the place), or `not_resolved`.
+    method: str = Field(pattern="^(airport_code|place_name|nearby_airport|not_resolved)$")
+    airport_name: str | None = Field(default=None, max_length=160)
+    airport_code: str | None = Field(default=None, pattern="^[A-Z]{3}$")
+    straight_line_km: float | None = Field(default=None, ge=0)
+    # Where the airport (and its code, when present) came from.
+    lookup_source: str | None = Field(default=None, max_length=80)
+    note: str | None = Field(default=None, max_length=400)
+    # M2 Phase 2 (second correction): what makes a substituted airport suitable
+    # for an ordinary commercial flight, and why it was chosen. A
+    # `nearby_airport` side WITHOUT `commercial_service_evidence` is never a
+    # basis for "no offers".
+    airport_lat: float | None = Field(default=None, ge=-90, le=90)
+    airport_lon: float | None = Field(default=None, ge=-180, le=180)
+    airport_type: str | None = Field(default=None, max_length=40)
+    airport_country: str | None = Field(default=None, max_length=2)
+    commercial_service_evidence: str | None = Field(default=None, max_length=80)
+    selection_rationale: str | None = Field(default=None, max_length=400)
+    dataset_version: str | None = Field(default=None, max_length=40)
+
+
 class FlightSearchResult(BaseModel):
     """Normalized response envelope returned by
     `FlightInventoryProvider.search_flights` (Step 169A).
@@ -189,6 +234,15 @@ class FlightSearchResult(BaseModel):
     # M2 Phase 1 (D2): structured cause of this result. None only on a result
     # stored before the field existed (or a status no rule can classify).
     availability_reason: FlightAvailabilityReason | None = None
+    # M2 Phase 2: for a PROVIDER_FAILED result, the fixed kind of failure when
+    # known (`timeout` / `connection` / `tool_error`). Never exception text.
+    failure_kind: str | None = None
+    # M2 Phase 2 (Kiwi remediation): per side, what the source was asked and
+    # why; how many searches and transport requests this result took. All
+    # optional (None on results stored before them).
+    location_resolution: list[FlightLocationResolution] | None = None
+    search_attempts: int | None = Field(default=None, ge=0)
+    provider_http_requests: int | None = Field(default=None, ge=0)
 
     origin: str | None = None
     destination: str

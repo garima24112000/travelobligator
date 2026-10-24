@@ -650,6 +650,9 @@ export function currencyMissingNotice(
 // tells a traveler to "connect" or "enable" anything.
 export const FLIGHTS_SEARCHED_NO_OFFERS = "No flight offers were found for this trip's route and dates.";
 export const FLIGHTS_NOT_SHOWN = "No flight options are shown for this trip.";
+export const FLIGHTS_LOCATION_UNCONFIRMED =
+  "No flight options were found under this trip's place names. The flight search doesn't say which airports it " +
+  "matched to a place name, so this doesn't mean there are no flights.";
 
 const FLIGHT_AVAILABILITY_NOTICES: Record<string, string> = {
   no_source_configured: "Flight search isn't part of this app yet, so no flight options are shown.",
@@ -658,7 +661,34 @@ const FLIGHT_AVAILABILITY_NOTICES: Record<string, string> = {
   search_completed_no_offers: FLIGHTS_SEARCHED_NO_OFFERS,
   response_unusable: "Flight search is temporarily unavailable. Please try again later.",
   provider_failed: "Flight search is temporarily unavailable. Please try again later.",
+  // M2 Phase 2: a search by place name that found nothing is NOT "no flights".
+  location_unconfirmed: FLIGHTS_LOCATION_UNCONFIRMED,
+  no_searchable_airport:
+    "Flights couldn't be searched because no airport could be found for a place on this trip, so no flight options are shown.",
 };
+
+/**
+ * M2 Phase 2: one line per side of the flight search that was moved to a
+ * nearby airport, so a traveler sees where flights actually depart or arrive.
+ * Only from the backend's structured provenance; empty when nothing moved.
+ */
+export function travelerFlightAirportNotes(
+  report: Pick<FlightInventoryReport, "location_resolution"> | null | undefined,
+): string[] {
+  return (report?.location_resolution ?? [])
+    // Only an airport with evidence of scheduled airline service is presented.
+    .filter((entry) => entry.method === "nearby_airport" && entry.airport_name && entry.commercial_service_evidence)
+    .map((entry) => {
+      const code = entry.airport_code ? ` (${entry.airport_code})` : "";
+      const distance =
+        entry.straight_line_km !== null ? ` (about ${entry.straight_line_km} km in a straight line)` : "";
+      const verb = entry.role === "origin" ? "from" : "to";
+      return (
+        `Flights were searched ${verb} ${entry.airport_name}${code}, an airport with scheduled airline ` +
+        `service near ${entry.requested}${distance}. It is not in ${entry.requested} itself.`
+      );
+    });
+}
 
 // -- route coverage summary (Developer view, M2 Phase 1 D6) ---------------------------------
 
@@ -773,6 +803,11 @@ const CHANGES_UNAVAILABLE: Record<string, ChangeRefusal> = {
     title: "Changes can't be applied right now",
     detail:
       "Your requests are saved with the trip, but the part of the app that applies them isn't available right now. Your itinerary stays as it is.",
+  },
+  // M2 Phase 2: the owner has paused new planning runs (temporary).
+  generation_paused: {
+    title: "Applying changes is paused",
+    detail: "Your requests are saved with the trip. Applying changes is paused for now, so please try again later.",
   },
 };
 

@@ -301,7 +301,7 @@ class ScrapedLocalFlightProvider(FlightInventoryProvider):
             return self._empty_result(
                 request,
                 FlightSearchStatus.NOT_CONNECTED,
-                "Scraped flight provider is not enabled.",
+                "The manually supplied local flight-file source is switched off (no live site is ever fetched).",
                 reason=FlightAvailabilityReason.NO_SOURCE_CONFIGURED,
             )
 
@@ -399,7 +399,7 @@ class ScrapedLocalFlightProvider(FlightInventoryProvider):
             checked_source_ids.append(slot.source_id)
 
             if not state.exists:
-                reason = f"{slot.source_id}: configured local manual scrape file was not found."
+                reason = f"{slot.source_id}: the configured manually supplied local file was not found."
                 warnings.append(reason)
                 checked_slot_messages.append(reason)
                 continue
@@ -508,7 +508,7 @@ class ScrapedLocalFlightProvider(FlightInventoryProvider):
             )
 
         if not checked_paths:
-            message = "No local scraped-flight HTML path is configured."
+            message = "No manually supplied local flight file is configured (no live site is ever fetched)."
         elif len(checked_paths) == 1:
             # Exactly one source was configured (the overwhelmingly
             # common pre-185D case) -- surface its own precise reason
@@ -517,7 +517,7 @@ class ScrapedLocalFlightProvider(FlightInventoryProvider):
             message = checked_slot_messages[0]
         else:
             message = (
-                "No local scraped-flight HTML files were found. Checked "
+                "No manually supplied local flight file was found (no live site is ever fetched). Checked "
                 "configured source(s): "
                 + ", ".join(checked_source_ids)
                 + "."

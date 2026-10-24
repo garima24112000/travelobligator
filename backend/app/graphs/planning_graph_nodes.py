@@ -532,7 +532,7 @@ def build_flight_inventory_node(
     def flight_inventory_node(state: PlanningGraphState) -> dict[str, Any]:
         planning_state = state["planning_state"]
         try:
-            report = resolved_service.build_report(planning_state)
+            report = resolved_service.build_report(planning_state, **_context(state))
         except Exception:
             return {
                 "failed_nodes": ["flight_inventory"],

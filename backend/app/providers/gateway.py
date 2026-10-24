@@ -26,6 +26,11 @@ from app.providers.base import (
 from app.providers.currency.frankfurter_adapter import FrankfurterCurrencyAdapter
 from app.providers.flights.base import FlightInventoryProvider
 from app.providers.flights.factory import get_flight_provider
+from app.providers.flights.airport_lookup import (
+    AirportLookupProvider,
+    AirportLookupResult,
+    get_airport_lookup_provider,
+)
 from app.providers.holidays.nager_date_adapter import NagerDateHolidaysAdapter
 from app.providers.places.factory import get_places_provider
 from app.providers.routing.base import RoutingProvider
@@ -72,7 +77,11 @@ _SAFE_PROVIDER_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_:.-]+$")
 _INFO_LEVEL_STATUSES = frozenset({"success", "returned"})
 # Section 1B: the gateway operations whose provider is OPTIONAL in V1, and
 # the statuses that only mean "nothing to offer" for them.
-_OPTIONAL_INVENTORY_STAGES = frozenset({"accommodations", "flights"})
+_OPTIONAL_INVENTORY_STAGES = frozenset({"accommodations", "flights", "airport_lookup"})
+_AIRPORT_LOOKUP_OUTCOMES = {
+    "found": "success", "none_nearby": "unavailable", "place_not_found": "unavailable",
+    "not_connected": "not_connected", "failed": "failed",
+}
 _EXPECTED_NO_DATA_STATUSES = frozenset({"unavailable", "not_connected"})
 
 # Maps a result's `status` value to one of this codebase's existing,
@@ -267,6 +276,7 @@ class ProviderGateway:
         routing: RoutingProvider | None = None,
         accommodation_inventory: AccommodationInventoryProvider | None = None,
         flight_inventory: FlightInventoryProvider | None = None,
+        airport_lookup: AirportLookupProvider | None = None,
     ) -> None:
         self.places = places or get_places_provider()
         self.routes = routes or RoutesProvider()
@@ -280,6 +290,8 @@ class ProviderGateway:
         self.routing = routing or get_routing_provider()
         self.accommodation_inventory = accommodation_inventory or get_accommodation_provider()
         self.flight_inventory = flight_inventory or get_flight_provider()
+        # M2 Phase 2: nearby airports for a flight search by place name.
+        self.airport_lookup = airport_lookup or get_airport_lookup_provider()
 
     # -- Section 203C.2B: explicit per-generation provider views ---------------------
     #
@@ -513,6 +525,25 @@ class ProviderGateway:
             stage="accommodations",
             status=_provider_status(result),
             duration_ms=duration_ms,
+        )
+        return result
+
+    def nearby_airports(
+        self, place_text: str, provider_context: GenerationProviderContext | None = None
+    ) -> AirportLookupResult:
+        """M2 Phase 2: real airports near a place (see
+        `providers/flights/airport_lookup.py`), charged to the generation's
+        Geoapify credits. `not_connected` unless configured."""
+        bind = getattr(self.airport_lookup, "bound_to", None)
+        provider = bind(provider_context) if callable(bind) and provider_context is not None else self.airport_lookup
+        started_at = time.monotonic()
+        result = provider.nearby_airports(place_text)
+        _log_provider_call(
+            provider=getattr(provider, "provider_name", None),
+            stage="airport_lookup",
+            # the lookup's own statuses, in the outcome vocabulary of the log
+            status=_AIRPORT_LOOKUP_OUTCOMES.get(result.status, "failed"),
+            duration_ms=(time.monotonic() - started_at) * 1000,
         )
         return result
 

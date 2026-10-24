@@ -6,7 +6,7 @@ and returned an empty itinerary list. Fakes and local files only."""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -57,7 +57,9 @@ _ITINERARY = {"id": "itinerary-1", "price": 53.0, "outbound": {"segments": [_SEG
 
 
 def _request(**overrides: Any) -> FlightSearchRequest:
-    fields: dict[str, Any] = {"origin": "London", "destination": "Paris", "departure_date": date(2026, 12, 15)}
+    # M2 Phase 2: always in the future -- a past departure is refused before any search.
+    fields: dict[str, Any] = {"origin": "London", "destination": "Paris",
+                              "departure_date": date.today() + timedelta(days=60)}
     fields.update(overrides)
     return FlightSearchRequest(**fields)
 
@@ -131,10 +133,15 @@ def test_kiwi_empty_itinerary_list_is_the_only_completed_zero_result(monkeypatch
     client = _FakeKiwiClient(
         _discovered("search-flight"), _structured({"itineraries": [], "resultsCount": 0, "error": None})
     )
-    result = _kiwi(monkeypatch, client).search_flights(_request())
+    # M2 Phase 2 (Kiwi remediation): only a search between airport CODES is a
+    # completed zero result; Kiwi never says which airports it matched to a
+    # place name, so a name search that found nothing is "location unconfirmed".
+    result = _kiwi(monkeypatch, client).search_flights(_request(origin="LHR", destination="CDG"))
     assert result.status == FlightSearchStatus.UNAVAILABLE
     assert result.availability_reason == Reason.SEARCH_COMPLETED_NO_OFFERS
     assert client.calls == ["search-flight"]
+    by_name = _kiwi(monkeypatch, client).search_flights(_request())
+    assert by_name.availability_reason == Reason.LOCATION_UNCONFIRMED
 
 
 def test_kiwi_success_is_offers_found(monkeypatch: pytest.MonkeyPatch) -> None:
