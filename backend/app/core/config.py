@@ -569,6 +569,10 @@ class Settings(BaseSettings):
     # the planner, the request and the prompts are exactly what they were
     # before Q3 (the regrouping and spread passes above run instead).
     day_composition_enabled: bool = Field(default=True, alias="DAY_COMPOSITION_ENABLED")
+    # M2 Phase 3: the known-closure and remote-day passes
+    # (`services/visit_day_feasibility`). A TEMPORARY rollback switch, like
+    # DAY_COMPOSITION_ENABLED: off, the plan is exactly as before them.
+    visit_day_feasibility_enabled: bool = Field(default=True, alias="VISIT_DAY_FEASIBILITY_ENABLED")
     # Route-burden quality thresholds (walking, from the routing provider's
     # own leg data; never an estimate). A day beyond its pace's total, or a
     # single leg beyond the leg limit, gets a long-travel warning and the

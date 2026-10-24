@@ -8,6 +8,7 @@ from typing import Any, NamedTuple
 import httpx
 
 from app.services.place_taxonomy import classify_place, filter_provider_tags
+from app.services.venue_status import venue_evidence_tags
 from app.core.config import get_settings
 from app.models.common import DataStatus, GeoPoint, ProviderStatus
 from app.models.providers import NormalizedPlace, ProviderResponse
@@ -679,6 +680,8 @@ class OpenStreetMapPlacesAdapter(DestinationResolutionMixin, PlacesProvider):
                     data_status=DataStatus.LIVE,
                     confidence=0.6,
                     provider_tags=filter_provider_tags(tags) or None,
+                    # {} = the element's tags were read and hold no venue keys
+                    venue_tags=venue_evidence_tags(tags) if isinstance(tags, dict) else None,
                 )
             )
             seen_ids.add(place_id)

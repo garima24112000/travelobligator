@@ -15,6 +15,7 @@ from app.models.candidate_quality import (
 from app.models.planning_state import PlanningState
 from app.models.providers import NormalizedPlace
 from app.services import place_taxonomy as taxonomy
+from app.services import venue_status
 from app.services.must_visit_matching import is_tagged_must_visit
 from app.services.must_visit_matching import legacy_must_visit_place_ids as resolve_legacy_must_visit_place_ids
 
@@ -87,6 +88,8 @@ _SEVERE_REJECT_REASONS = {
     CandidateRejectReason.MISSING_COORDINATES,
     CandidateRejectReason.INSUFFICIENT_PROVIDER_CONFIDENCE,
     CandidateRejectReason.UNSUPPORTED_ACCOMMODATION_INVENTORY,
+    # M2 Phase 3: the record states the place does not operate.
+    CandidateRejectReason.VENUE_REPORTED_NOT_OPERATING,
 }
 
 _TIER_THRESHOLDS: tuple[tuple[float, CandidateQualityTier], ...] = (
@@ -250,6 +253,13 @@ def _confidence_signal(
             [CandidateRejectReason.INSUFFICIENT_PROVIDER_CONFIDENCE],
         )
     return [], []
+
+
+_VENUE_STATUS_SIGNALS = {
+    venue_status.NOT_OPERATIONAL: "Provider data records that this place's visitor use has ended (closed, disused or gone).",
+    venue_status.NOT_YET_OPEN: "Provider data records this place as proposed or under construction, not yet open.",
+    venue_status.LISTED_CLOSED: "Provider data lists this place's opening hours as closed.",
+}
 
 
 class CandidateQualityService:
@@ -435,6 +445,15 @@ class CandidateQualityService:
             negative_signals.append("Provider data marks this place as private or not publicly accessible.")
             if CandidateRejectReason.UNSUITABLE_PLACE_TYPE not in reject_reasons:
                 reject_reasons.append(CandidateRejectReason.UNSUITABLE_PLACE_TYPE)
+        elif (reported := venue_status.venue_status(tags, _field(place, "venue_tags"))).status in (
+            venue_status.EXCLUDING_STATUSES
+        ):
+            # M2 Phase 3: the provider's own record states the place no longer
+            # operates, has not opened, or is closed. A record saying nothing
+            # is never read as "open" -- only an explicit statement excludes.
+            category_score = min(category_score, 0.1)
+            negative_signals.append(_VENUE_STATUS_SIGNALS[reported.status])
+            reject_reasons.append(CandidateRejectReason.VENUE_REPORTED_NOT_OPERATING)
         elif (
             str(tags.get("category_path") or "").count(".") >= 2
             and classification.object_kind is None
@@ -472,6 +491,8 @@ class CandidateQualityService:
                     CandidateRejectReason.ADMINISTRATIVE_OR_INFRASTRUCTURE,
                     CandidateRejectReason.WEAK_CATEGORY,
                     CandidateRejectReason.UNSUITABLE_PLACE_TYPE,
+                    # kept because the traveller asked; the validator says so
+                    CandidateRejectReason.VENUE_REPORTED_NOT_OPERATING,
                 )
             ]
 

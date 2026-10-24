@@ -8,6 +8,7 @@ from app.models.planning_state import (
     DailyPlan,
     InterestCoverageEntry,
     OverLimitWalkingLeg,
+    VenueEvidenceEntry,
     PlanningStage,
     PlanningState,
     ValidationIssue,
@@ -24,6 +25,7 @@ from app.core.errors import DESTINATION_UNRESOLVED_MESSAGE
 from app.services.plan_quality_findings import build_plan_quality_findings, interest_coverage_entries
 from app.services.entity_collisions import scheduled_unresolved_collisions
 from app.services.must_visit_matching import must_visit_place_ids, resolve_must_visits
+from app.services import venue_evidence
 from app.services.place_taxonomy import explicit_no_public_access
 from app.services.day_order_heuristics import GEOGRAPHIC_SPREAD_THRESHOLD_KM, day_spread_km
 from app.services.review_classification import classification_for
@@ -541,6 +543,11 @@ class PlanValidatorService(PlanningStageService):
         # the traveller is told so on its day.
         warnings.extend(_inaccessible_must_visit_issues(planning_state))
 
+        # M2 Phase 3: what the scheduled places' own records say about them
+        # operating, and about their listed hours on the scheduled dates.
+        evidence = _stop_evidence_safely(planning_state)
+        warnings.extend(_venue_status_issues(evidence))
+
         # A requested place is also kept when the routing provider definitively
         # found no route for a leg it is on; the traveller is told which one.
         warnings.extend(_unrouted_must_visit_leg_issues(planning_state))
@@ -744,6 +751,21 @@ class PlanValidatorService(PlanningStageService):
             # Presentation only: the coverage facts the findings above were raised from.
             interest_coverage=_interest_coverage_safely(planning_state),
             # Presentation only: the legs `long_travel_day` names as over-limit walks.
+            venue_evidence=(
+                [
+                    VenueEvidenceEntry(
+                        experience_id=entry.experience_id,
+                        day_number=entry.day_number,
+                        status=entry.status,
+                        hours_on_day=list(entry.hours_on_day),
+                        checked_on=entry.checked_on,
+                        source=entry.source,
+                    )
+                    for entry in evidence
+                ]
+                if planning_state.experience_plan is not None
+                else None
+            ),
             over_limit_walking_legs=(
                 [
                     OverLimitWalkingLeg(
@@ -863,6 +885,71 @@ _ACCESS_WORDING = {
     "private": "is marked in the place data as private",
     "no": "is marked in the place data as not open to the public",
 }
+
+
+def _stop_evidence_safely(planning_state: PlanningState) -> list[venue_evidence.StopEvidence]:
+    try:
+        return venue_evidence.stop_evidence(planning_state)
+    except Exception:  # noqa: BLE001 - evidence is presentation; it never fails validation
+        return []
+
+
+_NOT_OPERATING_WORDING = {
+    venue_evidence.REPORTED_NOT_OPERATING: "is recorded in the place data as no longer operating",
+    venue_evidence.REPORTED_NOT_YET_OPEN: "is recorded in the place data as not yet open",
+}
+
+
+def _venue_status_issues(evidence: list[venue_evidence.StopEvidence]) -> list[ValidationIssue]:
+    """Per day: scheduled stops whose own record states they do not operate
+    (only a requested place is ever scheduled despite that), and stops whose
+    listed hours close them on their scheduled date. Nothing is said about a
+    stop whose record says nothing."""
+    issues: list[ValidationIssue] = []
+    days = sorted({entry.day_number for entry in evidence})
+    for day_number in days:
+        on_day = [entry for entry in evidence if entry.day_number == day_number]
+        not_operating = [entry for entry in on_day if entry.status in _NOT_OPERATING_WORDING]
+        if not_operating:
+            stops = "; ".join(f"{entry.name} {_NOT_OPERATING_WORDING[entry.status]}" for entry in not_operating)
+            kept = (
+                " It is kept because you asked for it."
+                if all(entry.must_visit for entry in not_operating)
+                else ""
+            )
+            issues.append(
+                ValidationIssue(
+                    severity=ValidationSeverity.WARNING,
+                    category="venue_reported_not_operating",
+                    # Traveller wording: no implementation terms (the page shows it as written).
+                    message=f"Day {day_number}: {stops}.{kept} Do not plan on visiting it without checking first.",
+                    affected_section=f"experience_plan.daily_plans[{day_number}]",
+                    suggested_fix="Check whether this place is open to visitors before planning your day around it.",
+                )
+            )
+        closed = [entry for entry in on_day if entry.status == venue_evidence.LISTED_CLOSED_ON_DAY]
+        if closed:
+            names = " and ".join(entry.name for entry in closed)
+            plural = len(closed) > 1
+            kept = (
+                f" {'They are' if plural else 'It is'} kept because you asked for {'them' if plural else 'it'} and "
+                "no other day of this trip fitted."
+                if all(entry.must_visit for entry in closed)
+                else ""
+            )
+            issues.append(
+                ValidationIssue(
+                    severity=ValidationSeverity.WARNING,
+                    category="venue_closed_on_scheduled_day",
+                    message=(
+                        f"Day {day_number}: the listed opening hours of {names} show "
+                        f"{'them' if plural else 'it'} closed on this day.{kept}"
+                    ),
+                    affected_section=f"experience_plan.daily_plans[{day_number}]",
+                    suggested_fix="Check the current opening hours, and visit on another day if they are right.",
+                )
+            )
+    return issues
 
 
 def _inaccessible_must_visit_issues(planning_state: PlanningState) -> list[ValidationIssue]:

@@ -63,6 +63,8 @@ class PromotedAICandidate(BaseModel):
     # grounding evidence, so a promoted place is classified from provider
     # facts in the planner exactly like a broad-pool candidate.
     provider_tags: dict[str, str] | None = None
+    # M2 Phase 3: the grounding evidence's venue keys (see candidate_grounding).
+    venue_tags: dict[str, str] | None = None
     promotion_reasons: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     promoted: bool = True

@@ -274,6 +274,7 @@ def test_places_are_mapped_from_what_the_response_states(
         assert set(place.model_dump()) == {
             "place_id", "name", "category", "coordinates", "address", "source", "data_status",
             "confidence", "provider_tags",
+            "venue_tags",  # M2 Phase 3: the record's own venue evidence (here: none)
         }
 
 

@@ -86,7 +86,12 @@ PROBE_UNPUBLISHED_CURRENCY_COUNTRY = "VN"
 GEOAPIFY_CREDITS_PER_GENERATION = 100  # the production value, set explicitly for step 4
 LLM_REQUESTS_PER_GENERATION = 8  # 4 routed stages (anchor, reasoning, repair x1, narrator) x at most 2 requests
 
-_FROZEN_FILES = (_SCRIPTS_DIR / "benchmark" / "cities.json", _SCRIPTS_DIR / "benchmark" / "quality_v1.json")
+_FROZEN_FILES = (
+    _SCRIPTS_DIR / "benchmark" / "cities.json",
+    _SCRIPTS_DIR / "benchmark" / "quality_v1.json",
+    # M2 Phase 3: the second unseen acceptance set
+    _SCRIPTS_DIR / "benchmark" / "quality_v2.json",
+)
 _CITY_LIST_KEYS = frozenset({"tuning", "holdout", "holdout_stress"})
 
 # Host -> service. Every other host is refused.

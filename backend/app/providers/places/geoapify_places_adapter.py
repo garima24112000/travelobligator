@@ -90,6 +90,7 @@ from app.core import generation_diagnostics
 from app.core.provider_usage import GenerationProviderContext, ProviderUsageTracker
 from app.services.day_order_heuristics import NEAR_DAY_STOPS_KM
 from app.services.place_taxonomy import classify_place, filter_provider_tags
+from app.services.venue_status import venue_evidence_tags
 from app.utils.geo import haversine_distance_km
 from app.services.schedule_diversity import HISTORY_ARCHITECTURE, MUSEUM_CULTURE, coarse_class
 from app.utils.names import comparable_name
@@ -894,6 +895,7 @@ class GeoapifyPlacesAdapter(DestinationResolutionMixin, PlacesProvider):
             specific = most_specific_category(categories)
             category = specific.rsplit(".", 1)[-1] if specific else None
         formatted = properties.get("formatted")
+        venue = venue_evidence_tags(raw)
         return NormalizedPlace(
             place_id=f"geoapify/{place_id}",
             name=name.strip(),
@@ -904,6 +906,8 @@ class GeoapifyPlacesAdapter(DestinationResolutionMixin, PlacesProvider):
             data_status=DataStatus.LIVE,
             confidence=0.6,
             provider_tags=tags or None,
+            # {} = the record was read and holds no venue keys; None = no record to read
+            venue_tags=venue if isinstance(raw, dict) else None,
             # Sanitised internal identity for de-duplication only; the raw
             # source record itself is never kept.
             source_entity_id=source_entity_id(raw),
@@ -1147,6 +1151,17 @@ class GeoapifyPlacesAdapter(DestinationResolutionMixin, PlacesProvider):
             "source_entity_id": place.source_entity_id or source_entity_id(raw),
             "alt_names": known_names or None,
         }
+        # M2 Phase 3: Place Details documents `opening_hours` as a property of
+        # its own; the raw record's venue keys come with it. Kept beside the
+        # taxonomy tags; a value already known is only completed, never removed.
+        venue = {**(place.venue_tags or {}), **venue_evidence_tags(raw)}
+        documented_hours = properties.get("opening_hours")
+        if isinstance(documented_hours, str) and documented_hours.strip() and "opening_hours" not in venue:
+            venue.update(venue_evidence_tags({"opening_hours": documented_hours}))
+        read = isinstance(raw, dict) or isinstance(documented_hours, str)
+        if venue != (place.venue_tags or {}) or (read and place.venue_tags is None):
+            # {} = the answer was read and holds no venue keys (never "not read")
+            identity["venue_tags"] = venue if (venue or read) else None
         if not tags:
             return place.model_copy(update=identity) if any(identity.values()) else None
         tags = {**existing_tags, **tags}

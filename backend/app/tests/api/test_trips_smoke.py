@@ -2621,6 +2621,7 @@ def test_missing_must_visit_is_added_through_targeted_lookup(
         "data_status",
         "confidence",
         "provider_tags",  # Section 202B.2: structured tags (None for a fake provider)
+        "venue_tags",  # M2 Phase 3: venue-status evidence (None for a fake provider)
         "must_visit_term",  # Section 203C.2B: the user's own term this place was grounded for
         "must_visit_terms",  # Q1: every user term grounded to this provider place
     }

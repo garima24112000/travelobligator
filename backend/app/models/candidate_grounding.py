@@ -76,6 +76,18 @@ def _require_non_blank(value: str, field_name: str) -> str:
     return value
 
 
+def _only_venue_keys(value: dict[str, str] | None) -> dict[str, str] | None:
+    """Venue evidence may hold only the whitelisted venue keys."""
+    if value is None:
+        return None
+    from app.models.venue_keys import KEPT_KEYS
+
+    unknown = sorted(set(value) - set(KEPT_KEYS))
+    if unknown:
+        raise ValueError(f"venue_tags may only hold venue-status keys; got {unknown}")
+    return value
+
+
 def _check_forbidden(value: str, field_name: str) -> str:
     forbidden = _find_forbidden_pattern(value)
     if forbidden is not None:
@@ -148,6 +160,15 @@ class ProviderCandidateForGrounding(BaseModel):
     # targeted-lookup match is scored on the same evidence as a broad-pool
     # candidate. Never AI-authored.
     provider_tags: dict[str, str] | None = None
+    # M2 Phase 3: the provider record's own venue evidence
+    # (`services/venue_status.venue_evidence_tags`: lifecycle prefixes,
+    # opening_hours, check date) -- only those keys, never AI-authored.
+    venue_tags: dict[str, str] | None = None
+
+    @field_validator("venue_tags")
+    @classmethod
+    def validate_venue_keys(cls, value: dict[str, str] | None) -> dict[str, str] | None:
+        return _only_venue_keys(value)
 
     @field_validator("provider_name", "provider_place_id", "name")
     @classmethod
@@ -179,6 +200,15 @@ class CandidateGroundingEvidence(BaseModel):
     confidence: float = Field(ge=0.0, le=1.0)
     # Section 202C.1C: see `ProviderCandidateForGrounding.provider_tags`.
     provider_tags: dict[str, str] | None = None
+    # M2 Phase 3: the provider record's own venue evidence
+    # (`services/venue_status.venue_evidence_tags`: lifecycle prefixes,
+    # opening_hours, check date) -- only those keys, never AI-authored.
+    venue_tags: dict[str, str] | None = None
+
+    @field_validator("venue_tags")
+    @classmethod
+    def validate_venue_keys(cls, value: dict[str, str] | None) -> dict[str, str] | None:
+        return _only_venue_keys(value)
 
     @field_validator("provider_name", "provider_place_id", "matched_name")
     @classmethod

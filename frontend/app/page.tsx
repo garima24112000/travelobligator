@@ -92,6 +92,8 @@ import {
   UNVERIFIED_LEG_LINE,
   legIncludesFerry,
   legIsOverLimitWalk,
+  findVenueEvidence,
+  travelerVenueLine,
   legIsUnverified,
   reviewSeverity,
   travelerDayNotices,
@@ -113,6 +115,7 @@ import type {
 } from "@/lib/trust-dashboard";
 import { isAiInterpretedResult } from "@/lib/types";
 import type {
+  VenueEvidenceEntry,
   AccommodationInventoryReport,
   AccommodationOffer,
   AccommodationRatingDetails,
@@ -588,6 +591,33 @@ function MovementRow({
  * says so between the two stops instead of leaving a silent gap. It states
  * no mode, time or distance -- there is none to state.
  */
+/** M2 Phase 3: what a stop's own place record says about it on its day. */
+function VenueEvidenceRow({ entry, mode }: { entry: VenueEvidenceEntry | null; mode: "user" | "developer" }) {
+  if (!entry) return null;
+  if (mode === "developer") {
+    return (
+      <li data-testid="venue-evidence-row" className="ml-3 break-words pl-3 text-xs text-slate-400">
+        Venue evidence: {entry.status}
+        {entry.hours_on_day.length > 0 ? ` · listed hours ${entry.hours_on_day.join(", ")}` : ""}
+        {entry.checked_on ? ` · checked ${entry.checked_on}` : ""}
+        {entry.source ? ` · source ${entry.source}` : ""}
+      </li>
+    );
+  }
+  const line = travelerVenueLine(entry);
+  if (!line) return null;
+  return (
+    <li
+      data-testid="venue-evidence-row"
+      className={`ml-3 break-words pl-3 text-xs ${
+        line.attention ? "border-l border-amber-300/60 font-medium text-amber-200" : "text-slate-400"
+      }`}
+    >
+      {line.text}
+    </li>
+  );
+}
+
 function UnverifiedLegRow() {
   return (
     <li
@@ -8452,6 +8482,10 @@ export default function Home() {
                                 : previous,
                             )
                           }
+                        />
+                        <VenueEvidenceRow
+                          entry={findVenueEvidence(result.validationReport, experience.experience_id)}
+                          mode={mode}
                         />
                         {showMovementRow && movement && (
                           <MovementRow

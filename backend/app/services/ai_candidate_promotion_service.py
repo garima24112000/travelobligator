@@ -138,6 +138,7 @@ class AICandidatePromotionService:
                     confidence=grounded.evidence.confidence,
                     data_status=grounded.evidence.data_status.value,
                     provider_tags=grounded.evidence.provider_tags,
+                    venue_tags=grounded.evidence.venue_tags,
                     promotion_reasons=list(item.eligibility_reasons),
                     warnings=list(item.warnings),
                     promoted=True,

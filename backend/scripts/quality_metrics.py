@@ -23,7 +23,8 @@ from typing import Any
 
 # 5 (quality tuning corrections): dispersed days with their cause and
 # findings, and the kind of evidence that covers the food interest. Additive.
-SCHEMA_VERSION = 5
+# 6 (M2 Phase 3): venue evidence of the scheduled stops and remote days.
+SCHEMA_VERSION = 6
 
 # Q2: a candidate with at least this many stored usefulness evidences.
 _HIGHER_EVIDENCE_BAND = 2
@@ -288,6 +289,13 @@ def extract_quality_metrics(state: Any) -> dict[str, Any]:
                 "legs_the_provider_definitively_could_not_route": assessment.definitive_failures,
                 "legs_whose_provider_route_includes_a_ferry": assessment.ferry_legs,
                 "verified_transfer_seconds": _round(assessment.burden.total_duration_seconds, 1),
+                # M2 Phase 3: what made an `elevated` day elevated -- the existing
+                # classification's own two conditions, never a new limit. Elevated is
+                # within every limit: reported, never repaired.
+                "elevated_because": _elevated_because(assessment) if assessment.severity == "elevated" else None,
+                "vehicle_legs": assessment.burden.drive_legs,
+                "longest_vehicle_leg_seconds": _round(assessment.burden.max_drive_leg_duration_seconds, 1),
+                "walking_seconds": _round(assessment.burden.walking_duration_seconds, 1),
             }
             for assessment in assessments
         ],
@@ -540,9 +548,13 @@ def extract_quality_metrics(state: Any) -> dict[str, Any]:
         ],
     }
 
+    # -- venue evidence and remote days (M2 Phase 3) -----------------------------------------------
+    venue = venue_metrics(state)
+
     return {
         "schema_version": SCHEMA_VERSION,
         "note": "reported only; computed from stored state; never an acceptance input of the planner",
+        "venue": venue,
         "interests": interests,
         "must_visits": must_visits,
         "geography": geography,
@@ -560,6 +572,70 @@ def extract_quality_metrics(state: Any) -> dict[str, Any]:
             "scheduled_unresolved_collision_count": len(scheduled_unresolved_collisions(state)),
         },
         "future_metrics_not_computed": list(FUTURE_METRICS),
+    }
+
+
+def _elevated_because(assessment: Any) -> list[str]:
+    """The fixed reasons `route_burden.assess_legs` gives a day `elevated`."""
+    from app.core.config import get_settings
+
+    reasons = []
+    if assessment.burden.drive_legs:
+        reasons.append("needs_a_vehicle_transfer")
+    if assessment.burden.walking_duration_seconds > get_settings().route_burden_max_day_seconds_relaxed:
+        reasons.append("walking_beyond_the_relaxed_pace_total")
+    return reasons
+
+
+def venue_metrics(state: Any) -> dict[str, Any]:
+    """Venue validity and known-hours figures of the scheduled stops, from the
+    places' own stored records (`services/venue_evidence`), and remote days
+    (`services/remote_days`). Counts of what the records SAY: a stop whose
+    record says nothing is counted as unchecked, never as open."""
+    from app.services.remote_days import remote_days_safely
+    from app.services.venue_evidence import (
+        HOURS_NEED_HOLIDAY_DATA,
+        HOURS_NOT_LISTED,
+        HOURS_NOT_UNDERSTOOD,
+        LISTED_CLOSED_ON_DAY,
+        LISTED_OPEN_ON_DAY,
+        REPORTED_NOT_OPERATING,
+        REPORTED_NOT_YET_OPEN,
+        stop_evidence,
+    )
+
+    entries = stop_evidence(state)
+    by_status: dict[str, int] = {}
+    for entry in entries:
+        by_status[entry.status] = by_status.get(entry.status, 0) + 1
+    unchecked = (HOURS_NOT_LISTED, HOURS_NOT_UNDERSTOOD, HOURS_NEED_HOLIDAY_DATA)
+    stated_not_operating = [e for e in entries if e.status in (REPORTED_NOT_OPERATING, REPORTED_NOT_YET_OPEN)]
+    closed_on_day = [e for e in entries if e.status == LISTED_CLOSED_ON_DAY]
+    remote = remote_days_safely(state)
+    return {
+        "scheduled_stops": len(entries),
+        "stops_by_evidence": dict(sorted(by_status.items())),
+        # target zero, except a must-visit the traveller asked for (reported)
+        "scheduled_stated_not_operating": len(stated_not_operating),
+        "scheduled_stated_not_operating_not_must_visit": sum(1 for e in stated_not_operating if not e.must_visit),
+        "scheduled_on_a_listed_closing_day": len(closed_on_day),
+        "scheduled_on_a_listed_closing_day_not_must_visit": sum(1 for e in closed_on_day if not e.must_visit),
+        "stops_with_listed_hours_for_their_day": by_status.get(LISTED_OPEN_ON_DAY, 0) + len(closed_on_day),
+        "stops_with_hours_unchecked": sum(by_status.get(status, 0) for status in unchecked),
+        "share_with_hours_unchecked": _round(
+            sum(by_status.get(status, 0) for status in unchecked) / len(entries) if entries else None
+        ),
+        "stops_with_a_record_check_date": sum(1 for e in entries if e.checked_on),
+        # why hours are unknown, and where each stop's record came from (fixed labels)
+        "hours_unknown_by_cause": dict(sorted(
+            (cause, sum(1 for e in entries if e.unknown_cause == cause))
+            for cause in {e.unknown_cause for e in entries if e.unknown_cause}
+        )),
+        "stops_by_record": dict(sorted(
+            (record, sum(1 for e in entries if e.record == record)) for record in {e.record for e in entries}
+        )),
+        "remote_days": [day.day_number for day in remote],
+        "remote_days_without_a_requested_place": [day.day_number for day in remote if not day.requested_places],
     }
 
 
@@ -607,5 +683,11 @@ def render_lines(metrics: dict[str, Any]) -> list[str]:
         f"{slots['higher_evidence_available_count']} available",
         f"- unused candidates with more evidence than the weakest discretionary stop: "
         f"{slots['unused_with_more_evidence_than_weakest_discretionary_scheduled']}",
+        f"- venue evidence of scheduled stops: {metrics['venue']['stops_by_evidence'] or 'none'}"
+        f" | stated not operating (not must-visit): {metrics['venue']['scheduled_stated_not_operating_not_must_visit']}"
+        f" | on a listed closing day (not must-visit): "
+        f"{metrics['venue']['scheduled_on_a_listed_closing_day_not_must_visit']}",
+        f"- share of stops with hours unchecked: {metrics['venue']['share_with_hours_unchecked']}"
+        f" | remote days without a requested place: {joined(metrics['venue']['remote_days_without_a_requested_place'])}",
         f"- not computed yet (future metrics): {joined(metrics['future_metrics_not_computed'])}",
     ]

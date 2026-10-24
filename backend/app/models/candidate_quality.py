@@ -45,6 +45,9 @@ class CandidateRejectReason(str, Enum):
     # Section 202B.2: a structurally unsuitable place type (hospital,
     # clinic, office, parking, ...) per `app.services.place_taxonomy`.
     UNSUITABLE_PLACE_TYPE = "unsuitable_place_type"
+    # M2 Phase 3: the provider's own record states the place no longer
+    # operates, has not opened, or is closed (`services/venue_status`).
+    VENUE_REPORTED_NOT_OPERATING = "venue_reported_not_operating"
 
 
 _NON_REJECTED_LOW_TIERS = {CandidateQualityTier.LOW_PRIORITY, CandidateQualityTier.REJECTED}

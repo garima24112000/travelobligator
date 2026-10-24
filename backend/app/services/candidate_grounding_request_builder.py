@@ -5,6 +5,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from app.services.venue_status import venue_evidence_tags
 from app.models.ai_candidate_proposal import AICandidateProposal
 from app.models.candidate_grounding import CandidateGroundingRequest, ProviderCandidateForGrounding
 from app.models.common import DataStatus, GeoPoint
@@ -222,6 +223,12 @@ class CandidateGroundingRequestBuilder:
                 coordinates=coordinates,
                 data_status=data_status,
                 confidence=confidence,
+                # M2 Phase 3: the pool record's venue evidence, whitelisted again
+                venue_tags=(
+                    venue_evidence_tags(raw_candidate["venue_tags"])
+                    if isinstance(raw_candidate.get("venue_tags"), dict)
+                    else None
+                ),
             )
         except ValidationError:
             return None

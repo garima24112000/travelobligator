@@ -60,6 +60,8 @@ _SCRIPTS_DIR = Path(__file__).resolve().parent
 _BACKEND_DIR = _SCRIPTS_DIR.parent
 _REPO_DIR = _BACKEND_DIR.parent
 _DATA_PATH = _SCRIPTS_DIR / "benchmark" / "quality_v1.json"
+# M2 Phase 3: the second, still unseen acceptance set (its own frozen file).
+_DATA_PATH_V2 = _SCRIPTS_DIR / "benchmark" / "quality_v2.json"
 sys.path.insert(0, str(_SCRIPTS_DIR))
 
 import benchmark_tuning_cities as tuning  # noqa: E402  (the secret scrubber and file writers)
@@ -73,7 +75,10 @@ SCHEMA_VERSION = 2
 
 SET_TUNING = "quality-tuning"
 SET_HOLDOUT = "quality-holdout"
-_SET_KEYS = {SET_TUNING: "quality_tuning", SET_HOLDOUT: "quality_holdout"}
+SET_HOLDOUT_V2 = "quality-holdout-v2"
+_SET_KEYS = {SET_TUNING: "quality_tuning", SET_HOLDOUT: "quality_holdout", SET_HOLDOUT_V2: "quality_holdout_v2"}
+# Frozen sets: each refuses to run without --allow-quality-holdout, and only whole.
+FROZEN_SETS = frozenset({SET_HOLDOUT, SET_HOLDOUT_V2})
 
 # What `baseline_hard_correctness` is -- and is not. It is NOT the whole of
 # part A of the contract: A1-A3 are not acceptance checks during Q0.
@@ -116,7 +121,11 @@ def quality_metrics_outcome(report: dict[str, Any], *, generation_failed: bool) 
 
 
 def load_data(path: Path = _DATA_PATH) -> dict[str, Any]:
-    return json.loads(path.read_text(encoding="utf-8"))
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if path == _DATA_PATH and _DATA_PATH_V2.exists():
+        # the second frozen set lives in its own file; only its set key is added
+        data["quality_holdout_v2"] = json.loads(_DATA_PATH_V2.read_text(encoding="utf-8"))["quality_holdout_v2"]
+    return data
 
 
 def scenarios_of(data: dict[str, Any], which: str) -> list[dict[str, Any]]:
@@ -129,7 +138,7 @@ def holdout_refusal(
 ) -> str | None:
     """Why this invocation may not run, or None. The frozen holdout needs its
     explicit flag and is only ever run whole."""
-    if which != SET_HOLDOUT:
+    if which not in FROZEN_SETS:
         return None
     if not allow_quality_holdout:
         return (
@@ -386,7 +395,7 @@ def run_benchmark(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--set", dest="which", choices=[SET_TUNING, SET_HOLDOUT], default=SET_TUNING)
+    parser.add_argument("--set", dest="which", choices=[SET_TUNING, SET_HOLDOUT, SET_HOLDOUT_V2], default=SET_TUNING)
     parser.add_argument(
         "--allow-quality-holdout", action="store_true",
         help="required for --set quality-holdout (the frozen, unseen set; never while tuning)",
