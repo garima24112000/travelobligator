@@ -757,6 +757,9 @@ export type ValidationReport = {
   // no faster way of making the transfer is on the plan. Presentation only;
   // `null` or absent (a report stored before the field) marks no leg.
   over_limit_walking_legs?: OverLimitWalkingLeg[] | null;
+  // M2 Phase 3 (presentation only): per scheduled stop, what its own place
+  // record says about it operating and its listed hours on its scheduled date.
+  venue_evidence?: VenueEvidenceEntry[] | null;
 };
 
 export type OverLimitWalkingLeg = {
@@ -1600,4 +1603,23 @@ export type ItineraryRevisionComparison = {
   critical_issue_count_left: number;
   critical_issue_count_right: number;
   no_compared_differences: boolean;
+};
+
+// Backend app.models.planning_state.VenueEvidenceEntry. `hours_on_day` are the
+// place record's LISTED hours for that date, never a claim that it is open.
+export type VenueEvidenceEntry = {
+  experience_id: string;
+  day_number: number;
+  status:
+    | "reported_not_operating"
+    | "reported_not_yet_open"
+    | "listed_closed_on_day"
+    | "listed_open_on_day"
+    | "hours_need_holiday_data"
+    | "hours_not_understood"
+    | "hours_not_listed"
+    | string;
+  hours_on_day: string[];
+  checked_on: string | null;
+  source: string | null;
 };

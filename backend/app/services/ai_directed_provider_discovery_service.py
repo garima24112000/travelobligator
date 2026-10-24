@@ -407,6 +407,7 @@ class AIDirectedProviderDiscoveryService:
                 data_status=place.data_status,
                 confidence=place.confidence,
                 provider_tags=place.provider_tags,
+                venue_tags=place.venue_tags,
             )
         except ValidationError:
             return AIProviderDiscoveryAttempt(

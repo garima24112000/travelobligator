@@ -780,7 +780,7 @@ def test_metrics_report_evidence_neutrally_and_only_over_discretionary_slots() -
     # the honest future metric is still future
     assert "tourist_value_ranking_and_obscure_filler_share" in metrics_module.FUTURE_METRICS
     # Q3 added day geography, Q4 route severity; the tuning corrections added dispersion causes and food evidence
-    assert metrics_module.SCHEMA_VERSION == 5
+    assert metrics_module.SCHEMA_VERSION == 6  # 6 (M2 Phase 3): additive venue evidence
 
 
 # =====================================================================================

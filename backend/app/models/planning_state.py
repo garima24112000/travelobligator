@@ -319,7 +319,8 @@ class HolidayContext(BaseModel):
     only ever contains real provider-backed public holidays that fall
     inside the trip's date range; it is never used to infer closures,
     crowds, opening hours, events, festivals, strikes, or risk, and no such
-    value is ever invented. If the provider has real data for the relevant
+    value is ever invented. (M2 Phase 3: it only decides whether a place's
+    OWN provider hours rule for public holidays, `PH`, applies on a date.) If the provider has real data for the relevant
     year(s) but none of it falls inside the trip's date range, `holidays`
     stays empty while `data_status` still reflects a successful/live
     response -- that is reported honestly via `assumptions`, not treated as
@@ -922,6 +923,22 @@ class OverLimitWalkingLeg(BaseModel):
     to_experience_id: str
 
 
+class VenueEvidenceEntry(BaseModel):
+    """M2 Phase 3 (presentation only): what a scheduled stop's own provider
+    record says about the place operating and about its opening hours on the
+    stop's scheduled date (`services/venue_evidence`). `hours_on_day` are the
+    record's listed hours for that date ("09:00–17:00"), never a claim that
+    the place is open; `checked_on` is the record's own check date, when it
+    has one. Never read by the planner, readiness or a code."""
+
+    experience_id: str
+    day_number: int
+    status: str
+    hours_on_day: list[str] = Field(default_factory=list)
+    checked_on: str | None = None
+    source: str | None = None
+
+
 class ValidationReport(BaseModel):
     validation_report_id: str = Field(default_factory=lambda: _new_id("validation_report"))
 
@@ -958,6 +975,10 @@ class ValidationReport(BaseModel):
     # the walking-leg limit, in day and leg order. `None` when there is no
     # route report to read (and on a report stored before this field).
     over_limit_walking_legs: list[OverLimitWalkingLeg] | None = None
+    # M2 Phase 3 (presentation only): per scheduled stop, the venue evidence
+    # above, in day and stop order. `None` without a plan (and on a report
+    # stored before this field) -- never read as "checked".
+    venue_evidence: list[VenueEvidenceEntry] | None = None
 
     validated_at: datetime = Field(default_factory=_utc_now)
 

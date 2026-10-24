@@ -526,6 +526,7 @@ def test_fallback_result_creates_no_fake_rating_price_review_or_hours(
             "data_status",
             "confidence",
             "provider_tags",
+            "venue_tags",  # M2 Phase 3: the record's own venue evidence, never a fabricated field
         }
         for forbidden_field in ("rating", "price", "review", "opening_hours", "booking_url", "availability"):
             assert forbidden_field not in dumped
@@ -658,6 +659,7 @@ def test_accommodation_fallback_result_creates_no_fake_price_rating_review_or_ho
             "data_status",
             "confidence",
             "provider_tags",
+            "venue_tags",  # M2 Phase 3: the record's own venue evidence, never a fabricated field
         }
         for forbidden_field in (
             "rating",
@@ -804,6 +806,7 @@ def test_search_must_visit_place_result_has_no_fake_rating_price_review_or_hours
         "data_status",
         "confidence",
         "provider_tags",  # Section 202B.2: structured tags only, never a fact field
+        "venue_tags",  # M2 Phase 3: the record's own venue evidence, never a fabricated field
     }
     for forbidden_field in ("rating", "price", "review", "opening_hours", "booking_url", "availability"):
         assert forbidden_field not in dumped
@@ -1739,6 +1742,7 @@ def test_poi_cache_introduces_no_forbidden_fields(
             "data_status",
             "confidence",
             "provider_tags",
+            "venue_tags",  # M2 Phase 3: the record's own venue evidence, never a fabricated field
         }
         for forbidden_field in (
             "rating",

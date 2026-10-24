@@ -1096,7 +1096,7 @@ def test_metrics_report_day_geography_as_proxies_only(setting: Any) -> None:
     metrics = metrics_module.extract_quality_metrics(state)
     geography = metrics["day_geography"]
 
-    assert metrics["schema_version"] == 5  # additive since 4: dispersion causes, food evidence
+    assert metrics["schema_version"] == 6  # additive since 4: dispersion causes, food evidence; 6: venue evidence
     assert geography["days_by_band"] == {composition.COMPACT: 3}
     assert geography["days_within_one_area"] == 3 and geography["area_revisits_in_stop_order"] == 0
     assert geography["days_with_a_compact_alternative_of_equal_usefulness"] == []

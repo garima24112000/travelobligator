@@ -7,6 +7,7 @@
 // Node's built-in test runner (frontend/tests).
 
 import type {
+  VenueEvidenceEntry,
   CurrencyContext,
   FlightInventoryReport,
   HolidayContext,
@@ -1129,4 +1130,42 @@ export function travelerErrorMessage(input: TravelerErrorInput): TravelerError {
     return { message: message.trim(), retryable: false };
   }
   return { message: genericFailure(operation), retryable: status === null || status === 0 };
+}
+
+// -- venue evidence (M2 Phase 3) ------------------------------------------------------------
+
+export const VENUE_HOURS_NOT_CHECKED = "Opening hours not checked.";
+
+/**
+ * The Traveler view line for one scheduled stop's venue evidence, and whether
+ * it needs attention. Only the backend's own statement is restated; listed
+ * hours are never presented as a promise that the place is open.
+ */
+export function travelerVenueLine(
+  entry: Pick<VenueEvidenceEntry, "status" | "hours_on_day" | "checked_on"> | null | undefined,
+): { text: string; attention: boolean } | null {
+  if (!entry) return null;
+  const checked = entry.checked_on ? ` Last confirmed in the place data: ${entry.checked_on}.` : "";
+  switch (entry.status) {
+    case "reported_not_operating":
+      return { text: `Recorded as no longer operating. Check before you go.${checked}`, attention: true };
+    case "reported_not_yet_open":
+      return { text: `Recorded as not yet open. Check before you go.${checked}`, attention: true };
+    case "listed_closed_on_day":
+      return { text: `Its listed opening hours show it closed on this day.${checked}`, attention: true };
+    case "listed_open_on_day":
+      return {
+        text: `Listed opening hours this day: ${entry.hours_on_day.join(", ")}. Hours can change; check before you go.${checked}`,
+        attention: false,
+      };
+    default:
+      return { text: VENUE_HOURS_NOT_CHECKED, attention: false };
+  }
+}
+
+export function findVenueEvidence(
+  report: Pick<ValidationReport, "venue_evidence"> | null | undefined,
+  experienceId: string,
+): VenueEvidenceEntry | null {
+  return (report?.venue_evidence ?? []).find((entry) => entry.experience_id === experienceId) ?? null;
 }

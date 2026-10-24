@@ -75,6 +75,9 @@ MATERIAL_CODES: frozenset[str] = frozenset(
         "THIN_DAY",
         "TRAVEL_TIME_BUFFER",
         "UNDERFILLED_PLAN",
+        # M2 Phase 3: what a scheduled place's own record says about it.
+        "VENUE_CLOSED_ON_SCHEDULED_DAY",
+        "VENUE_REPORTED_NOT_OPERATING",
     }
 )
 

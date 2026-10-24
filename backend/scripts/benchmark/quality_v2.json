@@ -1,0 +1,100 @@
+{
+  "_comment": "M2 Phase 3 unseen acceptance set (docs/34_m2_phase3_itinerary_quality.md). BENCHMARK-ONLY: never imported by backend/app, and no name in this file may enter production logic. Every city is new: none is in cities.json, quality_v1.json or any development run of M2. quality_holdout_v2 is FROZEN and UNSEEN: it is not run, in whole or in part, while the planner is tuned, and then exactly once, whole. A scenario states a request and the generic dimensions it exercises; it never states an expected itinerary, day grouping, neighbourhood or stop.",
+  "frozen_on": "2026-10-24",
+  "defaults": {
+    "travelers": 2,
+    "travel_group_type": "couple"
+  },
+  "quality_holdout_v2": [
+    {
+      "id": "Q2-H1",
+      "destination": "Seville, Spain",
+      "trip_days": 3,
+      "pace": "balanced",
+      "interests": ["history", "architecture", "gardens"],
+      "must_visit": ["Real Alcázar of Seville"],
+      "covers": ["compact historic core", "venue hours", "must-visit identity"]
+    },
+    {
+      "id": "Q2-H2",
+      "destination": "Florence, Italy",
+      "trip_days": 3,
+      "pace": "packed",
+      "interests": ["art", "museums"],
+      "must_visit": ["Uffizi Gallery"],
+      "covers": ["museum weekly closures", "packed pace", "redundancy"]
+    },
+    {
+      "id": "Q2-H3",
+      "destination": "Copenhagen, Denmark",
+      "trip_days": 3,
+      "pace": "balanced",
+      "interests": ["architecture", "food", "waterfront"],
+      "must_visit": [],
+      "covers": ["waterfront", "food evidence", "limited-slot usefulness"]
+    },
+    {
+      "id": "Q2-H4",
+      "destination": "Athens, Greece",
+      "trip_days": 3,
+      "pace": "balanced",
+      "interests": ["history", "museums"],
+      "must_visit": ["Acropolis of Athens"],
+      "covers": ["terrain and walking burden", "must-visit identity", "venue hours"]
+    },
+    {
+      "id": "Q2-H5",
+      "destination": "Hong Kong",
+      "trip_days": 4,
+      "pace": "balanced",
+      "interests": ["food", "markets", "waterfront", "outdoors"],
+      "must_visit": ["Victoria Peak"],
+      "covers": ["ferry dependency", "topographic separation", "dense city"]
+    },
+    {
+      "id": "Q2-H6",
+      "destination": "Lima, Peru",
+      "trip_days": 3,
+      "pace": "relaxed",
+      "interests": ["food", "history"],
+      "must_visit": [],
+      "covers": ["sprawling city", "relaxed pace", "thin provider metadata"]
+    },
+    {
+      "id": "Q2-H7",
+      "destination": "Philadelphia, United States",
+      "trip_days": 3,
+      "pace": "balanced",
+      "interests": ["museums", "history", "architecture"],
+      "must_visit": ["Independence Hall"],
+      "covers": ["dense historic core", "museum weekly closures", "same-complex redundancy"]
+    },
+    {
+      "id": "Q2-H8",
+      "destination": "Tokyo, Japan",
+      "trip_days": 4,
+      "pace": "packed",
+      "interests": ["food", "gardens", "history"],
+      "must_visit": ["Sensō-ji"],
+      "covers": ["very large city", "geographic coherence", "packed pace"]
+    },
+    {
+      "id": "Q2-H9",
+      "destination": "Dubrovnik, Croatia",
+      "trip_days": 2,
+      "pace": "relaxed",
+      "interests": ["history", "waterfront"],
+      "must_visit": [],
+      "covers": ["compact core", "thin inventory", "remote-day pressure"]
+    },
+    {
+      "id": "Q2-H10",
+      "destination": "Cairo, Egypt",
+      "trip_days": 3,
+      "pace": "balanced",
+      "interests": ["history", "markets"],
+      "must_visit": ["Giza pyramid complex"],
+      "covers": ["remote must-visit day", "relocated and closed venues", "sprawling city"]
+    }
+  ]
+}

@@ -69,6 +69,12 @@ class NormalizedPlace(BaseModel):
     # with, so classification is tag-based instead of name-based. Never a
     # rating/price/hours/review field.
     provider_tags: dict[str, str] | None = None
+    # M2 Phase 3 (venue reliability): the record's own venue-status evidence,
+    # kept apart from the taxonomy tags -- OpenStreetMap lifecycle prefixes
+    # (`disused:*`, `was:*`, ...), `opening_hours` and its check date
+    # (`services/venue_status.venue_evidence_tags`; nothing else). None when
+    # the record carries none, and for places stored before this field.
+    venue_tags: dict[str, str] | None = None
     # Section 203C.2B (entity de-duplication). INTERNAL corroboration only,
     # never an id: the sanitised identity of the underlying source object
     # (`osm/<type>/<id>`) and the place's own other names from that record.

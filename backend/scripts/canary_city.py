@@ -34,6 +34,7 @@ from typing import Any
 _SCRIPTS_DIR = Path(__file__).resolve().parent
 _BACKEND_DIR = _SCRIPTS_DIR.parent
 _QUALITY_DATA_PATH = _SCRIPTS_DIR / "benchmark" / "quality_v1.json"
+_QUALITY_DATA_PATH_V2 = _SCRIPTS_DIR / "benchmark" / "quality_v2.json"
 # A week from today: inside the weather provider's forecast horizon, so the
 # canary exercises a real forecast instead of a known "not yet available".
 _START_DATE = date.today() + timedelta(days=7)
@@ -341,14 +342,16 @@ def _quality_metrics_module() -> Any:
 def _is_quality_holdout_city(city: str) -> bool:
     """Whether `city` belongs to the frozen, unseen quality holdout (Phase Q0).
     The names are read from the benchmark data; this script knows none."""
-    try:
-        data = json.loads(_QUALITY_DATA_PATH.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return False
+    scenarios: list[dict[str, Any]] = []
+    # M2 Phase 3: the second unseen set (its own file) is refused the same way.
+    for path, key in ((_QUALITY_DATA_PATH, "quality_holdout"), (_QUALITY_DATA_PATH_V2, "quality_holdout_v2")):
+        try:
+            scenarios.extend(json.loads(path.read_text(encoding="utf-8")).get(key, []))
+        except (OSError, ValueError):
+            continue
     wanted = _norm(city.split(",")[0])
     return bool(wanted) and any(
-        _norm(str(scenario.get("destination", "")).split(",")[0]) == wanted
-        for scenario in data.get("quality_holdout", [])
+        _norm(str(scenario.get("destination", "")).split(",")[0]) == wanted for scenario in scenarios
     )
 
 

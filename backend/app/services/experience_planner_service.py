@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 import statistics
-from datetime import timedelta
+from datetime import date, timedelta
 from typing import Any
 
 from app.services.experience_identity import deterministic_experience_id
@@ -50,6 +50,8 @@ from app.services import candidate_universe as universe
 from app.services import candidate_usefulness as usefulness
 from app.services import day_composition as composition
 from app.services import schedule_diversity as diversity
+from app.services import opening_hours
+from app.services import visit_day_feasibility as feasibility
 from app.services.base import PlanningStageService
 from app.services.day_order_heuristics import (
     ALTERNATIVE_MAX_LENGTH_RATIO,
@@ -68,6 +70,7 @@ from app.services.day_rationale import deterministic_day_summary, finalize_day_e
 from app.services.entity_collisions import SUSPECT_COLLISION_KEY
 from app.services.grounded_anchors import grounded_anchor_place_ids, low_anchor_utilization
 from app.services.pace_targets import pace_targets
+from app.services.usefulness_contract import count_viable_candidates
 from app.services.must_visit_matching import is_tagged_must_visit, legacy_must_visit_place_ids
 from app.utils.geo import haversine_distance_km
 
@@ -421,6 +424,8 @@ def _promoted_candidate_to_poi_dict(promoted: PromotedAICandidate) -> dict[str, 
         "original_ai_candidate_id": promoted.original_ai_candidate_id,
         "provider_source": promoted.provider_source,
         "provider_tags": promoted.provider_tags,
+        # M2 Phase 3: the grounded record's venue evidence (hours, lifecycle)
+        "venue_tags": promoted.venue_tags,
     }
 
 
@@ -996,6 +1001,32 @@ class ExperiencePlannerService(PlanningStageService):
         )
         _trace_schedule("interest_coverage", day_groups)
 
+        # M2 Phase 3: what the places' own records say about the scheduled
+        # dates, and days away from the trip's area with no reason for them.
+        # Bounded, deterministic, before routing; an active user lock leaves
+        # the plan untouched (see `services/visit_day_feasibility`).
+        if get_settings().visit_day_feasibility_enabled and not any(
+            lock.is_active for lock in planning_state.user_locks
+        ):
+            with performance.stage("visit_day_feasibility"):
+                day_groups = _apply_visit_day_feasibility(
+                    planning_state,
+                    day_groups,
+                    scheduling_candidate_pois,
+                    profiles,
+                    must_visit_ids,
+                    canonical_interests,
+                    start_date=trip_request.start_date,
+                    max_per_day=max_per_day,
+                    targets=pace_targets(num_days, pace),
+                    # Q3: a plan the model chose keeps its places (at most one
+                    # replacement per day), so a whole remote day is rebuilt
+                    # only in a deterministic plan; a model's is disclosed.
+                    rebuild_remote_days=not used_ai_reasoning,
+                    markets_requested=diversity.markets_explicitly_requested(interest_terms),
+                )
+            _trace_schedule("visit_day_feasibility", day_groups)
+
         reasoning_result = planning_state.ai_itinerary_reasoning_result
         logger.info(
             "ExperiencePlannerService resolved day grouping.",
@@ -1182,6 +1213,66 @@ class ExperiencePlannerService(PlanningStageService):
         finalize_day_explanations(planning_state)
         planning_state.touch()
         return planning_state
+
+
+def _same_complex(poi: dict[str, Any], others: list[dict[str, Any]], profiles: dict[int, _CandidateProfile]) -> bool:
+    """A sub-feature of a complex another scheduled stop already represents
+    (the planner's own `sub_feature_cluster` collapse)."""
+    cluster = profiles[id(poi)].sub_feature_cluster if id(poi) in profiles else None
+    return bool(cluster) and any(
+        other is not poi and id(other) in profiles and profiles[id(other)].sub_feature_cluster == cluster
+        for other in others
+    )
+
+
+def _apply_visit_day_feasibility(
+    planning_state: PlanningState,
+    day_groups: list[list[dict[str, Any]]],
+    pool: list[dict[str, Any]],
+    profiles: dict[int, _CandidateProfile],
+    must_visit_ids: set[int],
+    canonical_interests: list[str] | set[str] | frozenset[str],
+    *,
+    start_date: date,
+    max_per_day: int,
+    targets: Any,
+    rebuild_remote_days: bool,
+    markets_requested: bool,
+) -> list[list[dict[str, Any]]]:
+    helpers = feasibility.Helpers(
+        coordinates=_poi_coordinates,
+        tier_rank=lambda poi: profiles[id(poi)].tier_rank,
+        low_value=lambda poi: profiles[id(poi)].low_value,
+        usefulness_key=_usefulness_key(profiles),
+        must_visit=lambda poi: id(poi) in must_visit_ids,
+        matched_interests=lambda poi: frozenset(profiles[id(poi)].matched_interests),
+        suspected_duplicate=lambda poi, others: _suspected_duplicate_of_any(poi, others) or _same_complex(
+            poi, others, profiles
+        ),
+        market_excess=lambda stops: sum(diversity.hard_excess(
+            [diversity.coarse_class(profiles[id(poi)].primary) for poi in stops], markets_requested
+        ).values()),
+    )
+    holidays = opening_hours.holiday_dates(planning_state)
+    day_groups, closures = feasibility.resolve_known_closures(
+        day_groups, pool, helpers, start_date=start_date, holidays=holidays,
+        max_per_day=max_per_day, minimum_stops=targets.minimum_useful,
+    )
+    supply = count_viable_candidates(planning_state)
+    day_groups, remote = feasibility.resolve_unreasoned_remote_days(
+        day_groups, pool, helpers,
+        within_reach=_pool_reach(pool),
+        requested_interests=frozenset(canonical_interests),
+        start_date=start_date,
+        holidays=holidays,
+        supply_healthy=rebuild_remote_days and supply >= targets.target_stops,
+        minimum_stops=targets.minimum_useful,
+    )
+    for entry in closures.actions:
+        performance.count(f"known_closure_{entry['action']}")
+    for entry in remote.actions:
+        performance.count(f"remote_day_{entry['action']}")
+    return day_groups
 
 
 def _matches_must_visit(poi: dict[str, Any], terms_lower: list[str]) -> bool:

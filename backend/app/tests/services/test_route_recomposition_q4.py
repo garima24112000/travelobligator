@@ -779,7 +779,7 @@ def test_metrics_keep_verified_route_figures_apart_from_straight_line_proxies() 
     metrics = metrics_module.extract_quality_metrics(state)
     severity, geography = metrics["route_severity"], metrics["day_geography"]
 
-    assert metrics["schema_version"] == 5  # additive since 4: dispersion causes, food evidence
+    assert metrics["schema_version"] == 6  # additive since 4: dispersion causes, food evidence; 6: venue evidence
     assert severity["days_by_severity"] == {SEVERITY_NORMAL: 1}
     assert severity["days"][0]["fully_verified"] and severity["days"][0]["verified_transfer_seconds"] > 0
     recomposition = severity["recomposition"]
