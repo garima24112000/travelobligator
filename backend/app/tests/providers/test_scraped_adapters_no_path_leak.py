@@ -85,7 +85,7 @@ def test_accommodation_single_source_missing_file_leaks_no_path(
     assert str(missing_path) not in text
     assert str(tmp_path) not in text
     assert "does_not_exist.html" not in text
-    assert "no local manual scrape file found" in text.lower()
+    assert "no manually supplied local file found" in text.lower()
 
 
 def test_flight_single_source_missing_file_leaks_no_path(

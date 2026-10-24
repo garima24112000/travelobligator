@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
@@ -185,6 +186,18 @@ def _build_segments(raw_segments: Any) -> list[FlightSegment]:
     return segments
 
 
+_CURRENCY_CODE = re.compile(r"\b([A-Z]{3})\b")
+
+
+def _currency_from_label(label: Any) -> str | None:
+    """The ISO-style code in a provider price label such as "53 EUR", only
+    when the label holds exactly one three-letter upper-case code."""
+    if not isinstance(label, str):
+        return None
+    codes = set(_CURRENCY_CODE.findall(label))
+    return codes.pop() if len(codes) == 1 else None
+
+
 def _build_offer(raw_itinerary: dict[str, Any], currency: str | None) -> FlightOffer | None:
     """Builds one `FlightOffer` from one raw `itineraries[]` entry, or
     `None` when there isn't enough structured data to safely identify one
@@ -212,14 +225,22 @@ def _build_offer(raw_itinerary: dict[str, Any], currency: str | None) -> FlightO
         _build_segments(inbound_raw.get("segments")) if isinstance(inbound_raw, dict) else []
     )
 
+    # M2 Phase 2: a price is kept only with the currency KIWI stated -- the
+    # payload's `currency`, else the code inside this itinerary's own
+    # `priceFormatted` label. Never the trip's currency: a price Kiwi quoted
+    # in EUR must not be shown as USD. With no stated currency the price is
+    # dropped (the offer itself is kept).
+    offer_currency = currency or _currency_from_label(raw_itinerary.get("priceFormatted"))
+    price = _parse_optional_decimal(raw_itinerary.get("price")) if offer_currency else None
+
     return FlightOffer(
         offer_id=offer_id,
         provider=_KIWI_PROVIDER_NAME,
         data_status=DataStatus.LIVE,
         outbound_segments=outbound_segments,
         return_segments=return_segments,
-        total_price_amount=_parse_optional_decimal(raw_itinerary.get("price")),
-        currency=currency,
+        total_price_amount=price,
+        currency=offer_currency if price is not None else None,
         booking_url=_optional_str(raw_itinerary.get("bookingUrl")),
         # Kiwi's structured output has no explicit availability flag or
         # cancellation-policy field -- both stay honestly None rather than
@@ -274,14 +295,14 @@ def parse_kiwi_mcp_search_result(
             request,
             FlightSearchStatus.FAILED,
             _CALL_FAILED_MESSAGE_TEMPLATE.format(detail=call_result.message or "unknown error"),
-        )
+        ).model_copy(update={"failure_kind": getattr(call_result, "failure_kind", None)})
 
     if call_result.is_error:
         return _empty_result(
             request,
             FlightSearchStatus.FAILED,
             _CALL_FAILED_MESSAGE_TEMPLATE.format(detail="the tool reported an error"),
-        )
+        ).model_copy(update={"failure_kind": "tool_error"})
 
     payload = call_result.structured_content
     if not isinstance(payload, dict):
@@ -298,7 +319,7 @@ def parse_kiwi_mcp_search_result(
             request,
             FlightSearchStatus.FAILED,
             _TOOL_REPORTED_ERROR_MESSAGE_TEMPLATE.format(detail=_first_line(reported_error)),
-        )
+        ).model_copy(update={"failure_kind": "tool_error"})
 
     raw_itineraries = payload.get("itineraries")
     if not isinstance(raw_itineraries, list):
@@ -310,7 +331,9 @@ def parse_kiwi_mcp_search_result(
         )
 
     try:
-        currency = _optional_str(payload.get("currency")) or request.currency
+        # M2 Phase 2: the currency KIWI stated -- never the requested one.
+        stated = (_optional_str(payload.get("currency")) or "").strip().upper()
+        currency = stated if len(stated) == 3 and stated.isalpha() else None
         offers = [
             offer
             for raw_itinerary in raw_itineraries
@@ -361,5 +384,6 @@ def parse_kiwi_mcp_search_result(
         return_date=request.return_date,
         adults=request.adults,
         children=request.children,
-        currency=currency,
+        # The provider's own currency when it stated one (prices are in it).
+        currency=currency if currency and len(currency) == 3 else None,
     )

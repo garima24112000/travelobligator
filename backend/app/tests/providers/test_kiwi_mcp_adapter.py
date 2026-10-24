@@ -3,7 +3,7 @@ from __future__ import annotations
 import ast
 import inspect
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, timedelta
 
 import pytest
 
@@ -87,11 +87,17 @@ class _FakeKiwiMcpClient:
         )
 
 
+_DEPARTURE = date.today() + timedelta(days=60)
+_RETURN = _DEPARTURE + timedelta(days=71)
+
+
 def _request(**overrides: object) -> FlightSearchRequest:
     fields: dict[str, object] = {
         "origin": "London",
         "destination": "Paris",
-        "departure_date": date(2026, 10, 10),
+        # M2 Phase 2: always a FUTURE date -- a past departure is now refused
+        # before any search (a fixed date eventually passes, as 2026-10-10 did).
+        "departure_date": _DEPARTURE,
     }
     fields.update(overrides)
     return FlightSearchRequest(**fields)
@@ -186,7 +192,7 @@ def test_discovery_success_with_flight_tool_calls_search_flight(
             {
                 "flyFrom": "London",
                 "flyTo": "Paris",
-                "departureDate": "10/10/2026",
+                "departureDate": _DEPARTURE.strftime("%d/%m/%Y"),
                 "adults": 1,
                 "children": 0,
             },
@@ -403,7 +409,7 @@ def test_provider_never_populates_offers(
 def test_argument_builder_uses_discovered_schema_field_names() -> None:
     """Required test 3: uses flyFrom/flyTo/departureDate (the real,
     discovered field names), never Tequila-API-style fly_from/dateFrom."""
-    request = _request(departure_date=date(2026, 12, 15))
+    request = _request(departure_date=_DEPARTURE)  # M2 Phase 2: never a date that will pass
 
     arguments, error = build_search_flight_arguments(request, _REAL_SEARCH_FLIGHT_SCHEMA)
 
@@ -411,7 +417,7 @@ def test_argument_builder_uses_discovered_schema_field_names() -> None:
     assert arguments == {
         "flyFrom": "London",
         "flyTo": "Paris",
-        "departureDate": "15/12/2026",
+        "departureDate": _DEPARTURE.strftime("%d/%m/%Y"),
         "adults": 1,
         "children": 0,
     }
@@ -421,7 +427,7 @@ def test_argument_builder_uses_discovered_schema_field_names() -> None:
 
 def test_argument_builder_includes_return_date_currency_cabin_class_when_supported() -> None:
     request = _request(
-        return_date=date(2026, 12, 20),
+        return_date=_RETURN,  # M2 Phase 2: after the (future) fixture departure
         currency="USD",
         cabin_class="C",
     )
@@ -430,7 +436,7 @@ def test_argument_builder_includes_return_date_currency_cabin_class_when_support
 
     assert error is None
     assert arguments is not None
-    assert arguments["returnDate"] == "20/12/2026"
+    assert arguments["returnDate"] == _RETURN.strftime("%d/%m/%Y")
     assert arguments["currency"] == "USD"
     assert arguments["cabinClass"] == "C"
 

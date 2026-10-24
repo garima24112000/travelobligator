@@ -20,6 +20,9 @@ CHANGE_INTERPRETATION_UNAVAILABLE = "change_interpretation_unavailable"
 # Targeted regeneration is off and no deterministic operation can apply the
 # request(s) (with no registered operation at all, none ever could).
 CHANGE_APPLICATION_NOT_SUPPORTED = "change_application_not_supported"
+# M2 Phase 2: change application would otherwise work, but the owner's
+# `GENERATION_ENABLED=false` switch refuses every new planning run (HTTP 503).
+CHANGE_GENERATION_PAUSED = "generation_paused"
 
 _CHANGE_UNAVAILABLE_BLOCKED_BY = (
     "Change requests are saved, but this version of the app cannot apply them to the itinerary."
@@ -27,6 +30,8 @@ _CHANGE_UNAVAILABLE_BLOCKED_BY = (
 _CHANGE_UNAVAILABLE_NEXT_STEP = (
     "Your request stays saved with the trip. Applying change requests is not available yet."
 )
+_CHANGE_PAUSED_BLOCKED_BY = "Applying changes is paused for now: new planning runs are switched off."
+_CHANGE_PAUSED_NEXT_STEP = "Your request stays saved with the trip. Try again later."
 
 
 def change_application_unavailable_reason(pending_events: list[FeedbackEvent]) -> str | None:
@@ -36,7 +41,15 @@ def change_application_unavailable_reason(pending_events: list[FeedbackEvent]) -
     branching: `TARGETED_REGENERATION_ENABLED` picks the targeted path
     (which needs the feedback interpreter), otherwise only the registered
     deterministic legacy operations can apply anything. Configuration and
-    registry only -- no provider is called."""
+    registry only -- no provider is called. A missing capability is reported
+    before the temporary `GENERATION_ENABLED` switch (the more lasting fact)."""
+    capability = _missing_capability(pending_events)
+    if capability is not None:
+        return capability
+    return None if get_settings().generation_enabled else CHANGE_GENERATION_PAUSED
+
+
+def _missing_capability(pending_events: list[FeedbackEvent]) -> str | None:
     if get_settings().targeted_regeneration_enabled:
         return None if feedback_interpreter_is_configured() else CHANGE_INTERPRETATION_UNAVAILABLE
     # Imported here: the mutation service imports this module.
@@ -65,13 +78,14 @@ def apply_change_capability(
         "change_requests_unavailable_reason": reason,
     }
     if reason is not None and readiness.can_regenerate:
+        paused = reason == CHANGE_GENERATION_PAUSED
         update.update(
             status="blocked",
             can_regenerate=False,
             available_inputs=[item for item in readiness.available_inputs if item != "regeneration_engine"],
             missing_capabilities=["regeneration_engine"],
-            blocked_by=[_CHANGE_UNAVAILABLE_BLOCKED_BY],
-            next_step=_CHANGE_UNAVAILABLE_NEXT_STEP,
+            blocked_by=[_CHANGE_PAUSED_BLOCKED_BY if paused else _CHANGE_UNAVAILABLE_BLOCKED_BY],
+            next_step=_CHANGE_PAUSED_NEXT_STEP if paused else _CHANGE_UNAVAILABLE_NEXT_STEP,
         )
     return readiness.model_copy(update=update)
 

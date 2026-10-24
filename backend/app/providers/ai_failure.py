@@ -318,6 +318,57 @@ def provider_reset_seconds(exc: BaseException) -> float | None:
         return None
 
 
+WAIT_SOURCE_RETRY_AFTER = "retry_after"
+WAIT_SOURCE_QUOTA_RESET = "quota_reset"
+
+
+def _refused_dimension_reset_seconds(headers: Any) -> float | None:
+    """For a rate-limited (429) response with Groq's `x-ratelimit-*` headers:
+    the reset of the dimension that refused it. With requests still left the
+    refusal was on TOKENS (the request needs more than remain), so the token
+    reset applies; with no request left, the request reset. None without the
+    headers."""
+    try:
+        remaining_requests = float(headers.get("x-ratelimit-remaining-requests"))
+    except (TypeError, ValueError):
+        remaining_requests = None
+    reset_requests = parse_duration_seconds(headers.get("x-ratelimit-reset-requests"))
+    reset_tokens = parse_duration_seconds(headers.get("x-ratelimit-reset-tokens"))
+    if remaining_requests is not None and remaining_requests <= 0:
+        return reset_requests
+    if remaining_requests is not None:
+        return reset_tokens
+    return None
+
+
+def rate_limit_wait_seconds(exc: BaseException) -> tuple[float | None, str | None]:
+    """M2 Phase 2 (LLM reliability): how long a rate-limited request must wait
+    before the same provider can accept it again, and which provider statement
+    that came from. The longest of the provider's Retry-After / retry delay and
+    the reset of the quota dimension its headers show refused the request.
+
+    Evidence (development E2E run): Groq answered a reasoning request with 429,
+    the retry waited its short Retry-After and was refused again -- the token
+    budget, whose own reset was ~34 s away, had not refilled. Header values and
+    one structured field only -- never a message or body text."""
+    stated = retry_after_seconds(exc)
+    if stated is None:
+        try:
+            stated = _retry_info_seconds(getattr(exc, "details", None))
+        except Exception:  # noqa: BLE001
+            stated = None
+    try:
+        headers = getattr(getattr(exc, "response", None), "headers", None)
+        quota = _refused_dimension_reset_seconds(headers) if headers is not None else None
+    except Exception:  # noqa: BLE001 - unreadable headers are simply "no quota evidence"
+        quota = None
+    if quota is not None and (stated is None or quota > stated):
+        return quota, WAIT_SOURCE_QUOTA_RESET
+    if stated is not None:
+        return stated, WAIT_SOURCE_RETRY_AFTER
+    return None, None
+
+
 def safe_ai_failure_message(provider_label: str, kind: AIProviderFailureKind) -> str:
     """A fixed, secret-free sentence per failure kind. Never includes the
     raw exception text, provider response body, account identifiers, or

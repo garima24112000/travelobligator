@@ -195,6 +195,12 @@ class AccommodationSearchResult(BaseModel):
     message: str | None = None
     warnings: list[str] = Field(default_factory=list)
     generated_at: datetime = Field(default_factory=_utc_now)
+    # M2 Phase 2: WHY the result has the offers it has (same vocabulary as
+    # flights): `offers_found`, `no_source_configured` (nothing set up -- no
+    # bookable-inventory source exists in this app), `local_source_no_matching_offers`
+    # (a manually supplied local file held none), `provider_failed`. None only
+    # on a result stored before the field existed.
+    availability_reason: str | None = None
 
     hotel_ratings_status: HotelRatingsStatus | None = None
     hotel_ratings_provider: str | None = None

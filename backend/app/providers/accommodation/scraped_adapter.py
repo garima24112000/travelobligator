@@ -277,7 +277,7 @@ class ScrapedAccommodationProvider(AccommodationInventoryProvider):
                 provider=self.provider_name,
                 status=AccommodationSearchStatus.NOT_CONNECTED,
                 offers=[],
-                message="Scraped accommodation provider is not enabled.",
+                message="The manually supplied local accommodation-file source is switched off (no live site is ever fetched).",
             )
 
         slots = _resolve_slots(settings)
@@ -350,6 +350,8 @@ class ScrapedAccommodationProvider(AccommodationInventoryProvider):
         # local machine path must never reach a frontend-visible field.
         checked_paths: list[str] = []
         checked_source_ids: list[str] = []
+        # M2 Phase 2: configured local files that actually exist.
+        files_present = 0
 
         for slot in slots:
             state = file_states[slot]
@@ -363,9 +365,10 @@ class ScrapedAccommodationProvider(AccommodationInventoryProvider):
 
             if not state.exists:
                 warnings.append(
-                    f"{slot.source_id}: no local manual scrape file found for this source."
+                    f"{slot.source_id}: no manually supplied local file found for this source."
                 )
                 continue
+            files_present += 1
 
             try:
                 html = slot.path.read_text(encoding="utf-8")
@@ -437,6 +440,7 @@ class ScrapedAccommodationProvider(AccommodationInventoryProvider):
                 offers=success_offers,
                 message=message,
                 warnings=warnings,
+                availability_reason="offers_found",
             )
 
         if failed_labels:
@@ -449,17 +453,24 @@ class ScrapedAccommodationProvider(AccommodationInventoryProvider):
                     f"{', '.join(failed_labels)}."
                 ),
                 warnings=warnings,
+                availability_reason="provider_failed",
             )
 
-        if checked_paths:
+        if files_present:
+            # M2 Phase 2: a file WAS read; it simply held no offer.
             message = (
-                "No local scraped-accommodation HTML files were found. Checked "
+                "The manually supplied local accommodation file(s) held no offer for this trip. "
+                "Checked configured source(s): " + ", ".join(checked_source_ids) + "."
+            )
+        elif checked_paths:
+            message = (
+                "No manually supplied local accommodation file was found (no live site is ever fetched). Checked "
                 "configured source(s): "
                 + ", ".join(checked_source_ids)
                 + "."
             )
         else:
-            message = "No local scraped-accommodation HTML path is configured."
+            message = "No manually supplied local accommodation file is configured (no live site is ever fetched)."
 
         return AccommodationSearchResult(
             provider=self.provider_name,
@@ -467,6 +478,7 @@ class ScrapedAccommodationProvider(AccommodationInventoryProvider):
             offers=[],
             message=message,
             warnings=warnings,
+            availability_reason="local_source_no_matching_offers" if files_present else "no_source_configured",
         )
 
     def _build_source_policy(self, settings: Settings, slot: _ResolvedSlot) -> ScrapingSourcePolicy:

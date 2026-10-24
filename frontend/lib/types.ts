@@ -396,6 +396,9 @@ export type AccommodationInventoryReport = {
   hotel_ratings_message: string | null;
   hotel_ratings_enriched_offer_count: number;
   hotel_ratings_warnings: string[];
+  // M2 Phase 2: why the result has the offers it has (same vocabulary as
+  // flights). Absent on reports stored before it.
+  availability_reason?: string | null;
 };
 
 // Provenance for one scraped (not official-provider) flight offer
@@ -484,6 +487,37 @@ export type FlightInventoryReport = {
   // result has the offers it has. Only "search_completed_no_offers" means a
   // live search ran and found nothing. Absent on reports stored before it.
   availability_reason?: string | null;
+  // M2 Phase 2: for a provider failure, its fixed kind (timeout / connection /
+  // tool_error / request_cap).
+  failure_kind?: string | null;
+  // M2 Phase 2 (Kiwi remediation): per side, what the flight source was asked
+  // and where a substituted airport came from; search and HTTP request counts.
+  location_resolution?: FlightLocationResolution[] | null;
+  search_attempts?: number | null;
+  provider_http_requests?: number | null;
+};
+
+// Backend app.models.flight.FlightLocationResolution. `straight_line_km` is a
+// straight-line distance, never a travel distance.
+export type FlightLocationResolution = {
+  role: "origin" | "destination";
+  requested: string;
+  searched: string | null;
+  method: "airport_code" | "place_name" | "nearby_airport" | "not_resolved";
+  airport_name: string | null;
+  airport_code: string | null;
+  straight_line_km: number | null;
+  lookup_source: string | null;
+  note: string | null;
+  // Second correction: what makes a substituted airport suitable for an
+  // ordinary commercial flight, and why it was chosen (absent on older reports).
+  airport_lat?: number | null;
+  airport_lon?: number | null;
+  airport_type?: string | null;
+  airport_country?: string | null;
+  commercial_service_evidence?: string | null;
+  selection_rationale?: string | null;
+  dataset_version?: string | null;
 };
 
 export type DailyPlan = {

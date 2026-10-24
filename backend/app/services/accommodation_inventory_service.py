@@ -86,6 +86,7 @@ class AccommodationInventoryService:
                 status=AccommodationSearchStatus.UNAVAILABLE,
                 offers=[],
                 message=_NOT_ENOUGH_NIGHTS_MESSAGE,
+                availability_reason="search_not_possible",
             )
 
         request = AccommodationSearchRequest(
@@ -97,7 +98,23 @@ class AccommodationInventoryService:
             currency=trip_request.budget_currency,
         )
         result = _safe_search_accommodations(self.gateway, request)
-        return self.hotel_rating_enrichment_service.enrich(result)
+        return ensure_accommodation_reason(self.hotel_rating_enrichment_service.enrich(result))
+
+
+def ensure_accommodation_reason(result: AccommodationSearchResult) -> AccommodationSearchResult:
+    """M2 Phase 2: names the cause where the adapter did not, only where the
+    status alone proves it -- an unclassified `unavailable` stays None."""
+    if result.availability_reason is not None:
+        return result
+    if result.status == AccommodationSearchStatus.SUCCESS and result.offers:
+        reason = "offers_found"
+    elif result.status == AccommodationSearchStatus.NOT_CONNECTED:
+        reason = "no_source_configured"
+    elif result.status == AccommodationSearchStatus.FAILED:
+        reason = "provider_failed"
+    else:
+        return result
+    return result.model_copy(update={"availability_reason": reason})
 
 
 def _provider_name(gateway: ProviderGateway) -> str:

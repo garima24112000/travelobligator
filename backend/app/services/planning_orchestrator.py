@@ -59,6 +59,7 @@ from app.services.langgraph_planning_service import LangGraphPlanningService
 from app.services.plan_diff_preview_service import PlanDiffPreviewService
 from app.services.plan_validator_service import PlanValidatorService
 from app.services.regeneration_readiness_service import RegenerationReadinessService
+from app.services.route_context_finalizer import finalize_route_feasibility_context
 from app.services.revision_lineage_service import RevisionLineageService
 from app.services.route_aware_sequencing_service import RouteAwareSequencingService
 from app.services.day_rationale import finalize_day_explanations
@@ -79,8 +80,11 @@ logger = logging.getLogger(__name__)
 
 # Section 203C.2B: the stages that can spend provider credits receive the
 # generation's `GenerationProviderContext` explicitly.
-_PROVIDER_CONTEXT_STAGE_KEYS = frozenset({"destination_context", "experience_plan"})
-_PROVIDER_CONTEXT_STAGES = frozenset({PlanningStage.DESTINATION_CONTEXT, PlanningStage.EXPERIENCE_PLAN})
+# `stay_transport` (M2 Phase 2): its flight search may look up nearby airports.
+_PROVIDER_CONTEXT_STAGE_KEYS = frozenset({"destination_context", "stay_transport", "experience_plan"})
+_PROVIDER_CONTEXT_STAGES = frozenset(
+    {PlanningStage.DESTINATION_CONTEXT, PlanningStage.STAY_TRANSPORT, PlanningStage.EXPERIENCE_PLAN}
+)
 
 # Section 1A (measurement only): the stage a legacy-engine stage runner's
 # wall-clock is reported under, where that differs from its stage key (the
@@ -775,7 +779,9 @@ class PlanningOrchestrator:
             planning_state.accommodation_inventory_report
         )
 
-    def _build_flight_inventory_report_safe(self, planning_state: PlanningState) -> None:
+    def _build_flight_inventory_report_safe(
+        self, planning_state: PlanningState, provider_context: GenerationProviderContext | None = None
+    ) -> None:
         """Builds and stores `flight_inventory_report` plus the derived
         `ProviderCoverage.flights` value (Step 169E), failing safe
         (mirroring `_build_accommodation_inventory_report_safe`): an
@@ -789,7 +795,7 @@ class PlanningOrchestrator:
         """
         try:
             planning_state.flight_inventory_report = self.flight_inventory_service.build_report(
-                planning_state
+                planning_state, **context_kwargs(provider_context)
             )
         except Exception:
             logger.warning(
@@ -811,7 +817,9 @@ class PlanningOrchestrator:
             planning_state.flight_inventory_report
         )
 
-    def run_stay_transport_stage(self, planning_state: PlanningState) -> PlanningState:
+    def run_stay_transport_stage(
+        self, planning_state: PlanningState, provider_context: GenerationProviderContext | None = None
+    ) -> PlanningState:
         planning_state = self.stay_transport_service.run(planning_state)
         # Step 167D: bookable accommodation inventory report, computed
         # after StayTransportService (which still cannot recommend a real
@@ -828,7 +836,7 @@ class PlanningOrchestrator:
         # never schedules a flight into the itinerary as a daily
         # experience and never adds flight recommendation logic, only
         # records an honest inventory status.
-        self._build_flight_inventory_report_safe(planning_state)
+        self._build_flight_inventory_report_safe(planning_state, provider_context)
         planning_state.set_pipeline_status(PipelineStatus.STAY_TRANSPORT_CREATED)
         return planning_state
 
@@ -1113,6 +1121,8 @@ class PlanningOrchestrator:
 
             planning_state = self._mark_stage_started(planning_state, "post_processing")
             with performance.stage("post_processing"):
+                # M2 Phase 2: the plan's route context restates the FINAL route report.
+                planning_state = finalize_route_feasibility_context(planning_state)
                 planning_state = self.versioning_service.create_initial_version(planning_state)
                 planning_state = self.plan_diff_preview_service.recompute(planning_state)
                 planning_state = self.regeneration_readiness_service.recompute(planning_state)
@@ -1203,6 +1213,8 @@ class PlanningOrchestrator:
             # legacy-generated trip's.
             new_state = self._mark_stage_started(new_state, "post_processing")
             with performance.stage("post_processing"):
+                # M2 Phase 2: the plan's route context restates the FINAL route report.
+                new_state = finalize_route_feasibility_context(new_state)
                 new_state = self.versioning_service.create_initial_version(new_state)
                 new_state = self.plan_diff_preview_service.recompute(new_state)
                 new_state = self.regeneration_readiness_service.recompute(new_state)

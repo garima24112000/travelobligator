@@ -12,6 +12,7 @@ from app.services.plan_diff_preview_service import plan_diff_preview_service
 from app.services.planning_orchestrator import planning_orchestrator
 from app.services.regeneration_readiness_service import regeneration_readiness_service
 from app.services.revision_lineage_service import revision_lineage_service
+from app.services.route_context_finalizer import finalize_route_feasibility_context
 from app.services.versioning_service import versioning_service
 
 # Step 186C: the one real regeneration mutation path (Section 174's MVP
@@ -250,6 +251,8 @@ def apply_regeneration_mutation(
     planning_state = feedback_service.recompute_pending_feedback_summary(planning_state)
     planning_state = plan_diff_preview_service.recompute(planning_state)
     planning_state = regeneration_readiness_service.recompute(planning_state)
+    # M2 Phase 2: a rerun plan's route context restates its final route report.
+    planning_state = finalize_route_feasibility_context(planning_state)
 
     return RegenerationMutationResult(
         planning_state=planning_state,

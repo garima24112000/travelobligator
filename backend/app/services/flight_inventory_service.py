@@ -2,13 +2,17 @@ from __future__ import annotations
 
 import logging
 
+from typing import Any
+
 from app.models.flight import (
     FlightAvailabilityReason,
+    FlightLocationResolution,
     FlightSearchRequest,
     FlightSearchResult,
     FlightSearchStatus,
 )
 from app.models.planning_state import PlanningState
+from app.providers.flights import airport_lookup
 from app.providers.gateway import ProviderGateway, provider_gateway
 
 logger = logging.getLogger(__name__)
@@ -61,7 +65,9 @@ class FlightInventoryService:
     def __init__(self, gateway: ProviderGateway | None = None) -> None:
         self.gateway = gateway or provider_gateway
 
-    def build_report(self, planning_state: PlanningState) -> FlightSearchResult:
+    def build_report(
+        self, planning_state: PlanningState, provider_context: Any | None = None
+    ) -> FlightSearchResult:
         provider_name = _provider_name(self.gateway)
         trip_request = planning_state.trip_request
 
@@ -78,6 +84,7 @@ class FlightInventoryService:
                 adults=trip_request.travelers_count,
                 currency=trip_request.budget_currency,
                 trip_id=planning_state.trip_id,
+                destination_city=_resolved_city(planning_state),
             )
         except Exception:
             logger.warning(
@@ -95,7 +102,24 @@ class FlightInventoryService:
                 departure_date=trip_request.start_date,
             )
 
-        return ensure_availability_reason(_safe_search_flights(self.gateway, request))
+        first = ensure_availability_reason(_safe_search_flights(self.gateway, request))
+        if first.availability_reason != FlightAvailabilityReason.LOCATION_UNCONFIRMED:
+            return first
+        return _retry_with_nearby_airports(self.gateway, request, first, provider_context)
+
+
+def _resolved_city(planning_state: PlanningState) -> str | None:
+    """M2 Phase 2: the destination city as the destination geocoder already
+    resolved it (`destination_context.resolved_destination`), or None."""
+    context = planning_state.destination_context
+    resolved = context.resolved_destination if context is not None else None
+    if not isinstance(resolved, dict):
+        return None
+    for key in ("city", "town", "village", "municipality"):
+        value = resolved.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()[:160]
+    return None
 
 
 def ensure_availability_reason(result: FlightSearchResult) -> FlightSearchResult:
@@ -112,6 +136,139 @@ def ensure_availability_reason(result: FlightSearchResult) -> FlightSearchResult
     if result.status == FlightSearchStatus.FAILED:
         return result.with_reason(FlightAvailabilityReason.PROVIDER_FAILED)
     return result
+
+
+# M2 Phase 2 (Kiwi remediation): at most ONE further flight search per trip,
+# after a search by place NAME returned nothing, against the best airport with
+# evidence of scheduled airline service the lookup provider found for each side
+# searched by name (never simply the nearest -- providers/flights/airport_lookup.py).
+# Bounded: two flight searches and two airport lookups per trip at most.
+_NO_AIRPORT_MESSAGE = (
+    "No flight search could be made from {place}: {why} Flights were not checked for this place."
+)
+_LOOKUP_UNAVAILABLE_NOTE = "Nearby airports with scheduled airline service could not be looked up ({status})."
+_UNVERIFIED_AIRPORT_NOTE = (
+    "A nearby airport was searched without evidence of scheduled airline service, so finding no offers there "
+    "does not show that no flights exist."
+)
+
+
+def _airport_note(requested: str, airport: "airport_lookup.NearbyAirport") -> str:
+    code = f" ({airport.iata_code})" if airport.iata_code else ""
+    return (
+        f"Searched from {airport.name}{code}, an airport with scheduled airline service near {requested} "
+        f"(about {airport.straight_line_km:g} km in a straight line). It is not in the place itself."
+    )
+
+
+def _has_commercial_evidence(entry: FlightLocationResolution) -> bool:
+    return entry.method != "nearby_airport" or bool(entry.commercial_service_evidence)
+
+
+def _retry_with_nearby_airports(
+    gateway: ProviderGateway,
+    request: FlightSearchRequest,
+    first: FlightSearchResult,
+    provider_context: Any | None,
+) -> FlightSearchResult:
+    resolution = {entry.role: entry for entry in (first.location_resolution or [])}
+    sides = [
+        ("origin", request.origin),
+        ("destination", request.destination),
+    ]
+    replacements: dict[str, FlightLocationResolution] = {}
+    unresolved_notes: list[str] = []
+    for role, requested in sides:
+        entry = resolution.get(role)
+        if entry is None or entry.method != "place_name" or not requested:
+            continue
+        found = gateway.nearby_airports(requested, provider_context)
+        # Only an airport with evidence of scheduled airline service AND a code
+        # is ever substituted; the lookup returns them best first.
+        suitable = [
+            airport for airport in (found.airports if found.status == airport_lookup.STATUS_FOUND else ())
+            if airport.commercial_service_evidence and airport.iata_code
+        ]
+        if suitable:
+            airport = suitable[0]
+            replacements[role] = FlightLocationResolution(
+                role=role,
+                requested=requested[:160],
+                searched=airport.iata_code,
+                method="nearby_airport",
+                airport_name=airport.name,
+                airport_code=airport.iata_code,
+                straight_line_km=airport.straight_line_km,
+                lookup_source=found.source,
+                note=_airport_note(entry.searched or requested, airport),
+                airport_lat=airport.lat,
+                airport_lon=airport.lon,
+                airport_type=airport.airport_type,
+                airport_country=airport.country,
+                commercial_service_evidence=airport.commercial_service_evidence,
+                selection_rationale=airport.rationale,
+                dataset_version=found.dataset_version,
+            )
+        elif found.status in (airport_lookup.STATUS_PLACE_NOT_FOUND, airport_lookup.STATUS_NONE_NEARBY):
+            why = (
+                "the place could not be found on the map."
+                if found.status == airport_lookup.STATUS_PLACE_NOT_FOUND
+                else f"no airport with scheduled airline service was found within {found.radius_km:g} km of it "
+                "in the airport data used."
+            )
+            return first.model_copy(update={
+                "availability_reason": FlightAvailabilityReason.NO_SEARCHABLE_AIRPORT,
+                "message": _NO_AIRPORT_MESSAGE.format(place=requested, why=why),
+                "location_resolution": [
+                    *(e for e in (first.location_resolution or []) if e.role != role),
+                    entry.model_copy(update={"method": "not_resolved", "searched": None,
+                                             "lookup_source": found.source, "note": why,
+                                             "dataset_version": found.dataset_version}),
+                ],
+            })
+        else:
+            unresolved_notes.append(_LOOKUP_UNAVAILABLE_NOTE.format(status=found.failure_kind or found.status))
+
+    if not replacements:
+        if unresolved_notes:
+            return first.model_copy(update={"warnings": [*first.warnings, *dict.fromkeys(unresolved_notes)]})
+        return first
+
+    retry_request = request.model_copy(update={
+        "origin": replacements["origin"].searched if "origin" in replacements else request.origin,
+        "destination": replacements["destination"].searched if "destination" in replacements else request.destination,
+        "destination_city": None if "destination" in replacements else request.destination_city,
+    })
+    second = ensure_availability_reason(_safe_search_flights(gateway, retry_request))
+    # The adapter records what it was sent; the airport provenance replaces
+    # that entry for every substituted side.
+    merged = [
+        replacements.get(entry.role, entry)
+        for entry in (second.location_resolution or first.location_resolution or [])
+    ]
+    attempts = (first.search_attempts or 1) + (second.search_attempts or 1)
+    http = None
+    if first.provider_http_requests is not None or second.provider_http_requests is not None:
+        http = (first.provider_http_requests or 0) + (second.provider_http_requests or 0)
+    update: dict[str, Any] = {
+        "location_resolution": merged,
+        "search_attempts": attempts,
+        "provider_http_requests": http,
+        "warnings": [*second.warnings, *dict.fromkeys(unresolved_notes)],
+    }
+    if (
+        second.availability_reason == FlightAvailabilityReason.SEARCH_COMPLETED_NO_OFFERS
+        and not all(_has_commercial_evidence(entry) for entry in merged)
+    ):
+        # Codes alone are not enough: an airport without scheduled service can
+        # have a code and still never have a flight (M2 Phase 2 live finding).
+        update["availability_reason"] = FlightAvailabilityReason.LOCATION_UNCONFIRMED
+        update["message"] = _UNVERIFIED_AIRPORT_NOTE
+    elif second.availability_reason == FlightAvailabilityReason.LOCATION_UNCONFIRMED:
+        update["message"] = (
+            f"{second.message or ''} An airport with scheduled airline service was searched as well, with no offers."
+        ).strip()
+    return second.model_copy(update=update)
 
 
 def _provider_name(gateway: ProviderGateway) -> str:

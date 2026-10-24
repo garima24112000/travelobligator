@@ -143,7 +143,7 @@ const STATUS_KIND_LABELS: Record<TrustDashboardStatusKind, string> = {
   failed: "Failed",
   partial: "Partial",
   open_data_only: "Open-data only",
-  scraped_source: "Scraped/manual source",
+  scraped_source: "Manually supplied local file",
   no_pending_feedback: "No pending feedback",
   blocked_by_locks: "Blocked by locks",
 };

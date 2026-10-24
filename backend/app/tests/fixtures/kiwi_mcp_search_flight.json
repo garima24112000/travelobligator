@@ -1,0 +1,62 @@
+{
+  "_about": "Offline fixtures for the Kiwi MCP `search-flight` tool (M2 Phase 2). Shapes follow the structured content recorded from a live call in docs/12_provider_architecture.md section 59; every value is a test placeholder, not real flight data.",
+  "success_with_currency": {
+    "query": "London -> Paris, 1 adult",
+    "currency": "EUR",
+    "passengers": {"adults": 1, "children": 0, "infants": 0},
+    "resultsCount": 2,
+    "itineraries": [
+      {
+        "id": "fixture-itinerary-1",
+        "price": 53.0,
+        "priceFormatted": "53 EUR",
+        "totalDurationSeconds": 4500,
+        "bookingUrl": "https://example.invalid/book/1",
+        "baggage": {"personalItem": 1, "cabinBag": 0, "checkedBag": 0},
+        "outbound": {
+          "segments": [
+            {
+              "from": "TSA", "to": "TSB",
+              "departureTime": "2027-12-15T16:45:00", "arrivalTime": "2027-12-15T19:00:00",
+              "durationSeconds": 4500, "carrier": "ZZ", "carrierName": "TEST_ONLY_CARRIER", "flightNumber": "ZZ001"
+            }
+          ]
+        },
+        "inbound": null
+      },
+      {
+        "id": "fixture-itinerary-2",
+        "price": 61.5,
+        "priceFormatted": "62 EUR",
+        "outbound": {
+          "segments": [
+            {"from": "TSA", "to": "TSB", "departureTime": "2027-12-15T07:10:00", "arrivalTime": "2027-12-15T09:25:00",
+             "durationSeconds": 4500, "carrier": "ZY", "carrierName": "TEST_ONLY_CARRIER_2", "flightNumber": "ZY002"}
+          ]
+        },
+        "inbound": null
+      }
+    ],
+    "error": null
+  },
+  "success_without_payload_currency": {
+    "resultsCount": 2,
+    "itineraries": [
+      {
+        "id": "fixture-no-currency-labelled",
+        "price": 70.0,
+        "priceFormatted": "70 GBP",
+        "outbound": {"segments": [{"from": "TSA", "to": "TSB", "durationSeconds": 3600, "carrier": "ZZ", "flightNumber": "ZZ003"}]}
+      },
+      {
+        "id": "fixture-no-currency-anywhere",
+        "price": 80.0,
+        "outbound": {"segments": [{"from": "TSA", "to": "TSB", "durationSeconds": 3600, "carrier": "ZZ", "flightNumber": "ZZ004"}]}
+      }
+    ],
+    "error": null
+  },
+  "empty": {"currency": "EUR", "resultsCount": 0, "itineraries": [], "error": null},
+  "provider_error": {"error": "Could not resolve the origin place.", "itineraries": []},
+  "malformed": {"results": "renamed field"}
+}

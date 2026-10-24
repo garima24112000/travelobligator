@@ -34,10 +34,11 @@ from typing import Any, Callable
 from app.core import performance
 from app.providers.ai_failure import (
     TRANSPORT_RATE_LIMIT,
+    WAIT_SOURCE_QUOTA_RESET,
     AIProviderFailureKind,
     classify_ai_provider_exception,
     is_transient_failure,
-    retry_after_seconds,
+    rate_limit_wait_seconds,
     safe_ai_failure_message,
     transport_failure_subtype,
 )
@@ -57,6 +58,10 @@ MAX_RETRY_AFTER_SECONDS_WITHOUT_BUDGET = 20.0
 RETRY_AFTER_OBEYED = "obeyed"  # waited exactly as long as the provider asked
 RETRY_AFTER_CLAMPED = "clamped"  # asked for less than the ordinary backoff: waited the backoff
 RETRY_AFTER_SKIPPED = "skipped"  # did not fit: no wait, no retry, fallback
+# M2 Phase 2: the provider's headers showed the refusing quota dimension resets
+# later than its Retry-After; that reset was the wait (or did not fit).
+RETRY_AFTER_QUOTA_OBEYED = "quota_reset_obeyed"
+RETRY_AFTER_QUOTA_SKIPPED = "quota_reset_skipped"
 
 RESULT_SUCCESS = "success"
 # The model answered, but the answer was rejected (structure / validation /
@@ -204,8 +209,8 @@ class StageRun:
             return False
 
         pause = TRANSPORT_RETRY_BACKOFF_SECONDS
-        retry_after = (
-            retry_after_seconds(exc) if self.transport_failure == TRANSPORT_RATE_LIMIT else None
+        retry_after, wait_source = (
+            rate_limit_wait_seconds(exc) if self.transport_failure == TRANSPORT_RATE_LIMIT else (None, None)
         )
         if retry_after is not None:
             # The provider said when to come back. Retrying sooner would only
@@ -213,15 +218,24 @@ class StageRun:
             # never shorter than the ordinary backoff); a wait that does not
             # fit -- inside the stage budget, or under the fixed ceiling when
             # the stage has none -- is not started at all: the stage ends
-            # now and the deterministic fallback takes over.
+            # now and the deterministic fallback takes over. M2 Phase 2: "when
+            # to come back" includes the reset of the quota dimension that
+            # refused the request, when the headers show a later one.
+            quota_wait = wait_source == WAIT_SOURCE_QUOTA_RESET
             pause = max(retry_after, TRANSPORT_RETRY_BACKOFF_SECONDS)
             fits = self._room_for_retry(after_pause=pause) and (
                 self._budget is not None or pause <= MAX_RETRY_AFTER_SECONDS_WITHOUT_BUDGET
             )
             if not fits:
-                self.retry_after = RETRY_AFTER_SKIPPED
+                self.retry_after = RETRY_AFTER_QUOTA_SKIPPED if quota_wait else RETRY_AFTER_SKIPPED
                 return False
-            self.retry_after = RETRY_AFTER_OBEYED if pause == retry_after else RETRY_AFTER_CLAMPED
+            self.retry_after = (
+                RETRY_AFTER_QUOTA_OBEYED
+                if quota_wait
+                else RETRY_AFTER_OBEYED
+                if pause == retry_after
+                else RETRY_AFTER_CLAMPED
+            )
         elif not self._room_for_retry(after_pause=pause):
             self.deadline_exceeded = True
             return False

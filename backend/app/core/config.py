@@ -1235,6 +1235,40 @@ class Settings(BaseSettings):
     # whose name or description mentions "flight") purely to decide
     # *whether* flight-search tooling exists, never to call it.
     kiwi_mcp_tool_name: str | None = Field(default=None, alias="KIWI_MCP_TOOL_NAME")
+    # M2 Phase 2: ONE wall-clock limit for a whole flight search (connect,
+    # tool discovery and the search call together); `KIWI_MCP_TIMEOUT_SECONDS`
+    # bounds each read only.
+    kiwi_mcp_total_timeout_seconds: float = Field(
+        default=20.0, alias="KIWI_MCP_TOTAL_TIMEOUT_SECONDS", gt=0.0
+    )
+    # M2 Phase 2: how long a SUCCESSFUL tool discovery (names + input schemas,
+    # never flight data) is reused in-process before asking again. 0 disables.
+    # Flight offers themselves are never cached (live prices).
+    kiwi_mcp_discovery_cache_seconds: int = Field(
+        default=3600, alias="KIWI_MCP_DISCOVERY_CACHE_SECONDS", ge=0
+    )
+    # M2 Phase 2 (Kiwi remediation): hard cap on the HTTP requests ONE MCP
+    # session may put on the wire, counted in the Kiwi client's own transport
+    # (the MCP SDK uses `httpx2`, which an `httpx` guard never sees). A session
+    # that would exceed it is ended as a `request_cap` failure.
+    kiwi_mcp_max_http_requests_per_session: int = Field(
+        default=8, alias="KIWI_MCP_MAX_HTTP_REQUESTS_PER_SESSION", ge=1, le=20
+    )
+    # M2 Phase 2 (Kiwi remediation): nearby COMMERCIAL-airport lookup, used
+    # ONLY after a flight search by place name returned nothing.
+    # `not_connected` (default) or `ourairports_file`: the configured geocoder
+    # (one request per place, charged to the generation) + a local OurAirports
+    # `airports.csv` (public domain, supplied by the operator, never downloaded
+    # at runtime) for evidence of scheduled airline service. Never a hardcoded
+    # airport, never "nearest" alone (providers/flights/airport_lookup.py).
+    flight_airport_lookup_provider: str = Field(
+        default="not_connected", alias="FLIGHT_AIRPORT_LOOKUP_PROVIDER",
+        pattern="^(not_connected|ourairports_file)$",
+    )
+    flight_airport_data_path: str | None = Field(default=None, alias="FLIGHT_AIRPORT_DATA_PATH")
+    flight_airport_lookup_radius_km: float = Field(
+        default=60.0, alias="FLIGHT_AIRPORT_LOOKUP_RADIUS_KM", gt=0.0, le=150.0
+    )
 
     # Config gate for POST /trips/{trip_id}/generate's engine selection
     # (Step 171D, made the default in Step 171E once the LangGraph path
