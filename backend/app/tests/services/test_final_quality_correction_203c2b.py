@@ -429,7 +429,7 @@ def test_a_grounded_but_unscheduled_must_visit_is_a_warning() -> None:
     assert resolution.grounded and not resolution.scheduled
     issues = _must_visit_issues(state)
     assert len(issues) == 1 and "Torre Alta" in issues[0].message
-    assert "Found by the provider but not scheduled" in issues[0].message
+    assert "Torre Alta was found but is not on this plan" in issues[0].message  # Final Batch 1 wording
     assert "MUST_VISIT" in state.validation_report.review_codes
 
 

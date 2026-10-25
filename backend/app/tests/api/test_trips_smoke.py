@@ -40,6 +40,38 @@ def assert_api_response_shape(body: dict[str, Any]) -> None:
     assert "timestamp" in body["metadata"]
 
 
+_VISIT_TIME_STATUSES = {
+    "fits_listed_hours", "hours_unknown", "outside_listed_hours", "closed_on_date", "not_timed",
+}
+
+
+def assert_visit_times_are_estimates_only(day_plan: dict[str, Any]) -> None:
+    """Final Batch 1 (C): a day's visit times are labelled ESTIMATES and never
+    invent travel: the day starts at its pace window, every timed stop carries
+    a status, and after a stop without a time (the travel before it was not
+    verified) no later stop has one. No day-level walking, travel or cost
+    figure is invented either."""
+    assert day_plan["estimated_walking_km"] is None
+    assert day_plan["estimated_travel_time_minutes"] is None
+    assert day_plan["estimated_cost"] is None
+    experiences = day_plan["experiences"]
+    if not experiences:
+        return
+    schedule = day_plan["visit_schedule"]
+    first = experiences[0]
+    if first["start_time"] is not None and not first["arrival_wait_minutes"]:
+        assert first["start_time"] == schedule["window_start"]  # the day starts at its first stop
+    untimed = False
+    for experience in experiences:
+        assert experience["visit_time_status"] in _VISIT_TIME_STATUSES
+        assert experience["estimated_duration_minutes"]  # an estimate by kind of place
+        if experience["start_time"] is None:
+            untimed = True
+            assert experience["visit_time_status"] == "not_timed"
+        assert not (untimed and experience["start_time"] is not None)
+    assert (schedule["status"] == "partly_timed") == untimed
+
+
 def test_health(client: TestClient) -> None:
     response = client.get("/health")
     assert response.status_code == 200
@@ -209,21 +241,16 @@ def test_experience_plan_after_generate(client: TestClient, generated_trip_id: s
     assert len(all_experiences) > 0
 
     for day_plan in experience_plan["daily_plans"]:
-        # No route/timing/cost estimation is implemented yet at the day level.
-        assert day_plan["estimated_walking_km"] is None
-        assert day_plan["estimated_travel_time_minutes"] is None
-        assert day_plan["estimated_cost"] is None
+        # Final Batch 1: visit times are labelled estimates; no travel, cost or
+        # route fact is invented (no routing here, so only a first stop is timed).
+        assert_visit_times_are_estimates_only(day_plan)
 
     for experience in all_experiences:
-        # Scheduled experiences must come from real candidates with no invented
-        # times, durations, or cost/route facts.
+        # Scheduled experiences must come from real candidates.
         assert experience["name"] in {
             "Test Fixture Attraction One",
             "Test Fixture Attraction Two",
         }
-        assert experience["start_time"] is None
-        assert experience["end_time"] is None
-        assert experience["estimated_duration_minutes"] is None
 
     assert body["data"]["validation_report"]["readiness_status"] == "needs_review"
 
@@ -1452,7 +1479,8 @@ def test_validation_report_warns_about_unmatched_must_visit(
     # is not mentioned since it was found.
     assert "Space Needle" in must_visit_warning["message"]
     assert "Old Town Hall" not in must_visit_warning["message"]
-    assert "not grounded/scheduled" in must_visit_warning["message"]
+    # Final Batch 1: traveller wording ("grounded" was implementation wording)
+    assert "no matching place was found for Space Needle" in must_visit_warning["message"]
     assert "not replaced with unrelated attractions" in must_visit_warning["message"]
 
 
@@ -1752,13 +1780,9 @@ def test_experience_plan_orders_within_day_by_nearest_straight_line_distance(
     # -- not provider order -- determines the within-day sequence.
     assert scheduled_names == ["Anchor Point", "Near Point", "Far Point"]
 
-    # The reordering step must not invent any route/timing/walking/cost facts.
-    for experience in day_plan["experiences"]:
-        assert experience["start_time"] is None
-        assert experience["end_time"] is None
-        assert experience["estimated_duration_minutes"] is None
-    assert day_plan["estimated_walking_km"] is None
-    assert day_plan["estimated_travel_time_minutes"] is None
+    # The reordering step must not invent any route/timing/walking/cost facts
+    # (Final Batch 1: visit times are labelled estimates, never invented travel).
+    assert_visit_times_are_estimates_only(day_plan)
     assert day_plan["estimated_cost"] is None
     assert any("straight-line" in warning for warning in day_plan["warnings"])
     assert any("not route optimization" in warning for warning in day_plan["warnings"])
@@ -2036,13 +2060,7 @@ def test_validation_report_warns_about_geographic_spread(
     experience_response = client.get(f"/trips/{trip_id}/experience-plan")
     assert experience_response.status_code == 200
     day_plan = experience_response.json()["data"]["experience_plan"]["daily_plans"][0]
-    assert day_plan["estimated_walking_km"] is None
-    assert day_plan["estimated_travel_time_minutes"] is None
-    assert day_plan["estimated_cost"] is None
-    for experience in day_plan["experiences"]:
-        assert experience["start_time"] is None
-        assert experience["end_time"] is None
-        assert experience["estimated_duration_minutes"] is None
+    assert_visit_times_are_estimates_only(day_plan)  # Final Batch 1: labelled estimates only
 
 
 class _GeographicCloseTestPlacesProvider(PlacesProvider):
@@ -2290,15 +2308,9 @@ def test_experience_plan_groups_nearby_attractions_into_the_same_day(
     # The grouping/ordering step must not invent any route/timing/walking/
     # cost facts.
     for day_plan in daily_plans:
-        assert day_plan["estimated_walking_km"] is None
-        assert day_plan["estimated_travel_time_minutes"] is None
-        assert day_plan["estimated_cost"] is None
         assert any("straight-line" in warning for warning in day_plan["warnings"])
         assert any("not route optimization" in warning for warning in day_plan["warnings"])
-        for experience in day_plan["experiences"]:
-            assert experience["start_time"] is None
-            assert experience["end_time"] is None
-            assert experience["estimated_duration_minutes"] is None
+        assert_visit_times_are_estimates_only(day_plan)  # Final Batch 1: labelled estimates only
 
 
 class _DayGroupingMustVisitAnchorTestPlacesProvider(PlacesProvider):
@@ -2622,6 +2634,7 @@ def test_missing_must_visit_is_added_through_targeted_lookup(
         "confidence",
         "provider_tags",  # Section 202B.2: structured tags (None for a fake provider)
         "venue_tags",  # M2 Phase 3: venue-status evidence (None for a fake provider)
+        "english_name",  # Final Batch 1: the record's own English name (None for a fake provider)
         "must_visit_term",  # Section 203C.2B: the user's own term this place was grounded for
         "must_visit_terms",  # Q1: every user term grounded to this provider place
     }
@@ -2697,7 +2710,7 @@ def test_failed_targeted_lookup_keeps_unmatched_must_visit_warning(
     ]
     assert len(must_visit_warnings) == 1
     assert "Hidden Cave" in must_visit_warnings[0]["message"]
-    assert "not grounded/scheduled" in must_visit_warnings[0]["message"]
+    assert "not on this plan" in must_visit_warnings[0]["message"]  # Final Batch 1: traveller wording
     assert "not replaced with unrelated attractions" in must_visit_warnings[0]["message"]
 
 
@@ -4896,12 +4909,11 @@ def test_validation_report_includes_holiday_warning_when_usable_holiday_data_exi
     assert holiday_warning["severity"] == "warning"
 
     message = holiday_warning["message"].lower()
-    assert "provider-backed" in message
+    # Final Batch 1: listed hours ARE read now; the message says only what is true.
     assert "public holiday" in message
-    assert "closures" in message
     assert "opening hours" in message
-    assert "crowd" in message
-    assert "review" in message and "manually" in message
+    assert "crowds were not assessed" in message
+    assert "check these dates before you go" in message
 
     # Holidays never mark the plan ready by itself.
     assert validation_report["readiness_status"] == "needs_review"
@@ -4967,7 +4979,7 @@ def test_validation_report_softer_holiday_warning_when_none_in_range(
     assert holiday_warning is not None
     message = holiday_warning["message"].lower()
     assert "no public holidays fall within" in message
-    assert "not implemented" in message
+    assert "only where a place lists them" in message  # Final Batch 1: no blanket "not checked" claim
 
 
 def test_validation_report_no_holiday_warning_when_holidays_unavailable(
@@ -6730,9 +6742,8 @@ def test_scheduling_order_is_unchanged_by_route_feasibility_checks(
     scheduled_names = [experience["name"] for experience in day_plan["experiences"]]
 
     assert scheduled_names == ["Anchor Point", "Near Point", "Far Point"]
-    for experience in day_plan["experiences"]:
-        assert experience["start_time"] is None
-        assert experience["end_time"] is None
+    # Final Batch 1: the verified legs time the day; the order is still the planner's.
+    assert_visit_times_are_estimates_only(day_plan)
 
 
 def test_route_feasibility_report_never_fabricates_data_for_coordinate_less_candidates(

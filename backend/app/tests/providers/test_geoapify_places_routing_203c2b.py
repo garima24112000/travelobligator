@@ -275,6 +275,7 @@ def test_places_are_mapped_from_what_the_response_states(
             "place_id", "name", "category", "coordinates", "address", "source", "data_status",
             "confidence", "provider_tags",
             "venue_tags",  # M2 Phase 3: the record's own venue evidence (here: none)
+            "english_name",  # Final Batch 1: the record's own English name (here: none)
         }
 
 

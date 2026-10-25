@@ -78,6 +78,9 @@ MATERIAL_CODES: frozenset[str] = frozenset(
         # M2 Phase 3: what a scheduled place's own record says about it.
         "VENUE_CLOSED_ON_SCHEDULED_DAY",
         "VENUE_REPORTED_NOT_OPERATING",
+        # Final Batch 1 (C): the estimated visit times of a day.
+        "VISIT_OUTSIDE_LISTED_HOURS",
+        "DAY_EXCEEDS_TIME_WINDOW",
     }
 )
 

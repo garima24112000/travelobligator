@@ -24,6 +24,14 @@ PACE_TARGET_PER_DAY: dict[TripPace, int] = {
 }
 MINIMUM_USEFUL_RATIO = 0.80
 HEALTHY_BUFFER_RATIO = 2.25
+# The fewest stops a day should hold at each pace: below it the validator
+# reports a thin day (`plan_quality_findings`) and the planner tops the day up
+# when it can (`visit_day_feasibility.fill_thin_days`). One value read by both.
+MIN_STOPS_PER_DAY: dict[TripPace, int] = {
+    TripPace.RELAXED: 1,
+    TripPace.BALANCED: 2,
+    TripPace.PACKED: 3,
+}
 
 
 @dataclass(frozen=True)

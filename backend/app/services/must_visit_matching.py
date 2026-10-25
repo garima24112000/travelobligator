@@ -28,19 +28,49 @@ and only when EXACTLY ONE provider-backed candidate of the whole pool has
 that name. Uniqueness is a property of the pool, so this decision is made
 once, here, and consumers take the resulting provider ids
 (`legacy_must_visit_place_ids`); a per-candidate function cannot make it.
+
+Final itinerary (Final Batch 1, A). Whether a term is satisfied is decided
+against what is SCHEDULED, by identity: the grounded place itself, or a
+scheduled stop that is the same entity -- the same Wikidata reference close
+by, the existing merge rule (`entity_identity.SAME_WIKIDATA_METERS`). Still no
+name is compared, so a scheduled place is never reported missing merely
+because it was scheduled under a different provider record of itself.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Iterable
+from typing import Any, Iterable, Sequence
 
+from app.models.common import GeoPoint
 from app.models.planning_state import PlanningState
+from app.providers.places.entity_identity import SAME_WIKIDATA_METERS
+from app.utils.geo import haversine_distance_km
 from app.utils.names import comparable_name
 
 # The version the destination-context stage writes once it has established
 # must-visit identities under the rules above.
 MUST_VISIT_GROUNDING_VERSION = 1
+
+# Final Batch 1 (A): how the destination-context stage found a term
+# (`DestinationContext.must_visit_lookups[].outcome`).
+FOUND_BY_POOL_NAME = "pool_name"  # the one pool place the provider names exactly so
+FOUND_BY_POOL_OTHER_NAME = "pool_other_name"  # ...by another name of its own record
+FOUND_BY_LOOKUP = "lookup"  # the targeted lookup inside the destination
+FOUND_BY_WIDE_LOOKUP = "lookup_wide"  # the wider lookup, and the place IS in the destination
+EXCURSION_VERIFIED = "excursion_verified"  # outside; a verified driving route within the limit
+EXCURSION_TOO_FAR = "excursion_too_far"  # outside; the verified driving route exceeds the limit
+EXCURSION_ROUTE_UNVERIFIED = "excursion_route_unverified"  # outside; no route could be verified
+UNRESOLVED = "unresolved"
+# Set (True) on the candidate of a must-visit grounded as a verified excursion
+# OUTSIDE the destination, with `excursion_drive_seconds` / `excursion_distance_km`.
+OUTSIDE_DESTINATION_KEY = "outside_destination"
+# A lookup that came back without a place for one of these reasons may be
+# repeated as the wider excursion lookup; a provider FAILURE never is.
+WIDER_LOOKUP_REASONS = frozenset(
+    {"no_result", "not_a_specific_place", "weak_name_match", "low_confidence", "no_coordinates_or_identity",
+     "outside_destination"}
+)
 
 
 @dataclass(frozen=True)
@@ -49,6 +79,9 @@ class MustVisitResolution:
     grounded_place_ids: frozenset[str]
     grounded_names: tuple[str, ...]
     scheduled: bool
+    # Provider ids of the SCHEDULED stops that satisfy the term (the grounded
+    # place, or a scheduled record of the same entity). Empty when unscheduled.
+    scheduled_place_ids: frozenset[str] = frozenset()
 
     @property
     def grounded(self) -> bool:
@@ -85,14 +118,28 @@ def is_tagged_must_visit(candidate: Any, terms: Iterable[str]) -> bool:
     return bool(recorded) and any(comparable_name(term) in recorded for term in terms if term)
 
 
-def exact_name_candidates(pois: Iterable[dict[str, Any]], term: str) -> list[dict[str, Any]]:
+def exact_name_candidates(
+    pois: Iterable[dict[str, Any]],
+    term: str,
+    other_names: dict[str, Sequence[str]] | None = None,
+) -> list[dict[str, Any]]:
     """Provider-backed candidates whose provider name IS the term (comparable
     equality; never containment). A fact about the pool only -- the caller
-    decides what one, none or several of them mean."""
+    decides what one, none or several of them mean.
+
+    `other_names` (Final Batch 1, A): by place id, the OTHER names the
+    provider's own record gives the same place (its English, international,
+    official or local name -- `entity_identity.alternate_names`). A candidate
+    matches when any of its names IS the term, so a place recorded under its
+    local name is found by the name the traveller used. Still equality only."""
     wanted = comparable_name(term)
     if not wanted:
         return []
-    return [poi for poi in pois if poi.get("place_id") and comparable_name(poi.get("name")) == wanted]
+
+    def names(poi: dict[str, Any]) -> list[Any]:
+        return [poi.get("name"), *(other_names or {}).get(str(poi.get("place_id")), ())]
+
+    return [poi for poi in pois if poi.get("place_id") and any(comparable_name(n) == wanted for n in names(poi))]
 
 
 def requested_must_visits(planning_state: PlanningState) -> list[str]:
@@ -116,6 +163,23 @@ def _grounded_candidates(
     return exact if len(exact) == 1 else []
 
 
+def _same_entity(record: dict[str, Any] | None, grounded: dict[str, Any]) -> bool:
+    """Two provider records of ONE entity: the same Wikidata reference and no
+    farther apart than the existing merge rule allows. Identity evidence only
+    -- never a name."""
+    if record is None or record is grounded:
+        return False
+    first = str(((record.get("provider_tags") or {}).get("wikidata")) or "").strip()
+    second = str(((grounded.get("provider_tags") or {}).get("wikidata")) or "").strip()
+    if not first or first != second:
+        return False
+    a, b = record.get("coordinates") or {}, grounded.get("coordinates") or {}
+    if a.get("lat") is None or b.get("lat") is None:
+        return False
+    distance_km = haversine_distance_km(GeoPoint(lat=a["lat"], lng=a["lng"]), GeoPoint(lat=b["lat"], lng=b["lng"]))
+    return distance_km is not None and distance_km * 1000.0 <= SAME_WIKIDATA_METERS
+
+
 def resolve_must_visits(planning_state: PlanningState) -> list[MustVisitResolution]:
     context = planning_state.destination_context
     pois = context.candidate_pois if context is not None else []
@@ -123,18 +187,27 @@ def resolve_must_visits(planning_state: PlanningState) -> list[MustVisitResoluti
     scheduled = [experience for day in (plan.daily_plans if plan else []) for experience in day.experiences]
     scheduled_ids = {experience.provider_place_id for experience in scheduled if experience.provider_place_id}
     legacy = _is_legacy(planning_state)
+    pool_by_id = {str(poi["place_id"]): poi for poi in pois if poi.get("place_id")}
 
     resolutions: list[MustVisitResolution] = []
     for term in requested_must_visits(planning_state):
         matches = _grounded_candidates(pois, term, legacy=legacy)
         place_ids = frozenset(str(poi["place_id"]) for poi in matches)
+        # The grounded place itself, or a scheduled record of the same entity.
+        satisfying = frozenset(
+            str(scheduled_id)
+            for scheduled_id in scheduled_ids
+            if str(scheduled_id) in place_ids
+            or any(_same_entity(pool_by_id.get(str(scheduled_id)), grounded) for grounded in matches)
+        )
         resolutions.append(
             MustVisitResolution(
                 term=term,
                 grounded_place_ids=place_ids,
                 grounded_names=tuple(str(poi.get("name") or "") for poi in matches),
                 # by provider identity only: one scheduled place satisfies every term grounded to it
-                scheduled=bool(place_ids & scheduled_ids),
+                scheduled=bool(satisfying),
+                scheduled_place_ids=satisfying,
             )
         )
     return resolutions

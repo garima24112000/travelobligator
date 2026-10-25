@@ -75,6 +75,10 @@ class NormalizedPlace(BaseModel):
     # (`services/venue_status.venue_evidence_tags`; nothing else). None when
     # the record carries none, and for places stored before this field.
     venue_tags: dict[str, str] | None = None
+    # Final Batch 1 (E): the record's own English name when it differs from
+    # `name` (`entity_identity.english_name`), shown beside the original name.
+    # `name` stays the provider's name and identity. None otherwise.
+    english_name: str | None = None
     # Section 203C.2B (entity de-duplication). INTERNAL corroboration only,
     # never an id: the sanitised identity of the underlying source object
     # (`osm/<type>/<id>`) and the place's own other names from that record.

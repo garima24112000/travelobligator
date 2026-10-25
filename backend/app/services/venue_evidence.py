@@ -90,6 +90,10 @@ def _pool_by_place_id(planning_state: PlanningState) -> dict[str, dict[str, Any]
     return pool
 
 
+# Final Batch 1 (C): the same records, read by the visit scheduler.
+records_by_place_id = _pool_by_place_id
+
+
 def _unknown_cause(poi: dict[str, Any] | None, tags: dict[str, Any], reading: hours.DayHours) -> str:
     if poi is None:
         return "no_record"

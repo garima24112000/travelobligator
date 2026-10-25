@@ -52,6 +52,7 @@ from app.services import day_composition as composition
 from app.services import schedule_diversity as diversity
 from app.services import opening_hours
 from app.services import visit_day_feasibility as feasibility
+from app.services import visit_schedule
 from app.services.base import PlanningStageService
 from app.services.day_order_heuristics import (
     ALTERNATIVE_MAX_LENGTH_RATIO,
@@ -68,8 +69,9 @@ from app.services.day_order_heuristics import (
 )
 from app.services.day_rationale import deterministic_day_summary, finalize_day_explanations
 from app.services.entity_collisions import SUSPECT_COLLISION_KEY
+from app.services.same_site import SAME_SITE_KEY, group_for as same_site_group_for
 from app.services.grounded_anchors import grounded_anchor_place_ids, low_anchor_utilization
-from app.services.pace_targets import pace_targets
+from app.services.pace_targets import MIN_STOPS_PER_DAY, pace_targets
 from app.services.usefulness_contract import count_viable_candidates
 from app.services.must_visit_matching import is_tagged_must_visit, legacy_must_visit_place_ids
 from app.utils.geo import haversine_distance_km
@@ -85,10 +87,9 @@ _DEFAULT_CATEGORY = "attraction"
 _FEASIBILITY_WARNING = (
     "Days are grouped and attractions are ordered within each day using "
     "straight-line (haversine) geographic proximity when coordinates are "
-    "available; this is not route optimization. Route ordering, timing, "
-    "opening hours, and feasibility checks are not implemented yet, so "
-    "scheduled attractions have no start/end time, duration, walking "
-    "distance, or cost estimate."
+    "available; this is not route optimization. Visit times, where shown, are "
+    "estimates from typical visit lengths, each place's own listed opening hours "
+    "and verified travel times; no cost estimate is made."
 )
 
 _MAX_RESTAURANT_SUGGESTIONS_PER_DAY = 2
@@ -717,6 +718,12 @@ class ExperiencePlannerService(PlanningStageService):
         # already-scheduled real candidate out of a slot it would otherwise
         # have won.
         promoted_pois, promoted_candidate_warnings = _build_promoted_candidate_pois(planning_state)
+        # Final Batch 1 (D): a promoted candidate (built here, not in the pool)
+        # joins the site group of a pool record it forms one site with.
+        for promoted in promoted_pois:
+            group = same_site_group_for(promoted, scheduling_candidate_pois)
+            if group:
+                promoted[SAME_SITE_KEY] = group
         scheduling_candidate_pois = scheduling_candidate_pois + promoted_pois
         has_any_attraction_candidates = bool(candidate_pois) or bool(promoted_pois)
 
@@ -866,6 +873,13 @@ class ExperiencePlannerService(PlanningStageService):
         day_groups, collision_separations = _separate_suspected_duplicates(
             day_groups, scheduling_candidate_pois, profiles, must_visit_ids
         )
+        # Final Batch 1 (D): likewise, at most one record of a heritage site and
+        # the collection housed at it -- whoever chose them (the deterministic
+        # selection already takes only one; a model's plan may hold both).
+        day_groups, same_site_separations = _separate_suspected_duplicates(
+            day_groups, scheduling_candidate_pois, profiles, must_visit_ids, group_key=SAME_SITE_KEY
+        )
+        collision_separations = [*collision_separations, *same_site_separations]
         _trace_schedule("duplicate_separation", day_groups)
 
         # A plan the reasoning model chose gets ONE prospective geographic
@@ -1019,10 +1033,12 @@ class ExperiencePlannerService(PlanningStageService):
                     start_date=trip_request.start_date,
                     max_per_day=max_per_day,
                     targets=pace_targets(num_days, pace),
-                    # Q3: a plan the model chose keeps its places (at most one
-                    # replacement per day), so a whole remote day is rebuilt
-                    # only in a deterministic plan; a model's is disclosed.
-                    rebuild_remote_days=not used_ai_reasoning,
+                    # Final Batch 1 (B): a day away from the trip's area with no
+                    # reason for it is rebuilt whoever chose it. This is a
+                    # deliberate exception to Q3's "a model's plan keeps its
+                    # places": a whole remote day cannot be fixed one stop at a
+                    # time, and the model's choice was only disclosed before.
+                    rebuild_remote_days=True,
                     markets_requested=diversity.markets_explicitly_requested(interest_terms),
                 )
             _trace_schedule("visit_day_feasibility", day_groups)
@@ -1153,8 +1169,8 @@ class ExperiencePlannerService(PlanningStageService):
                 "deterministic path uses -- every scheduled place's name, coordinates, and "
                 "provider identity still come entirely from the real provider record, "
                 "never from the AI. A day this reasoning did not select any candidate for "
-                "stays empty rather than being auto-filled. Route ordering, timing, and "
-                "opening-hours feasibility are not implemented yet."
+                "stays empty rather than being auto-filled. Estimated visit times and the "
+                "places' own listed opening hours are applied to the final, routed days."
             ]
         else:
             assumptions = [
@@ -1163,8 +1179,8 @@ class ExperiencePlannerService(PlanningStageService):
                 "remaining slots (up to the pace-based per-day cap) are filled and ordered "
                 "using straight-line (haversine) geographic proximity when coordinates are "
                 "available. Days are grouped using geographic proximity, not route "
-                "optimization, and route ordering, timing, and opening-hours feasibility "
-                "are not implemented yet."
+                "optimization; estimated visit times and the places' own listed opening "
+                "hours are applied to the final, routed days."
             ]
         if not has_any_attraction_candidates:
             assumptions.insert(
@@ -1252,6 +1268,13 @@ def _apply_visit_day_feasibility(
         market_excess=lambda stops: sum(diversity.hard_excess(
             [diversity.coarse_class(profiles[id(poi)].primary) for poi in stops], markets_requested
         ).values()),
+        # Final Batch 1 (C): listed hours that leave no visit inside the pace's
+        # day window count like a closed day (only with time scheduling on).
+        closed=(
+            (lambda poi, day, holidays: visit_schedule.unvisitable_on(poi, day, holidays, targets.pace))
+            if get_settings().visit_time_scheduling_enabled
+            else None
+        ),
     )
     holidays = opening_hours.holiday_dates(planning_state)
     day_groups, closures = feasibility.resolve_known_closures(
@@ -1259,19 +1282,35 @@ def _apply_visit_day_feasibility(
         max_per_day=max_per_day, minimum_stops=targets.minimum_useful,
     )
     supply = count_viable_candidates(planning_state)
+    within_reach = _pool_reach(pool)
+    minimum_per_day = MIN_STOPS_PER_DAY[targets.pace]
     day_groups, remote = feasibility.resolve_unreasoned_remote_days(
         day_groups, pool, helpers,
-        within_reach=_pool_reach(pool),
+        within_reach=within_reach,
         requested_interests=frozenset(canonical_interests),
         start_date=start_date,
         holidays=holidays,
         supply_healthy=rebuild_remote_days and supply >= targets.target_stops,
         minimum_stops=targets.minimum_useful,
+        minimum_per_day=minimum_per_day,
+        max_per_day=max_per_day,
+    )
+    # Final Batch 1 (B): a thin day is topped up to the pace minimum with
+    # useful places within reach, whoever chose the plan; never with filler.
+    day_groups, thin = feasibility.fill_thin_days(
+        day_groups, pool, helpers,
+        within_reach=within_reach,
+        start_date=start_date,
+        holidays=holidays,
+        supply_healthy=supply >= targets.target_stops,
+        minimum_per_day=minimum_per_day,
     )
     for entry in closures.actions:
         performance.count(f"known_closure_{entry['action']}")
     for entry in remote.actions:
         performance.count(f"remote_day_{entry['action']}")
+    for entry in thin.actions:
+        performance.count(f"thin_day_{entry['action']}")
     return day_groups
 
 
@@ -1648,6 +1687,10 @@ def _candidate_profile(
             f"{classification.sub_feature_kind}:{round(point.lat / _CLUSTER_CELL_DEGREES)}:"
             f"{round(point.lng / _CLUSTER_CELL_DEGREES)}"
         )
+    elif poi.get(SAME_SITE_KEY):
+        # Final Batch 1 (D): a heritage site and the collection housed at it
+        # are one visit -- the same collapse as a structural sub-feature.
+        cluster = str(poi[SAME_SITE_KEY])
     rank, total = _quality_rank_and_score(score)
     if score is None and poi.get("quality_tier"):
         rank = {"primary_anchor": 4, "good_candidate": 3, "secondary_candidate": 2}.get(
@@ -2937,6 +2980,8 @@ def _separate_suspected_duplicates(
     pool: list[dict[str, Any]],
     profiles: dict[int, _CandidateProfile],
     must_visit_ids: set[int],
+    *,
+    group_key: str = SUSPECT_COLLISION_KEY,
 ) -> tuple[list[list[dict[str, Any]]], list[DiversityReplacement]]:
     """Guarantees that no two candidates of one unresolved suspected
     duplicate pair are scheduled together. The first of a pair is kept (a
@@ -2945,19 +2990,32 @@ def _separate_suspected_duplicates(
     not a low-value object, not itself a suspected duplicate of a scheduled
     stop and not adding a market beyond the day's cap -- or, with none,
     simply removed so the day is lighter. Nothing is invented. Returns the
-    days and what was replaced (`replacement_place` empty when removed)."""
+    days and what was replaced (`replacement_place` empty when removed).
+
+    `group_key=SAME_SITE_KEY` (Final Batch 1, D): the same for the records of
+    one heritage site and the collection housed at it, with three
+    differences: the MOST USEFUL record is kept (a must-visit still first); a
+    replacement is at most one quality tier below the record it replaces, so
+    a slot is not refilled with filler; and a record is never removed from a
+    day it alone fills -- both then stay."""
+    same_site = group_key == SAME_SITE_KEY
     days = [list(group) for group in day_groups]
     scheduled = [poi for group in days for poi in group]
     kept: dict[str, dict[str, Any]] = {}
-    for poi in sorted(scheduled, key=lambda p: id(p) not in must_visit_ids):  # must-visits claim first; stable
-        group = poi.get(SUSPECT_COLLISION_KEY)
+    claim_order = (
+        sorted(scheduled, key=lambda p: (id(p) not in must_visit_ids, _usefulness_key(profiles)(p)))
+        if same_site
+        else sorted(scheduled, key=lambda p: id(p) not in must_visit_ids)  # must-visits claim first; stable
+    )
+    for poi in claim_order:
+        group = poi.get(group_key)
         if group and group not in kept:
             kept[group] = poi
 
     separations: list[DiversityReplacement] = []
     for day in days:
         for index, poi in enumerate(list(day)):
-            group = poi.get(SUSPECT_COLLISION_KEY)
+            group = poi.get(group_key)
             if not group or kept.get(group) is poi or id(poi) in must_visit_ids:
                 continue
             rest = [other for other in day if other is not poi]
@@ -2983,6 +3041,13 @@ def _separate_suspected_duplicates(
                 and not diversity.hard_excess(
                     [*rest_classes, diversity.coarse_class(profiles[id(candidate)].primary)], False
                 )
+                and not (
+                    same_site
+                    and (
+                        profiles[id(candidate)].tier_rank < profiles[id(poi)].tier_rank - 1
+                        or _same_complex(candidate, others, profiles)
+                    )
+                )
             ]
             replacement = min(
                 candidates,
@@ -2994,6 +3059,8 @@ def _separate_suspected_duplicates(
             position = next(i for i, other in enumerate(day) if other is poi)
             if replacement is not None:
                 day[position] = replacement
+            elif same_site and not rest:
+                continue  # never empty a day: both records of the site stay
             else:
                 del day[position]
             separations.append(
@@ -4398,6 +4465,8 @@ def _build_experience_item(
 
     return ExperienceItem(
         name=name,
+        # Final Batch 1 (E): the record's own English name, shown beside `name`.
+        display_name=poi.get("english_name") or None,
         category=poi.get("category") or _DEFAULT_CATEGORY,
         coordinates=coordinates,
         why_included=why_included,

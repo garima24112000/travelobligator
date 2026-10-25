@@ -49,6 +49,7 @@ from app.services.route_aware_sequencing_service import RouteAwareSequencingServ
 from app.services.day_rationale import finalize_day_explanations
 from app.services.routability_repair_service import apply_routability_repair_safely
 from app.services.route_burden_repair_service import apply_route_burden_repair_safely
+from app.services.visit_schedule import apply_visit_schedule_safely
 from app.services.route_feasibility_service import (
     RouteFeasibilityService,
     adapt_route_modes_safely,
@@ -724,6 +725,12 @@ def build_route_aware_sequencing_node(
                     planning_state, resolved_route_feasibility_service, state.get("provider_context")
                 )
                 apply_route_burden_repair_safely(
+                    planning_state, resolved_route_feasibility_service, state.get("provider_context")
+                )
+            # Final Batch 1 (C): estimated visit times on the final legs, and
+            # the bounded repair of a visit its own listed hours rule out.
+            with performance.stage("visit_schedule"):
+                apply_visit_schedule_safely(
                     planning_state, resolved_route_feasibility_service, state.get("provider_context")
                 )
             # The days are final now: one authoritative explanation per day.

@@ -169,7 +169,8 @@ finding fails the canary).
   stops stay "Opening hours not checked" and closures stay undetected (P0-1 then needs a second status source).
 - No visit times or durations: no time-of-day window check.
 - OpenStreetMap statements can be outdated; age is shown, never acted on.
-- A model-chosen remote day is disclosed, not rebuilt.
+- A model-chosen remote day is disclosed, not rebuilt. *(Superseded by Final Batch 1: it is now rebuilt, and
+  visit times exist — see `35_final_batch1_quality_corrections.md`.)*
 - No elevation, transit or ticketing evidence; no visitor-significance signal.
 
 ## 6. First development run (Vienna, 2026-10-24) and the evidence-gap cycle

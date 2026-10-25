@@ -1,6 +1,8 @@
 """Geoapify forward geocoder (the production geocoder; Section 203C.1).
 
-`GET {GEOAPIFY_API_URL}/v1/geocode/search?text=...&format=json&limit=1`.
+`GET {GEOAPIFY_API_URL}/v1/geocode/search?text=...&format=json&limit=N`
+(N = 1 for a destination; a few for a named place, of which the first that
+passes the unchanged specificity rule is taken -- one request either way).
 Geoapify only accepts its key as the `apiKey` query parameter, so the key
 is part of the request URL: this module therefore never logs, and never
 lets an httpx exception (whose text contains the URL) leave it -- every
@@ -24,13 +26,30 @@ from app.core.config import get_settings
 from app.models.common import GeoPoint
 from app.providers import geoapify_client
 from app.providers.errors import ProviderRequestError
-from app.providers.geocoding.base import BoundingBox, GeocodeHit, GeocoderError, GeocodingProvider
+from app.providers.geocoding.base import (
+    NAMED_PLACE_LOW_CONFIDENCE,
+    NAMED_PLACE_NO_RESULT,
+    NAMED_PLACE_NOT_SPECIFIC,
+    NAMED_PLACE_UNUSABLE,
+    NAMED_PLACE_WEAK_MATCH,
+    BoundingBox,
+    GeocodeHit,
+    GeocoderError,
+    GeocodingProvider,
+    NamedPlaceLookup,
+)
 from app.providers.places.entity_identity import source_entity_id
 from app.providers.places.geoapify_categories import taxonomy_tags_from_categories
 from app.core.provider_usage import ProviderUsageTracker
 
 _LANGUAGE = "en"
 _MAX_RESULTS = 1
+# Final Batch 1 (A): a named place may not be Geoapify's FIRST result (a
+# street or the settlement can rank above it). The results of the same one
+# request are read in the provider's order and the first one that passes the
+# unchanged specificity rule is taken; the acceptance rule itself is not
+# loosened. Geocoding is charged per request, not per result.
+_NAMED_PLACE_MAX_RESULTS = 5
 _NAMED_PLACE_RADIUS_METERS = 12000
 
 # `result_type` values that are a settlement/administrative area, i.e. what
@@ -84,12 +103,17 @@ class GeoapifyGeocoder(GeocodingProvider):
         return {**super().destination_cache_query(query), "lang": _LANGUAGE, "schema": "v1"}
 
     def _first_result(self, client: httpx.Client, params: dict[str, Any]) -> dict[str, Any] | None:
+        results = self._results(client, params, _MAX_RESULTS)
+        return results[0] if results else None
+
+    def _results(self, client: httpx.Client, params: dict[str, Any], limit: int) -> list[dict[str, Any]]:
+        """The results of ONE request, in the provider's order."""
         try:
             payload = geoapify_client.geoapify_get(
                 client,
                 base_url=self._base_url,
                 path="/v1/geocode/search",
-                params={**params, "format": "json", "limit": _MAX_RESULTS, "lang": _LANGUAGE},
+                params={**params, "format": "json", "limit": limit, "lang": _LANGUAGE},
                 api_key=self._api_key,
                 timeout=self._timeout,
                 api="geocoding",
@@ -100,11 +124,9 @@ class GeoapifyGeocoder(GeocodingProvider):
         results = payload.get("results")
         if not isinstance(results, list):
             raise GeocoderError("malformed")
-        if not results:
-            return None
-        if not isinstance(results[0], dict):
+        if not all(isinstance(result, dict) for result in results[:limit]):
             raise GeocoderError("malformed")
-        return results[0]
+        return results[:limit]
 
     def _hit(self, result: dict[str, Any]) -> GeocodeHit | None:
         """Translates one Geoapify result. None when it has no coordinates
@@ -166,28 +188,54 @@ class GeoapifyGeocoder(GeocodingProvider):
         near: GeoPoint | None = None,
         bounding_box: BoundingBox | None = None,
     ) -> GeocodeHit | None:
+        return self.lookup_named_place(client, query, near=near, bounding_box=bounding_box).hit
+
+    def lookup_named_place(
+        self,
+        client: httpx.Client,
+        query: str,
+        *,
+        near: GeoPoint | None = None,
+        bounding_box: BoundingBox | None = None,
+        radius_meters: float | None = None,
+    ) -> NamedPlaceLookup:
         params: dict[str, Any] = {"text": query}
         if bounding_box is not None:
             south, north, west, east = bounding_box
             params["filter"] = f"rect:{west},{south},{east},{north}"
         elif near is not None:
-            params["filter"] = f"circle:{near.lng},{near.lat},{_NAMED_PLACE_RADIUS_METERS}"
+            radius = radius_meters if radius_meters is not None else _NAMED_PLACE_RADIUS_METERS
+            params["filter"] = f"circle:{near.lng},{near.lat},{radius:.0f}"
 
-        result = self._first_result(client, params)
-        if result is None or not _is_specific_named_match(result):
-            return None
-        hit = self._hit(result)
-        return hit if hit is not None and hit.name else None
+        results = self._results(client, params, _NAMED_PLACE_MAX_RESULTS)
+        for result in results:
+            if _named_match_rejection(result) is not None:
+                continue
+            hit = self._hit(result)
+            if hit is not None and hit.name:
+                return NamedPlaceLookup(hit=hit)
+        if not results:
+            return NamedPlaceLookup(hit=None, rejection=NAMED_PLACE_NO_RESULT)
+        # Why the provider's own best answer was not taken (a fixed label).
+        return NamedPlaceLookup(hit=None, rejection=_named_match_rejection(results[0]) or NAMED_PLACE_UNUSABLE)
+
+
+def _named_match_rejection(result: dict[str, Any]) -> str | None:
+    """None only when Geoapify itself says it matched the named feature --
+    not a street/postcode/city-level fallback, and not a low-confidence
+    fuzzy match; otherwise the fixed reason. Missing evidence is treated as
+    no match."""
+    if result.get("result_type") not in _NAMED_PLACE_RESULT_TYPES:
+        return NAMED_PLACE_NOT_SPECIFIC
+    rank = result.get("rank")
+    if not isinstance(rank, dict) or rank.get("match_type") not in _NAMED_PLACE_MATCH_TYPES:
+        return NAMED_PLACE_WEAK_MATCH
+    confidence = rank.get("confidence")
+    if not (isinstance(confidence, (int, float)) and confidence >= _NAMED_PLACE_MIN_CONFIDENCE):
+        return NAMED_PLACE_LOW_CONFIDENCE
+    return None
 
 
 def _is_specific_named_match(result: dict[str, Any]) -> bool:
-    """True only when Geoapify itself says it matched the named feature --
-    not a street/postcode/city-level fallback, and not a low-confidence
-    fuzzy match. Missing evidence is treated as no match."""
-    if result.get("result_type") not in _NAMED_PLACE_RESULT_TYPES:
-        return False
-    rank = result.get("rank")
-    if not isinstance(rank, dict) or rank.get("match_type") not in _NAMED_PLACE_MATCH_TYPES:
-        return False
-    confidence = rank.get("confidence")
-    return isinstance(confidence, (int, float)) and confidence >= _NAMED_PLACE_MIN_CONFIDENCE
+    """True only when Geoapify itself says it matched the named feature."""
+    return _named_match_rejection(result) is None

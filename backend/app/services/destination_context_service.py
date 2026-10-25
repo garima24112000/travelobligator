@@ -13,13 +13,17 @@ from app.models.planning_state import (
     DestinationContext,
     Holiday,
     HolidayContext,
+    MustVisitLookup,
     PlanningStage,
     PlanningState,
     WeatherContext,
 )
 from app.models.common import ProviderStatus
+from app.models.routing import RoutingProfile
+from app.core.config import get_settings
 from app.providers import missing_data_reasons
 from app.providers.gateway import ProviderGateway, provider_gateway
+from app.providers.places.destination_resolution import OUTSIDE_DESTINATION
 from app.providers.holidays.nager_date_adapter import infer_country_code
 from app.providers.places.country_identity import normalized_country_code
 from app.core import performance
@@ -28,8 +32,19 @@ from app.services import place_taxonomy as taxonomy
 from app.services.base import PlanningStageService
 from app.services.entity_collisions import apply_suspect_collisions
 from app.services.pace_targets import pace_targets_for
+from app.services.same_site import assign_same_site_groups
 from app.services.must_visit_matching import (
+    EXCURSION_ROUTE_UNVERIFIED,
+    EXCURSION_TOO_FAR,
+    EXCURSION_VERIFIED,
+    FOUND_BY_LOOKUP,
+    FOUND_BY_POOL_NAME,
+    FOUND_BY_POOL_OTHER_NAME,
+    FOUND_BY_WIDE_LOOKUP,
     MUST_VISIT_GROUNDING_VERSION,
+    OUTSIDE_DESTINATION_KEY,
+    UNRESOLVED,
+    WIDER_LOOKUP_REASONS,
     exact_name_candidates,
     grounded_terms,
     record_grounded_term,
@@ -275,9 +290,19 @@ class DestinationContextService(PlanningStageService):
             if attractions_response.data
             else []
         )
+        # Final Batch 1 (A): the OTHER names each pool place's own record gives
+        # it (English, international, official, local). Kept in memory for
+        # grounding only -- never persisted (`NormalizedPlace.alt_names`).
+        other_names = {
+            str(poi.place_id): list(poi.alt_names or [])
+            for poi in (attractions_response.data or [])
+            if poi.place_id and poi.alt_names
+        }
+        must_visit_lookups: list[MustVisitLookup] = []
         with performance.stage("must_visit_grounding"):
             candidate_pois, ungrounded_must_visits = self._append_must_visit_candidates(
-                planning_state, destination_name, candidate_pois, places=places
+                planning_state, destination_name, candidate_pois, places=places,
+                other_names=other_names, provider_context=provider_context, lookups=must_visit_lookups,
             )
         candidate_restaurants = (
             [poi.model_dump(mode="json") for poi in restaurants_response.data]
@@ -329,7 +354,14 @@ class DestinationContextService(PlanningStageService):
             )
         # Section 203C.2B: an ungroundable must-visit is disclosed, never
         # fabricated, and the rest of the plan continues.
+        outcomes = {lookup.term: lookup.outcome for lookup in must_visit_lookups}
         for term in ungrounded_must_visits:
+            if outcomes.get(term) in (EXCURSION_TOO_FAR, EXCURSION_ROUTE_UNVERIFIED):
+                assumptions.append(
+                    f"Must-visit '{term}' was found outside this destination, but a visit could not be "
+                    "verified as a feasible excursion from it, so it was not scheduled."
+                )
+                continue
             assumptions.append(
                 f"Must-visit '{term}' could not be matched to a verified place in this "
                 "destination, so it was not scheduled."
@@ -344,6 +376,7 @@ class DestinationContextService(PlanningStageService):
                 else None
             ),
             must_visit_grounding_version=MUST_VISIT_GROUNDING_VERSION,
+            must_visit_lookups=must_visit_lookups,
             candidate_pois=candidate_pois,
             candidate_restaurants=candidate_restaurants,
             candidate_accommodation_pois=candidate_accommodation_pois,
@@ -355,6 +388,9 @@ class DestinationContextService(PlanningStageService):
         # not resolve are recorded, and marked so they are never scheduled
         # together.
         apply_suspect_collisions(context, provider_context)
+        # Final Batch 1 (D): a heritage site and a collection housed at it are
+        # one visit; marked so the planner schedules at most one of them.
+        assign_same_site_groups(context.candidate_pois)
 
         planning_state.destination_context = context
         planning_state.touch()
@@ -605,9 +641,14 @@ class DestinationContextService(PlanningStageService):
         destination_name: str,
         candidate_pois: list[dict[str, Any]],
         places: Any = None,
+        *,
+        other_names: dict[str, list[str]] | None = None,
+        provider_context: GenerationProviderContext | None = None,
+        lookups: list[MustVisitLookup] | None = None,
     ) -> tuple[list[dict[str, Any]], list[str]]:
         """Establishes which PROVIDER IDENTITY each must-visit term refers to
-        (Q1). Returns `(candidate_pois, ungrounded_terms)`.
+        (Q1). Returns `(candidate_pois, ungrounded_terms)`; when `lookups` is
+        given, one `MustVisitLookup` per term is appended to it.
 
         This is the only place a term becomes an identity; it runs BEFORE
         candidate ranking and records the user's own term on the provider
@@ -618,21 +659,34 @@ class DestinationContextService(PlanningStageService):
         Per term, in the user's order:
 
           * exactly ONE broad-pool candidate has the term as its exact
-            comparable provider name -> that candidate is recorded and no
-            lookup is made;
+            comparable provider name -- or as another name its own provider
+            record gives it (`other_names`: its English, international,
+            official or local name; Final Batch 1) -> that candidate is
+            recorded and no lookup is made;
           * none has it (a longer or related name is NOT a match), or
             several have it (ambiguous) -> one targeted provider lookup
             (`"{must_visit_term}, {primary_destination}"`), and only the
             place the provider returns is recorded -- on the pool candidate
             with that same provider `place_id`, otherwise appended once
-            under its own id (never merged into a same-named candidate).
+            under its own id (never merged into a same-named candidate);
+          * that lookup accepted nothing (never after a provider FAILURE) ->
+            one wider lookup around the destination (Final Batch 1). A place
+            it finds inside the destination is grounded as above. A place
+            OUTSIDE it is grounded only as a verified excursion: a driving
+            route from the destination point must be obtained (the existing
+            alternate-mode allowance) and take no longer than the existing
+            longest drive leg (`ROUTE_BURDEN_MAX_DRIVE_LEG_SECONDS`). It is
+            appended marked `outside_destination`; otherwise it is not
+            scheduled, and why is recorded.
 
         Several terms the provider resolves to one place are all recorded on
         that one candidate. A term the provider cannot ground (no result, or
         a result without a provider id) is returned in `ungrounded_terms` and
-        disclosed -- never fabricated, never guessed from a name -- and the
-        existing unmatched-must-visit warning applies.
+        disclosed -- never fabricated, never guessed from a name, and never
+        replaced by another attraction -- and the existing unmatched-must-visit
+        warning applies.
         """
+        records = lookups if lookups is not None else []
         traveler_profile = planning_state.traveler_profile
         must_visit_terms = (
             traveler_profile.must_visit
@@ -648,8 +702,9 @@ class DestinationContextService(PlanningStageService):
 
         def unique_exact_match(term: str) -> dict[str, Any] | None:
             """The ONE pool candidate the provider names exactly as the user
-            did, or None when there is none or the name is ambiguous."""
-            exact = exact_name_candidates(candidate_pois, term)
+            did (by any name of its own record), or None when there is none
+            or the name is ambiguous."""
+            exact = exact_name_candidates(candidate_pois, term, other_names)
             return exact[0] if len(exact) == 1 else None
 
         # Section 1B: the lookups of the terms the broad pool does not
@@ -666,12 +721,31 @@ class DestinationContextService(PlanningStageService):
                         raise response
                     prefetched[term] = response
 
+        def ground(place_dict: dict[str, Any], term: str) -> dict[str, Any]:
+            target = next((poi for poi in candidate_pois if poi.get("place_id") == place_dict["place_id"]), None)
+            if target is None:
+                # A provider identity the pool does not hold: appended
+                # once, as itself. It is never merged into another
+                # candidate by name -- whether two provider records are
+                # one real place is the entity-collision layer's call.
+                candidate_pois.append(place_dict)
+                target = place_dict
+            # A second user term that the provider resolves to an already
+            # grounded place joins it: one candidate, one slot, both terms.
+            record_grounded_term(target, term)
+            return target
+
         for term in terms:
             exact = unique_exact_match(term)
             if exact is not None:
                 # The provider itself names exactly one place with the user's
                 # words: that provider identity is the must-visit.
                 record_grounded_term(exact, term)
+                by_primary = bool(exact_name_candidates([exact], term))
+                records.append(MustVisitLookup(
+                    term=term, outcome=FOUND_BY_POOL_NAME if by_primary else FOUND_BY_POOL_OTHER_NAME,
+                    place_id=str(exact["place_id"]),
+                ))
                 continue
 
             # No exact name, or several places share it (ambiguous): the
@@ -680,23 +754,88 @@ class DestinationContextService(PlanningStageService):
             grounded = False
             for place in response.data or []:
                 place_dict = place.model_dump(mode="json")
-                place_id = place_dict.get("place_id")
-                if not place_id:
+                if not place_dict.get("place_id"):
                     continue  # no provider identity to record the term on
-                target = next((poi for poi in candidate_pois if poi.get("place_id") == place_id), None)
-                if target is None:
-                    # A provider identity the pool does not hold: appended
-                    # once, as itself. It is never merged into another
-                    # candidate by name -- whether two provider records are
-                    # one real place is the entity-collision layer's call.
-                    candidate_pois.append(place_dict)
-                    target = place_dict
-                # A second user term that the provider resolves to an already
-                # grounded place joins it: one candidate, one slot, both terms.
-                record_grounded_term(target, term)
+                target = ground(place_dict, term)
+                records.append(MustVisitLookup(term=term, outcome=FOUND_BY_LOOKUP, place_id=str(target["place_id"])))
                 grounded = True
                 break
-            if not grounded:
+            if grounded:
+                continue
+            rejection = response.failure_reason
+            if rejection in WIDER_LOOKUP_REASONS and callable(getattr(places, "search_must_visit_excursion", None)):
+                record = self._ground_beyond_destination(
+                    places, term, destination_name, rejection, provider_context, ground
+                )
+            else:
+                record = MustVisitLookup(term=term, outcome=UNRESOLVED, rejection=rejection)
+            records.append(record)
+            if record.outcome not in (FOUND_BY_WIDE_LOOKUP, EXCURSION_VERIFIED):
                 ungrounded_terms.append(term)
 
         return candidate_pois, ungrounded_terms
+
+    def _ground_beyond_destination(
+        self,
+        places: Any,
+        term: str,
+        destination_name: str,
+        rejection: str | None,
+        provider_context: GenerationProviderContext | None,
+        ground: Any,
+    ) -> MustVisitLookup:
+        """The wider lookup for a term the destination-bounded lookup did not
+        find (Final Batch 1, A). Inside the destination -> grounded as usual.
+        Outside -> grounded only as a VERIFIED excursion (see
+        `_append_must_visit_candidates`); otherwise recorded, not scheduled."""
+        found = places.search_must_visit_excursion(term, destination_name)
+        place = found.place
+        if place is None or not place.place_id or place.coordinates is None or found.origin is None:
+            return MustVisitLookup(term=term, outcome=UNRESOLVED, rejection=rejection or found.rejection)
+        place_dict = place.model_dump(mode="json")
+        if not found.outside_destination:
+            target = ground(place_dict, term)
+            return MustVisitLookup(term=term, outcome=FOUND_BY_WIDE_LOOKUP, place_id=str(target["place_id"]))
+        distance_km = round(found.distance_km, 1) if found.distance_km is not None else None
+        seconds = self._verified_drive_seconds(found.origin, place.coordinates, provider_context)
+        if seconds is None:
+            outcome = EXCURSION_ROUTE_UNVERIFIED
+        elif seconds <= get_settings().route_burden_max_drive_leg_seconds:
+            outcome = EXCURSION_VERIFIED
+        else:
+            outcome = EXCURSION_TOO_FAR
+        record = MustVisitLookup(
+            term=term, outcome=outcome, place_id=str(place.place_id), rejection=OUTSIDE_DESTINATION,
+            distance_km=distance_km, excursion_drive_seconds=round(seconds, 1) if seconds is not None else None,
+        )
+        if outcome == EXCURSION_VERIFIED:
+            # Marked so every later stage and the traveller know it is an
+            # excursion OUT of the destination; the route is a road route
+            # only -- no transport service is assumed.
+            place_dict[OUTSIDE_DESTINATION_KEY] = True
+            place_dict["excursion_drive_seconds"] = record.excursion_drive_seconds
+            place_dict["excursion_distance_km"] = distance_km
+            ground(place_dict, term)
+        return record
+
+    def _verified_drive_seconds(
+        self, origin: GeoPoint, point: GeoPoint, provider_context: GenerationProviderContext | None
+    ) -> float | None:
+        """A provider driving route from the destination point to `point`, or
+        None when none was obtained (not connected, refused by the existing
+        alternate-mode allowance or the credit cap, or failed). Never a
+        straight-line estimate."""
+        routing_for = getattr(self.gateway, "routing_for", None)
+        if not callable(routing_for):
+            return None
+        try:
+            results = routing_for(provider_context).get_route_sequence(
+                [(origin.lat, origin.lng), (point.lat, point.lng)], RoutingProfile.DRIVING
+            )
+        except Exception:  # noqa: BLE001 - an unverified excursion is simply not scheduled
+            logger.warning("Excursion route lookup failed; the place is not scheduled.")
+            return None
+        result = results[0] if results else None
+        if result is None or result.status != ProviderStatus.SUCCESS or result.duration_seconds is None:
+            return None
+        return float(result.duration_seconds)

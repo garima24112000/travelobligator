@@ -5,6 +5,7 @@ from app.models.common import ValidationSeverity
 from app.models.planning_state import InterestCoverageEntry, PlanningState, TripPace, ValidationIssue
 from app.services import place_taxonomy as taxonomy
 from app.services.interest_coverage import coverage_basis, interest_coverage
+from app.services.pace_targets import MIN_STOPS_PER_DAY
 
 # Section 202B.2 (Tasks 23, 26-29, 31): factual, case-specific itinerary
 # quality findings. Pure read of `PlanningState` -- never repairs, drops or
@@ -24,8 +25,8 @@ _VIABLE_TIERS = frozenset(
 # Thin-day rule: fewer scheduled stops than this, for the trip's pace,
 # while viable unscheduled candidates remain. (The per-day maximum is
 # 2/3/4; a relaxed day of one stop is acceptable, a packed day of two is
-# thin.)
-_MIN_STOPS_PER_DAY: dict[TripPace, int] = {TripPace.RELAXED: 1, TripPace.BALANCED: 2, TripPace.PACKED: 3}
+# thin.) Final Batch 1: the one value the planner's thin-day fill reads too.
+_MIN_STOPS_PER_DAY: dict[TripPace, int] = MIN_STOPS_PER_DAY
 _CONCENTRATION_MIN_EXPERIENCES = 4
 _CONCENTRATION_SHARE = 0.5
 
@@ -140,9 +141,21 @@ def build_plan_quality_findings(planning_state: PlanningState) -> tuple[list[Val
 
     # -- empty / thin days ----------------------------------------------------------
     minimum = _MIN_STOPS_PER_DAY[pace]
+    # Final Batch 1 (B): a day away from the trip's area that holds ONLY the
+    # traveller's own must-visits is that request (the remote-day finding
+    # explains it); the trip's other places cannot join it, so it is not thin.
+    from app.services.remote_days import remote_days_safely  # noqa: PLC0415 - the planner imports this module
+
+    requested_remote_days = {
+        remote.day_number
+        for remote in remote_days_safely(planning_state)
+        if remote.requested_places and len(remote.requested_places) == remote.located_stops
+    }
     for day in plan.daily_plans:
         count = len(day.experiences)
         section = f"experience_plan.daily_plans[{day.day_number}]"
+        if day.day_number in requested_remote_days:
+            continue
         if count == 0:
             if unused_viable:
                 cause = (

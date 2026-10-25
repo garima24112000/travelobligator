@@ -15,6 +15,7 @@ from __future__ import annotations
 import logging
 import re
 import unicodedata
+from dataclasses import dataclass
 from typing import Any, NamedTuple
 
 import httpx
@@ -24,7 +25,7 @@ from app.core.config import get_settings
 from app.models.common import DataStatus, GeoPoint, ProviderStatus
 from app.models.providers import NormalizedPlace, ProviderResponse
 from app.providers.base import failed_response, not_connected_response, unavailable_response
-from app.providers.geocoding.base import GeocodeHit, GeocoderError
+from app.providers.geocoding.base import NAMED_PLACE_NO_RESULT, GeocodeHit, GeocoderError
 from app.providers.places.country_identity import same_country
 from app.services.place_taxonomy import filter_provider_tags
 from app.storage.provider_cache_store import ProviderCacheStore, make_query_hash
@@ -36,6 +37,27 @@ _USER_AGENT = "TravelObligator/0.1 (dev; legit-data-only)"
 _NAMED_PLACE_CACHE_SCHEMA = "203c1-v1"
 _REQUEST_TIMEOUT_SECONDS = 30.0
 _FALLBACK_SEARCH_RADIUS_METERS = 12000
+# Final Batch 1 (A): `failure_reason` of a must-visit lookup that found the
+# place outside the resolved destination.
+OUTSIDE_DESTINATION = "outside_destination"
+# Final Batch 1 (A): how far around the destination point a requested place
+# that is not in the destination is LOOKED FOR. A search area only: whether
+# visiting it is feasible is decided on a verified driving route against the
+# existing `ROUTE_BURDEN_MAX_DRIVE_LEG_SECONDS`, never on this distance.
+_EXCURSION_SEARCH_RADIUS_METERS = 60000
+
+
+@dataclass(frozen=True)
+class ExcursionLookup:
+    """A requested place looked for around the destination (Final Batch 1, A)."""
+
+    place: NormalizedPlace | None = None
+    # The resolved destination point the place is measured from.
+    origin: GeoPoint | None = None
+    outside_destination: bool = False
+    # Straight-line, for disclosure only (never a travel distance).
+    distance_km: float | None = None
+    rejection: str | None = None  # a fixed label when `place` is None
 # Minimum word length counted as "significant" when checking whether a
 # geocode result actually relates to the requested destination (Step
 # 155C). Filters out trivial short tokens ("of", "de", "la") while still
@@ -406,11 +428,12 @@ class DestinationResolutionMixin:
                             f"'{must_visit_term}' cannot be grounded to it."
                         ),
                     )
-                place = self._lookup_named_place(client, query, resolved)
+                place, rejection = self._lookup_named_place(client, query, resolved)
         except GeocoderError as exc:
             return self._geocoder_failure_response(exc, field_name)
 
         if place is None:
+            # Final Batch 1 (A): the fixed reason travels with the response.
             return unavailable_response(
                 self.provider_name,
                 self.provider_type,
@@ -418,7 +441,7 @@ class DestinationResolutionMixin:
                 message=(
                     f"{self._geocoder.display_name} found no named place with coordinates for '{query}'."
                 ),
-            )
+            ).model_copy(update={"failure_reason": rejection or NAMED_PLACE_NO_RESULT})
 
         if place.coordinates is None or not _is_within_destination(
             place.coordinates, resolved, _FALLBACK_SEARCH_RADIUS_METERS
@@ -431,7 +454,7 @@ class DestinationResolutionMixin:
                     f"{self._geocoder.display_name} found a place for '{query}', but it is outside the "
                     f"resolved destination '{primary_destination}', so it was not used."
                 ),
-            )
+            ).model_copy(update={"failure_reason": OUTSIDE_DESTINATION})
 
         return ProviderResponse[list[NormalizedPlace]](
             provider_name=self.provider_name,
@@ -489,14 +512,21 @@ class DestinationResolutionMixin:
         client: httpx.Client,
         query: str,
         resolved: _ResolvedDestination | None = None,
-    ) -> NormalizedPlace | None:
+        *,
+        excursion_radius_meters: float | None = None,
+    ) -> tuple[NormalizedPlace | None, str | None]:
         """Look up exactly one named, coordinate-backed place for `query` via
-        the configured geocoder. Returns None (never a guessed place) if the
-        geocoder has no usable result. `query` is always the must-visit term
-        combined with the trip's primary destination, so this never falls
-        back to an unconstrained global search that could resolve to the
-        wrong city. (Containment against the resolved destination is
-        checked by the caller, `search_must_visit_place`, not here.)
+        the configured geocoder. Returns `(place, None)`, or `(None, reason)`
+        -- a fixed `NAMED_PLACE_*` label, never a guessed place -- when the
+        geocoder has no usable result. `query` always names the destination
+        (or, for an excursion lookup, its country) and the search is
+        constrained around it, so this never falls back to an unconstrained
+        global search that could resolve to the wrong city. (Containment
+        against the resolved destination is checked by the caller, not here.)
+
+        `excursion_radius_meters` (Final Batch 1, A): search a circle of that
+        radius around the destination point instead of the destination's own
+        area -- the lookup for a requested place OUTSIDE the main city.
 
         Section 203C.1: a found place is cached under the geocoder's own
         source; "no match" and every failure are never cached. The place's
@@ -506,25 +536,32 @@ class DestinationResolutionMixin:
         query_hash = make_query_hash(
             {
                 "provider": self._geocoder.provider_name,
-                "kind": "named_place",
+                "kind": "named_place" if excursion_radius_meters is None else "named_place_excursion",
                 "query": query.strip().lower(),
                 "schema": _NAMED_PLACE_CACHE_SCHEMA,
+                **({"radius": round(excursion_radius_meters)} if excursion_radius_meters is not None else {}),
             }
         )
         cache_store = self._resolve_cache_store()
         if cache_store is not None:
             cached = self._read_named_place_cache(cache_store, query_hash)
             if cached is not None:
-                return cached
+                return cached, None
 
-        hit = self._geocoder.search_named_place(
-            client,
-            query,
-            near=resolved.point if resolved is not None else None,
-            bounding_box=resolved.bounding_box if resolved is not None else None,
-        )
+        near = resolved.point if resolved is not None else None
+        # The destination's own area for an ordinary lookup; the wider circle for an excursion.
+        bounding_box = resolved.bounding_box if resolved is not None and excursion_radius_meters is None else None
+        lookup_named = getattr(self._geocoder, "lookup_named_place", None)
+        if callable(lookup_named):
+            lookup = lookup_named(
+                client, query, near=near, bounding_box=bounding_box, radius_meters=excursion_radius_meters
+            )
+            hit, rejection = lookup.hit, lookup.rejection
+        else:  # a geocoder without the newer method: no reason can be told apart
+            hit = self._geocoder.search_named_place(client, query, near=near, bounding_box=bounding_box)
+            rejection = NAMED_PLACE_NO_RESULT
         if hit is None:
-            return None
+            return None, rejection or NAMED_PLACE_NO_RESULT
 
         # Whitelisted tags only (`filter_provider_tags`): never opening
         # hours, phone, website, ratings or any other non-taxonomy tag.
@@ -550,7 +587,41 @@ class DestinationResolutionMixin:
                 )
             except Exception:
                 logger.warning("Named-place cache write failed; returning live result anyway.")
-        return place
+        return place, None
+
+    def search_must_visit_excursion(self, must_visit_term: str, primary_destination: str) -> ExcursionLookup:
+        """Final Batch 1 (A): one lookup for a requested place that the
+        destination-bounded lookup did not find, in a wider circle around the
+        destination point (`_EXCURSION_SEARCH_RADIUS_METERS`) and named with the
+        destination's COUNTRY instead of the city -- a place outside the city
+        is rarely described by the city's name. The same strict acceptance
+        rule applies. It only finds the place: whether a visit is feasible is
+        decided by the caller on a verified route, never by this distance."""
+        resolved: _ResolvedDestination | None = None
+        try:
+            with httpx.Client(
+                timeout=_REQUEST_TIMEOUT_SECONDS, headers={"User-Agent": self._user_agent}
+            ) as client:
+                resolved = self._resolve_destination(client, primary_destination)
+                if resolved is None:
+                    return ExcursionLookup(rejection="destination_unresolved")
+                country = (resolved.address or {}).get("country")
+                query = f"{must_visit_term}, {country}" if country else must_visit_term
+                performance.note_request("named_lookup", query.strip().lower())
+                place, rejection = self._lookup_named_place(
+                    client, query, resolved, excursion_radius_meters=_EXCURSION_SEARCH_RADIUS_METERS
+                )
+        except GeocoderError as exc:
+            self._log_geocoder_failure(exc)
+            return ExcursionLookup(rejection=f"lookup_failed:{exc.kind}", origin=resolved.point if resolved else None)
+        if place is None or place.coordinates is None:
+            return ExcursionLookup(rejection=rejection or NAMED_PLACE_NO_RESULT, origin=resolved.point)
+        return ExcursionLookup(
+            place=place,
+            origin=resolved.point,
+            outside_destination=not _is_within_destination(place.coordinates, resolved, _FALLBACK_SEARCH_RADIUS_METERS),
+            distance_km=haversine_distance_km(resolved.point, place.coordinates),
+        )
 
     def _read_named_place_cache(
         self, cache_store: ProviderCacheStore, query_hash: str

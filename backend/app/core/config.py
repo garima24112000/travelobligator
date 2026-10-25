@@ -573,6 +573,11 @@ class Settings(BaseSettings):
     # (`services/visit_day_feasibility`). A TEMPORARY rollback switch, like
     # DAY_COMPOSITION_ENABLED: off, the plan is exactly as before them.
     visit_day_feasibility_enabled: bool = Field(default=True, alias="VISIT_DAY_FEASIBILITY_ENABLED")
+    # Final Batch 1 (C): estimated visit times on the final routed days, and
+    # the bounded repair of a visit its own listed hours rule out
+    # (`services/visit_schedule`). A TEMPORARY rollback switch: off, no visit
+    # time is set and the plan is exactly as before.
+    visit_time_scheduling_enabled: bool = Field(default=True, alias="VISIT_TIME_SCHEDULING_ENABLED")
     # Route-burden quality thresholds (walking, from the routing provider's
     # own leg data; never an estimate). A day beyond its pace's total, or a
     # single leg beyond the leg limit, gets a long-travel warning and the

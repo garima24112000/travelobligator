@@ -55,6 +55,8 @@ SETTING_GROUPS: dict[str, tuple[str, ...]] = {
         "schedule_diversity_enabled",
         "route_aware_scheduling_enabled",
         "inventory_sufficiency_gate_enabled",
+        "visit_day_feasibility_enabled",
+        "visit_time_scheduling_enabled",
     ),
     "engine_and_providers": (
         "planning_engine_mode",

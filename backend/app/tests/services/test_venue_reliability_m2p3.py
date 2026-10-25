@@ -72,7 +72,8 @@ def test_supported_hours(value: str, weekday: int, status: str, intervals: list[
 @pytest.mark.parametrize(
     "value",
     ["week 1-10 Mo-Fr 10:00-16:00", "Mo-Fr 09:00-17:00 || PH off", "sunrise-sunset", "Sa 10:00+",
-     'Mo-Fr 09:00-17:00 "by appointment"', "SH off", "Mo[1] 10:00-12:00", "Mo-Fr open", "25:00-26:00",
+     # Final Batch 1: `Mo[1]` is now read; a day offset after it is still not
+     'Mo-Fr 09:00-17:00 "by appointment"', "SH off", "Su[-1] -1 day 10:00-12:00", "Mo-Fr open", "25:00-26:00",
      "Mo 10:00-12:00; " * 30],
 )
 def test_anything_not_fully_understood_says_nothing(value: str) -> None:
