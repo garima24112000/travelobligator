@@ -143,6 +143,13 @@ const PLANNER_WORDING: RegExp[] = [
   /\breplacements?\b/i,
   /\broute[- ]burden\b/i,
   /\bdeterministic/i,
+  // Final Batch 1: how the plan was assembled ("expanded the schedule with a
+  // third stop to match the expected pace") is not a reason for a traveler.
+  /\bexpected pace\b/i,
+  /\bexpanded the schedule\b/i,
+  /\bslots?\b/i,
+  /\bfiller\b/i,
+  /\bpadding\b/i,
   /\b[a-z]+(?:_[a-z0-9]+)+\b/,
   /\b[A-Z]{2,}(?:_[A-Z0-9]+)+\b/,
 ];

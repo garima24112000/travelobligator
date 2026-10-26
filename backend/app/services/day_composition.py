@@ -93,6 +93,7 @@ from app.services.day_order_heuristics import (
     GEOGRAPHIC_SPREAD_THRESHOLD_KM,
     NEAR_DAY_STOPS_KM,
     day_spread_km,
+    keeps_day_within_spread,
     nearest_next_order,
 )
 from app.utils.geo import haversine_distance_km
@@ -589,6 +590,20 @@ class _Search:
                 for other in day:
                     if other != outgoing:
                         options.update(key for key in self.neighbours(other) if key in unused)
+                if self.day_facts(day).band == DISPERSED:
+                    # Final Batch 1: a DISPERSED day whose other stops have no
+                    # unused place near them (an outlying must-visit, say) may
+                    # still be repaired by an unused place that keeps the day
+                    # within the validator's own spread boundary -- the
+                    # candidates of the pre-Q3 spread pass. Candidate generation
+                    # only: the judge, the entry rules and the guards are unchanged.
+                    rest = [self.stops[key].point for key in day if key != outgoing and self.stops[key].point]
+                    if rest:
+                        options.update(
+                            key for key in unused
+                            if self.stops[key].point is not None
+                            and keeps_day_within_spread(rest, self.stops[key].point)
+                        )
                 if not options:
                     # nothing unused lies near the day's other stops (and nothing covers a missing interest)
                     self._note("replace_no_candidate_near_day")

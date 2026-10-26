@@ -7,6 +7,9 @@
 // Node's built-in test runner (frontend/tests).
 
 import type {
+  DayVisitSchedule,
+  ExperienceItem,
+  MustVisitStatusEntry,
   VenueEvidenceEntry,
   CurrencyContext,
   FlightInventoryReport,
@@ -1168,4 +1171,112 @@ export function findVenueEvidence(
   experienceId: string,
 ): VenueEvidenceEntry | null {
   return (report?.venue_evidence ?? []).find((entry) => entry.experience_id === experienceId) ?? null;
+}
+
+// -- estimated visit times and names (Final Batch 1) -------------------------------------------
+
+/**
+ * The name shown for a stop: its English name with the original after it when
+ * the place's own record has one, otherwise the original name. Never translated.
+ */
+export function travelerPlaceName(experience: Pick<ExperienceItem, "name" | "display_name">): string {
+  const english = experience.display_name?.trim();
+  return english && english !== experience.name ? `${english} (${experience.name})` : experience.name;
+}
+
+/**
+ * One stop's estimated visit time, always worded as an estimate. Null for a
+ * plan without times (older plans, or scheduling off). Hours that leave no
+ * time for the visit need attention; a closed day is the venue line's job.
+ */
+export function travelerVisitTimeLine(
+  experience: Pick<ExperienceItem, "start_time" | "end_time" | "visit_time_status" | "arrival_wait_minutes">,
+): { text: string; attention: boolean } | null {
+  const status = experience.visit_time_status;
+  if (!status) return null;
+  if (status === "not_timed" || !experience.start_time || !experience.end_time) {
+    return {
+      text: "No time estimated: the travel before this stop could not be checked.",
+      attention: false,
+    };
+  }
+  const wait = experience.arrival_wait_minutes
+    ? ` (after waiting about ${experience.arrival_wait_minutes} min for its listed opening time)`
+    : "";
+  const base = `Estimated visit: about ${experience.start_time}–${experience.end_time}${wait}.`;
+  if (status === "outside_listed_hours") {
+    return {
+      text: `${base} Its listed opening hours do not leave time for a visit then; check before you go.`,
+      attention: true,
+    };
+  }
+  return { text: base, attention: false };
+}
+
+/** What a day's estimated times assume (fixed copy around the backend's own values). */
+export function travelerDayScheduleNote(schedule: DayVisitSchedule | null | undefined): string | null {
+  if (!schedule) return null;
+  const parts = [
+    `Times are estimates for a day from ${schedule.window_start} to ${schedule.window_end}: typical visit lengths, ` +
+      "each place's listed hours where it has them, and checked travel times only.",
+  ];
+  if (schedule.status === "partly_timed") {
+    parts.push("Some stops have no time because the travel to them could not be checked.");
+  }
+  if (schedule.exceeds_window && schedule.ends_at) {
+    parts.push(`This day may run until about ${schedule.ends_at}.`);
+  }
+  return parts.join(" ");
+}
+
+/**
+ * Traveler-view lines for the requested must-visits: only what needs the
+ * traveller's attention (not on the plan, or an excursion out of the city).
+ * A scheduled request is never reported missing.
+ */
+export function travelerMustVisitLines(
+  statuses: MustVisitStatusEntry[] | null | undefined,
+): { text: string; attention: boolean }[] {
+  const lines: { text: string; attention: boolean }[] = [];
+  for (const entry of statuses ?? []) {
+    const away = entry.distance_km != null ? `, about ${Math.round(entry.distance_km)} km away` : "";
+    switch (entry.status) {
+      case "scheduled_excursion":
+        lines.push({
+          text:
+            `${entry.term} is outside the city${away}, on day ${entry.day_number}` +
+            (entry.drive_minutes != null ? `; about ${entry.drive_minutes} min each way by road` : "") +
+            ". How you travel there is not arranged or checked.",
+          attention: true,
+        });
+        break;
+      case "found_inaccessible":
+        lines.push({
+          text: `${entry.term} is on day ${entry.day_number} because you asked, but its listing says it may not be open to visit then. Check before you go.`,
+          attention: true,
+        });
+        break;
+      case "outside_destination_not_feasible":
+        lines.push({
+          text: `${entry.term} is outside the city${away}; the trip there is longer than a day's travel allows, so it is not on this plan.`,
+          attention: true,
+        });
+        break;
+      case "outside_destination_unverified":
+        lines.push({
+          text: `${entry.term} is outside the city${away}; the trip there could not be checked, so it is not on this plan.`,
+          attention: true,
+        });
+        break;
+      case "found_not_scheduled":
+        lines.push({ text: `${entry.term} was found but is not on this plan.`, attention: true });
+        break;
+      case "unresolved":
+        lines.push({ text: `No matching place was found for ${entry.term}.`, attention: true });
+        break;
+      default:
+        break; // scheduled: nothing to add
+    }
+  }
+  return lines;
 }

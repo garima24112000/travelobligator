@@ -180,7 +180,7 @@ def test_lisbon_plan_surfaces_ungrounded_must_visits_without_substitution() -> N
     message = must_visit_warnings[0].message
     assert "Eiffel Tower" in message
     assert "Louvre Museum" in message
-    assert "not grounded/scheduled" in message
+    assert "no matching place was found for Eiffel Tower" in message  # Final Batch 1: traveller wording
     assert "not replaced with unrelated attractions" in message
 
     # A failed must-visit never claims the plan is ready.
@@ -322,7 +322,7 @@ def test_no_route_feasibility_report_falls_back_to_original_not_implemented_warn
     PlanValidatorService().run(planning_state)
 
     warning = _feasibility_warning(planning_state)
-    assert "not implemented" in warning.message
+    assert "no route data was available" in warning.message  # Final Batch 1 wording
     assert planning_state.validation_report.readiness_status.value == "needs_review"
 
 
@@ -689,7 +689,7 @@ def test_validator_never_claims_route_timing_was_checked_when_unavailable() -> N
     feasibility_warning = _feasibility_warning(planning_state)
     # Must explicitly deny that timing/feasibility checks happened -- never
     # an affirmative "checked" claim standing alone.
-    assert "not implemented yet" in feasibility_warning.message
+    assert "no route data was available to check the travel feasibility" in feasibility_warning.message  # FB1
     assert "needs review" in feasibility_warning.message
     assert planning_state.validation_report.readiness_status.value != "ready"
     # No blocking failure is ever created just because routing/timing data

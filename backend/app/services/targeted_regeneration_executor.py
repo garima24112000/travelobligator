@@ -42,6 +42,7 @@ from app.core.provider_usage import GenerationProviderContext, context_kwargs
 from app.services.pace_targets import trip_days_of
 from app.services.route_aware_sequencing_service import RouteAwareSequencingService, route_aware_sequencing_service
 from app.services.route_feasibility_service import RouteFeasibilityService, route_feasibility_service
+from app.services.visit_schedule import apply_visit_schedule_safely, clear_visit_times
 from app.services.travel_time_buffer_service import TravelTimeBufferService, travel_time_buffer_service
 
 logger = logging.getLogger(__name__)
@@ -1226,6 +1227,15 @@ class TargetedRegenerationExecutor:
         provider_context: GenerationProviderContext | None = None,
     ) -> None:
         context = context_kwargs(provider_context)
+        # Final Batch 1 (C): the copied items' estimated times belong to the
+        # previous version; on every day this request may change they are
+        # removed before the days are routed again (a stale time would be read
+        # as a schedule gap) and recomputed below. A hard-preserved day is left
+        # exactly as it was.
+        changeable_days = {
+            day.day_number for day in working_state.experience_plan.daily_plans
+        } - set(hard_preserved_days) if working_state.experience_plan is not None else set()
+        clear_visit_times(working_state, changeable_days)
         working_state.route_feasibility_report = self.route_feasibility_service.build_report(working_state, **context)
 
         sequencing_report = self.route_aware_sequencing_service.build_report(working_state, **context)
@@ -1249,6 +1259,11 @@ class TargetedRegenerationExecutor:
                         working_state, **context
                     )
 
+        # Estimated times for the final days -- without the repair: a
+        # hard-preserved day must not change here.
+        apply_visit_schedule_safely(
+            working_state, self.route_feasibility_service, provider_context, repair=False, days=changeable_days
+        )
         working_state.travel_time_buffer_report = self.travel_time_buffer_service.build_report(working_state, **context)
 
     # -- bounded repair (Task 28/29/31) ------------------------------------

@@ -23,6 +23,7 @@ Contracts:
 from __future__ import annotations
 
 import copy
+import dataclasses
 import logging
 import math
 from dataclasses import dataclass
@@ -55,6 +56,7 @@ from app.providers.geocoding.base import GeocoderError, GeocodingProvider
 from app.providers.geocoding.factory import get_geocoding_provider
 from app.providers.places.destination_resolution import (
     DestinationResolutionMixin,
+    ExcursionLookup,
     _is_within_destination,
     _ResolvedDestination,
     _user_agent,
@@ -69,6 +71,7 @@ from app.providers.places.entity_identity import (
     collision_record,
     conclusively_distinct,
     dedupe_places,
+    english_name,
     merge_rule,
     source_entity_id,
     suspect_pair,
@@ -912,6 +915,7 @@ class GeoapifyPlacesAdapter(DestinationResolutionMixin, PlacesProvider):
             # source record itself is never kept.
             source_entity_id=source_entity_id(raw),
             alt_names=alternate_names(raw, name.strip()),
+            english_name=english_name(raw, name.strip()),
         )
 
     # -- named places (must-visits, AI anchors) -----------------------------------------
@@ -932,6 +936,25 @@ class GeoapifyPlacesAdapter(DestinationResolutionMixin, PlacesProvider):
         """
         response = super().search_must_visit_place(must_visit_term, primary_destination, filters)
         return self._with_pool_identity_and_details([response])[0]
+
+    def search_must_visit_excursion(self, must_visit_term: str, primary_destination: str) -> ExcursionLookup:
+        """The wider lookup (Final Batch 1, A), then the same pool-identity /
+        Place Details step as `search_must_visit_place`, so a place found this
+        way keeps one identity and carries its category and venue evidence."""
+        found = super().search_must_visit_excursion(must_visit_term, primary_destination)
+        if found.place is None:
+            return found
+        response = ProviderResponse[list[NormalizedPlace]](
+            provider_name=self.provider_name,
+            provider_type=self.provider_type,
+            status=ProviderStatus.SUCCESS,
+            data_status=DataStatus.LIVE,
+            data=[found.place],
+            confidence=0.5,
+        )
+        enriched = self._with_pool_identity_and_details([response])[0]
+        place = enriched.data[0] if enriched.data else found.place
+        return dataclasses.replace(found, place=place)
 
     def search_must_visit_places(
         self, must_visit_terms: list[str], primary_destination: str
@@ -1150,6 +1173,7 @@ class GeoapifyPlacesAdapter(DestinationResolutionMixin, PlacesProvider):
         identity = {
             "source_entity_id": place.source_entity_id or source_entity_id(raw),
             "alt_names": known_names or None,
+            "english_name": place.english_name or english_name(raw, place.name),
         }
         # M2 Phase 3: Place Details documents `opening_hours` as a property of
         # its own; the raw record's venue keys come with it. Kept beside the

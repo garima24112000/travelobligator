@@ -259,11 +259,17 @@ export type CurrencyContext = {
 export type ExperienceItem = {
   experience_id: string;
   name: string;
+  // Final Batch 1: the place's own English name when it differs from `name`
+  // (absent on older plans). `name` stays the provider's name.
+  display_name?: string | null;
   category: string;
   coordinates: GeoPoint | null;
+  // Final Batch 1: ESTIMATED local times ("HH:MM") -- see visit_time_status.
   start_time: string | null;
   end_time: string | null;
   estimated_duration_minutes: number | null;
+  visit_time_status?: string | null;
+  arrival_wait_minutes?: number | null;
   why_included: string | null;
   confidence: number;
   promoted_from_ai: boolean;
@@ -531,6 +537,28 @@ export type DailyPlan = {
   // The backend's factual one-line summary of the day's final stops
   // (services/day_rationale.deterministic_day_summary). Absent on older plans.
   goal?: string | null;
+  // Final Batch 1: the estimated day (services/visit_schedule). Absent on older plans.
+  visit_schedule?: DayVisitSchedule | null;
+};
+
+export type DayVisitSchedule = {
+  window_start: string;
+  window_end: string;
+  status: string; // "timed" | "partly_timed"
+  ends_at: string | null;
+  exceeds_window: boolean;
+  untimed_reason: string | null;
+};
+
+// Final Batch 1: one requested must-visit, reconciled against the final plan.
+export type MustVisitStatusEntry = {
+  term: string;
+  status: string;
+  place_name: string | null;
+  day_number: number | null;
+  distance_km: number | null;
+  drive_minutes: number | null;
+  reason: string | null;
 };
 
 export type StayAreaGuidance = {
@@ -757,6 +785,8 @@ export type ValidationReport = {
   // no faster way of making the transfer is on the plan. Presentation only;
   // `null` or absent (a report stored before the field) marks no leg.
   over_limit_walking_legs?: OverLimitWalkingLeg[] | null;
+  // Final Batch 1: each requested must-visit and what became of it. Absent on older reports.
+  must_visit_status?: MustVisitStatusEntry[] | null;
   // M2 Phase 3 (presentation only): per scheduled stop, what its own place
   // record says about it operating and its listed hours on its scheduled date.
   venue_evidence?: VenueEvidenceEntry[] | null;

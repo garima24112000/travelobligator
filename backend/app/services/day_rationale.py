@@ -7,15 +7,19 @@ change which places are scheduled or their order. A rationale is therefore
 only ever attached to a day when that day's final scheduled attractions
 are exactly the model's own, in the model's own order. Otherwise it is
 dropped and the day is described by a deterministic, factual summary of
-what is actually scheduled.
+what is actually scheduled. Final Batch 1: it is also dropped when it
+describes how the plan was assembled, or names a requested interest that
+nothing on the day serves.
 """
 
 from __future__ import annotations
 
+import re
 from typing import Sequence
 
 from app.models.ai_itinerary_reasoning import AIItineraryReasoningStatus, build_candidate_id
 from app.models.planning_state import DailyPlan, PlanningState
+from app.services import place_taxonomy as taxonomy
 
 RATIONALE_WARNING_PREFIX = "AI itinerary reasoning rationale for this day: "
 
@@ -51,7 +55,38 @@ def current_day_rationale(planning_state: PlanningState, day_plan: DailyPlan) ->
         build_candidate_id(str(experience.provider_source), str(experience.provider_place_id))
         for experience in day_plan.experiences
     ]
-    return reasoning_day.rationale if proposed == scheduled else None
+    if proposed != scheduled:
+        return None
+    rationale = reasoning_day.rationale
+    if rationale and (_PROCESS_WORDING.search(rationale) or _claims_unserved_interest(planning_state, day_plan, rationale)):
+        return None  # the factual summary describes the day instead
+    return rationale
+
+
+# Final Batch 1 (E): wording about how the plan was ASSEMBLED ("expanded the
+# schedule with a third stop to match the expected pace") is not a reason a
+# traveller can use; such a rationale is not shown.
+_PROCESS_WORDING = re.compile(
+    r"\b(?:candidates?|slots?|schedul\w*|expected pace|pace target|filler|padding|top[- ]?up|expanded the)\b",
+    re.IGNORECASE,
+)
+
+
+def _claims_unserved_interest(planning_state: PlanningState, day_plan: DailyPlan, rationale: str) -> bool:
+    """True when the rationale names one of the trip's requested interests
+    that nothing on this day serves (no stop matched it; for food, no stop
+    and no nearby food suggestion either) -- a claim the day does not support."""
+    profile = planning_state.traveler_profile
+    requested = set(taxonomy.canonical_interests(
+        profile.interests if profile else planning_state.trip_request.interests
+    ))
+    claimed = {
+        interest for word in re.findall(r"[A-Za-z]+", rationale) for interest in taxonomy.canonical_interests([word])
+    } & requested
+    served = {interest for experience in day_plan.experiences for interest in experience.matched_interests}
+    if day_plan.restaurant_suggestions:
+        served.add("food")
+    return bool(claimed - served)
 
 
 def clear_day_rationale(day_plan: DailyPlan) -> None:

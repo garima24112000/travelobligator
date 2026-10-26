@@ -641,7 +641,7 @@ def test_more_must_visits_than_the_pace_allows_are_reported_not_silently_dropped
     PlanValidatorService().run(state)
     (issue,) = [issue for issue in state.validation_report.warnings if issue.category == "must_visit"]
     missing = next(f"request {index}" for index, poi in enumerate(requested) if poi["name"] not in names)
-    assert "Found by the provider but not scheduled" in issue.message and missing in issue.message
+    assert f"{missing} was found but is not on this plan" in issue.message  # Final Batch 1 wording
 
 
 def test_a_distant_grounded_must_visit_survives_the_outlier_control() -> None:

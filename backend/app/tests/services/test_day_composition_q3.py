@@ -845,7 +845,11 @@ def _ai_state(
 
 
 def _two_groups() -> list[dict[str, Any]]:
-    return [*_core(8), *_core(4, north=20.0, prefix="n")]
+    # Two separate areas (6 km apart; composition areas are 3 km) both within the
+    # pool's reach (8 km). Final Batch 1: a model's day wholly BEYOND reach is now
+    # rebuilt like a deterministic one (test_fb1_remote_thin_days), so the
+    # regrouping contract is tested on areas a plan may legitimately use.
+    return [*_core(8), *_core(4, north=6.0, prefix="n")]
 
 
 def test_a_model_plan_keeps_its_places_and_is_only_regrouped(setting: Any) -> None:

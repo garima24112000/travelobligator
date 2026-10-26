@@ -20,7 +20,11 @@ Supported (the common subset of the syntax):
     the way mappers write it; read the other way (all day on the first days),
     it would give the same open/closed answer for every date anyway;
   * months and month-day ranges before the weekdays (`Jan-Mar`, `Apr 1-Jun 30`,
-    `Dec 24-26`, comma lists, ranges across the year end such as `Nov 1-Mar 31`);
+    `Dec 24-26`, comma lists, ranges across the year end such as `Nov 1-Mar 31`),
+    optionally followed by the syntax's own `:` separator (`Apr 1-Jun 30: ...`);
+  * the n-th weekday of the month on a single weekday (`Mo[1]`, `Su[-1]`,
+    `Sa[1,3]`, `Th[2-4]`): only those occurrences of that weekday in the month
+    (Final Batch 1, E);
   * times `HH:MM-HH:MM`, comma lists, ends up to `48:00`, and overnight spans
     (`22:00-02:00`), which continue into the next date;
   * a quoted comment after `off` / `closed` (`closed "temporarily closed"`):
@@ -28,8 +32,9 @@ Supported (the common subset of the syntax):
     ("by appointment") and is not supported.
 
 Everything else -- years, week numbers, `SH` (school holidays, of which no data
-exists), `sunrise`/`sunset`, open ends (`+`), `||` fallbacks, `Mo[1]`,
-comments on open rules, `unknown` -- makes the WHOLE value `unsupported`, and
+exists), `sunrise`/`sunset`, open ends (`+`), `||` fallbacks, a day offset after
+an n-th weekday (`Su[-1] -1 day`), comments on open rules, `unknown` -- makes
+the WHOLE value `unsupported`, and
 `unsupported_feature` names which of those it was (a fixed label, never the
 value): a half-understood value could call a place closed (or open) on a date
 it is not.
@@ -58,10 +63,17 @@ _MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct",
 _MONTH_INDEX = {name: index + 1 for index, name in enumerate(_MONTHS)}
 _TIME_SPAN = re.compile(r"^(\d{1,2}):(\d{2})-(\d{1,2}):(\d{2})$")
 _DAY_TOKEN = re.compile(r"^(Mo|Tu|We|Th|Fr|Sa|Su)(?:-(Mo|Tu|We|Th|Fr|Sa|Su))?$")
-_WEEKDAY_SELECTOR = re.compile(r"^(?:(?:Mo|Tu|We|Th|Fr|Sa|Su)(?:-(?:Mo|Tu|We|Th|Fr|Sa|Su))?|PH)(?:,(?:(?:Mo|Tu|We|Th|Fr|Sa|Su)(?:-(?:Mo|Tu|We|Th|Fr|Sa|Su))?|PH))*$")
+# One weekday with its n-th occurrences in the month: `Mo[1]`, `Su[-1]`, `Sa[1,3]`, `Th[2-4]`.
+_NTH = r"-?[1-5](?:-[1-5])?"
+_NTH_DAY_TOKEN = re.compile(rf"^(Mo|Tu|We|Th|Fr|Sa|Su)\[({_NTH}(?:,{_NTH})*)\]$")
+_WEEKDAY_ITEM = rf"(?:(?:Mo|Tu|We|Th|Fr|Sa|Su)(?:-(?:Mo|Tu|We|Th|Fr|Sa|Su)|\[{_NTH}(?:,{_NTH})*\])?|PH)"
+_WEEKDAY_SELECTOR = re.compile(rf"^{_WEEKDAY_ITEM}(?:,{_WEEKDAY_ITEM})*$")
+# A comma that separates weekday items (never one inside `[...]`).
+_ITEM_COMMA = re.compile(r",(?![^\[]*\])")
 _MONTH = r"(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)"
 _MONTH_ITEM = rf"{_MONTH}(?:\s+\d{{1,2}})?(?:-(?:{_MONTH}(?:\s+\d{{1,2}})?|\d{{1,2}}))?"
-_MONTH_PREFIX = re.compile(rf"^({_MONTH_ITEM}(?:,{_MONTH_ITEM})*)(?:\s+(.*))?$")
+# The syntax allows a `:` after the month selector (`Apr 1-Jun 30: Mo-Su 10:00-17:00`).
+_MONTH_PREFIX = re.compile(rf"^({_MONTH_ITEM}(?:,{_MONTH_ITEM})*):?(?:\s+(.*))?$")
 _MONTH_ITEM_PARTS = re.compile(rf"^({_MONTH})(?:\s+(\d{{1,2}}))?(?:-(?:({_MONTH})(?:\s+(\d{{1,2}}))?|(\d{{1,2}})))?$")
 _MAX_LENGTH = 255  # the OpenStreetMap tag-value limit
 # `, ` that starts an ADDITIONAL rule (a space, then a weekday or PH), not a list item
@@ -94,6 +106,9 @@ class _Rule:
     additive: bool = False  # an additional rule (`, `): adds, never replaces
     # ((start month, day), (end month, day)) ranges; None: every date
     months: tuple[tuple[tuple[int, int], tuple[int, int]], ...] | None = None
+    # (weekday, occurrences) for a weekday named with `[n]`: it applies only on
+    # those occurrences in the month (1..5 from the start, -1..-5 from the end)
+    nth: tuple[tuple[int, frozenset[int]], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -123,13 +138,33 @@ def _minutes(hours: str, minutes: str) -> int:
     return hour * 60 + minute
 
 
-def _parse_weekdays(selector: str) -> tuple[frozenset[int] | None, bool]:
+def _parse_occurrences(items: str) -> frozenset[int]:
+    """`1`, `-1`, `1,3`, `2-4` -> the occurrences of a weekday in its month."""
+    found: set[int] = set()
+    for item in items.split(","):
+        negative = item.startswith("-")
+        bounds = (item[1:] if negative else item).split("-")
+        first, last = int(bounds[0]), int(bounds[-1])
+        if last < first:
+            raise UnsupportedHours("n-th weekday range")
+        found.update(-value if negative else value for value in range(first, last + 1))
+    return frozenset(found)
+
+
+def _parse_weekdays(
+    selector: str,
+) -> tuple[frozenset[int] | None, bool, tuple[tuple[int, frozenset[int]], ...]]:
     days: set[int] = set()
     holiday = False
-    for token in selector.split(","):
+    occurrences: dict[int, set[int]] = {}
+    for token in _ITEM_COMMA.split(selector):
         token = token.strip()
         if token == "PH":
             holiday = True
+            continue
+        nth = _NTH_DAY_TOKEN.match(token)
+        if nth:
+            occurrences.setdefault(_DAY_INDEX[nth.group(1)], set()).update(_parse_occurrences(nth.group(2)))
             continue
         match = _DAY_TOKEN.match(token)
         if not match:
@@ -142,7 +177,10 @@ def _parse_weekdays(selector: str) -> tuple[frozenset[int] | None, bool]:
             if index == end:
                 break
             index = (index + 1) % 7
-    return (frozenset(days) if days else None), holiday
+    # A weekday named plainly as well applies on every occurrence.
+    nth = tuple(sorted((day, frozenset(found)) for day, found in occurrences.items() if day not in days))
+    days.update(occurrences)
+    return (frozenset(days) if days else None), holiday, nth
 
 
 def _parse_months(selector: str) -> tuple[tuple[tuple[int, int], tuple[int, int]], ...]:
@@ -238,9 +276,11 @@ def parse_opening_hours(value: str | None) -> OpeningHours:
         tokens = part.split(" ") if part else []
         weekdays: frozenset[int] | None = None
         holiday = False
+        nth: tuple[tuple[int, frozenset[int]], ...] = ()
         spans: tuple[tuple[int, int], ...] = ()
-        if tokens and (_DAY_TOKEN.match(tokens[0].split(",")[0]) or tokens[0].split(",")[0] == "PH"):
-            weekdays, holiday = _parse_weekdays(tokens.pop(0))
+        first_item = _ITEM_COMMA.split(tokens[0])[0] if tokens else ""
+        if tokens and (_DAY_TOKEN.match(first_item) or _NTH_DAY_TOKEN.match(first_item) or first_item == "PH"):
+            weekdays, holiday, nth = _parse_weekdays(tokens.pop(0))
         if tokens:
             spans = _parse_spans(" ".join(tokens).replace(" ", ""))
         if tokens and closed:
@@ -250,7 +290,7 @@ def parse_opening_hours(value: str | None) -> OpeningHours:
         if additive and closed:
             raise UnsupportedHours("additional rule with off")
         rules.append(_Rule(weekdays=weekdays, holiday=holiday, spans=spans, closed=closed, additive=additive,
-                           months=months))
+                           months=months, nth=nth))
     if not rules:
         raise UnsupportedHours("no rule")
     return OpeningHours(rules=tuple(rules), has_holiday_rule=any(rule.holiday for rule in rules))
@@ -308,7 +348,20 @@ def _rule_applies(rule: _Rule, day: date, is_holiday: bool) -> bool:
         return is_holiday
     if rule.weekdays is None:
         return True
-    return weekday in rule.weekdays or (rule.holiday and is_holiday)
+    return (weekday in rule.weekdays and _is_named_occurrence(rule, day)) or (rule.holiday and is_holiday)
+
+
+def _is_named_occurrence(rule: _Rule, day: date) -> bool:
+    """For a weekday named with `[n]`: whether `day` is one of the named
+    occurrences of that weekday in its month. True for any other weekday."""
+    wanted = dict(rule.nth).get(day.weekday())
+    if wanted is None:
+        return True
+    next_month = date(day.year + day.month // 12, day.month % 12 + 1, 1)
+    days_in_month = (next_month - timedelta(days=1)).day
+    from_start = (day.day - 1) // 7 + 1
+    from_end = -((days_in_month - day.day) // 7 + 1)
+    return from_start in wanted or from_end in wanted
 
 
 def _spans_on(hours: OpeningHours, day: date, is_holiday: bool) -> tuple[tuple[int, int], ...]:

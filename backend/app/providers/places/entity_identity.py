@@ -54,6 +54,8 @@ UNRESOLVED = "unresolved"
 # Two records of one Wikidata entity are merged only when they are also
 # close together (parts of one large site keep separate records otherwise).
 _SAME_WIKIDATA_METERS = 1000.0
+# The same rule, read by must-visit reconciliation (`services/must_visit_matching`).
+SAME_WIKIDATA_METERS = _SAME_WIKIDATA_METERS
 
 
 def source_entity_id(raw: Any) -> str | None:
@@ -89,6 +91,16 @@ def alternate_names(raw: Any, primary_name: str) -> list[str] | None:
             seen.add(comparable)
             names.append(name)
     return names[:_MAX_ALT_NAMES] or None
+
+
+def english_name(raw: Any, primary_name: str) -> str | None:
+    """Final Batch 1 (E): the record's own English name (`name:en`), when it
+    names the place differently from its primary name -- for display beside
+    the original. Never translated or guessed."""
+    if not isinstance(raw, dict) or not isinstance(raw.get("name:en"), str):
+        return None
+    name = raw["name:en"].strip()[:_MAX_NAME_LENGTH]
+    return name if comparable_name(name) and comparable_name(name) != comparable_name(primary_name) else None
 
 
 def _names(place: NormalizedPlace) -> set[str]:

@@ -62,6 +62,7 @@ import {
 } from "./PlanInsightPanels";
 import {
   aggregateCaveats,
+  hasPlannerWording,
   humanizeIdentifier,
   travelerDayFindings,
   travelerProse,
@@ -94,6 +95,10 @@ import {
   legIsOverLimitWalk,
   findVenueEvidence,
   travelerVenueLine,
+  travelerDayScheduleNote,
+  travelerMustVisitLines,
+  travelerPlaceName,
+  travelerVisitTimeLine,
   legIsUnverified,
   reviewSeverity,
   travelerDayNotices,
@@ -615,6 +620,70 @@ function VenueEvidenceRow({ entry, mode }: { entry: VenueEvidenceEntry | null; m
     >
       {line.text}
     </li>
+  );
+}
+
+/** Final Batch 1: a stop's ESTIMATED visit time (both views; Developer view adds the raw status). */
+function VisitTimeRow({ experience, mode }: { experience: ExperienceItem; mode: "user" | "developer" }) {
+  if (mode === "developer") {
+    if (!experience.visit_time_status) return null;
+    return (
+      <li data-testid="visit-time-row" className="ml-3 break-words pl-3 text-xs text-slate-400">
+        Visit time (estimate): {experience.start_time ?? "—"}–{experience.end_time ?? "—"} ·{" "}
+        {experience.estimated_duration_minutes ?? "?"} min · {experience.visit_time_status}
+        {experience.arrival_wait_minutes ? ` · wait ${experience.arrival_wait_minutes} min` : ""}
+      </li>
+    );
+  }
+  const line = travelerVisitTimeLine(experience);
+  if (!line) return null;
+  return (
+    <li
+      data-testid="visit-time-row"
+      className={`ml-3 break-words pl-3 text-xs ${
+        line.attention ? "border-l border-amber-300/60 font-medium text-amber-200" : "text-slate-300"
+      }`}
+    >
+      {line.text}
+    </li>
+  );
+}
+
+/** Final Batch 1: what a day's estimated times assume. */
+function DayScheduleNote({ day }: { day: DailyPlan }) {
+  const note = travelerDayScheduleNote(day.visit_schedule);
+  if (!note) return null;
+  return (
+    <p data-testid="day-schedule-note" className="mt-1 break-words text-xs text-slate-400">
+      {note}
+    </p>
+  );
+}
+
+/**
+ * Final Batch 1: the requested must-visits that need the traveler's
+ * attention (not on the plan, or an excursion out of the city). A requested
+ * place that is scheduled is never reported missing.
+ */
+function MustVisitNotice({ report }: { report: ValidationReport | null | undefined }) {
+  const lines = travelerMustVisitLines(report?.must_visit_status);
+  if (lines.length === 0) return null;
+  return (
+    <section
+      role="status"
+      aria-labelledby="must-visit-notice-heading"
+      data-testid="must-visit-notice"
+      className="rounded-2xl border border-amber-400/40 bg-amber-500/10 p-4 text-amber-100"
+    >
+      <h2 id="must-visit-notice-heading" className="text-base font-semibold">
+        About the places you asked for
+      </h2>
+      <ul className="mt-1 list-disc break-words pl-5 text-sm leading-6">
+        {lines.map((line) => (
+          <li key={line.text}>{line.text}</li>
+        ))}
+      </ul>
+    </section>
   );
 }
 
@@ -2210,7 +2279,9 @@ function ScheduledExperienceCard({
           <p className="break-words font-medium text-slate-100 [overflow-wrap:anywhere]">
             {/* <bdi>: a name in a right-to-left or mixed script keeps its
                 own direction without reordering the text around it. */}
-            <bdi>{experience.name}</bdi>{" "}
+            {/* Final Batch 1: Traveler view shows the place's own English name
+                first when its record has one, with the original after it. */}
+            <bdi>{mode === "user" ? travelerPlaceName(experience) : experience.name}</bdi>{" "}
             <span className="font-normal text-slate-400">
               ({mode === "user" ? humanizeIdentifier(experience.category) : experience.category})
             </span>
@@ -8344,6 +8415,7 @@ export default function Home() {
               mode={mode}
               factualSummary={day.goal ?? null}
             />
+            {mode === "user" && <DayScheduleNote day={day} />}
             {mode === "user" && (
               <DayReviewNotices
                 dayNumber={day.day_number}
@@ -8370,7 +8442,14 @@ export default function Home() {
                   <p className="mt-1 text-sm text-slate-400">
                     Nothing is scheduled for this day.
                   </p>
-                  {Array.from(new Set(day.warnings.map((warning) => travelerText(warning)))).map(
+                  {/* Final Batch 1: an internal planning note is never shown here. */}
+                  {Array.from(
+                    new Set(
+                      day.warnings
+                        .filter((warning) => !hasPlannerWording(warning))
+                        .map((warning) => travelerText(warning)),
+                    ),
+                  ).map(
                     (warning) => (
                       <p
                         key={warning}
@@ -8487,6 +8566,7 @@ export default function Home() {
                           entry={findVenueEvidence(result.validationReport, experience.experience_id)}
                           mode={mode}
                         />
+                        <VisitTimeRow experience={experience} mode={mode} />
                         {showMovementRow && movement && (
                           <MovementRow
                             buffer={movement}
@@ -9749,6 +9829,9 @@ PY`}
                 <InterestCoverageNotice
                   notices={travelerInterestCoverage(result.validationReport).notices}
                 />
+                {/* Final Batch 1: what became of each requested must-visit
+                    that needs attention, above the itinerary. */}
+                <MustVisitNotice report={result.validationReport} />
 
                 <div id="draft-itinerary" className="flex flex-col gap-6">
                   <LockedItemsSummarySection

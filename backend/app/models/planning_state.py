@@ -197,6 +197,25 @@ class TravelerProfile(BaseModel):
     claim_sources: list[ClaimSource] = Field(default_factory=list)
 
 
+class MustVisitLookup(BaseModel):
+    """How the destination-context stage looked for ONE must-visit term
+    (Final Batch 1, A). Fixed labels, provider ids and numbers only."""
+
+    term: str
+    # pool_name / pool_other_name / lookup / lookup_wide / excursion_verified /
+    # excursion_too_far / excursion_route_unverified / unresolved
+    outcome: str
+    place_id: str | None = None
+    # A fixed label for why a lookup accepted nothing (`NAMED_PLACE_*`,
+    # `outside_destination`, `lookup_failed:<kind>`); None when it found the place.
+    rejection: str | None = None
+    # A place found OUTSIDE the destination: straight-line distance from the
+    # destination point (disclosure only), and the verified driving duration
+    # from that point when a route was obtained.
+    distance_km: float | None = None
+    excursion_drive_seconds: float | None = None
+
+
 class DestinationContext(BaseModel):
     context_id: str = Field(default_factory=lambda: _new_id("destination_context"))
 
@@ -226,6 +245,9 @@ class DestinationContext(BaseModel):
     # that record only. 0 for a context stored before Q1, where
     # `app.services.must_visit_matching` applies its narrow legacy fallback.
     must_visit_grounding_version: int = 0
+    # Final Batch 1 (A): one entry per requested must-visit term -- what found
+    # it (or why nothing did). Empty for contexts stored before this.
+    must_visit_lookups: list[MustVisitLookup] = Field(default_factory=list)
     candidate_pois: list[dict[str, Any]] = Field(default_factory=list)
     candidate_restaurants: list[dict[str, Any]] = Field(default_factory=list)
     # Open-data location candidates only (e.g. OSM), never bookable inventory.
@@ -534,6 +556,10 @@ class ExperienceItem(BaseModel):
     experience_id: str = Field(default_factory=lambda: _new_id("experience"))
 
     name: str
+    # Final Batch 1 (E): the place's own English name from its provider record
+    # when it differs from `name` -- presentation only; `name` stays the
+    # provider's name (identity, grounding, narration). None otherwise.
+    display_name: str | None = None
     category: str
     coordinates: GeoPoint | None = None
 
@@ -605,6 +631,31 @@ class ExperienceItem(BaseModel):
     # than guessing a status the day-level report doesn't itself support
     # for this item.
     route_aware_provenance: MovementDataProvenance | None = None
+    # Final Batch 1 (C): how this stop's estimated visit time (`start_time` /
+    # `end_time`, local time at the destination) relates to the place's own
+    # listed hours that date -- `fits_listed_hours`, `hours_unknown`,
+    # `outside_listed_hours`, `closed_on_date`, or `not_timed` (no time could
+    # be estimated: the travel before it was not verified). The duration is an
+    # ESTIMATE by kind of place; nothing here says the place is open. None for
+    # items stored before this field and for plans with no schedule.
+    visit_time_status: str | None = None
+    # Minutes waited for the listed opening time before the visit (estimate).
+    arrival_wait_minutes: int | None = Field(default=None, ge=0)
+
+
+class DayVisitSchedule(BaseModel):
+    """Final Batch 1, C: the estimated day (`services/visit_schedule`). Local
+    wall-clock times at the destination on the day's own date ("HH:MM")."""
+
+    # The day window assumed for the trip's pace (a planning assumption).
+    window_start: str
+    window_end: str
+    # `timed` -- every stop has an estimated time; `partly_timed` -- the stops
+    # after a travel leg that was not verified have none (`untimed_reason`).
+    status: str
+    ends_at: str | None = None
+    exceeds_window: bool = False
+    untimed_reason: str | None = None
 
 
 class RestaurantOption(BaseModel):
@@ -712,6 +763,9 @@ class DailyPlan(BaseModel):
     # the day changes (`services/day_rationale.finalize_day_explanations`).
     # Optional: a day stored before this field loads unchanged.
     ai_rationale_warning: str | None = None
+    # Final Batch 1 (C): the estimated schedule of this day, or None (a plan
+    # stored before this field, or scheduling switched off).
+    visit_schedule: DayVisitSchedule | None = None
 
 
 class StayAreaGuidance(BaseModel):
@@ -939,6 +993,25 @@ class VenueEvidenceEntry(BaseModel):
     source: str | None = None
 
 
+class MustVisitStatusEntry(BaseModel):
+    """Final Batch 1, A (presentation only): what became of ONE requested
+    must-visit in the FINAL itinerary (`services/must_visit_status`). Never
+    read by the planner, readiness or a code."""
+
+    term: str
+    # scheduled / scheduled_excursion / found_inaccessible / found_not_scheduled /
+    # outside_destination_not_feasible / outside_destination_unverified / unresolved
+    status: str
+    place_name: str | None = None
+    day_number: int | None = None
+    # A place outside the destination: straight-line distance from it and the
+    # verified driving duration (minutes, rounded) -- road route only.
+    distance_km: float | None = None
+    drive_minutes: int | None = None
+    # A fixed label for why it is not scheduled or not accessible (None when scheduled normally).
+    reason: str | None = None
+
+
 class ValidationReport(BaseModel):
     validation_report_id: str = Field(default_factory=lambda: _new_id("validation_report"))
 
@@ -979,6 +1052,10 @@ class ValidationReport(BaseModel):
     # above, in day and stop order. `None` without a plan (and on a report
     # stored before this field) -- never read as "checked".
     venue_evidence: list[VenueEvidenceEntry] | None = None
+    # Final Batch 1, A (presentation only): one entry per requested must-visit,
+    # reconciled against the final itinerary. `None` without a plan (and on a
+    # report stored before this field).
+    must_visit_status: list[MustVisitStatusEntry] | None = None
 
     validated_at: datetime = Field(default_factory=_utc_now)
 

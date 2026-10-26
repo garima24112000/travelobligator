@@ -215,10 +215,21 @@ def test_generated_planning_state_is_persisted_and_reloadable(client: TestClient
         for experience in day_plan.experiences
     ]
     assert len(all_experiences) > 0
+    # Final Batch 1: times are the generation's own labelled estimates (no
+    # routing here, so only a day's first stop has one) -- and the round-trip
+    # adds, drops or changes none of them: exactly what generation returned.
+    generated = [
+        experience
+        for day_plan in generate_response.json()["data"]["planning_state"]["experience_plan"]["daily_plans"]
+        for experience in day_plan["experiences"]
+    ]
+    time_fields = ("start_time", "end_time", "estimated_duration_minutes", "visit_time_status", "arrival_wait_minutes")
+    assert [{key: e[key] for key in time_fields} for e in generated] == [
+        {key: getattr(e, key) for key in time_fields} for e in all_experiences
+    ]
     for experience in all_experiences:
-        assert experience.start_time is None
-        assert experience.end_time is None
-        assert experience.estimated_duration_minutes is None
+        if experience.stop_order and experience.stop_order > 1:
+            assert experience.start_time is None and experience.visit_time_status == "not_timed"
 
 
 def test_data_sources_used_is_persisted_and_reloadable(client: TestClient) -> None:

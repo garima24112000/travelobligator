@@ -1,8 +1,9 @@
-"""Two bounded, deterministic planner passes over grouped days (M2 Phase 3).
+"""Three bounded, deterministic planner passes over grouped days (M2 Phase 3;
+Final Batch 1).
 
-Both run after the days are grouped and before the experience items, routing
+All run after the days are grouped and before the experience items, routing
 and validation are built, so routing is still requested once, for the final
-stops. Both are pure: no provider, routing or model call, and no place name.
+stops. All are pure: no provider, routing or model call, and no place name.
 They never touch a plan with an active user lock (the caller checks).
 
 1. **Known closures (Workstream B).** A stop whose OWN provider opening hours
@@ -38,6 +39,20 @@ They never touch a plan with an active user lock (the caller checks).
    the day within the spread boundary, none more than one quality tier below
    the weakest stop it replaces, none closed on the date. A day that cannot be
    rebuilt with at least one such stop is left as it is, and reported.
+   Final Batch 1: this applies to a plan the reasoning model chose as well
+   (the caller decides), and a rebuilt day holds as many stops as it had or
+   the pace's per-day minimum, whichever is more (never above the pace cap) --
+   a single isolated stop is not rebuilt as another single-stop day.
+
+3. **Thin days (Final Batch 1).** A day holding fewer stops than the pace's
+   per-day minimum (`pace_targets.MIN_STOPS_PER_DAY`, the validator's own
+   thin-day rule) while supply is healthy is topped up to that minimum from
+   unused candidates within reach: most useful first, each keeping the day
+   within the spread boundary and no more than one tier below the day's
+   weakest stop, none closed on the date, none a duplicate or a record of a
+   site already scheduled. Nothing below that standard is added -- a lighter
+   day beats filler. A day whose stops all lie away from the trip's area (a
+   requested excursion) is left as it is.
 """
 
 from __future__ import annotations
@@ -59,6 +74,10 @@ CLOSURE_KEPT = "kept"
 REMOTE_REBUILT = "rebuilt"
 REMOTE_KEPT_REASON = "kept_with_reason"
 REMOTE_KEPT_NO_ALTERNATIVE = "kept_no_alternative"
+THIN_FILLED = "thin_filled"
+THIN_PARTLY_FILLED = "thin_partly_filled"
+THIN_KEPT_NO_CANDIDATE = "thin_kept_no_candidate"
+THIN_KEPT_REMOTE = "thin_kept_remote"
 
 
 @dataclass(frozen=True)
@@ -75,6 +94,15 @@ class Helpers:
     # The schedule-diversity HARD rule (marketplaces per day): stops beyond the
     # cap. A pass never leaves a day with more of it than the day had before.
     market_excess: Callable[[list[Poi]], int] = lambda stops: 0
+    # Final Batch 1 (C): whether a place's own listed hours rule a visit out on
+    # a date. None: closed all day (`closed_on`); the planner passes
+    # `visit_schedule.unvisitable_on`, which also counts hours that leave no
+    # visit of its estimated length inside the pace's day window.
+    closed: Callable[[Poi, date, frozenset[date] | None], bool] | None = None
+
+
+def _closed(poi: Poi, day: date, holidays: frozenset[date] | None, helpers: Helpers) -> bool:
+    return helpers.closed(poi, day, holidays) if helpers.closed is not None else closed_on(poi, day, holidays)
 
 
 @dataclass
@@ -131,7 +159,7 @@ def resolve_known_closures(
         position = 0
         while position < len(days[day_index]):
             stop = days[day_index][position]
-            if not closed_on(stop, dates[day_index], holidays):
+            if not _closed(stop, dates[day_index], holidays, helpers):
                 position += 1
                 continue
             action = _relocate(days, day_index, position, dates, holidays, helpers, max_per_day)
@@ -162,17 +190,17 @@ def _relocate(
     stop = days[day_index][position]
     remaining = days[day_index][:position] + days[day_index][position + 1:]
     for other in range(len(days)):
-        if other == day_index or closed_on(stop, dates[other], holidays) or not remaining:
+        if other == day_index or _closed(stop, dates[other], holidays, helpers) or not remaining:
             continue  # a move never leaves its day empty (a swap may still help)
         if len(days[other]) < max_per_day and _fits([*days[other], stop], helpers, days[other]):
             days[day_index].pop(position)
             days[other].append(stop)
             return CLOSURE_MOVED
     for other in range(len(days)):
-        if other == day_index or closed_on(stop, dates[other], holidays):
+        if other == day_index or _closed(stop, dates[other], holidays, helpers):
             continue
         for index, partner in enumerate(days[other]):
-            if closed_on(partner, dates[day_index], holidays):
+            if _closed(partner, dates[day_index], holidays, helpers):
                 continue
             target = days[other][:index] + days[other][index + 1:] + [stop]
             source = [*remaining, partner]
@@ -204,7 +232,7 @@ def _replace(
             and not helpers.low_value(poi)
             and helpers.coordinates(poi) is not None
             and helpers.tier_rank(poi) >= floor
-            and not closed_on(poi, day, holidays)
+            and not _closed(poi, day, holidays, helpers)
             and not helpers.suspected_duplicate(poi, scheduled)
         ),
         key=helpers.usefulness_key,
@@ -229,6 +257,8 @@ def resolve_unreasoned_remote_days(
     holidays: frozenset[date] | None,
     supply_healthy: bool,
     minimum_stops: int,
+    minimum_per_day: int = 0,
+    max_per_day: int | None = None,
 ) -> tuple[list[list[Poi]], PassReport]:
     days = [list(group) for group in day_groups]
     report = PassReport()
@@ -236,6 +266,10 @@ def resolve_unreasoned_remote_days(
         return days, report
     used = {id(poi) for group in days for poi in group}
     for day_index, group in enumerate(days):
+        # As many stops as the day had, or the pace minimum -- never above the cap.
+        target = max(len(group), minimum_per_day)
+        if max_per_day is not None:
+            target = min(target, max(max_per_day, len(group)))
         located = [poi for poi in group if helpers.coordinates(poi) is not None]
         if not located or any(within_reach(poi) for poi in located):
             continue
@@ -256,13 +290,13 @@ def resolve_unreasoned_remote_days(
                 and not helpers.low_value(poi)
                 and helpers.coordinates(poi) is not None
                 and helpers.tier_rank(poi) >= floor
-                and not closed_on(poi, day, holidays)
+                and not _closed(poi, day, holidays, helpers)
             ),
             key=helpers.usefulness_key,
         )
         rebuilt: list[Poi] = []
         for candidate in candidates:
-            if len(rebuilt) >= len(group):
+            if len(rebuilt) >= target:
                 break
             if helpers.suspected_duplicate(candidate, [*scheduled, *rebuilt]):
                 continue
@@ -279,4 +313,63 @@ def resolve_unreasoned_remote_days(
             used.add(id(poi))
         days[day_index] = rebuilt
         report.note(day=day_index + 1, action=REMOTE_REBUILT, replaced=len(group), stops=len(rebuilt))
+    return days, report
+
+
+def fill_thin_days(
+    day_groups: list[list[Poi]],
+    pool: list[Poi],
+    helpers: Helpers,
+    *,
+    within_reach: Callable[[Poi], bool],
+    start_date: date,
+    holidays: frozenset[date] | None,
+    supply_healthy: bool,
+    minimum_per_day: int,
+) -> tuple[list[list[Poi]], PassReport]:
+    """Pass 3 (see the module docstring): tops a thin day up to the pace's
+    per-day minimum with useful places within reach, or leaves it lighter."""
+    days = [list(group) for group in day_groups]
+    report = PassReport()
+    if not supply_healthy:
+        return days, report
+    used = {id(poi) for group in days for poi in group}
+    for day_index, group in enumerate(days):
+        if not group or len(group) >= minimum_per_day:
+            continue  # an empty day has its own fill; a full one needs nothing
+        located = [poi for poi in group if helpers.coordinates(poi) is not None]
+        if located and not any(within_reach(poi) for poi in located):
+            report.note(day=day_index + 1, action=THIN_KEPT_REMOTE)
+            continue
+        floor = min(helpers.tier_rank(poi) for poi in group) - 1
+        day = start_date + timedelta(days=day_index)
+        candidates = sorted(
+            (
+                poi for poi in pool
+                if id(poi) not in used
+                and within_reach(poi)
+                and not helpers.low_value(poi)
+                and helpers.coordinates(poi) is not None
+                and helpers.tier_rank(poi) >= floor
+                and not _closed(poi, day, holidays, helpers)
+            ),
+            key=helpers.usefulness_key,
+        )
+        added = 0
+        for candidate in candidates:
+            if len(days[day_index]) >= minimum_per_day:
+                break
+            scheduled = [poi for stops in days for poi in stops]
+            if helpers.suspected_duplicate(candidate, scheduled):
+                continue
+            if _fits([*days[day_index], candidate], helpers, days[day_index]):
+                days[day_index].append(candidate)
+                used.add(id(candidate))
+                added += 1
+        action = (
+            THIN_FILLED if len(days[day_index]) >= minimum_per_day
+            else THIN_PARTLY_FILLED if added
+            else THIN_KEPT_NO_CANDIDATE
+        )
+        report.note(day=day_index + 1, action=action, added=added)
     return days, report

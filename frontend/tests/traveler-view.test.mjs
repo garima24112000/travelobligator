@@ -45,6 +45,7 @@ import {
   travelerRouteCoverageNote,
   tripSummarySourceNote,
 } from "../lib/traveler-view.ts";
+import { travelerPlaceName } from "../lib/traveler-view.ts";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const page = readFileSync(join(root, "app", "page.tsx"), "utf8");
@@ -569,7 +570,12 @@ test("long and local-script place names pass through unchanged and wrap safely",
   ];
   // names are rendered directly, never passed through the sentence rewriter
   const card = componentSource("ScheduledExperienceCard");
-  assert.match(card, /<bdi>\{experience\.name\}<\/bdi>/);
+  // Final Batch 1: Traveler view may put the record's own English name first;
+  // the original name itself is never rewritten.
+  assert.match(card, /<bdi>\{mode === "user" \? travelerPlaceName\(experience\) : experience\.name\}<\/bdi>/);
+  for (const name of names) {
+    assert.equal(travelerPlaceName({ name, display_name: null }), name);
+  }
   assert.doesNotMatch(card, /travelerText\(experience\.name\)|humanizeIdentifier\(experience\.name\)/);
   assert.match(card, /break-words[^"]*\[overflow-wrap:anywhere\]/);
   assert.match(card, /min-w-0 flex-1/);

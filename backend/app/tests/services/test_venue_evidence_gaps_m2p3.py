@@ -109,7 +109,8 @@ def test_a_closure_comment_keeps_the_place_closed() -> None:
         ("Sa 10:00+", oh.FEATURE_OPEN_END),
         ("SH off; Mo-Fr 09:00-17:00", oh.FEATURE_SCHOOL_HOLIDAY),
         ("2026 Mo-Fr 09:00-17:00", oh.FEATURE_YEAR_OR_WEEK),
-        ("Mo[1] 10:00-12:00", oh.FEATURE_NTH_WEEKDAY),
+        ("Su[-1] -1 day 10:00-12:00", oh.FEATURE_NTH_WEEKDAY),  # Final Batch 1: `Mo[1]` alone is now read
+        ("Mo[1] 10:00-12:00", None),
         ("Mo-Fr, Su", oh.FEATURE_OTHER),
         ("Mo-Fr 09:00-17:00", None),
         ("", None),

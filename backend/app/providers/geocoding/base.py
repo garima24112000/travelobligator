@@ -79,6 +79,23 @@ class GeocodeHit:
     source_entity_id: str | None = None
 
 
+# Final Batch 1 (A): why a named-place lookup produced no accepted place. Fixed
+# labels only -- never the query, a result's name or a provider message.
+NAMED_PLACE_NO_RESULT = "no_result"
+NAMED_PLACE_NOT_SPECIFIC = "not_a_specific_place"  # a street / postcode / settlement fallback
+NAMED_PLACE_WEAK_MATCH = "weak_name_match"  # the provider did not say it matched the name
+NAMED_PLACE_LOW_CONFIDENCE = "low_confidence"
+NAMED_PLACE_UNUSABLE = "no_coordinates_or_identity"
+
+
+@dataclass(frozen=True)
+class NamedPlaceLookup:
+    """One named-place lookup: the accepted place, or why there is none."""
+
+    hit: GeocodeHit | None
+    rejection: str | None = None  # a NAMED_PLACE_* label when `hit` is None
+
+
 class GeocodingProvider:
     """Interface + honest default: not connected, never a guessed place."""
 
@@ -112,3 +129,20 @@ class GeocodingProvider:
         a provider may use them to constrain the search. Containment is
         still checked by the caller either way."""
         raise GeocoderError("not_connected")
+
+    def lookup_named_place(
+        self,
+        client: httpx.Client,
+        query: str,
+        *,
+        near: GeoPoint | None = None,
+        bounding_box: BoundingBox | None = None,
+        radius_meters: float | None = None,
+    ) -> NamedPlaceLookup:
+        """`search_named_place` with the reason when nothing was accepted. A
+        provider that can tell its reasons apart overrides this; the default
+        knows only that nothing came back. `radius_meters` (with `near` and no
+        bounding box) widens the search around `near`; a provider that cannot
+        honour it searches as `search_named_place` does."""
+        hit = self.search_named_place(client, query, near=near, bounding_box=bounding_box)
+        return NamedPlaceLookup(hit=hit, rejection=None if hit is not None else NAMED_PLACE_NO_RESULT)

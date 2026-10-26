@@ -7,6 +7,7 @@ from app.models.hotel_ratings import HotelRatingsStatus
 from app.models.planning_state import (
     DailyPlan,
     InterestCoverageEntry,
+    MustVisitStatusEntry,
     OverLimitWalkingLeg,
     VenueEvidenceEntry,
     PlanningStage,
@@ -25,6 +26,9 @@ from app.core.errors import DESTINATION_UNRESOLVED_MESSAGE
 from app.services.plan_quality_findings import build_plan_quality_findings, interest_coverage_entries
 from app.services.entity_collisions import scheduled_unresolved_collisions
 from app.services.must_visit_matching import must_visit_place_ids, resolve_must_visits
+from app.services import must_visit_status as mv_status
+from app.services.must_visit_status import NOT_ON_PLAN as MUST_VISIT_NOT_ON_PLAN
+from app.services.must_visit_status import must_visit_statuses_safely
 from app.services import venue_evidence
 from app.services.place_taxonomy import explicit_no_public_access
 from app.services.day_order_heuristics import GEOGRAPHIC_SPREAD_THRESHOLD_KM, day_spread_km
@@ -557,6 +561,11 @@ class PlanValidatorService(PlanningStageService):
         # there and back is not in the plan and is said to be unchecked.
         warnings.extend(_remote_day_issues(planning_state))
 
+        # Final Batch 1 (C): what the estimated visit times say -- a visit its
+        # own listed hours rule out at its planned time (kept because nothing
+        # else was possible), and a day that runs past its pace's window.
+        warnings.extend(_visit_time_issues(planning_state))
+
         captured_constraints: list[str] = []
         for constraint in planning_state.trip_request.constraints:
             if constraint not in captured_constraints:
@@ -604,33 +613,26 @@ class PlanValidatorService(PlanningStageService):
         # language, another word order), and that used to report a grounded,
         # scheduled must-visit as missing. A term that is grounded AND
         # scheduled raises nothing; only a real problem is a warning.
-        del must_visit_terms  # resolved through `resolve_must_visits` below
-        unscheduled = [resolution for resolution in resolve_must_visits(planning_state) if not resolution.scheduled]
-        unmatched_must_visit = [resolution.term for resolution in unscheduled]
-        grounded_but_unscheduled = [resolution.term for resolution in unscheduled if resolution.grounded]
+        del must_visit_terms  # resolved through `must_visit_statuses` below
+        # Final Batch 1 (A): reconciled against the FINAL itinerary, so a
+        # requested place that is scheduled is never also reported missing;
+        # what is not on the plan says why, in traveller wording.
+        must_visit_status = must_visit_statuses_safely(planning_state)
+        not_on_plan = [entry for entry in must_visit_status or [] if entry.status in MUST_VISIT_NOT_ON_PLAN]
 
-        if unmatched_must_visit:
-            unmatched_list = ", ".join(unmatched_must_visit)
+        if not_on_plan:
+            details = "; ".join(_must_visit_not_on_plan_text(entry, planning_state) for entry in not_on_plan)
             warnings.append(
                 ValidationIssue(
                     severity=ValidationSeverity.WARNING,
                     category="must_visit",
                     message=(
-                        f"The following must-visit place(s) were requested but were not "
-                        f"grounded/scheduled for this destination: {unmatched_list}. "
-                        f"They were not replaced with unrelated attractions."
-                        + (
-                            " Found by the provider but not scheduled: "
-                            + ", ".join(grounded_but_unscheduled)
-                            + "."
-                            if grounded_but_unscheduled
-                            else ""
-                        )
+                        f"Requested must-visit place(s) not on this plan: {details}. "
+                        "They were not replaced with unrelated attractions."
                     ),
                     affected_section="experience_plan",
                     suggested_fix=(
-                        "Search for these must-visit places directly, or connect a places "
-                        "provider with broader coverage."
+                        "Check these places yourself and add them to your day if you can reach them."
                     ),
                 )
             )
@@ -766,6 +768,8 @@ class PlanValidatorService(PlanningStageService):
                 if planning_state.experience_plan is not None
                 else None
             ),
+            # Presentation only: each requested must-visit, reconciled against the final plan.
+            must_visit_status=must_visit_status,
             over_limit_walking_legs=(
                 [
                     OverLimitWalkingLeg(
@@ -1043,16 +1047,103 @@ def _unrouted_must_visit_leg_issues(planning_state: PlanningState) -> list[Valid
     return issues
 
 
+def _visit_time_issues(planning_state: PlanningState) -> list[ValidationIssue]:
+    """From the estimated schedule (`services/visit_schedule`) only. Times are
+    estimates; a finding says so and never states that a place is open."""
+    plan = planning_state.experience_plan
+    if plan is None:
+        return []
+    must_visit_ids = must_visit_place_ids(planning_state)
+    evidence = {entry.experience_id: entry for entry in _stop_evidence_safely(planning_state)}
+    issues: list[ValidationIssue] = []
+    for day in plan.daily_plans:
+        section = f"experience_plan.daily_plans[{day.day_number}]"
+        for item in day.experiences:
+            if item.visit_time_status != "outside_listed_hours":
+                continue
+            entry = evidence.get(item.experience_id)
+            listed = ", ".join(entry.hours_on_day) if entry is not None else ""
+            kept = (
+                " It is kept because you asked for it."
+                if item.provider_place_id and str(item.provider_place_id) in must_visit_ids
+                else ""
+            )
+            issues.append(
+                ValidationIssue(
+                    severity=ValidationSeverity.WARNING,
+                    category="visit_outside_listed_hours",
+                    message=(
+                        f"Day {day.day_number}: at the estimated time of the visit to {item.name} (about "
+                        f"{item.start_time}), its listed opening hours that day"
+                        + (f" ({listed})" if listed else "")
+                        + f" do not leave time for a visit.{kept} Check the hours and plan this visit yourself."
+                    ),
+                    affected_section=section,
+                    suggested_fix="Visit it at a time its listed hours allow, or swap it with another stop.",
+                )
+            )
+        schedule = day.visit_schedule
+        if schedule is not None and schedule.exceeds_window:
+            issues.append(
+                ValidationIssue(
+                    severity=ValidationSeverity.WARNING,
+                    category="day_exceeds_time_window",
+                    message=(
+                        f"Day {day.day_number}: with estimated visit lengths and the travel times shown, this day "
+                        f"runs until about {schedule.ends_at}, later than a day planned from {schedule.window_start} "
+                        f"to {schedule.window_end} at this pace."
+                    ),
+                    affected_section=section,
+                    suggested_fix="Allow more time, or leave out a stop on this day.",
+                )
+            )
+    return issues
+
+
+def _must_visit_not_on_plan_text(entry: MustVisitStatusEntry, planning_state: PlanningState) -> str:
+    """One requested place that is not on the plan, and why (traveller wording)."""
+    destination = planning_state.trip_request.primary_destination.split(",")[0].strip()
+    away = f", about {entry.distance_km:.0f} km away" if entry.distance_km is not None else ""
+    if entry.status == mv_status.OUTSIDE_NOT_FEASIBLE:
+        road = f" (about {entry.drive_minutes} minutes each way by road)" if entry.drive_minutes is not None else ""
+        return (
+            f"{entry.term} is outside {destination}{away}; the trip there is longer than a single "
+            f"day's travel allows{road}"
+        )
+    if entry.status == mv_status.OUTSIDE_UNVERIFIED:
+        return f"{entry.term} is outside {destination}{away}; the trip there could not be checked"
+    if entry.status == mv_status.FOUND_NOT_SCHEDULED:
+        return f"{entry.term} was found but is not on this plan"
+    return f"no matching place was found for {entry.term}"
+
+
 def _remote_day_issues(planning_state: PlanningState) -> list[ValidationIssue]:
     """One warning per day whose located stops ALL lie beyond the planner's
     own pool reach (`services/remote_days`). It says only what is true of
     every such day: the journey to the day's area and back is not in the
     plan and has not been checked. No time, distance, mode or place to stay
     is stated; a day the traveller's must-visits put there is kept and says
-    so."""
+    so. Final Batch 1 (A): for a requested place outside the destination that
+    was planned as an excursion, the verified ROAD time from the destination
+    is stated -- a road route only, never a transport service."""
     issues: list[ValidationIssue] = []
+    excursions = {
+        entry.day_number: entry
+        for entry in must_visit_statuses_safely(planning_state) or []
+        if entry.status == mv_status.SCHEDULED_EXCURSION and entry.drive_minutes is not None
+    }
+    destination = planning_state.trip_request.primary_destination.split(",")[0].strip()
     for remote in remote_days_safely(planning_state):
-        if remote.located_stops > 1:
+        excursion = excursions.get(remote.day_number)
+        if excursion is not None:
+            body = (
+                f"{excursion.place_name} is outside {destination}"
+                + (f", about {excursion.distance_km:.0f} km away" if excursion.distance_km is not None else "")
+                + f". By road it is about {excursion.drive_minutes} minutes each way from the centre of "
+                f"{destination}; this time is not included in this day's figures, and how you travel there is "
+                "not arranged or checked. It is on this day because you asked for it."
+            )
+        elif remote.located_stops > 1:
             body = (
                 "All of this day's stops lie away from the area where most of this trip's places are. The travel "
                 "times shown cover only the moves between this day's stops: getting to this area and back is not "
@@ -1063,7 +1154,7 @@ def _remote_day_issues(planning_state: PlanningState) -> list[ValidationIssue]:
                 "This day's stop lies away from the area where most of this trip's places are. Getting there and "
                 "back is not included in this plan and has not been checked."
             )
-        if remote.requested_places:
+        if remote.requested_places and excursion is None:
             plural = len(remote.requested_places) > 1
             body += (
                 f" {' and '.join(remote.requested_places)} {'are' if plural else 'is'} on this day because you "
@@ -1097,12 +1188,12 @@ def _format_budget_amount(value: float) -> str:
 
 
 _NO_ROUTE_FEASIBILITY_DATA_MESSAGE = (
-    "Attractions have been scheduled into days, but route ordering, timing, "
-    "opening-hours, and feasibility checks are not implemented yet, so this plan "
-    "needs review before it can be considered ready."
+    "Attractions have been scheduled into days, but no route data was available to "
+    "check the travel feasibility between them, so visit times could only be estimated "
+    "up to each day's first stop and this plan needs review before it can be considered ready."
 )
 _NO_ROUTE_FEASIBILITY_DATA_SUGGESTED_FIX = (
-    "Implement route/timing feasibility validation before marking plans ready."
+    "Check how you will travel between the stops before following this plan."
 )
 _ROUTE_AWARE_SCHEDULING_SUGGESTED_FIX = (
     "Review route-aware sequencing (Section 166, applied only when "
@@ -1303,18 +1394,18 @@ def _build_holiday_warning(planning_state: PlanningState) -> ValidationIssue | N
         holiday_list = ", ".join(
             f"{holiday.date.isoformat()} ({holiday.name})" for holiday in holiday_context.holidays
         )
+        # Final Batch 1 (E): the plan DOES read each place's own listed hours
+        # (M2 Phase 3), including holiday hours where a place lists them; the
+        # old sentence saying no hours were checked was no longer true.
         message = (
-            "Provider-backed public holiday data is available for this trip, but the "
-            "itinerary has not been checked against venue closures, opening hours, or "
-            "crowd context yet -- review these dates manually: "
-            f"{holiday_list}."
+            f"Public holidays fall during this trip: {holiday_list}. Where a place lists "
+            "holiday opening hours, they were used for these dates; most places list none, "
+            "and crowds were not assessed -- check these dates before you go."
         )
     else:
         message = (
-            "Provider-backed public holiday data was checked for this trip's date "
-            "range, but no public holidays fall within it. The itinerary still has "
-            "not been checked against venue closures, opening hours, or crowd "
-            "context for any date, since that interpretation is not implemented yet."
+            "No public holidays fall within this trip's dates. Opening hours were checked "
+            "only where a place lists them, and crowds were not assessed."
         )
 
     return ValidationIssue(
@@ -1322,11 +1413,7 @@ def _build_holiday_warning(planning_state: PlanningState) -> ValidationIssue | N
         category="holidays",
         message=message,
         affected_section="experience_plan",
-        suggested_fix=(
-            "Implement holiday-aware itinerary checks (e.g. venue closures, opening "
-            "hours, or crowd context around public holidays) before treating this "
-            "plan as holiday-checked."
-        ),
+        suggested_fix="Check opening hours on public holidays directly with the places you plan to visit.",
     )
 
 
