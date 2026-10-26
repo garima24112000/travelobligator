@@ -834,6 +834,31 @@ export function travelerChangesUnavailable(
   return (reason && CHANGES_UNAVAILABLE[reason]) || DEFAULT_CHANGES_UNAVAILABLE;
 }
 
+// -- marking a place to keep (Final Batch 2) ---------------------------------------------------
+
+/** Whether a NEW keep marker may be offered. A keep only matters for applying requested changes (and
+ * while one is active no change is applied at all), so where applying is unavailable the control would
+ * do nothing and is not offered. Unknown (an older readiness) keeps the previous behaviour. A keep that
+ * is already stored is always shown and can always be removed. */
+export function keepControlAvailable(
+  readiness: Pick<RegenerationReadiness, "change_requests_applicable"> | null | undefined,
+): boolean {
+  return readiness?.change_requests_applicable !== false;
+}
+
+/** The accessible name of the "Keep this place" button: what a keep really does, nothing more. It
+ * starts with the visible text, so a speech-input user can say what they see (WCAG 2.5.3). */
+export function keepButtonLabel(placeName: string): string {
+  return `Keep this place: ${placeName}. While a place is kept, no requested change is applied`;
+}
+
+/** Traveler note above the list of kept places. */
+export function keptPlacesNote(changesApplicable: boolean): string {
+  return changesApplicable
+    ? "These places stay as they are. While any place is kept, requested changes cannot be applied; remove the keep first."
+    : "Requested changes are not applied to itineraries here, so keeping a place changes nothing. You can remove a keep at any time.";
+}
+
 // -- loading ------------------------------------------------------------------------
 
 // The pipeline stages the backend reports while generating, in traveler words.
@@ -908,6 +933,10 @@ export const BACKEND_UNREACHABLE = "BACKEND_UNREACHABLE";
 export const PLAN_NOT_GENERATED = "PLAN_NOT_GENERATED";
 export const PLAN_UNUSABLE = "PLAN_UNUSABLE";
 export const PLAN_INCOMPLETE = "PLAN_INCOMPLETE";
+// Final Batch 2 (a backend code): POST /generate for a trip that already has a usable plan. The
+// generate flow then simply loads that plan -- e.g. after a "Try again" whose earlier attempt finished
+// but could not be loaded.
+export const PLAN_ALREADY_GENERATED = "PLAN_ALREADY_GENERATED";
 
 /**
  * What a trip's summary says can be shown for it (P1C-2). Read from the backend's own fields only:

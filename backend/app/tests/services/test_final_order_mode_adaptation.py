@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -83,7 +84,9 @@ class _Run:
 
     def __init__(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, days: list[list[dict[str, Any]]], extra: list[dict[str, Any]] | None = None) -> None:
         self.network = _Network(routing=_routes)
-        store = ProviderCacheStore(tmp_path / f"cache-{id(self)}.sqlite3")
+        # A fresh cache per run: `id(self)` is reused once an earlier run is collected (see
+        # test_alternate_mode_priority_r1.py).
+        store = ProviderCacheStore(tmp_path / f"cache-{uuid.uuid4().hex}.sqlite3")
         self.gateway = ProviderGateway(routing=_routing(monkeypatch, self.network, store))
         self.context: GenerationProviderContext = _context(trip_days=len(days))
         self.service = RouteFeasibilityService(gateway=self.gateway)

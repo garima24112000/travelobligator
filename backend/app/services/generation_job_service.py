@@ -24,6 +24,7 @@ from app.core.errors import (
     generation_global_limit_error,
     generation_user_limit_error,
     job_already_running_error,
+    plan_already_generated_error,
     trip_not_found_error,
 )
 from app.models.generation_job import (
@@ -35,7 +36,7 @@ from app.models.generation_job import (
     mark_job_running,
     mark_job_succeeded,
 )
-from app.models.planning_state import PlanningStage
+from app.models.planning_state import PlanningStage, PlanningState
 from app.models.targeted_regeneration_runtime import TargetedRegenerationRuntimeStatus
 from app.repositories.admission import AdmissionPolicy, AdmissionRefusal, AdmissionRefusedError
 from app.repositories.errors import (
@@ -479,6 +480,34 @@ def ensure_generation_enabled() -> None:
             extra={"error_code": ErrorCode.GENERATION_DISABLED.value},
         )
         raise generation_disabled_error()
+
+
+def has_usable_generated_plan(planning_state: PlanningState) -> bool:
+    """Final Batch 2: whether `planning_state` already holds a FIRST plan that can be shown -- a recorded
+    version with a resolved destination, an experience plan and a validation report. A generation that
+    failed, was interrupted, could not resolve its destination or produced no destination context is
+    not one, so "Try again" on the same trip still builds it."""
+    destination = planning_state.destination_context
+    return (
+        bool(planning_state.version_history)
+        and planning_state.experience_plan is not None
+        and planning_state.validation_report is not None
+        and destination is not None
+        and destination.destination_resolution != "unresolved"
+    )
+
+
+def ensure_plan_not_yet_generated(trip_id: str) -> None:
+    """Raises `plan_already_generated_error()` (409) when the trip already has a usable plan: `POST
+    /generate` would replace it under the same version label without recording a revision. Called before
+    admission, so a refusal admits, stores and counts nothing."""
+    planning_state = get_planning_state_repository().get_by_trip_id(trip_id)
+    if planning_state is not None and has_usable_generated_plan(planning_state):
+        logger.info(
+            "Refused a generation request: the trip already has an itinerary.",
+            extra={"error_code": ErrorCode.PLAN_ALREADY_GENERATED.value},
+        )
+        raise plan_already_generated_error()
 
 
 def _create_job_or_conflict(job: GenerationJob) -> None:

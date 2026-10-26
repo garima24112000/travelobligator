@@ -60,13 +60,13 @@ test.describe("a real generated itinerary", () => {
     ]);
     await expect(page.getByText("9 scheduled places")).toBeVisible();
     for (const day of [1, 2, 3]) {
-      const stops = dayCard(page, day).getByRole("button", { name: /^Keep .* for future regeneration$/ });
-      await expect(stops).toHaveCount(3);
+      await expect(dayCard(page, day).getByTestId("scheduled-stop")).toHaveCount(3);
     }
     // every scheduled place appears exactly once across the trip
-    const names = await page.getByRole("button", { name: /^Keep .* for future regeneration$/ }).evaluateAll((buttons) =>
-      buttons.map((button) => (button.getAttribute("aria-label") ?? "").replace(/^Keep | for future regeneration$/g, "")),
-    );
+    const names = await page
+      .getByTestId("scheduled-stop")
+      .evaluateAll((stops) => stops.map((stop) => stop.getAttribute("data-stop-name") ?? ""));
+    expect(names).toHaveLength(9);
     expect(new Set(names).size).toBe(9);
     // nothing the providers did not supply is claimed
     await expect(page.getByText("Places come from map data. Ratings, prices and opening hours are not included.")).toBeVisible();
@@ -192,6 +192,109 @@ test.describe("a real generated itinerary", () => {
     await expect(page.getByText("Nearby food ideas").first()).toBeVisible();
     await expect(page.getByText("These are not reservations, ratings or recommendations.").first()).toBeVisible();
     await expect(page.getByText("Fixture Corner Bistro (restaurant)").first()).toBeVisible();
+  });
+});
+
+// -- marking a place to keep (Final Batch 2) ----------------------------------------------------------
+
+const MARK_KEPT_BUTTON = /^Keep this place: .*\. While a place is kept, no requested change is applied$/;
+
+async function firstScheduledStop(page: import("@playwright/test").Page, tripId: string) {
+  const response = await page.request.get(`/api/trips/${tripId}`);
+  expect(response.ok()).toBe(true);
+  const plans = (await response.json()).data.planning_state.experience_plan.daily_plans;
+  const stop = plans.flatMap((day: { experiences: { experience_id: string; name: string }[] }) => day.experiences)[0];
+  return stop as { experience_id: string; name: string };
+}
+
+test.describe("keeping a place", () => {
+  test("no keep control is offered where requested changes cannot be applied", async ({ page }) => {
+    // The offline backend runs the release configuration: saved requests are not applied.
+    await openGeneratedTrip(page);
+    await expect(page.getByTestId("scheduled-stop")).toHaveCount(9);
+    await expect(page.getByRole("button", { name: MARK_KEPT_BUTTON })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: /Keep this place|future regeneration/ })).toHaveCount(0);
+    await expect(page.getByText("Keep this place")).toHaveCount(0);
+  });
+
+  test("a keep that is already stored is still shown and can be removed", async ({ page }) => {
+    await signUpViaApi(page);
+    const tripId = await createTripViaApi(page);
+    await generateViaApi(page, tripId);
+    const stop = await firstScheduledStop(page, tripId);
+    const locked = await page.request.post(`/api/trips/${tripId}/locks`, {
+      data: { locked_item_type: "experience", locked_item_id: stop.experience_id, reason: "user_requested_keep" },
+    });
+    expect(locked.ok()).toBe(true);
+
+    await page.goto(`/?trip=${tripId}`);
+    await expect(page.getByRole("heading", { name: "Your itinerary, day by day" })).toBeVisible({ timeout: 20_000 });
+    const card = page.getByTestId("scheduled-stop").filter({ has: page.getByText(stop.name, { exact: false }) }).first();
+    await expect(card.getByText("Kept", { exact: true })).toBeVisible();
+    const remove = card.getByRole("button", { name: `Remove keep marker for ${stop.name}` });
+    await remove.click();
+    await expect(card.getByText("Keep marker removed.")).toBeVisible();
+    await expect(card.getByText("Kept", { exact: true })).toHaveCount(0);
+    // and, applying still being unavailable, no new keep is offered in its place
+    await expect(card.getByRole("button", { name: MARK_KEPT_BUTTON })).toHaveCount(0);
+  });
+
+  test("where changes can be applied, the control says what a keep does", async ({ page }) => {
+    await signUpViaApi(page);
+    const tripId = await createTripViaApi(page);
+    await generateViaApi(page, tripId);
+    await page.route(`**/api/trips/${tripId}/regeneration-readiness`, async (route) => {
+      const response = await route.fetch();
+      const body = await response.json();
+      if (response.ok()) {
+        body.data.regeneration_readiness.change_requests_applicable = true;
+        body.data.regeneration_readiness.change_requests_unavailable_reason = null;
+      }
+      await route.fulfill({ response, json: body });
+    });
+    await page.goto(`/?trip=${tripId}`);
+    await expect(page.getByRole("heading", { name: "Your itinerary, day by day" })).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByRole("button", { name: MARK_KEPT_BUTTON })).toHaveCount(9);
+    await expect(page.getByRole("button", { name: /future regeneration/ })).toHaveCount(0);
+  });
+});
+
+test.describe("development-only actions in Developer view", () => {
+  const REFRESH = { name: "Refresh AI promotion report" };
+
+  async function openDeveloperView(page: import("@playwright/test").Page, refreshAvailable?: boolean) {
+    await signUpViaApi(page);
+    const tripId = await createTripViaApi(page);
+    await generateViaApi(page, tripId);
+    // The offline backend runs no AI discovery, and the promotion controls are shown only for a review
+    // that has candidate data: mark the real review as having some (still no item). The availability
+    // flag is the backend's own unless a test sets what a production backend answers (which also
+    // serves no such route).
+    await page.route(`**/api/trips/${tripId}/ai-candidate-review`, async (route) => {
+      const response = await route.fetch();
+      const body = await response.json();
+      if (response.ok()) {
+        body.data.ai_candidate_review_report.status = "success";
+        if (refreshAvailable !== undefined) body.data.promotion_refresh_available = refreshAvailable;
+      }
+      await route.fulfill({ response, json: body });
+    });
+    await page.goto(`/?trip=${tripId}`);
+    await expect(page.getByRole("heading", { name: "Your itinerary, day by day" })).toBeVisible({ timeout: 20_000 });
+    await page.getByRole("button", { name: "Developer view" }).click();
+    await expect(page.getByRole("heading", { name: "AI candidate review" })).toBeVisible();
+  }
+
+  test("the promotion refresh is offered only where the backend has it", async ({ page }) => {
+    await openDeveloperView(page); // the offline backend runs as development
+    await expect(page.getByRole("button", REFRESH)).toBeVisible();
+    await expect(page.getByText(/Development only\. Refreshing only recomputes/)).toBeVisible();
+  });
+
+  test("where the refresh does not exist, no button is offered", async ({ page }) => {
+    await openDeveloperView(page, false);
+    await expect(page.getByRole("button", REFRESH)).toHaveCount(0);
+    await expect(page.getByText("The report above is the one recorded when this itinerary was built.")).toBeVisible();
   });
 });
 

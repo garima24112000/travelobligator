@@ -1358,6 +1358,8 @@ export type AICandidateReviewReport = {
 export type AICandidateReviewData = {
   trip_id: string;
   ai_candidate_review_report: AICandidateReviewReport;
+  // Final Batch 2: false in production, where POST /ai-candidate-promotions does not exist.
+  promotion_refresh_available?: boolean;
 };
 
 // One AI candidate that cleared Step 170B's deterministic eligibility

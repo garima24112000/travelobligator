@@ -68,9 +68,11 @@ def test_calling_generate_again_does_not_duplicate_v1(
     assert len(before_version_history) == 1
     first_version_id = before_version_history[0]["version_id"]
 
+    # Final Batch 2: a trip with a plan is not built again through /generate at all.
     second_generate_response = client.post(f"/trips/{generated_trip_id}/generate")
-    assert second_generate_response.status_code == 200
-    after_version_history = second_generate_response.json()["data"]["planning_state"][
+    assert second_generate_response.status_code == 409
+    assert second_generate_response.json()["errors"][0]["code"] == "PLAN_ALREADY_GENERATED"
+    after_version_history = client.get(f"/trips/{generated_trip_id}").json()["data"]["planning_state"][
         "version_history"
     ]
 

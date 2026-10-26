@@ -597,7 +597,11 @@ def test_RACE_a_generation_request_that_loses_to_a_deletion_is_a_404_not_a_503(
     # nobody else was affected, and their generation is still admitted and runs
     assert _stored_for(bystander_trip) == bystander_before
     monkeypatch.setattr(planning_orchestrator, "generate_full_plan_via_langgraph", real_plan)
-    admitted = bystander.post(f"/trips/{bystander_trip}/generate")
+    # Final Batch 2: their existing trip already has its plan (409 PLAN_ALREADY_GENERATED), so the
+    # proof that their generation is still admitted and runs is a new trip of theirs.
+    assert bystander.post(f"/trips/{bystander_trip}/generate").json()["errors"][0]["code"] == "PLAN_ALREADY_GENERATED"
+    bystander_new_trip = bystander.post("/trips", json=create_trip_payload()).json()["data"]["trip_id"]
+    admitted = bystander.post(f"/trips/{bystander_new_trip}/generate")
     assert admitted.status_code == 202
     job_id = admitted.json()["data"]["job_id"]
     assert _scalar("select status from generation_jobs where job_id = :j", j=job_id) == "succeeded"

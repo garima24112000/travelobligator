@@ -556,6 +556,24 @@ def job_already_running_error(trip_id: str) -> AppError:
     )
 
 
+PLAN_ALREADY_GENERATED_MESSAGE = (
+    "This trip already has an itinerary, so it was not built again. Nothing was changed."
+)
+
+
+def plan_already_generated_error() -> AppError:
+    """Final Batch 2: 409 -- `POST /trips/{trip_id}/generate` for a trip that already has a usable
+    plan. Building it again would replace the itinerary under its existing version label without
+    recording a revision (the saved workspace would no longer equal its branch head) and would spend
+    a generation allowance. Raised before any job is admitted, so nothing is stored or counted."""
+    return AppError(
+        code=ErrorCode.PLAN_ALREADY_GENERATED,
+        message=PLAN_ALREADY_GENERATED_MESSAGE,
+        status_code=status.HTTP_409_CONFLICT,
+        field="trip_id",
+    )
+
+
 def branch_not_found_error(trip_id: str, branch_id: str) -> AppError:
     """404 -- no `ItineraryBranch` exists with this id for this trip
     (Section 199A)."""
