@@ -120,7 +120,7 @@ The browser does not normally call the Render backend directly.
 `/api/:path*` rewrite; the runtime `API_BASE_URL=/api` tells the browser to use it. No backend credential
 exists in the frontend environment.
 
-**Backend (Render).** Built from `backend/Dockerfile` (`python:3.11.17-slim-bookworm`, multi-stage, non-root
+**Backend (Render).** Built from `backend/Dockerfile` (`python:3.11.18-slim-bookworm`, multi-stage, non-root
 uid 10001, `python -m app.serve`). `render.yaml` describes one free web service and holds no secret value.
 `APP_ENV=production` turns on strict startup validation: PostgreSQL only, no SQLite cache, debug off, a
 Secure/HttpOnly session cookie, a long session secret, https-only explicit CORS origins. Every response is
