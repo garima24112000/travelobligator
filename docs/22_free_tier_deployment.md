@@ -776,8 +776,12 @@ stage off; `LLM_FAILOVER_ENABLED=false` the explicit way to run one provider.
 2. Sync the Blueprint (or copy the table above into the dashboard). A sync sets the listed variables to
    these values; if the dashboard currently holds a different `GROQ_MODEL` or `GEMINI_MODEL`, decide which
    is intended before syncing.
-3. If `AI_FEEDBACK_INTERPRETER_ENABLED` or `TARGETED_REGENERATION_ENABLED` is set in the dashboard, it is
-   not touched by a sync; an enabled feedback interpreter needs its provider and that provider's key.
+3. *(Final Batch 2.)* `render.yaml` now pins `TARGETED_REGENERATION_ENABLED`, `AI_FEEDBACK_INTERPRETER_ENABLED`,
+   `KIWI_MCP_ENABLED`, `FLIGHT_AIRPORT_LOOKUP_PROVIDER`, `FLIGHT_PROVIDER`, `ACCOMMODATION_PROVIDER` and
+   `HOTEL_RATINGS_PROVIDER` off, so a sync sets them. Without a sync, check the dashboard first: production
+   refuses to start with any of the first four switched on unless `PRODUCTION_ALLOW_UNEVALUATED_INTEGRATIONS`
+   names it ([`36_final_batch2_reliability.md`](36_final_batch2_reliability.md)). An enabled feedback
+   interpreter also still needs its provider and that provider's key.
 4. Apply the pending migrations (sections 13A, 13B), deploy the backend, then check
    `curl -sI <RENDER_BACKEND_ORIGIN>/health` for the four backend headers.
 5. Deploy the frontend, then check `curl -sI <VERCEL_FRONTEND_ORIGIN>/` for the page headers and

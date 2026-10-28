@@ -332,7 +332,8 @@ test.describe("keyboard", () => {
       page.getByRole("form", { name: "Create a new trip" }).getByLabel("Destination"),
       page.getByRole("form", { name: "Create a new trip" }).locator('button[type="submit"]'),
       page.getByRole("button", { name: "Developer view" }),
-      page.getByRole("button", { name: /^Keep .* for future regeneration$/ }).first(),
+      // (Final Batch 2: the per-stop keep control is not offered where requested changes cannot be
+      // applied -- the offline backend's release configuration; itinerary.spec.ts "keeping a place".)
       page.getByRole("link", { name: /^Open .* in OpenStreetMap$/ }).first(),
       page.locator("details").filter({ hasText: "Your data and privacy" }).locator("summary"),
       page.getByRole("button", { name: "Delete my account…" }),

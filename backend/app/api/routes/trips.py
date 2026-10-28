@@ -353,9 +353,15 @@ def generate_trip_plan(
     rejected with `JOB_ALREADY_RUNNING` (409) rather than starting a
     second one. The default, synchronous behavior below is completely
     unchanged either way.
+
+    Final Batch 2: builds a trip's FIRST plan only. A trip that already has a usable plan is refused
+    with 409 `PLAN_ALREADY_GENERATED` before any job is admitted (rebuilding it here would replace the
+    itinerary under its existing version label without a revision); changes go through
+    `POST /regenerate`. A failed, interrupted, unresolved or unusable generation can be retried.
     """
     # The owner's switch applies to both branches (the job path checks it again at admission).
     generation_job_service.ensure_generation_enabled()
+    generation_job_service.ensure_plan_not_yet_generated(trip_id)
     if get_settings().async_generation_enabled:
         job = generation_job_service.start_generate_job(
             trip_id=trip_id, owner_id=current_user.user_id, background_tasks=background_tasks
@@ -1365,13 +1371,25 @@ def get_ai_candidate_review(
     data = AICandidateReviewResponseData(
         trip_id=trip_id,
         ai_candidate_review_report=report,
+        promotion_refresh_available=not is_production(get_settings()),
     )
     return success_response(data)
+
+
+def _development_only() -> None:
+    """P0: a development/inspection endpoint does not exist in production. It answers exactly as an
+    unknown path does (FastAPI's own 404), and -- as a path-decorator dependency -- before the session
+    or the trip is even looked at, so it reveals nothing and runs nothing."""
+    if is_production(get_settings()):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
 
 
 @router.post(
     "/{trip_id}/ai-candidate-promotions",
     response_model=ApiResponse[AICandidatePromotionResponseData],
+    # Final Batch 2: a manual recompute of a field that is revision content, saved without a revision --
+    # the saved workspace then no longer equals its branch head. Development inspection only.
+    dependencies=[Depends(_development_only)],
 )
 def promote_ai_candidates(
     trip_id: str, current_user: PublicUser = Depends(require_trip_owner)
@@ -1405,14 +1423,6 @@ def promote_ai_candidates(
         ai_candidate_promotion_report=planning_state.ai_candidate_promotion_report,
     )
     return success_response(data)
-
-
-def _development_only() -> None:
-    """P0: a development/inspection endpoint does not exist in production. It answers exactly as an
-    unknown path does (FastAPI's own 404), and -- as a path-decorator dependency -- before the session
-    or the trip is even looked at, so it reveals nothing and runs nothing."""
-    if is_production(get_settings()):
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
 
 
 @router.post(

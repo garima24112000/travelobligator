@@ -285,14 +285,19 @@ def test_repair_runs_on_the_reasoning_provider() -> None:
 
 
 def test_the_optional_feedback_interpreter_is_never_required_but_is_checked_when_on() -> None:
-    assert _from_render().ai_feedback_interpreter_enabled is False  # not part of render.yaml
-    message = _rejected(AI_FEEDBACK_INTERPRETER_ENABLED="true")
+    # Final Batch 2: render.yaml pins it off, and switching it on needs an explicit allowance as well.
+    assert _from_render().ai_feedback_interpreter_enabled is False
+    allowed = dict(PRODUCTION_ALLOW_UNEVALUATED_INTEGRATIONS="feedback_interpreter")
+    message = _rejected(AI_FEEDBACK_INTERPRETER_ENABLED="true", **allowed)
     assert "the feedback interpreter stage is switched on but AI_FEEDBACK_INTERPRETER_PROVIDER" in message
     assert "ANTHROPIC_API_KEY" in _rejected(
-        AI_FEEDBACK_INTERPRETER_ENABLED="true", AI_FEEDBACK_INTERPRETER_PROVIDER="anthropic"
+        AI_FEEDBACK_INTERPRETER_ENABLED="true", AI_FEEDBACK_INTERPRETER_PROVIDER="anthropic", **allowed
+    )
+    assert "PRODUCTION_ALLOW_UNEVALUATED_INTEGRATIONS=feedback_interpreter" in _rejected(
+        AI_FEEDBACK_INTERPRETER_ENABLED="true", AI_FEEDBACK_INTERPRETER_PROVIDER="groq"
     )
     validate_runtime_configuration(
-        _from_render(AI_FEEDBACK_INTERPRETER_ENABLED="true", AI_FEEDBACK_INTERPRETER_PROVIDER="groq")
+        _from_render(AI_FEEDBACK_INTERPRETER_ENABLED="true", AI_FEEDBACK_INTERPRETER_PROVIDER="groq", **allowed)
     )
 
 

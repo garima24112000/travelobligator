@@ -640,6 +640,8 @@ def test_a_job_for_a_trip_deleted_under_the_request_is_a_404(
     trip_id = _new_trip(client)
     assert client.post(f"/trips/{trip_id}/generate").status_code == 200
     assert client.post(f"/trips/{trip_id}/feedback", json={"feedback_text": "Make it less packed"}).status_code == 200
+    # Final Batch 2: /generate admits only a trip without a plan, so its race is shown on one of those.
+    unplanned_trip_id = _new_trip(client)
     _env(monkeypatch, ASYNC_GENERATION_ENABLED="true")
 
     def gone(job, policy, now):
@@ -650,9 +652,9 @@ def test_a_job_for_a_trip_deleted_under_the_request_is_a_404(
     monkeypatch.setattr(planning_orchestrator, "generate_full_plan_via_langgraph", lambda trip: work.append("plan"))
     monkeypatch.setattr(planning_orchestrator, "rerun_affected_stages", lambda *a, **k: work.append("rerun"))
 
-    for response in (
-        client.post(f"/trips/{trip_id}/generate"),
-        client.post(f"/trips/{trip_id}/regenerate", json={"confirm": True}),
+    for trip_id, response in (
+        (unplanned_trip_id, client.post(f"/trips/{unplanned_trip_id}/generate")),
+        (trip_id, client.post(f"/trips/{trip_id}/regenerate", json={"confirm": True})),
     ):
         assert response.status_code == 404, response.text
         assert response.json()["errors"] == [

@@ -73,6 +73,7 @@ import {
   GETTING_AROUND_DISCLAIMER,
   GETTING_AROUND_HEADING,
   LOADING_DEFAULT_MESSAGE,
+  PLAN_ALREADY_GENERATED,
   PLAN_INCOMPLETE,
   PLAN_NOT_GENERATED,
   PLAN_UNUSABLE,
@@ -83,6 +84,9 @@ import {
   loadingStageLabel,
   planAvailability,
   currencyMissingNotice,
+  keepButtonLabel,
+  keepControlAvailable,
+  keptPlacesNote,
   routeReportSummary,
   travelerChangeRefusal,
   travelerChangesUnavailable,
@@ -239,6 +243,8 @@ type PlanResult = {
   providerUsageReport: ProviderUsageReport | null;
   aiCandidateReviewReport: AICandidateReviewReport | null;
   aiCandidatePromotionReport: AICandidatePromotionReport | null;
+  // Final Batch 2: false where the development-only promotion refresh does not exist.
+  aiCandidatePromotionRefreshAvailable: boolean;
   routeAwareSequencingReport: RouteAwareSequencingReport | null;
   routeFeasibilityReport: RouteFeasibilityReport | null;
   travelTimeBufferReport: TravelTimeBufferReport | null;
@@ -2180,12 +2186,18 @@ function AIPromotedBadge({ experience }: { experience: ExperienceItem }) {
  * provider coverage, or route feasibility, and never claims the plan was
  * regenerated (see app.tests.api.test_trip_locks.
  * test_locking_does_not_modify_generated_plan_sections).
+ *
+ * Final Batch 2: `canMarkKeep` (`keepControlAvailable`) is false where
+ * requested changes cannot be applied -- a new keep would do nothing there,
+ * so it is not offered. A keep that is already stored is still shown and can
+ * still be removed.
  */
 function ScheduledExperienceCard({
   experience,
   orderNumber,
   tripId,
   activeLock,
+  canMarkKeep,
   onLockChange,
   mode = "developer",
 }: {
@@ -2193,6 +2205,7 @@ function ScheduledExperienceCard({
   orderNumber: number;
   tripId: string;
   activeLock: UserLock | null;
+  canMarkKeep: boolean;
   mode?: "user" | "developer";
   onLockChange: (
     userLocks: UserLock[],
@@ -2270,7 +2283,11 @@ function ScheduledExperienceCard({
   }
 
   return (
-    <li className="rounded-lg border border-white/10 bg-slate-900/60 p-3 text-sm">
+    <li
+      data-testid="scheduled-stop"
+      data-stop-name={experience.name}
+      className="rounded-lg border border-white/10 bg-slate-900/60 p-3 text-sm"
+    >
       <div className="flex items-start gap-3">
         <span className="flex h-6 w-6 flex-none items-center justify-center rounded-full border border-cyan-300/40 bg-slate-950 text-xs font-semibold text-cyan-200">
           {orderNumber}
@@ -2315,11 +2332,12 @@ function ScheduledExperienceCard({
             />
           </div>
 
+          {(activeLock || canMarkKeep) && (
           <div className="mt-2 flex flex-wrap items-center gap-2">
             {activeLock ? (
               <>
                 <span className="rounded-full border border-emerald-300/40 bg-slate-950 px-3 py-1 text-xs font-semibold text-emerald-200">
-                  {mode === "user" ? "Kept" : "Kept for future regeneration"}
+                  {mode === "user" ? "Kept" : "Kept (blocks applying changes)"}
                 </span>
                 <button
                   type="button"
@@ -2336,13 +2354,14 @@ function ScheduledExperienceCard({
                 type="button"
                 onClick={() => void handleKeepThisPlace()}
                 disabled={isSubmittingLock}
-                aria-label={`Keep ${experience.name} for future regeneration`}
+                aria-label={keepButtonLabel(experience.name)}
                 className={`rounded-full border border-cyan-300/40 bg-slate-900 px-3 py-1 text-xs font-semibold text-cyan-200 transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50 ${FOCUS_RING_CLASSNAME}`}
               >
                 {isSubmittingLock ? "Saving..." : "Keep this place"}
               </button>
             )}
           </div>
+          )}
 
           {lockErrorMessage && (
             <p className="mt-1 break-words text-xs text-red-300">{lockErrorMessage}</p>
@@ -3938,16 +3957,22 @@ function PromotedAICandidateCard({
  * only after being AI-proposed, provider-grounded, quality-approved, and
  * deterministically promoted by the backend -- an AI suggestion alone is
  * never enough.
+ *
+ * Final Batch 2: `refreshAvailable` is the backend's `promotion_refresh_available`. The refresh is a
+ * development-only tool (it does not exist in production), so where it is unavailable no button is
+ * offered.
  */
 function AICandidateReviewSection({
   tripId,
   reviewReport,
   promotionReport,
+  refreshAvailable,
   onPromotionReportChange,
 }: {
   tripId: string;
   reviewReport: AICandidateReviewReport | null;
   promotionReport: AICandidatePromotionReport | null;
+  refreshAvailable: boolean;
   onPromotionReportChange: (report: AICandidatePromotionReport) => void;
 }) {
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -4049,24 +4074,34 @@ function AICandidateReviewSection({
             )}
           </dl>
 
-          <div className="mt-4 flex flex-wrap items-center gap-3">
-            <button
-              type="button"
-              onClick={() => void handleRefreshPromotions()}
-              disabled={isRefreshing}
-              className={`rounded-full border border-cyan-300/40 bg-slate-900 px-3 py-1 text-xs font-semibold text-cyan-200 transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50 ${FOCUS_RING_CLASSNAME}`}
-            >
-              {isRefreshing ? "Refreshing..." : "Refresh AI promotion report"}
-            </button>
-            {refreshError && (
-              <p className="break-words text-xs text-red-300">{refreshError}</p>
-            )}
-          </div>
-          <p className="mt-2 text-[11px] text-slate-500">
-            Refreshing only recomputes which already-grounded candidates are
-            eligible/promoted -- it never calls an AI provider and never
-            schedules anything into the itinerary by itself.
-          </p>
+          {refreshAvailable ? (
+            <>
+              <div className="mt-4 flex flex-wrap items-center gap-3">
+                <button
+                  type="button"
+                  onClick={() => void handleRefreshPromotions()}
+                  disabled={isRefreshing}
+                  className={`rounded-full border border-cyan-300/40 bg-slate-900 px-3 py-1 text-xs font-semibold text-cyan-200 transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50 ${FOCUS_RING_CLASSNAME}`}
+                >
+                  {isRefreshing ? "Refreshing..." : "Refresh AI promotion report"}
+                </button>
+                {refreshError && (
+                  <p className="break-words text-xs text-red-300">{refreshError}</p>
+                )}
+              </div>
+              <p className="mt-2 text-[11px] text-slate-500">
+                Development only. Refreshing only recomputes which already-grounded
+                candidates are eligible/promoted -- it never calls an AI provider and
+                never schedules anything into the itinerary by itself. It records no
+                new version, so this trip&apos;s saved state then differs from its
+                recorded revision.
+              </p>
+            </>
+          ) : (
+            <p className="mt-4 text-[11px] text-slate-500">
+              The report above is the one recorded when this itinerary was built.
+            </p>
+          )}
 
           <div className="mt-4">
             <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
@@ -6680,6 +6715,8 @@ async function loadPlanResult(tripId: string): Promise<PlanResult> {
     inventorySufficiencyReport: trip.planning_state.inventory_sufficiency_report ?? null,
     providerUsageReport: trip.planning_state.provider_usage_report ?? null,
     aiCandidateReviewReport: aiCandidateReview.ai_candidate_review_report,
+    // absent (an older backend) = not offered: the button only appears where the backend says it exists
+    aiCandidatePromotionRefreshAvailable: aiCandidateReview.promotion_refresh_available === true,
     aiCandidatePromotionReport:
       trip.planning_state.ai_candidate_promotion_report,
     routeAwareSequencingReport:
@@ -6756,12 +6793,15 @@ function LockedItemsSummarySection({
   tripId,
   userLocks,
   dailyPlans,
+  changesApplicable,
   onLockChange,
   mode = "developer",
 }: {
   tripId: string;
   userLocks: UserLock[];
   dailyPlans: DailyPlan[];
+  // Final Batch 2: `keepControlAvailable(readiness)` -- whether requested changes can be applied.
+  changesApplicable: boolean;
   onLockChange: (
     userLocks: UserLock[],
     planDiffPreview: PlanDiffPreview,
@@ -6823,12 +6863,12 @@ function LockedItemsSummarySection({
   return (
     <div className="rounded-2xl border border-white/10 bg-white/5 p-4 sm:p-5">
       <h2 className="text-lg font-semibold">
-        {isTraveler ? "Places you asked to keep" : "Kept for future regeneration"}
+        {isTraveler ? "Places you asked to keep" : "Keep markers"}
       </h2>
       <p className="mt-1 text-xs text-amber-300/90">
         {isTraveler
-          ? "These places stay as they are. While any place is kept, requested changes cannot be applied; remove the keep first."
-          : "These keep markers are stored for future regeneration. They do not change the current plan yet."}
+          ? keptPlacesNote(changesApplicable)
+          : "An active keep marker blocks applying requested changes entirely; it never preserves a place through a regeneration. Keep markers do not change the current plan."}
       </p>
 
       {locks.length === 0 ? (
@@ -8220,9 +8260,18 @@ export default function Home() {
           });
       }, 700);
 
-      const response = await generatePlan(tripId);
+      // Final Batch 2: a trip that already has its itinerary (an earlier attempt finished but could
+      // not be loaded) is not built again -- the backend refuses with PLAN_ALREADY_GENERATED and
+      // the existing plan is loaded below instead.
+      let response: Awaited<ReturnType<typeof generatePlan>> | null;
+      try {
+        response = await generatePlan(tripId);
+      } catch (err) {
+        if (!(err instanceof ApiRequestError && err.code === PLAN_ALREADY_GENERATED)) throw err;
+        response = null;
+      }
 
-      if (isStartJobResponseData(response)) {
+      if (response !== null && isStartJobResponseData(response)) {
         // Async mode (Step 186C): a job was created, not completed --
         // never treat "request accepted" as "itinerary ready." Poll the
         // job until it reaches a terminal status, alongside the
@@ -8364,8 +8413,8 @@ export default function Home() {
       </p>
       {mode === "developer" && (
         <p className="mt-1 text-xs text-amber-300/90">
-          Keep markers are stored for future regeneration. They do not
-          change the current plan.
+          Keep markers do not change the current plan; an active one blocks
+          applying requested changes.
         </p>
       )}
       {mode === "user" && (
@@ -8545,6 +8594,7 @@ export default function Home() {
                             result.userLocks,
                             experience.experience_id,
                           )}
+                          canMarkKeep={keepControlAvailable(result.regenerationReadiness)}
                           onLockChange={(
                             userLocks,
                             planDiffPreview,
@@ -9700,6 +9750,7 @@ PY`}
                   tripId={result.summary.trip_id}
                   userLocks={result.userLocks}
                   dailyPlans={result.dailyPlans}
+                  changesApplicable={keepControlAvailable(result.regenerationReadiness)}
                   onLockChange={(userLocks, planDiffPreview, regenerationReadiness) =>
                     setResult((previous) =>
                       previous
@@ -9771,6 +9822,7 @@ PY`}
                   tripId={result.summary.trip_id}
                   reviewReport={result.aiCandidateReviewReport}
                   promotionReport={result.aiCandidatePromotionReport}
+                  refreshAvailable={result.aiCandidatePromotionRefreshAvailable}
                   onPromotionReportChange={(report) =>
                     setResult((previous) =>
                       previous
@@ -9839,6 +9891,7 @@ PY`}
                     tripId={result.summary.trip_id}
                     userLocks={result.userLocks}
                     dailyPlans={result.dailyPlans}
+                    changesApplicable={keepControlAvailable(result.regenerationReadiness)}
                     onLockChange={(userLocks, planDiffPreview, regenerationReadiness) =>
                       setResult((previous) =>
                         previous

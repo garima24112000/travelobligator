@@ -141,6 +141,26 @@ services:
         value: gemini
       - key: GEMINI_MODEL
         value: gemini-3.5-flash-lite
+      # Final Batch 2: what the release does NOT run, written out so a dashboard value cannot differ from
+      # the evaluated configuration unnoticed. Production refuses to start with any of the first four on
+      # unless PRODUCTION_ALLOW_UNEVALUATED_INTEGRATIONS names it (docs/36_final_batch2_reliability.md).
+      # Saved change requests are not applied (targeted regeneration and its interpreter are unevaluated);
+      # Kiwi's terms of use are unconfirmed and the airport data is not packaged; there is no permitted
+      # live stay, flight or hotel-rating source, and manually supplied files are never used here.
+      - key: TARGETED_REGENERATION_ENABLED
+        value: "false"
+      - key: AI_FEEDBACK_INTERPRETER_ENABLED
+        value: "false"
+      - key: KIWI_MCP_ENABLED
+        value: "false"
+      - key: FLIGHT_AIRPORT_LOOKUP_PROVIDER
+        value: not_connected
+      - key: FLIGHT_PROVIDER
+        value: not_connected
+      - key: ACCOMMODATION_PROVIDER
+        value: not_connected
+      - key: HOTEL_RATINGS_PROVIDER
+        value: not_connected
       # ---- secrets (dashboard only)
       - key: DATABASE_URL
         sync: false

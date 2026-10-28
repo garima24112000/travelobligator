@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -77,7 +78,9 @@ class _Run:
         failing_drive_origin_lat: float | None = None,
     ) -> None:
         self.network = _Network(routing=_routes(failing_drive_origin_lat))
-        store = ProviderCacheStore(tmp_path / f"cache-{id(self)}.sqlite3")
+        # A fresh cache per run: `id(self)` is reused once an earlier run is collected, which made a later
+        # run read the earlier one's cached routes and send fewer requests (an intermittent failure).
+        store = ProviderCacheStore(tmp_path / f"cache-{uuid.uuid4().hex}.sqlite3")
         self.gateway = ProviderGateway(routing=_routing(monkeypatch, self.network, store))
         self.context = _context(trip_days=len(days))
         self.context.alternate_mode_requests_left = allowance

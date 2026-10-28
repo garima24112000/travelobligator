@@ -90,6 +90,7 @@ def test_startup_summary_is_a_fixed_set_of_safe_scalars() -> None:
         "persistence_backend", "provider_cache_backend", "geocoding_provider", "places_provider", "routing_provider",
             "async_generation_enabled", "metrics_enabled", "migration_head", "lease_seconds",
         "db_pool_size", "db_max_overflow", "db_max_connections", "db_statement_timeout_ms", "db_lock_timeout_ms",
+        "production_integration_overrides",
     }
     text = repr(summary)
     assert _DB_SECRET not in text and _REDIS_SECRET not in text and "postgresql://" not in text

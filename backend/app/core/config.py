@@ -204,6 +204,16 @@ class Settings(BaseSettings):
     production_allow_ai_stages_disabled: bool = Field(
         default=False, alias="PRODUCTION_ALLOW_AI_STAGES_DISABLED"
     )
+    # Final Batch 2: with APP_ENV=production, the integrations the release was NOT evaluated with
+    # (targeted regeneration, the AI feedback interpreter, Kiwi flight search, the OurAirports airport
+    # lookup) stop startup when switched on -- a dashboard value can never enable one quietly. This is
+    # the ONLY way to allow one on purpose: a comma-separated list naming each allowed integration
+    # (`targeted_regeneration`, `feedback_interpreter`, `kiwi_flights`, `airport_lookup`); an unknown
+    # name stops startup. It relaxes that one check only: every other production rule (a switched-on
+    # stage's provider and key, the beta access, the cost limits) still applies.
+    production_allow_unevaluated_integrations: str = Field(
+        default="", alias="PRODUCTION_ALLOW_UNEVALUATED_INTEGRATIONS"
+    )
     # A provider whose known remaining quota is at or under this share of its
     # limit is DRAINING: later stages prefer the other provider.
     llm_quota_reserve_ratio: float = Field(default=0.10, alias="LLM_QUOTA_RESERVE_RATIO", ge=0.0, lt=1.0)

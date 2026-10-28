@@ -14,7 +14,8 @@ cannot work, instead of letting them surprise an operator later:
   * Section 203B: with `APP_ENV=production` the development-only choices are rejected outright
     (Local JSON, SQLite provider cache, debug mode, insecure/cross-site session cookie, missing or
     short session secret, non-https CORS origin, the public Nominatim geocoder, Geoapify without its
-    key) -- see `production_configuration_problems`.
+    key) -- see `production_configuration_problems`; and (Final Batch 2) an integration the release was
+    not evaluated with, unless `PRODUCTION_ALLOW_UNEVALUATED_INTEGRATIONS` names it.
 
 Per-field bounds (persistence URL shape, REDIS_URL shape, lease >= 3 s, timeouts > 0) are enforced by
 `Settings` / `core.persistence` / `core.provider_cache`. `startup_config_summary` is the ONLY thing
@@ -155,6 +156,49 @@ def production_configuration_problems(settings: Settings) -> list[str]:
         problems.append(f"OPS_TOKEN must be at least {MIN_OPS_TOKEN_LENGTH} characters when set.")
     problems.extend(_production_abuse_limit_problems(settings))
     problems.extend(_production_model_stage_problems(settings))
+    problems.extend(_production_unevaluated_integration_problems(settings))
+    return problems
+
+
+# Final Batch 2: integrations outside the evaluated release configuration: (name used in
+# PRODUCTION_ALLOW_UNEVALUATED_INTEGRATIONS, the env names that switch it on, is it switched on).
+_UNEVALUATED_INTEGRATIONS = (
+    ("targeted_regeneration", "TARGETED_REGENERATION_ENABLED",
+     lambda s: s.targeted_regeneration_enabled),
+    ("feedback_interpreter", "AI_FEEDBACK_INTERPRETER_ENABLED",
+     lambda s: s.ai_feedback_interpreter_enabled),
+    ("kiwi_flights", "FLIGHT_PROVIDER=kiwi_mcp / KIWI_MCP_ENABLED",
+     lambda s: (s.flight_provider or "").strip().lower() == "kiwi_mcp" or s.kiwi_mcp_enabled),
+    ("airport_lookup", "FLIGHT_AIRPORT_LOOKUP_PROVIDER",
+     lambda s: s.flight_airport_lookup_provider != _NOT_CONNECTED),
+)
+_UNEVALUATED_INTEGRATION_NAMES = tuple(name for name, _env, _on in _UNEVALUATED_INTEGRATIONS)
+
+
+def allowed_unevaluated_integrations(settings: Settings) -> list[str]:
+    """The names listed in PRODUCTION_ALLOW_UNEVALUATED_INTEGRATIONS (lower-cased, de-duplicated, in order)."""
+    raw = settings.production_allow_unevaluated_integrations or ""
+    return list(dict.fromkeys(part.strip().lower() for part in raw.split(",") if part.strip()))
+
+
+def _production_unevaluated_integration_problems(settings: Settings) -> list[str]:
+    """Production must not run an integration the release was not evaluated with because a dashboard
+    value happened to switch it on. Each one needs its own name in PRODUCTION_ALLOW_UNEVALUATED_INTEGRATIONS;
+    an unknown name is refused rather than ignored, so a typo can never look like an allowance."""
+    problems: list[str] = []
+    allowed = allowed_unevaluated_integrations(settings)
+    if [name for name in allowed if name not in _UNEVALUATED_INTEGRATION_NAMES]:
+        problems.append(
+            "PRODUCTION_ALLOW_UNEVALUATED_INTEGRATIONS may only name: "
+            + ", ".join(_UNEVALUATED_INTEGRATION_NAMES) + "."
+        )
+    for name, env, is_on in _UNEVALUATED_INTEGRATIONS:
+        if is_on(settings) and name not in allowed:
+            problems.append(
+                f"APP_ENV=production: {env} switches on the {name} integration, which the release was not "
+                f"evaluated with. Switch it off, or allow it on purpose with "
+                f"PRODUCTION_ALLOW_UNEVALUATED_INTEGRATIONS={name}."
+            )
     return problems
 
 
@@ -379,4 +423,8 @@ def startup_config_summary(settings: Settings | None = None, migration_head: str
         "db_max_connections": resolved.db_pool_size + resolved.db_max_overflow,
         "db_statement_timeout_ms": resolved.db_statement_timeout_ms,
         "db_lock_timeout_ms": resolved.db_lock_timeout_ms,
+        # Final Batch 2: fixed integration names only, so an allowance is never silent.
+        "production_integration_overrides": ",".join(
+            name for name in allowed_unevaluated_integrations(resolved) if name in _UNEVALUATED_INTEGRATION_NAMES
+        ) or "none",
     }

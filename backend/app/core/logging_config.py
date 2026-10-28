@@ -222,6 +222,7 @@ ALLOWED_EXTRA_FIELDS = frozenset(
         "db_max_connections",
         "db_statement_timeout_ms",
         "db_lock_timeout_ms",
+        "production_integration_overrides",
     }
 )
 

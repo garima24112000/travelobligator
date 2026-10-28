@@ -235,10 +235,18 @@ def test_the_per_user_limit_does_not_touch_another_user(
 def test_generating_one_trip_again_counts_again(
     jobs_enabled: None, client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # Final Batch 2: a trip is generated again only when its earlier attempt left no usable plan ("Try
+    # again"); every such attempt is a job of its own and counts.
     _env(monkeypatch, GENERATION_MAX_JOBS_PER_USER_PER_WINDOW="2")
+
+    def _fail(trip_id: str):
+        raise RuntimeError("simulated failure")
+
+    monkeypatch.setattr(planning_orchestrator, "generate_full_plan_via_langgraph", _fail)
     trip_id = _new_trip(client)
     assert client.post(f"/trips/{trip_id}/generate").status_code == 202
     assert client.post(f"/trips/{trip_id}/generate").status_code == 202
+    assert len(job_repository.list_by_trip_id(trip_id)) == 2
     _refused(client.post(f"/trips/{trip_id}/generate"), "GENERATION_USER_LIMIT_REACHED")
 
 

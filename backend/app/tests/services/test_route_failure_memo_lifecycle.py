@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -73,7 +74,9 @@ class _Lifecycle:
     ) -> None:
         self.engine = engine
         self.network = _Network(routing=_provider)
-        store = ProviderCacheStore(tmp_path / f"cache-{engine}-{id(self)}.sqlite3")
+        # A fresh cache per run: `id(self)` is reused once an earlier run is collected (see
+        # test_alternate_mode_priority_r1.py).
+        store = ProviderCacheStore(tmp_path / f"cache-{engine}-{uuid.uuid4().hex}.sqlite3")
         self.gateway = ProviderGateway(routing=_routing(monkeypatch, self.network, store))
         self.context: GenerationProviderContext = _context(trip_days=len(days))
         self.feasibility = RouteFeasibilityService(gateway=self.gateway)

@@ -18,6 +18,12 @@ from fastapi.testclient import TestClient
 # The one invariant 199B genuinely must prove is Task 31's other half:
 # `/generate` never resets/touches any OTHER branch's already-recorded,
 # immutable revisions.
+#
+# Final Batch 2: that re-run changed the active branch's content under the
+# unchanged "v1" label with no snapshot -- the saved workspace no longer
+# equalled its branch head (tests/api/test_revision_integrity_batch2.py). A
+# trip with a plan is now refused with 409 PLAN_ALREADY_GENERATED, so
+# nothing is re-run at all; the invariant below must still hold.
 
 
 def _main_branch_id(client: TestClient, trip_id: str) -> str:
@@ -46,7 +52,9 @@ def test_regenerate_call_never_touches_other_branches(
     # Calling /generate again (still on Main, the active branch) must
     # never affect the fork branch created above at all.
     second_generate = client.post(f"/trips/{generated_trip_id}/generate")
-    assert second_generate.status_code == 200
+    assert second_generate.status_code == 409
+    assert second_generate.json()["errors"][0]["code"] == "PLAN_ALREADY_GENERATED"
+    assert _main_branch_id(client, generated_trip_id) == main_branch_id
 
     branches_after = client.get(f"/trips/{generated_trip_id}/branches").json()["data"]["branches"]
     fork_after = next(b for b in branches_after if b["branch_id"] == fork_branch_id)

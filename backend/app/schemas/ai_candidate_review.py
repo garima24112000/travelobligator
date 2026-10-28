@@ -14,3 +14,6 @@ class AICandidateReviewResponseData(BaseModel):
 
     trip_id: str
     ai_candidate_review_report: AICandidateReviewReport
+    # Final Batch 2: whether `POST /trips/{trip_id}/ai-candidate-promotions` exists here. It is a
+    # development-only inspection tool (404 in production), so a client never offers it there.
+    promotion_refresh_available: bool = True
