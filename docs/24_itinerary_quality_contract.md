@@ -325,6 +325,18 @@ Guards in the tooling:
 - `canary_city.py` refuses a city of the quality holdout without `--allow-quality-holdout`.
 - The earlier runner, `benchmark_cities.py`, is unchanged and cannot reach the quality sets.
 
+### 7.4 Later unseen sets
+
+The holdout above has been run and reported (docs 26/27), so it is no longer unseen. Two later sets exist, each
+with its own frozen file and the same guards:
+
+- `quality-holdout-v2` (`quality_v2.json`, docs/34): run once, a historical FAIL.
+- `quality-holdout-v3` (`quality_v3.json`): the final independent acceptance of the corrected planner. It is
+  frozen with its own protocol (`docs/37_final_quality_acceptance_v3.md`, `evaluation/quality_v3/protocol.json`)
+  and can be run only by `scripts/quality_acceptance_v3.py`; `benchmark_quality.py` refuses it.
+
+The release target of section 6 is unchanged for both.
+
 ## 8. Running the quality benchmark
 
 Live runs need provider keys and are done by hand. Nothing in Q0 ran one.

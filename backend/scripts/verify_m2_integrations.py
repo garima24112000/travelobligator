@@ -91,6 +91,8 @@ _FROZEN_FILES = (
     _SCRIPTS_DIR / "benchmark" / "quality_v1.json",
     # M2 Phase 3: the second unseen acceptance set
     _SCRIPTS_DIR / "benchmark" / "quality_v2.json",
+    # Final Batch 3: the third unseen acceptance set
+    _SCRIPTS_DIR / "benchmark" / "quality_v3.json",
 )
 _CITY_LIST_KEYS = frozenset({"tuning", "holdout", "holdout_stress"})
 

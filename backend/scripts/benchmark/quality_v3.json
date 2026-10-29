@@ -1,0 +1,100 @@
+{
+  "_comment": "Final Batch 3 unseen acceptance set (docs/37_final_quality_acceptance_v3.md). BENCHMARK-ONLY: never imported by backend/app, and no name in this file may enter production logic. Every destination and every must-visit name is new: none appears in any commit of the repository, in any earlier benchmark, tuning, development or acceptance set, or in any stored result. quality_holdout_v3 is FROZEN and UNSEEN: it is run exactly once, whole, only through scripts/quality_acceptance_v3.py under the frozen protocol (evaluation/quality_v3/protocol.json). A scenario states a request and the generic dimensions it exercises; it never states an expected itinerary, day grouping, neighbourhood or stop.",
+  "frozen_on": "2026-10-27",
+  "defaults": {
+    "travelers": 2,
+    "travel_group_type": "couple"
+  },
+  "quality_holdout_v3": [
+    {
+      "id": "Q3-H1",
+      "destination": "Naples, Italy",
+      "trip_days": 3,
+      "pace": "balanced",
+      "interests": ["history", "food", "waterfront"],
+      "must_visit": ["Pompeii"],
+      "covers": ["must-visit outside the city", "coastal city", "food evidence"]
+    },
+    {
+      "id": "Q3-H2",
+      "destination": "Kuala Lumpur, Malaysia",
+      "trip_days": 3,
+      "pace": "packed",
+      "interests": ["food", "architecture", "gardens"],
+      "must_visit": ["Petronas Twin Towers"],
+      "covers": ["sprawling city", "packed pace", "route burden"]
+    },
+    {
+      "id": "Q3-H3",
+      "destination": "Stockholm, Sweden",
+      "trip_days": 4,
+      "pace": "balanced",
+      "interests": ["museums", "harbour", "history"],
+      "must_visit": ["Vasa Museum"],
+      "covers": ["island geography and ferries", "museum weekly closures", "waterfront"]
+    },
+    {
+      "id": "Q3-H4",
+      "destination": "Salzburg, Austria",
+      "trip_days": 2,
+      "pace": "relaxed",
+      "interests": ["history", "architecture"],
+      "must_visit": ["Hohensalzburg Fortress"],
+      "covers": ["small compact town", "thin inventory", "same-site redundancy"]
+    },
+    {
+      "id": "Q3-H5",
+      "destination": "Auckland, New Zealand",
+      "trip_days": 3,
+      "pace": "relaxed",
+      "interests": ["outdoors", "waterfront", "food"],
+      "must_visit": [],
+      "covers": ["topographic separation", "ferry dependency", "limited-slot usefulness without must-visits"]
+    },
+    {
+      "id": "Q3-H6",
+      "destination": "Cartagena, Colombia",
+      "trip_days": 3,
+      "pace": "relaxed",
+      "interests": ["history", "architecture", "food"],
+      "must_visit": ["Castillo San Felipe de Barajas"],
+      "covers": ["ambiguous destination name", "compact historic core", "must-visit in the local language"]
+    },
+    {
+      "id": "Q3-H7",
+      "destination": "Amsterdam, Netherlands",
+      "trip_days": 5,
+      "pace": "balanced",
+      "interests": ["museums", "art", "markets"],
+      "must_visit": ["Rijksmuseum", "Anne Frank House"],
+      "covers": ["longest trip", "multiple must-visits", "museum-dense redundancy"]
+    },
+    {
+      "id": "Q3-H8",
+      "destination": "Dubai, United Arab Emirates",
+      "trip_days": 3,
+      "pace": "packed",
+      "interests": ["architecture", "markets", "waterfront"],
+      "must_visit": ["Burj Khalifa"],
+      "covers": ["car-dependent city", "vehicle transfers", "packed pace"]
+    },
+    {
+      "id": "Q3-H9",
+      "destination": "Tunis, Tunisia",
+      "trip_days": 3,
+      "pace": "balanced",
+      "interests": ["history", "markets", "museums"],
+      "must_visit": ["Bardo National Museum"],
+      "covers": ["museum weekly closures", "thin provider metadata", "names in several languages"]
+    },
+    {
+      "id": "Q3-H10",
+      "destination": "Tbilisi, Georgia",
+      "trip_days": 3,
+      "pace": "balanced",
+      "interests": ["history", "architecture", "food"],
+      "must_visit": [],
+      "covers": ["ambiguous country name", "names in a non-Latin script", "hilly terrain"]
+    }
+  ]
+}

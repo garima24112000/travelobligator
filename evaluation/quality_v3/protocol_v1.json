@@ -1,0 +1,158 @@
+{
+ "protocol_id": "quality-acceptance-v3",
+ "protocol_version": 1,
+ "frozen_on": "2026-10-27",
+ "document": "docs/37_final_quality_acceptance_v3.md",
+ "contract": "docs/24_itinerary_quality_contract.md (parts A, B and C and the section 6 release target, unchanged)",
+ "set": {
+  "name": "quality-holdout-v3",
+  "file": "backend/scripts/benchmark/quality_v3.json",
+  "key": "quality_holdout_v3",
+  "scenario_count": 10,
+  "sha256": "ff521eb3e851a55073a8989cbf84e3dafa7a2f9cd3b02450853b4b2823047384",
+  "sha256_construction": "sha256 of json.dumps(scenario list, ensure_ascii=False, sort_keys=True, separators=(',', ':'))"
+ },
+ "request_defaults": {
+  "travelers": 2,
+  "travel_group_type": "couple",
+  "origin": null
+ },
+ "dates": {
+  "trip_start_date": "2026-11-23",
+  "trip_start_weekday": "Monday",
+  "same_start_date_for_every_scenario": true,
+  "execution_window": {
+   "first_day": "2026-10-28",
+   "last_day": "2026-11-15",
+   "timezone": "UTC"
+  }
+ },
+ "source": {
+  "base_commit": "5eda096a54ef993b460416c9816b443e0c6ec3b6",
+  "base_description": "Final Batch 2 head (PR #13), containing Final Batch 1 (905f228): the final corrected planner",
+  "fingerprint_sha256": "b493b1c1bcae9fa16adfbbc5dcc9360a2620d42d9e3f2781cebecf628b0e8da2",
+  "fingerprint_file_count": 335,
+  "fingerprint_covers": ["backend/app (excluding backend/app/tests/)", "backend/scripts", "backend/requirements.txt"],
+  "working_tree": "clean (no modified or untracked file anywhere in the checkout)"
+ },
+ "runtime": {
+  "python": "3.11",
+  "packages": "exactly the name==version pins of backend/requirements.txt"
+ },
+ "configuration": {
+  "configuration_sha256": "bdf9620130346a217e382f2ff4206a2de01dd85d8192d1bf5a3164769bffd965",
+  "construction": "run_provenance.capture_configuration() after applying `environment` below and then benchmark_cities._configure_environment (throwaway Local JSON store, throwaway SQLite provider cache, synchronous generation, APP_ENV=development); every other setting at its code default",
+  "environment_source": "render.yaml: every envVar with a literal value (no secret; sync:false values are not part of it)",
+  "environment": {
+   "APP_ENV": "production",
+   "APP_DEBUG": "false",
+   "PERSISTENCE_BACKEND": "postgres",
+   "PROVIDER_CACHE_BACKEND": "redis",
+   "SESSION_COOKIE_SECURE": "true",
+   "SESSION_COOKIE_HTTPONLY": "true",
+   "SESSION_COOKIE_SAMESITE": "lax",
+   "METRICS_ENABLED": "false",
+   "ASYNC_GENERATION_ENABLED": "true",
+   "GENERATION_MAX_JOBS_PER_USER_PER_WINDOW": "5",
+   "GENERATION_MAX_JOBS_GLOBAL_PER_WINDOW": "25",
+   "GENERATION_MAX_CONCURRENT_JOBS": "2",
+   "GENERATION_LIMIT_WINDOW_SECONDS": "86400",
+   "MAX_TRIPS_PER_USER": "20",
+   "MAX_TRIP_DAYS": "7",
+   "SIGNUP_MAX_PER_WINDOW_GLOBAL": "30",
+   "LOGIN_MAX_FAILURES_PER_ACCOUNT": "10",
+   "SIGNUP_MODE": "invite_link",
+   "REGISTRATION_ACCESS_TTL_SECONDS": "1800",
+   "GENERATION_ENABLED": "true",
+   "CLIENT_IP_TRUSTED_PROXY_HOPS": "0",
+   "DB_POOL_SIZE": "3",
+   "DB_MAX_OVERFLOW": "2",
+   "DB_CONNECT_TIMEOUT_SECONDS": "15",
+   "GEOCODING_PROVIDER": "geoapify",
+   "PLACES_PROVIDER": "geoapify",
+   "ROUTING_PROVIDER": "geoapify",
+   "INVENTORY_SUFFICIENCY_GATE_ENABLED": "true",
+   "GEOAPIFY_MAX_CREDITS_PER_GENERATION": "100",
+   "AI_CANDIDATE_PROPOSAL_PROVIDER": "groq",
+   "AI_CANDIDATE_DISCOVERY_ENABLED": "true",
+   "AI_DIRECTED_PROVIDER_DISCOVERY_MAX_SEARCHES": "16",
+   "AI_DIRECTED_PROVIDER_DISCOVERY_MAX_EXTRA_SEARCHES": "4",
+   "AI_ITINERARY_REASONING_ENABLED": "true",
+   "AI_ITINERARY_REASONING_PROVIDER": "groq",
+   "AI_ITINERARY_REPAIR_ENABLED": "true",
+   "ITINERARY_NARRATOR_ENABLED": "true",
+   "ITINERARY_NARRATOR_PROVIDER": "groq",
+   "GROQ_MODEL": "openai/gpt-oss-20b",
+   "LLM_FAILOVER_ENABLED": "true",
+   "LLM_PRIMARY_PROVIDER": "groq",
+   "LLM_SECONDARY_PROVIDER": "gemini",
+   "GEMINI_MODEL": "gemini-3.5-flash-lite",
+   "TARGETED_REGENERATION_ENABLED": "false",
+   "AI_FEEDBACK_INTERPRETER_ENABLED": "false",
+   "KIWI_MCP_ENABLED": "false",
+   "FLIGHT_AIRPORT_LOOKUP_PROVIDER": "not_connected",
+   "FLIGHT_PROVIDER": "not_connected",
+   "ACCOMMODATION_PROVIDER": "not_connected",
+   "HOTEL_RATINGS_PROVIDER": "not_connected"
+  },
+  "credentials_required_present": ["GEOAPIFY_API_KEY", "GROQ_API_KEY", "GEMINI_API_KEY"]
+ },
+ "execution": {
+  "runner": "backend/scripts/quality_acceptance_v3.py run --allow-quality-holdout --execute",
+  "runs": 1,
+  "whole_set_only": true,
+  "scenario_order": "file order, strictly one after another",
+  "pause_seconds_between_scenarios": 8,
+  "max_resumes": 2,
+  "interruption_rule": "A scenario during which the request guard stopped (HTTP 401/403 from any service, or 429 from a data provider) is not a result; it and every scenario not yet run are run by --resume after the cause is fixed. Every other outcome is the result and is never run again: a completed plan of any quality, a technical failure, an honest INSUFFICIENT_VERIFIED_INVENTORY plan, an LLM provider rate limit absorbed by failover or the deterministic fallback. If interrupted scenarios remain after max_resumes, the run is void and no acceptance can be claimed from it.",
+  "limits": {
+   "max_requests_by_service_per_scenario": {
+    "geoapify": 100,
+    "groq": 8,
+    "gemini": 8,
+    "open_meteo": 2,
+    "nager_date": 3,
+    "frankfurter": 2,
+    "kiwi": 0
+   },
+   "max_llm_requests_per_scenario": 8,
+   "geoapify_credits_per_generation": 100,
+   "allowed_hosts": ["api.geoapify.com", "api.open-meteo.com", "date.nager.at", "api.frankfurter.app", "api.frankfurter.dev", "api.groq.com", "generativelanguage.googleapis.com"]
+  },
+  "run_totals_at_most": {
+   "geoapify": 1000,
+   "llm_combined": 80,
+   "open_meteo": 20,
+   "nager_date": 30,
+   "frankfurter": 20,
+   "kiwi": 0
+  },
+  "after_the_run": "MANIFEST.sha256 over every file of the run is written before anyone reads a plan; the review packets are built only from a run that matches it"
+ },
+ "review": {
+  "designated_reviewer": null,
+  "reviewer_requirements": [
+   "named in this protocol before the run (a protocol amendment, docs/37 section 10)",
+   "has not authored, tuned or reviewed planner changes for this release",
+   "has seen no output of this set before scoring, and none of the automated verdicts"
+  ],
+  "presentation_seed": "travelobligator/quality-acceptance-v3/2026-10-27",
+  "packet_codes": "P01..P10 in the order of sha256(seed + ':' + scenario id)",
+  "scale": "whole numbers 1-5 only: 1 unusable, 2 poor, 3 acceptable with edits, 4 good, 5 excellent",
+  "dimensions": ["attraction_usefulness", "geographic_day_coherence", "personalization", "pace_realism", "redundancy_avoidance", "overall_would_use"],
+  "order_of_work": "score each packet completely (six scores, evidence, verified factual errors) and record it on the scoresheet; only then open after_scoring/<packet>.md; never revise a recorded score",
+  "verified_factual_error": "a scheduled place that the reviewer checked against an official or primary source and found permanently or temporarily closed on its planned date, relocated, not existing, not open to visitors, or materially away from where the plan puts it; each with its source and the date it was checked",
+  "second_reviewer": "optional; recorded separately, never averaged and never used for the verdict"
+ },
+ "acceptance": {
+  "all_three_required": true,
+  "criteria": [
+   {"id": "median_overall_at_least_4", "rule": "median of the ten Overall scores >= 4 (with ten scores the median is the mean of the 5th and 6th; 3.5 does not meet it)"},
+   {"id": "no_overall_below_3", "rule": "no scenario with an Overall score below 3"},
+   {"id": "zero_hard_factual_safety_failures", "rule": "the run is valid and complete; every scenario's generation completed and passed the canary's baseline hard correctness (acceptance policy 2, as recorded); and the reviewer verified zero factual errors across the ten plans"}
+  ],
+  "other_dimensions": "recorded and reported; no threshold",
+  "part_b": "reported per scenario; never a pass or fail criterion and never read before scoring",
+  "no_retuning": "the result is recorded as it comes out; a defect found is fixed and validated on tuning or development scenarios, never by rerunning or re-scoring this set"
+ }
+}

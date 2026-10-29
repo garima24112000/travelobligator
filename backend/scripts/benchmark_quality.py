@@ -62,6 +62,9 @@ _REPO_DIR = _BACKEND_DIR.parent
 _DATA_PATH = _SCRIPTS_DIR / "benchmark" / "quality_v1.json"
 # M2 Phase 3: the second, still unseen acceptance set (its own frozen file).
 _DATA_PATH_V2 = _SCRIPTS_DIR / "benchmark" / "quality_v2.json"
+# Final Batch 3: the third unseen acceptance set. It is run ONLY by
+# `quality_acceptance_v3.py` under its frozen protocol -- never by this CLI.
+_DATA_PATH_V3 = _SCRIPTS_DIR / "benchmark" / "quality_v3.json"
 sys.path.insert(0, str(_SCRIPTS_DIR))
 
 import benchmark_tuning_cities as tuning  # noqa: E402  (the secret scrubber and file writers)
@@ -76,9 +79,17 @@ SCHEMA_VERSION = 2
 SET_TUNING = "quality-tuning"
 SET_HOLDOUT = "quality-holdout"
 SET_HOLDOUT_V2 = "quality-holdout-v2"
-_SET_KEYS = {SET_TUNING: "quality_tuning", SET_HOLDOUT: "quality_holdout", SET_HOLDOUT_V2: "quality_holdout_v2"}
+SET_HOLDOUT_V3 = "quality-holdout-v3"
+_SET_KEYS = {
+    SET_TUNING: "quality_tuning",
+    SET_HOLDOUT: "quality_holdout",
+    SET_HOLDOUT_V2: "quality_holdout_v2",
+    SET_HOLDOUT_V3: "quality_holdout_v3",
+}
 # Frozen sets: each refuses to run without --allow-quality-holdout, and only whole.
-FROZEN_SETS = frozenset({SET_HOLDOUT, SET_HOLDOUT_V2})
+FROZEN_SETS = frozenset({SET_HOLDOUT, SET_HOLDOUT_V2, SET_HOLDOUT_V3})
+# Frozen sets with their own protocol runner: this CLI refuses them outright.
+PROTOCOL_ONLY_SETS = frozenset({SET_HOLDOUT_V3})
 
 # What `baseline_hard_correctness` is -- and is not. It is NOT the whole of
 # part A of the contract: A1-A3 are not acceptance checks during Q0.
@@ -125,6 +136,8 @@ def load_data(path: Path = _DATA_PATH) -> dict[str, Any]:
     if path == _DATA_PATH and _DATA_PATH_V2.exists():
         # the second frozen set lives in its own file; only its set key is added
         data["quality_holdout_v2"] = json.loads(_DATA_PATH_V2.read_text(encoding="utf-8"))["quality_holdout_v2"]
+    if path == _DATA_PATH and _DATA_PATH_V3.exists():
+        data["quality_holdout_v3"] = json.loads(_DATA_PATH_V3.read_text(encoding="utf-8"))["quality_holdout_v3"]
     return data
 
 
@@ -140,6 +153,11 @@ def holdout_refusal(
     explicit flag and is only ever run whole."""
     if which not in FROZEN_SETS:
         return None
+    if which in PROTOCOL_ONLY_SETS:
+        return (
+            f"Refusing to run {which} here: it is run only by scripts/quality_acceptance_v3.py, under its "
+            "frozen protocol. Nothing was run."
+        )
     if not allow_quality_holdout:
         return (
             "Refusing to run the frozen quality holdout without --allow-quality-holdout "
