@@ -1,6 +1,6 @@
 {
  "protocol_id": "quality-acceptance-v3",
- "protocol_version": 2,
+ "protocol_version": 3,
  "frozen_on": "2026-10-27",
  "document": "docs/37_final_quality_acceptance_v3.md",
  "contract": "docs/24_itinerary_quality_contract.md (parts A, B and C and the section 6 release target, unchanged)",
@@ -138,7 +138,7 @@
    "applies_to": "every attempt (the per-scenario limits of version 1, unchanged, set afresh for each attempt)"
   },
   "after_the_run": "MANIFEST.sha256 over every file of the run (attempt records included) is written, and its digest entered in the audit log, before anyone reads a plan; every later step re-verifies the run folder against both",
-  "operator": null,
+  "operator": "Garima Prachi",
   "attempts": {
    "max_attempts_per_scenario": 3,
    "max_attempts_total": 12,
@@ -186,7 +186,7 @@
   }
  },
  "review": {
-  "designated_reviewer": null,
+  "designated_reviewer": "Avinash Kumar Singh",
   "reviewer_requirements": [
    "exactly one designated reviewer, named in this protocol before the run (a protocol amendment, docs/37 section 10)",
    "not the execution operator recorded in this protocol",
@@ -232,6 +232,17 @@
   "part_b": "reported per scenario; never a pass or fail criterion and never read before scoring",
   "no_retuning": "the result is recorded as it comes out; a defect found is fixed and validated on tuning or development scenarios, never by rerunning or re-scoring this set"
  },
- "amended_on": "2026-10-28",
- "amendments": "evaluation/quality_v3/AMENDMENT_v2.md (version 1 kept byte-identical as evaluation/quality_v3/protocol_v1.json)"
+ "amended_on": "2026-11-09",
+ "amendments": "evaluation/quality_v3/AMENDMENT_v2.md and evaluation/quality_v3/AMENDMENT_v3.md (version 1 kept byte-identical as evaluation/quality_v3/protocol_v1.json, version 2 as evaluation/quality_v3/protocol_v2.json)",
+ "owner_confirmations": {
+  "confirmed_on": "2026-11-09",
+  "confirmed_by": "the owner",
+  "record": "evaluation/quality_v3/AMENDMENT_v3.md (the owner's statements, word for word)",
+  "designation": "designated reviewer Avinash Kumar Singh; execution operator Garima Prachi",
+  "cumulative_budget_approved": true,
+  "destination_history_confirmed": true,
+  "reviewer_eligibility_confirmed_by_owner": true,
+  "execution_window": "unchanged; the owner kept the existing last day, 2026-11-15 (UTC)",
+  "not_a_substitute_for": "the reviewer's own signed INDEPENDENCE_DECLARATION.md, locked by `declare` after the run and before any review material exists"
+ }
 }

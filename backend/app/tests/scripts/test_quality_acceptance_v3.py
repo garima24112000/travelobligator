@@ -29,13 +29,15 @@ _PROTOCOL_PATH = _REPO_DIR / "evaluation" / "quality_v3" / "protocol.json"
 # to either after the freeze must be recorded in docs/37_final_quality_acceptance_v3.md section 10
 # (protocol amendments) BEFORE the run; after the run neither may change at all.
 _QUALITY_HOLDOUT_V3_SHA256 = "ff521eb3e851a55073a8989cbf84e3dafa7a2f9cd3b02450853b4b2823047384"
-_PROTOCOL_SHA256 = "23a9204663522bbd5a0420fa7affe493086ad0e2ae6148e1cc8572900c3a693a"  # version 2
+_PROTOCOL_SHA256 = "79cd08315c12f28499ac911501046f64e56bb80e7c63c15a81c07f55a8da4060"  # version 3
+_PROTOCOL_V2_SHA256 = "23a9204663522bbd5a0420fa7affe493086ad0e2ae6148e1cc8572900c3a693a"
 _PROTOCOL_V1_SHA256 = "19a39ecdc2ce5bf215b7e7166af18b539f10e170343af1b43f2de9b22e48650b"
 _PROTOCOL_V1_FINGERPRINT = "b493b1c1bcae9fa16adfbbc5dcc9360a2620d42d9e3f2781cebecf628b0e8da2"
-_PROTOCOL_DOCUMENT_SHA256 = "d3e8049c602b7ba3008fa53f76f20023260b97e13edcf9355b772ad620ca1a89"
+_PROTOCOL_DOCUMENT_SHA256 = "5e775ec060dd3f9db62ae4e3832447b234c434bf6bc85dc09f4fbd734c679ac0"
 _REVIEWER_INSTRUCTIONS_SHA256 = "64efbf796908fbce3dac5c7f170f6868f41b9c2e2588ce75bb4f97c0d5aa44ac"
 _INDEPENDENCE_DECLARATION_SHA256 = "75c29d5e76190baa94b28b9980e6fd932ab8049916e5127016032df6e3fac71b"
 _AMENDMENT_V2_SHA256 = "0ba0b2ae5f50bf2dd5adefccccb644b296f18f6d59c5655bbb49def4843ff3aa"
+_AMENDMENT_V3_SHA256 = "51634fd577366f87c4e7008fbc998f98316a6dd89c2f5d92c776120437d0c330"
 
 
 def _load(name: str) -> Any:
@@ -84,6 +86,7 @@ def test_the_review_procedure_documents_are_frozen() -> None:
         _REPO_DIR / "evaluation" / "quality_v3" / "REVIEWER_INSTRUCTIONS.md": _REVIEWER_INSTRUCTIONS_SHA256,
         _REPO_DIR / "evaluation" / "quality_v3" / "INDEPENDENCE_DECLARATION.md": _INDEPENDENCE_DECLARATION_SHA256,
         _REPO_DIR / "evaluation" / "quality_v3" / "AMENDMENT_v2.md": _AMENDMENT_V2_SHA256,
+        _REPO_DIR / "evaluation" / "quality_v3" / "AMENDMENT_v3.md": _AMENDMENT_V3_SHA256,
     }
     for path, pinned in pins.items():
         assert hashlib.sha256(path.read_bytes()).hexdigest() == pinned, path.name
@@ -93,10 +96,12 @@ def test_amendment_v2_records_both_versions_and_changes_only_what_it_says() -> N
     folder = _REPO_DIR / "evaluation" / "quality_v3"
     v1_path = folder / "protocol_v1.json"
     assert hashlib.sha256(v1_path.read_bytes()).hexdigest() == _PROTOCOL_V1_SHA256  # kept byte-identical
-    v1, v2 = json.loads(v1_path.read_text(encoding="utf-8")), _protocol()
+    v2_path = folder / "protocol_v2.json"
+    assert hashlib.sha256(v2_path.read_bytes()).hexdigest() == _PROTOCOL_V2_SHA256  # kept byte-identical
+    v1, v2 = json.loads(v1_path.read_text(encoding="utf-8")), json.loads(v2_path.read_text(encoding="utf-8"))
     assert (v1["protocol_version"], v2["protocol_version"]) == (1, 2)
     record = (folder / "AMENDMENT_v2.md").read_text(encoding="utf-8")
-    for digest in (_PROTOCOL_V1_SHA256, _PROTOCOL_SHA256, _PROTOCOL_V1_FINGERPRINT, v2["source"]["fingerprint_sha256"],
+    for digest in (_PROTOCOL_V1_SHA256, _PROTOCOL_V2_SHA256, _PROTOCOL_V1_FINGERPRINT, v2["source"]["fingerprint_sha256"],
                    v2["configuration"]["configuration_sha256"], _QUALITY_HOLDOUT_V3_SHA256):
         assert digest in record, digest
     assert v1["source"]["fingerprint_sha256"] == _PROTOCOL_V1_FINGERPRINT != v2["source"]["fingerprint_sha256"]
@@ -111,6 +116,55 @@ def test_amendment_v2_records_both_versions_and_changes_only_what_it_says() -> N
     # the two evaluation scripts carry the digests the record states
     for name in ("quality_acceptance_v3.py", "quality_review_packets.py"):
         assert hashlib.sha256((_SCRIPTS_DIR / name).read_bytes()).hexdigest() in record, name
+
+
+_V3_CHANGED_TOP_LEVEL = {"protocol_version", "amended_on", "amendments", "owner_confirmations"}
+
+
+def test_amendment_v3_names_the_people_and_changes_nothing_else() -> None:
+    """Version 3 only names the reviewer and the operator and records the owner's dated confirmations."""
+    folder = _REPO_DIR / "evaluation" / "quality_v3"
+    v2 = json.loads((folder / "protocol_v2.json").read_text(encoding="utf-8"))
+    v3 = _protocol()
+    assert (v2["protocol_version"], v3["protocol_version"]) == (2, 3)
+    assert set(v3) - set(v2) == {"owner_confirmations"} and not set(v2) - set(v3)
+    for key in set(v2) - _V3_CHANGED_TOP_LEVEL:
+        if key in ("review", "execution"):
+            continue
+        assert v2[key] == v3[key], key
+    # within review and execution, only the two names change, from null to two different people
+    assert (v2["review"]["designated_reviewer"], v2["execution"]["operator"]) == (None, None)
+    reviewer, operator = v3["review"]["designated_reviewer"], v3["execution"]["operator"]
+    assert (reviewer, operator) == ("Avinash Kumar Singh", "Garima Prachi")
+    assert reviewer.casefold() != operator.casefold()
+    assert {k: v for k, v in v3["review"].items() if k != "designated_reviewer"} == \
+        {k: v for k, v in v2["review"].items() if k != "designated_reviewer"}
+    assert {k: v for k, v in v3["execution"].items() if k != "operator"} == \
+        {k: v for k, v in v2["execution"].items() if k != "operator"}
+    # the frozen inputs
+    assert v3["set"]["sha256"] == _QUALITY_HOLDOUT_V3_SHA256
+    assert v3["source"]["fingerprint_sha256"] == "032530cb1e9745392b59bcbf9d10b0ce8cdbccc37e5ac4ca6ee1b73e928a9153"
+    assert v3["configuration"]["configuration_sha256"] == "bdf9620130346a217e382f2ff4206a2de01dd85d8192d1bf5a3164769bffd965"
+    assert v3["dates"]["execution_window"]["last_day"] == "2026-11-15"
+    # the owner's confirmations are dated and point to the record, which quotes them and states every digest
+    confirmations = v3["owner_confirmations"]
+    assert v3["amended_on"] == confirmations["confirmed_on"] == "2026-11-09"
+    assert confirmations["cumulative_budget_approved"] is True
+    assert confirmations["destination_history_confirmed"] is True
+    assert confirmations["reviewer_eligibility_confirmed_by_owner"] is True
+    record = (folder / "AMENDMENT_v3.md").read_text(encoding="utf-8")
+    for digest in (_PROTOCOL_V1_SHA256, _PROTOCOL_V2_SHA256, _PROTOCOL_SHA256, _QUALITY_HOLDOUT_V3_SHA256,
+                   v3["source"]["fingerprint_sha256"], v3["configuration"]["configuration_sha256"]):
+        assert digest in record, digest
+    totals = v3["execution"]["cumulative_totals_at_most"]
+    approval = ("I approve the cumulative maximum limits of 1,200 Geoapify requests and credits, 96 combined "
+                "Groq/Gemini requests, 24 Open-Meteo, 36 Nager.Date, 24 Frankfurter and 0 Kiwi.")
+    assert (totals["geoapify"], totals["geoapify_credits"], totals["llm_combined"], totals["open_meteo"],
+            totals["nager_date"], totals["frankfurter"], totals["kiwi"]) == (1200, 1200, 96, 24, 36, 24, 0)
+    flat = " ".join(line.lstrip("> ").strip() for line in record.splitlines())
+    assert approval in flat
+    for name in (reviewer, operator):
+        assert name in record
 
 
 def test_every_city_is_new_and_none_was_a_development_destination() -> None:
@@ -292,6 +346,7 @@ def test_preflight_fails_on_any_drift_and_sends_nothing(monkeypatch: pytest.Monk
     drifted["source"]["fingerprint_sha256"] = "0" * 64
     drifted["configuration"]["configuration_sha256"] = "0" * 64
     drifted["review"]["designated_reviewer"] = None
+    drifted["execution"]["operator"] = None
     (tmp_path / "audit.jsonl").write_text("not a record\n", encoding="utf-8")
     results = acceptance.preflight_checks(drifted, today=date(2027, 1, 1), out_dir=tmp_path,
                                           audit_path=tmp_path / "audit.jsonl", for_run=True, environ={})
