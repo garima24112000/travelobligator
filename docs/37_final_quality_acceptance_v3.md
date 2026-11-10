@@ -416,6 +416,24 @@ Failed, as expected:
 - no operator, so reviewer ≠ operator cannot be shown;
 - no provider key.
 
+**Version 3, 2026-11-10 UTC (nothing sent).** Run on the committed amendment (`b88568a`), clean tree. Passed:
+
+- set unchanged (10 scenarios);
+- inside the window;
+- trip start in the future;
+- HEAD contains `5eda096`;
+- source fingerprint `032530cb…` equal;
+- Python 3.11 and every pinned package;
+- configuration digest `bdf96201…` equal;
+- designated reviewer recorded, execution operator recorded, and they are different people;
+- result directory and audit log new.
+
+Failed, as expected:
+
+- no provider key (deliberately absent in the preparation shell).
+
+On the run day, preflight is run again in the operator's shell with the three keys exported.
+
 The offline tests use a stand-in generation and send nothing. They rehearse:
 
 - interrupted attempts across two resumes, the resume limit and the cumulative-budget refusal;
