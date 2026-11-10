@@ -544,11 +544,15 @@ def main(argv: list[str] | None = None) -> int:
         # Like actions/checkout (fetch-depth 1, persist-credentials false): a one-commit repository with HEAD
         # detached at the commit and a credential-free origin, so tests that read git see what CI gives them.
         host_source = work / "src"
+        # The checkout keeps the ordinary permissions a CI checkout has (umask 022): the production images COPY these
+        # files and run as a non-root user. Only the evidence is private (its folders are 0700 from the root down).
+        private_umask = os.umask(0o022)
         for argv_ in (["git", "init", "-q", str(host_source)],
                       ["git", "-C", str(host_source), "fetch", "-q", "--depth", "1", f"file://{repo}", sha],
                       ["git", "-C", str(host_source), "-c", "advice.detachedHead=false", "checkout", "-q", "--detach", "FETCH_HEAD"],
                       ["git", "-C", str(host_source), "remote", "add", "origin", REPO_SOURCE_URL]):
             subprocess.run(argv_, check=True, env=host_env(), capture_output=True)
+        os.umask(private_umask)
         if capture(["git", "-C", str(host_source), "rev-parse", "HEAD"]) != sha or capture(["git", "-C", str(host_source), "status", "--porcelain"]):
             raise RuntimeError("the checkout is not exactly the commit")
         source_tar = work / "source.tar"
