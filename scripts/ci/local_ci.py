@@ -37,7 +37,6 @@ import shlex
 import shutil
 import subprocess
 import sys
-import tarfile
 import tempfile
 import time
 import uuid
@@ -56,7 +55,7 @@ POSTGRES_IMAGE = "postgres:16"
 REDIS_IMAGE = "redis:7.4-alpine"
 TRIVY_IMAGE = "aquasec/trivy:0.70.0"
 TRIVY_CACHE_VOLUME = "travelob-local-ci-trivy-cache"
-BASE_IMAGES = ("python:3.11-bookworm", "node:22-bookworm")
+BASE_IMAGES = ("python:3.11-trixie", "node:22-trixie")
 
 JOBS = {  # id -> (CI check name, ci.yml timeout-minutes)
     "backend-hermetic": ("Backend / Hermetic", 20),
@@ -220,7 +219,7 @@ class Box:
         if not ok:
             return False
         argv = ["docker", "exec", "-i", "-u", "runner", self.name, "tar", "-x", "-C", "/work", "-f", "-"]
-        return self.run.execute(self.job, Step("Check out the commit (git archive)", "git archive <sha> | " + shlex.join(argv),
+        return self.run.execute(self.job, Step("Check out the commit (shallow git checkout)", "tar <checkout> | " + shlex.join(argv),
                                                "host -> runner container"), argv, deadline, stdin_path=self.source_tar)
 
     def service(self, name: str, image: str, env: dict[str, str], health: str) -> str:
@@ -486,14 +485,15 @@ def write_summary(path: Path, manifest: dict[str, Any]) -> None:
 
 
 DIFFERENCES = [
-    "Runs on the operator's machine in Docker, not on GitHub's ubuntu-24.04 VM: the runner image is Debian bookworm "
+    "Runs on the operator's machine in Docker, not on GitHub's ubuntu-24.04 VM: the runner image is Debian trixie "
     "(python:3.11 + node:22 binaries + postgresql-client-16 from apt.postgresql.org) on the host's native architecture.",
     "Architecture follows the host. On Apple silicon everything (runner, production images, Trivy image scans) is "
     "linux/arm64; GitHub builds and scans linux/amd64. Image vulnerability results can differ by architecture.",
     "No dependency cache (actions/setup-python, setup-node, buildx type=gha): every install is cold. Job time budget "
     f"is ci.yml's timeout-minutes x {TIMEOUT_FACTOR}.",
-    "Checkout is `git archive <sha>` (tracked files at that commit, no .git directory); actions/checkout has a .git "
-    "directory. Trivy's secret scan therefore never sees .git (it skips it on CI as well).",
+    "Checkout: a one-commit (depth 1) git repository detached at the commit, like actions/checkout's default. For a "
+    "pull_request event CI checks out GitHub's merge of the branch into main instead; the two trees are equal only when "
+    "the branch contains main's tip (the merge procedure requires that).",
     "Chromium's system libraries are installed when the runner image is built (`playwright install-deps` for the "
     "commit's pinned Playwright version) instead of `--with-deps` inside the job.",
     "Trivy runs from the aquasec/trivy:0.70.0 image (the version trivy-action v0.36.0 installs); its vulnerability "
@@ -532,13 +532,21 @@ def main(argv: list[str] | None = None) -> int:
     work = Path(tempfile.mkdtemp(prefix="travelob-local-ci-"))
     manifest: dict[str, Any] = {"schema": SCHEMA, "run_id": run_id, "started_at": started_at}
     try:
-        source_tar = work / "source.tar"
-        subprocess.run(["git", "-C", str(repo), "archive", "--format=tar", "-o", str(source_tar), sha], check=True, env=host_env())
-        source_tar.chmod(0o644)
+        # Like actions/checkout (fetch-depth 1, persist-credentials false): a one-commit repository with HEAD
+        # detached at the commit and a credential-free origin, so tests that read git see what CI gives them.
         host_source = work / "src"
-        host_source.mkdir()
-        with tarfile.open(source_tar) as archive:
-            archive.extractall(host_source, filter="data")
+        for argv_ in (["git", "init", "-q", str(host_source)],
+                      ["git", "-C", str(host_source), "fetch", "-q", "--depth", "1", f"file://{repo}", sha],
+                      ["git", "-C", str(host_source), "-c", "advice.detachedHead=false", "checkout", "-q", "--detach", "FETCH_HEAD"],
+                      ["git", "-C", str(host_source), "remote", "add", "origin", REPO_SOURCE_URL]):
+            subprocess.run(argv_, check=True, env=host_env(), capture_output=True)
+        if capture(["git", "-C", str(host_source), "rev-parse", "HEAD"]) != sha or capture(["git", "-C", str(host_source), "status", "--porcelain"]):
+            raise RuntimeError("the checkout is not exactly the commit")
+        source_tar = work / "source.tar"
+        subprocess.run(["tar", "-c", "-f", str(source_tar), "-C", str(host_source), "."], check=True, env=host_env())
+        source_tar.chmod(0o644)
+        git_archive = work / "git-archive.tar"
+        subprocess.run(["git", "-C", str(repo), "archive", "--format=tar", "-o", str(git_archive), sha], check=True, env=host_env())
         lock = json.loads((host_source / "frontend" / "package-lock.json").read_text(encoding="utf-8"))
         playwright = lock["packages"]["node_modules/@playwright/test"]["version"]
 
@@ -551,7 +559,7 @@ def main(argv: list[str] | None = None) -> int:
                 "subject": capture(["git", "-C", str(repo), "log", "-1", "--format=%s", sha]),
                 "committed_at": capture(["git", "-C", str(repo), "log", "-1", "--format=%cI", sha]),
                 "refs": sorted(set(capture(["git", "-C", str(repo), "for-each-ref", "--points-at", sha, "--format=%(refname)"]).split())),
-                "source_archive_sha256": sha256_file(source_tar),
+                "git_archive_sha256": sha256_file(git_archive),
             },
             "tool": {
                 "commit": capture(["git", "-C", str(repo), "rev-parse", "HEAD"]),

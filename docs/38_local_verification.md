@@ -38,8 +38,9 @@ same gates. That includes the zero-skip assertion of `Backend / Integration`, th
 `Containers / Build & Smoke` with the same severities and `--ignore-unfixed`, and the three Trivy steps of
 `Security / Scan`.
 
-- **Checkout.** The commit is exported with `git archive`, so an untracked or modified file in the operator's
-  checkout can't take part. Each job gets a fresh container and a fresh copy.
+- **Checkout.** A one-commit (depth 1) git repository detached at the commit, fetched from the local repository,
+  like `actions/checkout`'s default. An untracked or modified file in the operator's checkout can't take part.
+  Each job gets a fresh container and a fresh copy.
 - **Runner.** Every job except Containers and Security runs as a non-root `runner` user in an image providing
   Python 3.11, Node 22, the PostgreSQL 16 client, GnuPG and Chromium's libraries for the commit's Playwright
   version.
@@ -62,7 +63,7 @@ same gates. That includes the zero-skip assertion of `Backend / Integration`, th
 
 | File | Contents |
 | --- | --- |
-| `manifest.json` | The commit (SHA, tree, refs that point at it, SHA-256 of the exported archive). The tool's own commit and file digests, and whether they were clean. Host OS, architecture, and the Docker, buildx, Compose and git versions. Every image's ID and digests. Tool versions inside the runner. The Trivy database date. Every step's exact command, where it ran, gate flag, status, exit code, UTC start and end, duration, log path and log SHA-256. Each job's junit or Playwright counts. The list of differences from CI. |
+| `manifest.json` | The commit (SHA, tree, refs that point at it, SHA-256 of its `git archive`). The tool's own commit and file digests, and whether they were clean. Host OS, architecture, and the Docker, buildx, Compose and git versions. Every image's ID and digests. Tool versions inside the runner. The Trivy database date. Every step's exact command, where it ran, gate flag, status, exit code, UTC start and end, duration, log path and log SHA-256. Each job's junit or Playwright counts. The list of differences from CI. |
 | `SUMMARY.md` | The same, for a person |
 | `logs/<job>/NN-<step>.log`, `results/<job>/…` | Logs, junit XML, Playwright results and screenshots |
 | `SHA256SUMS` | Every file above. **The SHA-256 of this file is the run's evidence digest.** |
@@ -78,11 +79,14 @@ same gates. That includes the zero-skip assertion of `Backend / Integration`, th
 
 **Differences from GitHub-hosted CI** (also written into every manifest):
 
-- **Platform.** Debian bookworm in Docker on the operator's machine, instead of GitHub's Ubuntu 24.04 VM.
+- **Platform.** Debian trixie in Docker on the operator's machine, instead of GitHub's Ubuntu 24.04 VM. Trixie
+  has GnuPG 2.4, as Ubuntu 24.04 does; the backup script needs it.
 - **Architecture.** It follows the host: linux/arm64 on Apple silicon, while CI is linux/amd64. Image
   vulnerability results can differ by architecture.
 - **Caching.** Every install is cold.
-- **Checkout.** The checkout has no `.git` directory.
+- **Checkout.** For a pull request, CI checks out GitHub's merge of the branch into `main`. The tool checks out
+  the commit itself. The two trees are equal only when the branch contains `main`'s tip, which the merge
+  procedure requires.
 - **Chromium's libraries** are installed when the runner image is built, not with `--with-deps` during the job.
 - **Trivy database.** Results depend on the database date, which is recorded in the manifest.
 - **Order.** The jobs run one after another, not in parallel.

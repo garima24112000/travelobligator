@@ -2,14 +2,14 @@
 # scripts/ci/local_ci.py (docs/38_local_verification.md). It is never deployed and never pushed.
 #
 # What CI's runner gives the jobs, and what this image gives instead:
-#   Python 3.11 (actions/setup-python)   -> python:3.11 (Debian bookworm)
+#   Python 3.11 (actions/setup-python)   -> python:3.11 (Debian trixie: GnuPG 2.4, as Ubuntu 24.04)
 #   Node 22 (actions/setup-node)          -> node:22's own binaries, copied in
 #   pg_dump/pg_restore >= 16              -> postgresql-client-16 from the PostgreSQL project's signed archive
 #   gpg, git, curl, openssl               -> the Debian packages
 #   a non-root user ("runner")            -> uid 1001 "runner" (tests that check file permissions behave as on CI)
 #   Chromium's system libraries           -> installed for the Playwright version the commit pins (build arg)
-ARG PYTHON_IMAGE=python:3.11-bookworm
-ARG NODE_IMAGE=node:22-bookworm
+ARG PYTHON_IMAGE=python:3.11-trixie
+ARG NODE_IMAGE=node:22-trixie
 
 FROM ${NODE_IMAGE} AS node
 
@@ -30,7 +30,7 @@ RUN set -eux; \
     apt-get install -y --no-install-recommends ca-certificates curl gnupg git openssl; \
     install -d /usr/share/postgresql-common/pgdg; \
     curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc; \
-    echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt bookworm-pgdg main" > /etc/apt/sources.list.d/pgdg.list; \
+    echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt trixie-pgdg main" > /etc/apt/sources.list.d/pgdg.list; \
     apt-get update -qq; \
     apt-get install -y --no-install-recommends postgresql-client-16; \
     ln -sf /usr/lib/postgresql/16/bin/pg_dump /usr/local/bin/pg_dump; \
