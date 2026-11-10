@@ -93,6 +93,11 @@ if skipped:
     sys.exit("A test skipped although PostgreSQL and Redis are both available.")
 PY'''
 
+# GitHub Actions sets CI=true in every step, and the project reads it (frontend/playwright.config.ts: workers,
+# forbidOnly, the JSON reporter, reuseExistingServer). It is set here too. GITHUB_ACTIONS and the other GITHUB_*
+# variables are NOT set: this tool is not GitHub, and nothing may believe it is.
+CI_ENV = {"CI": "true"}
+
 # Host-side commands get this environment only: never the operator's shell (which may hold real keys).
 HOST_ENV_KEEP = ("PATH", "HOME", "TMPDIR", "LANG", "LC_ALL", "DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_CONFIG", "USER")
 
@@ -188,7 +193,7 @@ class Run:
             out.flush()
             try:
                 stdin = stdin_path.open("rb") if stdin_path else subprocess.DEVNULL
-                done = subprocess.run(argv, cwd=cwd, env=host_env(), stdout=out, stderr=subprocess.STDOUT,
+                done = subprocess.run(argv, cwd=cwd, env=host_env(CI_ENV), stdout=out, stderr=subprocess.STDOUT,
                                       stdin=stdin, timeout=remaining)
                 step.exit_code = done.returncode
                 step.status = "passed" if done.returncode == 0 else "failed"
@@ -234,7 +239,7 @@ class Box:
 
     def step(self, name: str, script: str, deadline: float, failed: bool, workdir: str = "/work",
              env: dict[str, str] | None = None, gate: bool = True) -> bool:
-        merged = {**self.env, **(env or {})}
+        merged = {**CI_ENV, **self.env, **(env or {})}
         argv = ["docker", "exec", "-u", "runner", "-w", workdir]
         for key, value in merged.items():
             argv += ["-e", f"{key}={value}"]
@@ -502,6 +507,10 @@ DIFFERENCES = [
     "Not reproduced: actions/upload-artifact (results are kept in the evidence folder instead), the job summary page, "
     "concurrency cancellation, and GitHub's check-run status. Nothing is reported to GitHub by this tool.",
     "Jobs run one after another (CI runs them in parallel); each job gets its own fresh container and checkout.",
+    "CI=true is set in every step, as GitHub does; GITHUB_ACTIONS and the other GITHUB_* variables are not set.",
+    "Machine size: GitHub's standard Linux runner for a public repository has 4 vCPUs and 16 GB; the local Docker VM's "
+    "CPU and memory are recorded in manifest.json (host.docker_resources). Playwright's worker count comes from CI=true "
+    "(2), not from the CPU count.",
     "The Containers job replaces the local tags travelobligator-backend:local and travelobligator-frontend:local.",
 ]
 
@@ -576,6 +585,7 @@ def main(argv: list[str] | None = None) -> int:
                 "docker_client": capture(["docker", "version", "--format", "{{.Client.Version}}"]),
                 "buildx": capture(["docker", "buildx", "version"]),
                 "compose": capture(["docker", "compose", "version", "--short"]),
+                "docker_resources": capture(["docker", "info", "--format", "cpus={{.NCPU}} memory_bytes={{.MemTotal}}"]),
                 "git": capture(["git", "--version"]),
             },
             "differences": DIFFERENCES,

@@ -90,6 +90,8 @@ same gates. That includes the zero-skip assertion of `Backend / Integration`, th
 - **Chromium's libraries** are installed when the runner image is built, not with `--with-deps` during the job.
 - **Trivy database.** Results depend on the database date, which is recorded in the manifest.
 - **Order.** The jobs run one after another, not in parallel.
+- **Environment.** `CI=true` is set in every step, as GitHub does; `GITHUB_ACTIONS` and the other `GITHUB_*`
+  variables are not. Machine size differs, and the Docker VM's CPUs and memory are recorded.
 - **Local images.** The local image tags `travelobligator-{backend,frontend}:local` are replaced.
 - **GitHub.** Nothing is reported to GitHub.
 
