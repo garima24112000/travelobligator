@@ -29,15 +29,17 @@ _PROTOCOL_PATH = _REPO_DIR / "evaluation" / "quality_v3" / "protocol.json"
 # to either after the freeze must be recorded in docs/37_final_quality_acceptance_v3.md section 10
 # (protocol amendments) BEFORE the run; after the run neither may change at all.
 _QUALITY_HOLDOUT_V3_SHA256 = "ff521eb3e851a55073a8989cbf84e3dafa7a2f9cd3b02450853b4b2823047384"
-_PROTOCOL_SHA256 = "79cd08315c12f28499ac911501046f64e56bb80e7c63c15a81c07f55a8da4060"  # version 3
+_PROTOCOL_SHA256 = "79d7db63e7e0cd8ddeb784ecd61aabf46b67298533c38af3c265df4538932c5a"  # version 4
+_PROTOCOL_V3_SHA256 = "79cd08315c12f28499ac911501046f64e56bb80e7c63c15a81c07f55a8da4060"
 _PROTOCOL_V2_SHA256 = "23a9204663522bbd5a0420fa7affe493086ad0e2ae6148e1cc8572900c3a693a"
 _PROTOCOL_V1_SHA256 = "19a39ecdc2ce5bf215b7e7166af18b539f10e170343af1b43f2de9b22e48650b"
 _PROTOCOL_V1_FINGERPRINT = "b493b1c1bcae9fa16adfbbc5dcc9360a2620d42d9e3f2781cebecf628b0e8da2"
-_PROTOCOL_DOCUMENT_SHA256 = "8e9073e235be13f5bfc0b932a7af217f989fda4f0a9b23f8066607fdc4f532a2"
+_PROTOCOL_DOCUMENT_SHA256 = "c356976c9a1a4d972e50606831c3cc187d11900f333fee4dbabc9f6a39ab6545"
 _REVIEWER_INSTRUCTIONS_SHA256 = "64efbf796908fbce3dac5c7f170f6868f41b9c2e2588ce75bb4f97c0d5aa44ac"
 _INDEPENDENCE_DECLARATION_SHA256 = "75c29d5e76190baa94b28b9980e6fd932ab8049916e5127016032df6e3fac71b"
 _AMENDMENT_V2_SHA256 = "0ba0b2ae5f50bf2dd5adefccccb644b296f18f6d59c5655bbb49def4843ff3aa"
 _AMENDMENT_V3_SHA256 = "51634fd577366f87c4e7008fbc998f98316a6dd89c2f5d92c776120437d0c330"
+_AMENDMENT_V4_SHA256 = "bc235eeee6ba321fbbb6af197937b71e11c96478123b7fed1723b79ed88ec087"
 
 
 def _load(name: str) -> Any:
@@ -87,6 +89,7 @@ def test_the_review_procedure_documents_are_frozen() -> None:
         _REPO_DIR / "evaluation" / "quality_v3" / "INDEPENDENCE_DECLARATION.md": _INDEPENDENCE_DECLARATION_SHA256,
         _REPO_DIR / "evaluation" / "quality_v3" / "AMENDMENT_v2.md": _AMENDMENT_V2_SHA256,
         _REPO_DIR / "evaluation" / "quality_v3" / "AMENDMENT_v3.md": _AMENDMENT_V3_SHA256,
+        _REPO_DIR / "evaluation" / "quality_v3" / "AMENDMENT_v4.md": _AMENDMENT_V4_SHA256,
     }
     for path, pinned in pins.items():
         assert hashlib.sha256(path.read_bytes()).hexdigest() == pinned, path.name
@@ -125,7 +128,9 @@ def test_amendment_v3_names_the_people_and_changes_nothing_else() -> None:
     """Version 3 only names the reviewer and the operator and records the owner's dated confirmations."""
     folder = _REPO_DIR / "evaluation" / "quality_v3"
     v2 = json.loads((folder / "protocol_v2.json").read_text(encoding="utf-8"))
-    v3 = _protocol()
+    v3_path = folder / "protocol_v3.json"
+    assert hashlib.sha256(v3_path.read_bytes()).hexdigest() == _PROTOCOL_V3_SHA256  # kept byte-identical
+    v3 = json.loads(v3_path.read_text(encoding="utf-8"))
     assert (v2["protocol_version"], v3["protocol_version"]) == (2, 3)
     assert set(v3) - set(v2) == {"owner_confirmations"} and not set(v2) - set(v3)
     for key in set(v2) - _V3_CHANGED_TOP_LEVEL:
@@ -153,7 +158,7 @@ def test_amendment_v3_names_the_people_and_changes_nothing_else() -> None:
     assert confirmations["destination_history_confirmed"] is True
     assert confirmations["reviewer_eligibility_confirmed_by_owner"] is True
     record = (folder / "AMENDMENT_v3.md").read_text(encoding="utf-8")
-    for digest in (_PROTOCOL_V1_SHA256, _PROTOCOL_V2_SHA256, _PROTOCOL_SHA256, _QUALITY_HOLDOUT_V3_SHA256,
+    for digest in (_PROTOCOL_V1_SHA256, _PROTOCOL_V2_SHA256, _PROTOCOL_V3_SHA256, _QUALITY_HOLDOUT_V3_SHA256,
                    v3["source"]["fingerprint_sha256"], v3["configuration"]["configuration_sha256"]):
         assert digest in record, digest
     totals = v3["execution"]["cumulative_totals_at_most"]
@@ -165,6 +170,48 @@ def test_amendment_v3_names_the_people_and_changes_nothing_else() -> None:
     assert approval in flat
     for name in (reviewer, operator):
         assert name in record
+
+
+_V4_CHANGED_TOP_LEVEL = {"protocol_version", "amended_on", "amendments", "dates", "owner_confirmations", "ci_evidence"}
+
+
+def test_amendment_v4_moves_the_dates_states_the_ci_rule_and_changes_nothing_else() -> None:
+    """Version 4: the owner-approved window and trip start, and the CI evidence rule (docs/37 section 9, item 1)."""
+    folder = _REPO_DIR / "evaluation" / "quality_v3"
+    v3, v4 = json.loads((folder / "protocol_v3.json").read_text(encoding="utf-8")), _protocol()
+    assert (v3["protocol_version"], v4["protocol_version"]) == (3, 4)
+    assert set(v4) - set(v3) == {"ci_evidence"} and not set(v3) - set(v4)
+    for key in set(v3) - _V4_CHANGED_TOP_LEVEL:
+        assert v3[key] == v4[key], key  # set, source, configuration, runtime, execution, review, acceptance ...
+    # the dates: only the trip start and the window move; still a Monday, still seven days of margin
+    assert {k: v for k, v in v4["dates"].items() if k not in ("trip_start_date", "execution_window")} == \
+        {k: v for k, v in v3["dates"].items() if k not in ("trip_start_date", "execution_window")}
+    window = v4["dates"]["execution_window"]
+    assert (v4["dates"]["trip_start_date"], window["first_day"], window["last_day"], window["timezone"]) == \
+        ("2026-12-07", "2026-11-16", "2026-11-30", "UTC")
+    start = date.fromisoformat(v4["dates"]["trip_start_date"])
+    assert start.weekday() == 0 and date.fromisoformat(window["last_day"]) <= start - timedelta(days=7)
+    # the owner's 2026-11-09 confirmations stay, only the window note records that it was superseded
+    assert {k: v for k, v in v4["owner_confirmations"].items() if k != "execution_window"} == \
+        {k: v for k, v in v3["owner_confirmations"].items() if k != "execution_window"}
+    assert "superseded on 2026-11-10 by amendment 4" in v4["owner_confirmations"]["execution_window"]
+    # the CI rule: all six ci.yml jobs, a committed tool pinned by digest, never a GitHub check
+    ci = v4["ci_evidence"]
+    workflow = yaml.safe_load((_REPO_DIR / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8"))
+    assert sorted(ci["jobs"]) == sorted(job["name"] for job in workflow["jobs"].values())
+    assert set(ci["tool"]) == {"files", "introduced_in_commit", "local_ci_py_sha256", "runner_dockerfile_sha256"}
+    assert all(len(ci["tool"][k]) == 64 for k in ("local_ci_py_sha256", "runner_dockerfile_sha256"))
+    assert "EXACT commit" in ci["local_alternative"] and "passed" in ci["local_alternative"]
+    assert "never presented as GitHub-hosted CI" in ci["never"]
+    # the record quotes the decisions and states every digest; the frozen inputs are the same
+    record = (folder / "AMENDMENT_v4.md").read_text(encoding="utf-8")
+    for digest in (_PROTOCOL_V1_SHA256, _PROTOCOL_V2_SHA256, _PROTOCOL_V3_SHA256, _PROTOCOL_SHA256,
+                   _QUALITY_HOLDOUT_V3_SHA256, v4["source"]["fingerprint_sha256"], v4["configuration"]["configuration_sha256"],
+                   ci["tool"]["local_ci_py_sha256"], ci["tool"]["runner_dockerfile_sha256"]):
+        assert digest in record, digest
+    flat = " ".join(line.lstrip("> ").strip() for line in record.splitlines())
+    assert "Prepare a formal amendment extending the quality_v3 execution window to November 16–30, 2026" in flat
+    assert "Do not fabricate GitHub checks or represent local runs as GitHub-hosted CI." in flat
 
 
 def test_every_city_is_new_and_none_was_a_development_destination() -> None:
