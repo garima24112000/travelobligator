@@ -73,7 +73,7 @@ def test_backend_copies_only_runtime_files_and_no_secrets() -> None:
 
 def test_frontend_image_is_pinned_multistage_non_root_standalone() -> None:
     lines = _instructions(_FRONTEND_DOCKERFILE)
-    assert any(l.startswith("ARG NODE_IMAGE=node:22.23.3-alpine3.24") for l in lines)
+    assert any(l.startswith("ARG NODE_IMAGE=node:22.23.4-alpine3.24") for l in lines)
     prod = _FRONTEND_DOCKERFILE.split("AS production", 1)[1]
     assert "USER node" in prod and 'CMD ["node", "server.js"]' in prod
     assert "npm run dev" not in prod and "npm ci" not in prod  # no install / dev server in the runtime stage
