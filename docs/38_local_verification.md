@@ -1,6 +1,7 @@
 # 38. Local verification when GitHub-hosted CI is unavailable
 
-Status: **tool implemented; replacement gate and protocol amendment 4 PROPOSED, not approved.** Since
+Status: **tool implemented; local verification approved by the owner on 2026-11-10** (protocol amendment 4,
+`evaluation/quality_v3/AMENDMENT_v4.md`, on the branch of PR #15). Since
 2026-11-06, GitHub refuses to start any Actions job for this account ("The job was not started because your
 account is locked due to a billing issue"). That stops every job of `ci.yml`, and also the scheduled
 `neon-backup.yml`, `production-monitor.yml` and `uptime.yml`. The owner has decided not to pay for GitHub
@@ -100,69 +101,115 @@ counts. Logs differ in their timestamps and are not expected to be byte-identica
 checked with `shasum -a 256 -c SHA256SUMS`, and its digest is compared with the one posted on the pull request. If
 the owner wants a signature, `gpg --detach-sign SHA256SUMS` with the owner's own key adds one.
 
-## 3. Merge procedure while hosted checks are unavailable (PROPOSED: the owner's approval needed)
+## 3. Merge procedure while hosted checks are unavailable (approved by the owner, 2026-11-10)
 
 Nothing here creates or edits a GitHub status or check. The pull request keeps its red "job was not started"
-checks; they're never presented as anything else. No `--admin` merge is involved, because there is no protection
-to bypass.
+checks, and they're never presented as anything else. No `--admin` merge is involved, because there is no
+protection to bypass. Merging stays the owner's decision for each pull request.
 
 1. **Up to date with main.** `git merge-base --is-ancestor origin/main <head sha>`, so that the merge commit's tree
    equals the verified tree.
-2. **Local run passes.** `local_ci.py --commit <head sha>` reports `overall: passed`, with the tool files clean.
-3. **Evidence posted.** With the owner's approval, the summary and the evidence digest go on the pull request as a
-   comment. The repository is public, so the comment is public.
+2. **Local run passes.** `local_ci.py --commit <head sha>` reports `overall: passed`. The tool files must be clean
+   and equal to the digests that amendment 4 records.
+3. **Evidence posted.** A sanitized summary goes on the pull request as a comment: commit SHA, tree, the six
+   results, the evidence digest, and every earlier failed or aborted run of the same change. It never includes
+   raw logs, traces, screenshots, environment variables or the evidence folder. The repository is public, so the
+   comment is public.
 4. **Owner approval.** The owner approves on the pull request, naming the head SHA and the evidence digest.
-5. **Merge** with `gh pr merge <n> --merge`, the same kind of merge as #13 and #14.
+5. **Merge** with `gh pr merge <n> --merge`, the same kind of merge as #13 and #14. The merge commit's message
+   carries the evidence digest. It isn't written into a tracked file, because that would create a new commit
+   that the evidence doesn't cover.
 6. **Tree check.** `git rev-parse origin/main^{tree}` must equal the `tree` in the manifest. If it doesn't, run
    the tool on the merge commit before anything relies on it.
 
-A new commit on the branch makes the evidence stale; the whole procedure starts again.
+A new commit on the branch makes the evidence stale, and the whole procedure starts again.
 
 For a production deployment (`docs/25`), the same tool on the exact `main` commit is the proposed stand-in. That
 needs its own owner decision, and none is made here.
 
-## 4. Proposed protocol amendment 4 for quality_v3 (NOT approved, not applied)
+## 4. Protocol amendment 4 for quality_v3 (approved by the owner, 2026-11-10)
 
 `docs/37` section 9, item 1 requires "the commit's CI passes". Section 10 lists the only changes allowed before the
-run: naming people, moving dates, and re-freezing the fingerprint or configuration after a recorded change.
-**Replacing the source of the CI evidence isn't on that list.** Treating a local run as "CI" without saying so
-would silently relax the requirement. So the smallest legitimate change is an explicit amendment that the owner
-approves. It would make these changes:
+run. Replacing the source of the CI evidence wasn't on that list, so it needed an explicit, owner-approved
+amendment rather than a silent reinterpretation. Amendment 4 does three things:
 
-- **Section 9, item 1, appended:** "While GitHub-hosted runners are unavailable to this repository, the CI
-  requirement is met instead by a passing run of `scripts/ci/local_ci.py` (tool commit `<sha>`, file digests
-  recorded) of all six jobs on the exact commit, whose evidence digest and summary are recorded on the pull request
-  and in `AMENDMENT_v4.md`, and which the owner has approved in writing. A GitHub-hosted run, when available again,
-  is still preferred."
-- **Section 10:** one added allowed change ("the source of the CI evidence of section 9, item 1, as in amendment
-  4"), and a row in the table.
-- **`protocol.json`:**
-  - version 4, `amended_on`, `amendments`;
-  - one new field, `ci_evidence`, naming the tool, its digests, and the rule above;
-  - version 3 kept byte-identical as `protocol_v3.json`.
-- **Tests:** new pins, and a test that allows only those fields to differ.
+- it states the CI rule above in `protocol.json` (`ci_evidence`), pinning the tool by file digest;
+- it adds that one item to section 10's list;
+- it moves the dates: execution window **2026-11-16 to 2026-11-30 UTC**, trip start **Monday 2026-12-07**.
 
-**Unchanged:** the ten scenarios (`ff521eb3…`), dates, rubric, thresholds, request limits, cumulative budgets,
-reviewer and operator, fingerprint (`032530cb…`) and configuration digest (`bdf96201…`). The quality_v3 preflight
-doesn't check CI, so no runner code changes.
+Version 3 is kept byte-identical. The ten scenarios (`ff521eb3…`), rubric, thresholds, limits, budgets, reviewer
+and operator, fingerprint (`032530cb…`) and configuration digest (`bdf96201…`) are unchanged. The dates live only
+in `protocol.json`, and `scripts/ci` is outside the fingerprint.
 
-**Order.**
+**If the tool changes,** its new file digests need a further amendment before they can be used.
 
-1. Merge this tool, gated by its own local run under section 3.
-2. Add amendment 4 to PR #15.
-3. Run the tool on PR #15's new head.
-4. Merge under section 3.
+### 4.1 Local runs so far (all disclosed)
 
-**The quickest alternative, needing no amendment.** The repository is public, and GitHub-hosted standard runners
-are free for public repositories. The lock is an account billing problem, not Actions usage. If clearing it costs
-nothing going forward, hosted CI resumes and this amendment isn't needed.
+| Run (UTC) | Commit | Tool | Outcome |
+| --- | --- | --- | --- |
+| 2026-11-10 04:18 | `4288103` (PR #15) | `803935c` | **Aborted**, not evidence. No `.git` in the checkout and GnuPG 2.2: 31 hermetic failures from the tool's environment. |
+| 2026-11-10 04:44 | `4288103` | `a6a0006` | **Aborted**, not evidence. `CI=true` wasn't set, so Playwright ran 4 workers instead of 2. |
+| 2026-11-10 05:43 | `4288103` | `4de59d8` | **Failed**, evidence `e233c90c…`. Hermetic, Integration, Frontend and Security passed. E2E had 182 passed and 1 failed: a trip deletion took 10.1 s against a 10 s expectation. Containers failed because the tool's private umask reached the checkout (a tool defect). |
+| trials, scratch evidence | `4288103` | `a6a0006` to `aeefbdf` | Single-job trials while fixing the tool: Hermetic passed, E2E passed (183/0), Containers showed CVE-2026-109518 in the backend image. Not evidence. |
 
-**Dates.** The window ends 2026-11-15 UTC. If PR #15 can't be merged by **2026-11-13**, leaving the operator two
-days, the alternative is a date amendment (section 10 allows it). The trip start would move to **Monday
-2026-12-07** and the window would run from **2026-11-16 to 2026-11-30 UTC**: still a Monday, and ending seven
-days before the trip.
+### 4.2 The Browser / E2E deletion failure: diagnosis (2026-11-10)
 
-## 5. Backups and monitoring without GitHub Actions (DESIGN: the owner's approval needed for any new resource)
+**What failed.** In the evidence run of 05:43, one of 183 browser tests failed: `[mobile-375] accessibility.spec.ts
+› keyboard › deleting a trip can be done, and cancelled, with the keyboard alone`. Its Playwright trace shows
+`DELETE /trips/{id}` answered **200 after 10,112 ms**. The test waits at most **10,000 ms** (Playwright's
+`expect` timeout) for "Trip deleted.". The deletion itself succeeded; the page was still showing "Deleting…".
+
+**Cause: the offline test backend's development store, not the product's deletion.**
+
+- The browser suite's backend (`backend/scripts/e2e_backend.py`) uses the Local JSON development store, which is
+  documented "Not for production use". It holds one file for the whole run: every test signs up a fresh account
+  and nothing is pruned, so the file grows through the suite.
+- Every read of that store parses the whole file. Every write rewrites it whole, with `indent=2`, `sort_keys` and
+  `fsync`, under one process-wide lock.
+- Deleting a trip there makes about ten whole-file reads and five whole-file rewrites.
+- A generation by a parallel test worker also rewrites the file after each stage, under the same lock.
+
+**Measured** with `scripts/ci/diagnostics/e2e_delete_latency.py`: the real offline backend in the same runner image,
+no provider, three deletions per point.
+
+| Trips in store | Store | Delete alone (median) | Delete during a generation |
+| ---: | ---: | ---: | ---: |
+| 0 | 0 MB | 0.02 s | 0.06 s |
+| 40 | 9.2 MB | 1.58 s | 3.18 s |
+| 80 | 18.4 MB | 3.72 s | 7.37 s |
+| 120 | 27.5 MB | 6.89 s | 11.25 s |
+| 160 | 36.7 MB | 9.65 s (max 10.11) | 15.88 s |
+
+Latency grows linearly with the total stored data, about 0.06 s per stored trip, and a concurrent generation
+roughly doubles it. The failure's 10.1 s matches a store of about 100–120 trips, plus a generation by the other
+worker. That is where the suite was at that moment.
+
+**Classification.**
+
+- **Not database contention, transaction locks or an inefficient production deletion.** Production deletes in
+  PostgreSQL, in one unit of work with indexed deletes. The browser suite never exercises that path; its
+  integration tests do, and they pass.
+- **Not fixture interference by another test's data either.** It's the size of all tests' data together, plus
+  serialization on the store's single lock, with backend saturation from one parallel generation.
+- **The underlying cost is a known property of a dev-only store,** not a product defect.
+- **Not GitHub-specific.** GitHub's runner has the same fixture. A faster disk makes each whole-file rewrite
+  cheaper, so it fails there less often. This Docker VM measured 0.88 s per 37 MB rewrite with `fsync`.
+
+**What was not done.** No timeout was raised, no test or application behaviour changed, and nothing was rerun to
+hide the failure.
+
+**Correction options (owner decision).** Each one touches different frozen material:
+
+| Option | Change | Effect on quality_v3 |
+| --- | --- | --- |
+| A | Make the E2E backend's store cost independent of the suite's size, in `backend/scripts/e2e_backend.py` (test infrastructure) | `backend/scripts` is fingerprinted: re-freeze the fingerprint by a recorded amendment (section 10 allows it). The planner is unchanged. |
+| B | Make `LocalJsonStore` writes cheaper (compact JSON, or no `fsync` in test mode) | `backend/app`: fingerprint re-freeze, and an application change to a dev-only store. Still linear in size. |
+| C | For the deletion confirmation only, wait for the deletion request itself, with a budget stated from the measurement above, before checking the message | Test expectation only (`frontend/e2e`): no fingerprint change. It doesn't make the slow store faster. |
+
+## 5. Backups and monitoring without GitHub Actions
+
+*The owner approved designing this on 2026-11-10. Nothing is provisioned. Any service that may incur a cost needs
+the owner's approval before it's activated.*
 
 **Where things stand.**
 
@@ -189,7 +236,19 @@ unset NEON_BACKUP_DATABASE_URL BACKUP_ENCRYPTION_PASSPHRASE
 
 - **What the script does:** it encrypts, proves that the encrypted file decrypts to the dump, uploads without
   overwriting, and checks the stored object's SHA-256.
-- **Restore check:** follow the recovery drill of `docs/30` against a disposable database.
+- **Restore check (required before the backup counts as done).** Run the recovery drill of `docs/30` section 5.1.
+  It restores only into a throwaway PostgreSQL 16 container with no network:
+
+  ```bash
+  aws s3api list-objects-v2 --bucket travelobligator-db-backups-10192026 --prefix neon/ \
+      --query 'Contents[].[Key,Size,LastModified]' --output table
+  python3 scripts/backup/restore_drill.py --s3-key neon/<the new object> --expect-revision a94c0e7d2b61
+  ```
+
+  `a94c0e7d2b61` is the Alembic head of `main` today. Production must be at exactly this revision, so check it
+  before relying on it. The drill must print `Drill PASSED`. Afterwards, `docker ps -a --filter
+  label=travelobligator.restore-drill=true` must show nothing. Record the date, object name and result (not the
+  row counts) in `docs/30` section 8.
 - **Repeat daily** until automation is back. The 7-day rule applies to these objects too.
 
 Don't keep an extra local copy: manual exports have no retention policy in force (`docs/25`).
