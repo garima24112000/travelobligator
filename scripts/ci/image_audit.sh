@@ -27,6 +27,9 @@ expect "backend entrypoint" "$(inspect "${BACKEND_IMAGE}" '{{json .Config.Entryp
 case "$(inspect "${BACKEND_IMAGE}" '{{json .Config}}')" in
   *--reload*) fail "backend image config mentions --reload" ;;
 esac
+# CVE-2026-109518 (owner-approved exception in backend/Dockerfile): the fixed apt, and no package list left behind.
+expect "backend apt packages" "$(docker run --rm --network none --entrypoint dpkg-query "${BACKEND_IMAGE}" -W -f '${Package}=${Version} ' apt libapt-pkg6.0)" "apt=2.6.2 libapt-pkg6.0=2.6.2 "
+expect "backend apt package lists" "$(docker run --rm --network none --entrypoint sh "${BACKEND_IMAGE}" -c 'ls -A /var/lib/apt/lists | grep -v "^lock$\|^partial$" | wc -l')" "0"
 
 docker run --rm --network none -e PORT=9123 --entrypoint python "${BACKEND_IMAGE}" -c '
 import importlib.util, os, pathlib, sys

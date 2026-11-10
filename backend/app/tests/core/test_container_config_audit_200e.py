@@ -43,6 +43,20 @@ def test_backend_runtime_image_drops_setuid_bits_and_the_installer() -> None:
     assert "pip install" not in runtime  # nothing is installed into the runtime stage
 
 
+def test_backend_apt_exception_upgrades_only_the_fixed_apt_packages() -> None:
+    # Owner-approved exception (CVE-2026-109518): exactly apt and libapt-pkg6.0, exactly 2.6.2, never a general
+    # upgrade, the package lists removed in the same layer, and before the setuid bits are stripped.
+    runtime = _BACKEND_DOCKERFILE.split("FROM ${PYTHON_IMAGE} AS runtime")[1]
+    body = "\n".join(_instructions(runtime))
+    assert "ARG APT_FIXED_VERSION=2.6.2" in body
+    assert re.search(r"--only-upgrade\s*\\\s*apt=\$\{APT_FIXED_VERSION\} libapt-pkg6\.0=\$\{APT_FIXED_VERSION\}", body)
+    assert "rm -rf /var/lib/apt/lists/*" in body
+    instructions = "\n".join(_instructions(_BACKEND_DOCKERFILE))
+    assert not re.search(r"apt-get (dist-|full-)?upgrade", instructions)
+    assert body.index("APT_FIXED_VERSION") < body.index("chmod a-s")
+    assert instructions.count("apt-get install") == 1
+
+
 def test_backend_healthcheck_is_liveness_only() -> None:
     health = re.search(r"HEALTHCHECK.*?\n\s+CMD (.*)", _BACKEND_DOCKERFILE).group(1)
     assert "/health" in health and "/ready" not in health
