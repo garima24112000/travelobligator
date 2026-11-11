@@ -151,6 +151,8 @@ in `protocol.json`, and `scripts/ci` is outside the fingerprint.
 | 2026-11-10 04:44 | `4288103` | `a6a0006` | **Aborted**, not evidence. `CI=true` wasn't set, so Playwright ran 4 workers instead of 2. |
 | 2026-11-10 05:43 | `4288103` | `4de59d8` | **Failed**, evidence `e233c90c…`. Hermetic, Integration, Frontend and Security passed. E2E had 182 passed and 1 failed: a trip deletion took 10.1 s against a 10 s expectation. Containers failed because the tool's private umask reached the checkout (a tool defect). |
 | trials, scratch evidence | `4288103` | `a6a0006` to `aeefbdf` | Single-job trials while fixing the tool: Hermetic passed, E2E passed (183/0), Containers showed CVE-2026-109518 in the backend image. Not evidence. |
+| 2026-11-10 | `9d59ab2` (PR #16) | `dc89ef0` | Subset (Containers, Security), so never "passed" overall: evidence `eb39097d…`. The backend gate passed with apt 2.6.2. The frontend image gate failed on fixable HIGH findings in `musl` and `zlib`. |
+| 2026-11-10 | `bdc8424` (PR #16) | `dc89ef0` | Subset (Containers, Security): both **passed**, evidence `13fb67be…`. The frontend base is `node:22.23.4-alpine3.24`, which the owner accepted on 2026-11-10. |
 
 ### 4.2 The Browser / E2E deletion failure: diagnosis (2026-11-10)
 
@@ -205,6 +207,18 @@ hide the failure.
 | A | Make the E2E backend's store cost independent of the suite's size, in `backend/scripts/e2e_backend.py` (test infrastructure) | `backend/scripts` is fingerprinted: re-freeze the fingerprint by a recorded amendment (section 10 allows it). The planner is unchanged. |
 | B | Make `LocalJsonStore` writes cheaper (compact JSON, or no `fsync` in test mode) | `backend/app`: fingerprint re-freeze, and an application change to a dev-only store. Still linear in size. |
 | C | For the deletion confirmation only, wait for the deletion request itself, with a budget stated from the measurement above, before checking the message | Test expectation only (`frontend/e2e`): no fingerprint change. It doesn't make the slow store faster. |
+
+**Decision (owner, 2026-11-10): option C.** In `accessibility.spec.ts` › keyboard › "deleting a trip can be done,
+and cancelled, with the keyboard alone", the test now waits for `DELETE /trips/{id}` itself, up to
+`DELETE_REQUEST_BUDGET_MS` = 30 s (about twice the slowest measured deletion, 15.9 s), requires status 200, and then
+checks "Trip deleted." with the usual 10 s expect timeout. Every keyboard and focus assertion is unchanged. A
+refused or failed deletion, or one slower than the budget, still fails the test. Production deletion, the planner,
+the test backend and the quality_v3 fingerprint are untouched, and retries stay off.
+
+The owner limited the change to that one test. Seven other checks of "Trip deleted." in `saved-trips`,
+`journey-smoke`, `itinerary` and `security` wait with the default 10 s after a deletion on the same store. They have
+the same exposure but haven't failed so far. If one does, the failure is disclosed and its correction is a new
+owner decision.
 
 ## 5. Backups and monitoring without GitHub Actions
 
