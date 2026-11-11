@@ -1,6 +1,6 @@
 {
  "protocol_id": "quality-acceptance-v3",
- "protocol_version": 2,
+ "protocol_version": 4,
  "frozen_on": "2026-10-27",
  "document": "docs/37_final_quality_acceptance_v3.md",
  "contract": "docs/24_itinerary_quality_contract.md (parts A, B and C and the section 6 release target, unchanged)",
@@ -18,12 +18,12 @@
   "origin": null
  },
  "dates": {
-  "trip_start_date": "2026-11-23",
+  "trip_start_date": "2026-12-07",
   "trip_start_weekday": "Monday",
   "same_start_date_for_every_scenario": true,
   "execution_window": {
-   "first_day": "2026-10-28",
-   "last_day": "2026-11-15",
+   "first_day": "2026-11-16",
+   "last_day": "2026-11-30",
    "timezone": "UTC"
   }
  },
@@ -138,7 +138,7 @@
    "applies_to": "every attempt (the per-scenario limits of version 1, unchanged, set afresh for each attempt)"
   },
   "after_the_run": "MANIFEST.sha256 over every file of the run (attempt records included) is written, and its digest entered in the audit log, before anyone reads a plan; every later step re-verifies the run folder against both",
-  "operator": null,
+  "operator": "Garima Prachi",
   "attempts": {
    "max_attempts_per_scenario": 3,
    "max_attempts_total": 12,
@@ -186,7 +186,7 @@
   }
  },
  "review": {
-  "designated_reviewer": null,
+  "designated_reviewer": "Avinash Kumar Singh",
   "reviewer_requirements": [
    "exactly one designated reviewer, named in this protocol before the run (a protocol amendment, docs/37 section 10)",
    "not the execution operator recorded in this protocol",
@@ -232,6 +232,42 @@
   "part_b": "reported per scenario; never a pass or fail criterion and never read before scoring",
   "no_retuning": "the result is recorded as it comes out; a defect found is fixed and validated on tuning or development scenarios, never by rerunning or re-scoring this set"
  },
- "amended_on": "2026-10-28",
- "amendments": "evaluation/quality_v3/AMENDMENT_v2.md (version 1 kept byte-identical as evaluation/quality_v3/protocol_v1.json)"
+ "amended_on": "2026-11-10",
+ "amendments": "evaluation/quality_v3/AMENDMENT_v2.md, AMENDMENT_v3.md and AMENDMENT_v4.md (versions 1, 2 and 3 kept byte-identical as evaluation/quality_v3/protocol_v1.json, protocol_v2.json and protocol_v3.json)",
+ "owner_confirmations": {
+  "confirmed_on": "2026-11-09",
+  "confirmed_by": "the owner",
+  "record": "evaluation/quality_v3/AMENDMENT_v3.md (the owner's statements, word for word)",
+  "designation": "designated reviewer Avinash Kumar Singh; execution operator Garima Prachi",
+  "cumulative_budget_approved": true,
+  "destination_history_confirmed": true,
+  "reviewer_eligibility_confirmed_by_owner": true,
+  "execution_window": "2026-11-09: the owner kept the then last day, 2026-11-15 (UTC); superseded on 2026-11-10 by amendment 4, which the owner approved (window 2026-11-16 to 2026-11-30 UTC, trip start Monday 2026-12-07)",
+  "not_a_substitute_for": "the reviewer's own signed INDEPENDENCE_DECLARATION.md, locked by `declare` after the run and before any review material exists"
+ },
+ "ci_evidence": {
+  "requirement": "docs/37 section 9, item 1: the commit's CI passes",
+  "hosted": "the six jobs of .github/workflows/ci.yml on GitHub-hosted runners, when GitHub runs them for this repository",
+  "local_alternative": "while GitHub-hosted runners are unavailable to this repository: one run of the committed local runner on the EXACT commit, with overall_status 'passed' (every gate step of all six jobs ran and exited 0), its tool files clean and equal to the digests below",
+  "jobs": [
+   "Backend / Hermetic",
+   "Backend / Integration",
+   "Frontend / Build",
+   "Browser / E2E",
+   "Containers / Build & Smoke",
+   "Security / Scan"
+  ],
+  "tool": {
+   "files": [
+    "scripts/ci/local_ci.py",
+    "scripts/ci/local-runner.Dockerfile"
+   ],
+   "introduced_in_commit": "aeefbdf",
+   "local_ci_py_sha256": "db8ff7ca47c33e574729c21b2f9d4dcf633fd83336345752a020d9763dcc5dd7",
+   "runner_dockerfile_sha256": "0909b283ff7dc282dfd2ca13c3dff394069989b27b23549fc96226c65b107966"
+  },
+  "record": "the commit SHA, the evidence digest (SHA-256 of the run's SHA256SUMS) and a sanitized summary are posted on the pull request, every earlier failed or aborted local run of the same change is disclosed there with it, and the evidence digest is written in the merge commit's message; the merge commit's tree must equal the verified commit's tree, so the verified content is exactly what is merged",
+  "never": "a local run is never presented as GitHub-hosted CI and never creates or edits a GitHub status or check",
+  "outside_fingerprint": "scripts/ci is not part of the source fingerprint; backend/app, backend/scripts and backend/requirements.txt are"
+ }
 }

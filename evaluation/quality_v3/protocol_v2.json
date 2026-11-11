@@ -1,0 +1,237 @@
+{
+ "protocol_id": "quality-acceptance-v3",
+ "protocol_version": 2,
+ "frozen_on": "2026-10-27",
+ "document": "docs/37_final_quality_acceptance_v3.md",
+ "contract": "docs/24_itinerary_quality_contract.md (parts A, B and C and the section 6 release target, unchanged)",
+ "set": {
+  "name": "quality-holdout-v3",
+  "file": "backend/scripts/benchmark/quality_v3.json",
+  "key": "quality_holdout_v3",
+  "scenario_count": 10,
+  "sha256": "ff521eb3e851a55073a8989cbf84e3dafa7a2f9cd3b02450853b4b2823047384",
+  "sha256_construction": "sha256 of json.dumps(scenario list, ensure_ascii=False, sort_keys=True, separators=(',', ':'))"
+ },
+ "request_defaults": {
+  "travelers": 2,
+  "travel_group_type": "couple",
+  "origin": null
+ },
+ "dates": {
+  "trip_start_date": "2026-11-23",
+  "trip_start_weekday": "Monday",
+  "same_start_date_for_every_scenario": true,
+  "execution_window": {
+   "first_day": "2026-10-28",
+   "last_day": "2026-11-15",
+   "timezone": "UTC"
+  }
+ },
+ "source": {
+  "base_commit": "5eda096a54ef993b460416c9816b443e0c6ec3b6",
+  "base_description": "Final Batch 2 head (PR #13), containing Final Batch 1 (905f228): the final corrected planner",
+  "fingerprint_sha256": "032530cb1e9745392b59bcbf9d10b0ce8cdbccc37e5ac4ca6ee1b73e928a9153",
+  "fingerprint_file_count": 335,
+  "fingerprint_covers": [
+   "backend/app (excluding backend/app/tests/)",
+   "backend/scripts",
+   "backend/requirements.txt"
+  ],
+  "working_tree": "clean (no modified or untracked file anywhere in the checkout)",
+  "reconciled_onto": "3fa622b (main after PR #13 was merged); main changed no fingerprinted file"
+ },
+ "runtime": {
+  "python": "3.11",
+  "packages": "exactly the name==version pins of backend/requirements.txt"
+ },
+ "configuration": {
+  "configuration_sha256": "bdf9620130346a217e382f2ff4206a2de01dd85d8192d1bf5a3164769bffd965",
+  "construction": "run_provenance.capture_configuration() after applying `environment` below and then benchmark_cities._configure_environment (throwaway Local JSON store, throwaway SQLite provider cache, synchronous generation, APP_ENV=development); every other setting at its code default",
+  "environment_source": "render.yaml: every envVar with a literal value (no secret; sync:false values are not part of it)",
+  "environment": {
+   "APP_ENV": "production",
+   "APP_DEBUG": "false",
+   "PERSISTENCE_BACKEND": "postgres",
+   "PROVIDER_CACHE_BACKEND": "redis",
+   "SESSION_COOKIE_SECURE": "true",
+   "SESSION_COOKIE_HTTPONLY": "true",
+   "SESSION_COOKIE_SAMESITE": "lax",
+   "METRICS_ENABLED": "false",
+   "ASYNC_GENERATION_ENABLED": "true",
+   "GENERATION_MAX_JOBS_PER_USER_PER_WINDOW": "5",
+   "GENERATION_MAX_JOBS_GLOBAL_PER_WINDOW": "25",
+   "GENERATION_MAX_CONCURRENT_JOBS": "2",
+   "GENERATION_LIMIT_WINDOW_SECONDS": "86400",
+   "MAX_TRIPS_PER_USER": "20",
+   "MAX_TRIP_DAYS": "7",
+   "SIGNUP_MAX_PER_WINDOW_GLOBAL": "30",
+   "LOGIN_MAX_FAILURES_PER_ACCOUNT": "10",
+   "SIGNUP_MODE": "invite_link",
+   "REGISTRATION_ACCESS_TTL_SECONDS": "1800",
+   "GENERATION_ENABLED": "true",
+   "CLIENT_IP_TRUSTED_PROXY_HOPS": "0",
+   "DB_POOL_SIZE": "3",
+   "DB_MAX_OVERFLOW": "2",
+   "DB_CONNECT_TIMEOUT_SECONDS": "15",
+   "GEOCODING_PROVIDER": "geoapify",
+   "PLACES_PROVIDER": "geoapify",
+   "ROUTING_PROVIDER": "geoapify",
+   "INVENTORY_SUFFICIENCY_GATE_ENABLED": "true",
+   "GEOAPIFY_MAX_CREDITS_PER_GENERATION": "100",
+   "AI_CANDIDATE_PROPOSAL_PROVIDER": "groq",
+   "AI_CANDIDATE_DISCOVERY_ENABLED": "true",
+   "AI_DIRECTED_PROVIDER_DISCOVERY_MAX_SEARCHES": "16",
+   "AI_DIRECTED_PROVIDER_DISCOVERY_MAX_EXTRA_SEARCHES": "4",
+   "AI_ITINERARY_REASONING_ENABLED": "true",
+   "AI_ITINERARY_REASONING_PROVIDER": "groq",
+   "AI_ITINERARY_REPAIR_ENABLED": "true",
+   "ITINERARY_NARRATOR_ENABLED": "true",
+   "ITINERARY_NARRATOR_PROVIDER": "groq",
+   "GROQ_MODEL": "openai/gpt-oss-20b",
+   "LLM_FAILOVER_ENABLED": "true",
+   "LLM_PRIMARY_PROVIDER": "groq",
+   "LLM_SECONDARY_PROVIDER": "gemini",
+   "GEMINI_MODEL": "gemini-3.5-flash-lite",
+   "TARGETED_REGENERATION_ENABLED": "false",
+   "AI_FEEDBACK_INTERPRETER_ENABLED": "false",
+   "KIWI_MCP_ENABLED": "false",
+   "FLIGHT_AIRPORT_LOOKUP_PROVIDER": "not_connected",
+   "FLIGHT_PROVIDER": "not_connected",
+   "ACCOMMODATION_PROVIDER": "not_connected",
+   "HOTEL_RATINGS_PROVIDER": "not_connected"
+  },
+  "credentials_required_present": [
+   "GEOAPIFY_API_KEY",
+   "GROQ_API_KEY",
+   "GEMINI_API_KEY"
+  ]
+ },
+ "execution": {
+  "runner": "backend/scripts/quality_acceptance_v3.py run --allow-quality-holdout --execute",
+  "runs": 1,
+  "whole_set_only": true,
+  "scenario_order": "file order, strictly one after another",
+  "pause_seconds_between_scenarios": 8,
+  "max_resumes": 2,
+  "interruption_rule": "An attempt during which the request guard stopped (HTTP 401/403 from any service, or 429 from a data provider) is not a result; its scenario, and every scenario not yet run, is run again by --resume after the cause is fixed, and the interrupted attempt's record stays as evidence. Every other outcome is the result and is never run again: a completed plan of any quality, a technical failure, an honest INSUFFICIENT_VERIFIED_INVENTORY plan, an LLM provider rate limit absorbed by failover or the deterministic fallback, and a scenario that reached a per-attempt cap. If scenarios without a result remain after max_resumes, or a further full attempt would not fit the cumulative limits, the run is void and no acceptance can be claimed from it.",
+  "limits": {
+   "max_requests_by_service_per_scenario": {
+    "geoapify": 100,
+    "groq": 8,
+    "gemini": 8,
+    "open_meteo": 2,
+    "nager_date": 3,
+    "frankfurter": 2,
+    "kiwi": 0
+   },
+   "max_llm_requests_per_scenario": 8,
+   "geoapify_credits_per_generation": 100,
+   "allowed_hosts": [
+    "api.geoapify.com",
+    "api.open-meteo.com",
+    "date.nager.at",
+    "api.frankfurter.app",
+    "api.frankfurter.dev",
+    "api.groq.com",
+    "generativelanguage.googleapis.com"
+   ],
+   "applies_to": "every attempt (the per-scenario limits of version 1, unchanged, set afresh for each attempt)"
+  },
+  "after_the_run": "MANIFEST.sha256 over every file of the run (attempt records included) is written, and its digest entered in the audit log, before anyone reads a plan; every later step re-verifies the run folder against both",
+  "operator": null,
+  "attempts": {
+   "max_attempts_per_scenario": 3,
+   "max_attempts_total": 12,
+   "definition": "An attempt is one start of one scenario's generation; it begins with a write-once start marker before its first request and ends with a write-once final record (outcome result, technical_failure or interrupted). A scenario skipped because the guard had already stopped in that session, or refused by the cumulative check, is not an attempt and sends nothing. An attempt that started and has no final record (the process died) is abandoned and is counted at the full per-attempt caps.",
+   "why_twelve": "At most 1 + max_resumes = 3 sessions. A guard stop ends a session's sending, so each session has at most one attempt that is not a result. If all three sessions are interrupted the run is void with at most 9 results, so 9 + 3 = 12; otherwise at most 10 results + 2 interrupted attempts = 12."
+  },
+  "totals_without_interruption": {
+   "geoapify": 1000,
+   "geoapify_credits": 1000,
+   "llm_combined": 80,
+   "open_meteo": 20,
+   "nager_date": 30,
+   "frankfurter": 20,
+   "kiwi": 0,
+   "note": "10 completed attempts; informational"
+  },
+  "cumulative_totals_at_most": {
+   "geoapify": 1200,
+   "geoapify_credits": 1200,
+   "llm_combined": 96,
+   "open_meteo": 24,
+   "nager_date": 36,
+   "frankfurter": 24,
+   "kiwi": 0,
+   "note": "every attempt of every session, interrupted and abandoned ones included: max_attempts_total x the per-attempt caps; checked before each attempt, which starts only if all of its caps still fit; an unknown credit count is taken at the per-generation cap"
+  },
+  "audit_log": {
+   "default_path": "benchmark_results/quality_holdout_v3.audit.jsonl (beside the result folders, never inside one)",
+   "form": "append-only JSON lines, each with seq and the SHA-256 of the previous line; digests, counts and fixed labels only",
+   "records": [
+    "session_started",
+    "attempt_started",
+    "attempt_recorded",
+    "attempt_abandoned",
+    "budget_exhausted",
+    "session_ended",
+    "run_void",
+    "run_manifest",
+    "declaration_locked",
+    "review_manifest",
+    "submission_locked",
+    "acceptance_recorded"
+   ],
+   "external_copy": "the operator records the audit log head printed after each step outside the machine (docs/37 section 8)"
+  }
+ },
+ "review": {
+  "designated_reviewer": null,
+  "reviewer_requirements": [
+   "exactly one designated reviewer, named in this protocol before the run (a protocol amendment, docs/37 section 10)",
+   "not the execution operator recorded in this protocol",
+   "has not developed, tuned or reviewed planner changes for this release",
+   "has seen no output of this evaluation, no automated verdict and no scenario identity before receiving the blinded packets"
+  ],
+  "presentation_seed": "travelobligator/quality-acceptance-v3/2026-10-27",
+  "packet_codes": "P01..P10 in the order of sha256(seed + ':' + scenario id)",
+  "scale": "whole numbers 1-5 only: 1 unusable, 2 poor, 3 acceptable with edits, 4 good, 5 excellent",
+  "dimensions": [
+   "attraction_usefulness",
+   "geographic_day_coherence",
+   "personalization",
+   "pace_realism",
+   "redundancy_avoidance",
+   "overall_would_use"
+  ],
+  "order_of_work": "score each packet completely (six scores, evidence, verified factual errors) and record it on the scoresheet; return the scoresheet and the ten packets; only after `submit` has locked them may the reviewer read the after-scoring files; never revise a recorded score",
+  "verified_factual_error": "a scheduled place that the reviewer checked against an official or primary source and found permanently or temporarily closed on its planned date, relocated, not existing, not open to visitors, or materially away from where the plan puts it; each with its source and the date it was checked",
+  "second_reviewer": "optional; recorded separately, never averaged and never used for the verdict",
+  "independence_declaration": "evaluation/quality_v3/INDEPENDENCE_DECLARATION.md, completed and signed by the reviewer after the run and before any review material exists; locked by `declare` into its own folder (never in the reviewer bundle), its digest entered in the audit log",
+  "reviewer_bundle": "reviewer_bundle/ only: the ten packets, the empty scoresheet and REVIEWER_INSTRUCTIONS.md; no scenario id, packet mapping, automated verdict or Part B figure",
+  "held_by_operator": "operator/: the packet mapping and the after-scoring files (automated verdict and Part B figures), released to the reviewer only after `submit` has locked the scoresheet",
+  "submission": "the completed scoresheet and the returned packets are validated and locked write-once by `submit` (the plan part of each returned packet must equal the packet issued under its code); edits before submission are the reviewer's own and are not corruption; after it, nothing changes"
+ },
+ "acceptance": {
+  "all_three_required": true,
+  "criteria": [
+   {
+    "id": "median_overall_at_least_4",
+    "rule": "median of the ten Overall scores >= 4 (with ten scores the median is the mean of the 5th and 6th; 3.5 does not meet it)"
+   },
+   {
+    "id": "no_overall_below_3",
+    "rule": "no scenario with an Overall score below 3"
+   },
+   {
+    "id": "zero_hard_factual_safety_failures",
+    "rule": "the run is valid and complete; every scenario's generation completed and passed the canary's baseline hard correctness (acceptance policy 2, as recorded); and the reviewer verified zero factual errors across the ten plans"
+   }
+  ],
+  "other_dimensions": "recorded and reported; no threshold",
+  "part_b": "reported per scenario; never a pass or fail criterion and never read before scoring",
+  "no_retuning": "the result is recorded as it comes out; a defect found is fixed and validated on tuning or development scenarios, never by rerunning or re-scoring this set"
+ },
+ "amended_on": "2026-10-28",
+ "amendments": "evaluation/quality_v3/AMENDMENT_v2.md (version 1 kept byte-identical as evaluation/quality_v3/protocol_v1.json)"
+}

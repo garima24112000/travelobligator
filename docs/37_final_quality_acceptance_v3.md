@@ -1,7 +1,8 @@
 # 37. Final independent quality acceptance (quality-holdout-v3) — protocol
 
-Status: **prepared and frozen on 2026-10-27 (protocol version 1); amended to version 2 on 2026-10-28, before any
-run (section 10, `evaluation/quality_v3/AMENDMENT_v2.md`); not run.** No itinerary was generated, no provider or
+Status: **prepared and frozen on 2026-10-27 (protocol version 1); amended to version 2 on 2026-10-28 and to
+version 3 on 2026-11-09 and to version 4 on 2026-11-10, before any run (section 10,
+`evaluation/quality_v3/AMENDMENT_v2.md`, `AMENDMENT_v3.md`, `AMENDMENT_v4.md`); not run.** No itinerary was generated, no provider or
 model was called, no production setting changed and nothing was committed while preparing or amending it. The earlier holdouts are
 untouched: `quality-holdout` (docs 26/27, a FAIL) and `quality-holdout-v2` (a historical FAIL, 6/10 baseline)
 are neither rerun nor re-scored, and this set does not replace their results.
@@ -66,15 +67,18 @@ test or fixture.
 The scenarios were chosen from the contract's generic categories before anything about them was looked up. No
 provider was asked about any of them, so nobody knows how well the planner does on them.
 
-**Owner check still needed:** the owner confirms that none of these ten destinations was used in a manual or
-production trip by anyone who worked on the planner (section 9, item 5). The repository cannot show that.
+**Owner check (done 2026-11-09, amendment 3):** the owner confirmed that none of these ten destinations was used
+in a manual or production trip by anyone who worked on the planner (section 9, item 5). The statement is recorded
+word for word in `evaluation/quality_v3/AMENDMENT_v3.md`. The repository cannot show it.
 
 ## 3. Dates
 
-- Trip start: **Monday 2026-11-23**, the same for every scenario. A Monday start exercises weekly museum
+- Trip start: **Monday 2026-12-07**, the same for every scenario. A Monday start exercises weekly museum
   closures on the first day.
-- Execution window: **2026-10-28 to 2026-11-15 (UTC), inclusive.** The runner refuses outside it. The last day
+- Execution window: **2026-11-16 to 2026-11-30 (UTC), inclusive.** The runner refuses outside it. The last day
   leaves at least a week before the trip starts, so every plan is for a future trip.
+- *Amendment 4 (2026-11-10) moved both, with the owner's approval. Versions 1–3 had the trip start on Monday
+  2026-11-23 and the window 2026-10-28 to 2026-11-15.*
 - Weather is a forecast only within the provider's horizon, so a run early in the window records weather as
   unavailable (the accepted `WEATHER` data-coverage code) and a run late in it may have a forecast. It is the same
   for all ten scenarios of one run, and the run date is recorded.
@@ -328,12 +332,19 @@ recorded digest. Results and packets stay in the git-ignored `benchmark_results/
 1. **This work is reviewed and committed**, with a clean tree. Committing does not change the frozen
    fingerprint, which covers file contents and not the commit. The commit's CI passes (`Backend / Hermetic`
    runs the pins and guards of `test_quality_acceptance_v3.py`). PR #13 is merged (`3fa622b`) and this work
-   sits on top of it.
+   sits on top of it. *Amendment 4: while GitHub-hosted runners are unavailable to this repository, "CI passes"
+   is met only by one run of the committed local runner on the exact commit, as stated in `protocol.json`
+   `ci_evidence`. All six jobs must pass and the tool files must equal the recorded digests. The evidence digest is
+   recorded on the pull request and in the merge commit's message, and the merged tree must equal the verified
+   tree. Every earlier failed or aborted local run is disclosed with it. It is never presented as GitHub-hosted
+   CI.*
 2. **No planner or tooling change after the freeze.** Any change to `backend/app` (outside its tests),
    `backend/scripts` or `backend/requirements.txt` changes the fingerprint, and the runner refuses. If such a
    change is needed before the run, it is a protocol amendment (section 10). After the run, none is possible.
 3. **A designated reviewer and an execution operator are named** in `protocol.json` (one amendment, section 10).
-   They are two different people, and the reviewer meets section 7.
+   They are two different people, and the reviewer meets section 7. *Done in amendment 3 (2026-11-09): reviewer
+   Avinash Kumar Singh, operator Garima Prachi; the owner confirmed the reviewer's eligibility. The reviewer's own
+   signed declaration is still required after the run.*
 4. **The operator's environment.** A fresh checkout with no `.env` that sets a recorded setting. Python 3.11
    with `pip install -r backend/requirements.txt`. The three keys exported in the operator's own shell (never in
    a file in the repository, never shown).
@@ -342,6 +353,10 @@ recorded digest. Results and packets stay in the git-ignored `benchmark_results/
    - The cumulative request limits of section 4 (at most 1,200 Geoapify credits and 96 model requests) are
      approved.
    - The run happens inside the execution window.
+
+   *The first two were given by the owner on 2026-11-09 and are recorded word for word in amendment 3. On
+   2026-11-09 the owner kept the window ending 2026-11-15. On 2026-11-10 the owner approved amendment 4, which
+   moved it to 2026-11-16 to 2026-11-30 UTC. The runner checks the third on the run day.*
 6. **`preflight` passes** on the run day. It is the last step before `run`.
 
 ## 10. Protocol amendments
@@ -350,7 +365,9 @@ Allowed **only before the run**, and only for the following:
 
 - naming the designated reviewer and the execution operator;
 - moving the dates (the trip start must stay a Monday, and the window must end at least seven days before it);
-- re-freezing the fingerprint or configuration digest after a reviewed change that is recorded here.
+- re-freezing the fingerprint or configuration digest after a reviewed change that is recorded here;
+- the source of the CI evidence of section 9, item 1, as stated in amendment 4 (added by amendment 4, with the
+  owner's approval).
 
 The scenarios, the per-attempt limits and the acceptance rule are not amended. Each amendment:
 
@@ -366,6 +383,8 @@ later step refuses another one.
 | --- | --- | --- | --- |
 | 1 | 2026-10-27 | Frozen | — |
 | 2 | 2026-10-28 | Cumulative limits corrected (12 attempts: 1,200 Geoapify credits, 96 model requests); write-once attempt records and enforced cumulative limits; hash-chained audit log; review and submission manifests, the mapping check and the locked scoresheet; execution operator, reviewer ≠ operator and a locked independence declaration; fingerprint re-frozen for the two evaluation scripts only | The pre-commit protocol review found that version 1 understated the worst-case requests with resumes, lost an interrupted attempt's evidence on resume, and did not verify the review material at scoring. `evaluation/quality_v3/AMENDMENT_v2.md` |
+| 3 | 2026-11-09 | Designated reviewer (Avinash Kumar Singh) and execution operator (Garima Prachi) named; the owner's dated confirmations recorded (cumulative limits approved, destination history, reviewer eligibility, window kept). Scenarios, rules, limits, dates, fingerprint and configuration unchanged; version 2 kept byte-identical as `protocol_v2.json` | Version 2 left both people unnamed, so preflight refused the run (section 9, items 3 and 5). `evaluation/quality_v3/AMENDMENT_v3.md` |
+| 4 | 2026-11-10 | Execution window moved to 2026-11-16 to 2026-11-30 UTC and trip start to Monday 2026-12-07. CI evidence of section 9, item 1 may come from one run of the committed local runner on the exact commit while GitHub-hosted runners are unavailable (`protocol.json` `ci_evidence`). Scenarios, rules, limits, budgets, people, fingerprint and configuration unchanged; version 3 kept byte-identical as `protocol_v3.json` | GitHub stopped running Actions for this account (billing restriction; the owner declined to pay for it), and the old window could not be met with the remaining prerequisites. The owner's decisions of 2026-11-10. `evaluation/quality_v3/AMENDMENT_v4.md` |
 
 ## 11. Offline preflight on 2026-10-27 (the freeze day; nothing sent)
 
@@ -407,6 +426,24 @@ Failed, as expected:
 - no reviewer;
 - no operator, so reviewer ≠ operator cannot be shown;
 - no provider key.
+
+**Version 3, 2026-11-10 UTC (nothing sent).** Run on the committed amendment (`b88568a`), clean tree. Passed:
+
+- set unchanged (10 scenarios);
+- inside the window;
+- trip start in the future;
+- HEAD contains `5eda096`;
+- source fingerprint `032530cb…` equal;
+- Python 3.11 and every pinned package;
+- configuration digest `bdf96201…` equal;
+- designated reviewer recorded, execution operator recorded, and they are different people;
+- result directory and audit log new.
+
+Failed, as expected:
+
+- no provider key (deliberately absent in the preparation shell).
+
+On the run day, preflight is run again in the operator's shell with the three keys exported.
 
 The offline tests use a stand-in generation and send nothing. They rehearse:
 
