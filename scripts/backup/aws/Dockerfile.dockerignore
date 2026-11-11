@@ -1,0 +1,5 @@
+# Build context for scripts/backup/aws/Dockerfile (BuildKit reads <Dockerfile>.dockerignore): only these files.
+*
+!scripts/backup/neon_s3_backup.py
+!scripts/backup/aws/lambda_handler.py
+!scripts/backup/aws/requirements.txt
