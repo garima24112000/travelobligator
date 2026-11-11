@@ -35,6 +35,10 @@ const TAGS = ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "best-practice"];
 // (P1C-4 and P1C-5 were listed here for the sign-up screen until they were fixed; the list is empty again.)
 const KNOWN_ISSUES: Record<string, { rule: string; defect: string }[]> = {};
 
+// How long the keyboard-deletion test waits for DELETE /trips/{id} on the offline test backend: about twice the
+// slowest deletion measured on its development store (docs/38 section 4.2). Not a product latency target.
+const DELETE_REQUEST_BUDGET_MS = 30_000;
+
 async function scan(page: Page, testInfo: TestInfo, state: string) {
   const results = await new AxeBuilder({ page }).withTags(TAGS).analyze();
   const summary = results.violations.map((violation) => ({
@@ -376,7 +380,17 @@ test.describe("keyboard", () => {
     await expect(confirmation).toBeVisible();
     await page.keyboard.press("Tab");
     await expect(confirmation.getByRole("button", { name: "Delete trip" })).toBeFocused();
+    // Wait for the deletion request itself, then for its message. The offline test backend keeps every test's
+    // data in one Local JSON file that it rewrites whole, so a deletion there slows down as the suite runs:
+    // measured up to 15.9 s with 160 stored trips while another worker generated (docs/38 section 4.2). The
+    // budget covers that with margin; once the request has succeeded the message must still appear within the
+    // usual expect timeout, and any refusal or error status fails the test.
+    const deletion = page.waitForResponse(
+      (response) => response.request().method() === "DELETE" && /\/trips\/[^/]+$/.test(new URL(response.url()).pathname),
+      { timeout: DELETE_REQUEST_BUDGET_MS },
+    );
     await page.keyboard.press("Enter");
+    expect((await deletion).status(), "the deletion request succeeded").toBe(200);
     await expect(page.getByRole("status").filter({ hasText: "Trip deleted." })).toBeVisible();
   });
 
