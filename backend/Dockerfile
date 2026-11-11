@@ -12,6 +12,12 @@
 # not an `apt-get upgrade`, when the image scan gate reports fixable OS findings. `ARG PYTHON_IMAGE` lets a build
 # target another version.
 #
+# ONE owner-approved exception (2026-11-10, CVE-2026-109518, HIGH, fixed in apt 2.6.2): the runtime stage upgrades
+# exactly the two binary packages of Debian's fixed `apt` source, `apt` and `libapt-pkg6.0`, to 2.6.2 from Debian's
+# security archive, because no 3.11.18-slim-bookworm rebuild carries it yet. Nothing else is upgraded (no
+# `apt-get upgrade`), the package lists are removed again, and scripts/ci/image_audit.sh checks the installed versions.
+# Remove this step when the base tag ships apt >= 2.6.2.
+#
 # The process model is ONE Uvicorn worker per container, started by `python -m app.serve` in exec form
 # (no shell, so SIGTERM from `docker stop` reaches Uvicorn directly). Scale by running more containers.
 # The database schema is NEVER migrated by this container: run the one-shot migration step
@@ -47,6 +53,12 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 # chage, expiry, unix_chkpwd). Nothing in this image runs them, and for a process running as uid 10001 they are the
 # only way to gain privileges inside the container (a HIGH advisory concerns `mount` itself), so the bits are removed.
 # The binaries stay (Debian marks util-linux/login essential); without the bit they run only with the caller's rights.
+ARG APT_FIXED_VERSION=2.6.2
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends --only-upgrade \
+        apt=${APT_FIXED_VERSION} libapt-pkg6.0=${APT_FIXED_VERSION} \
+    && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*.deb
+
 RUN groupadd --system --gid 10001 app \
     && useradd --system --uid 10001 --gid app --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin app \
     && python -m pip uninstall --yes --no-cache-dir setuptools wheel pip \
