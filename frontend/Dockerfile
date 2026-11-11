@@ -14,7 +14,7 @@
 # environment. `NEXT_PUBLIC_API_BASE_URL` (a build-time ARG) is only the fallback when `API_BASE_URL` is unset.
 # Both are public, browser-visible values -- never secrets, never internal service names.
 
-ARG NODE_IMAGE=node:22.23.3-alpine3.24
+ARG NODE_IMAGE=node:22.23.4-alpine3.24
 
 FROM ${NODE_IMAGE} AS base
 WORKDIR /app
