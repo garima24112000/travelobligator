@@ -1,0 +1,375 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Description": "TravelObligator: GitHub-independent Neon backup, weekly backup verification and hourly monitoring (scripts/backup/aws/README.md). Nothing runs and no alarm notifies until Activate=true.",
+  "Parameters": {
+    "ImageUri": {
+      "Type": "String",
+      "Description": "The backup image in this account's ECR, pinned by digest (<account>.dkr.ecr.<region>.amazonaws.com/<repo>@sha256:<64 hex>).",
+      "AllowedPattern": "^[0-9]{12}\\.dkr\\.ecr\\.[a-z0-9-]+\\.amazonaws\\.com/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$"
+    },
+    "AlertEmail": {
+      "Type": "String",
+      "Description": "Where alarms are sent. AWS emails a confirmation link first; nothing is delivered until it is confirmed.",
+      "AllowedPattern": "^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$"
+    },
+    "Activate": {
+      "Type": "String",
+      "Default": "false",
+      "AllowedValues": ["false", "true"],
+      "Description": "false: the schedules are DISABLED and the alarms send nothing. true only after the owner's approval."
+    },
+    "BackupBucket": {
+      "Type": "String",
+      "Default": "travelobligator-db-backups-10192026"
+    },
+    "BackupExpectedDbUser": {
+      "Type": "String",
+      "Default": "travelobligator_backup"
+    },
+    "DatabaseUrlParameter": {
+      "Type": "String",
+      "Default": "/travelobligator/backup/neon-database-url",
+      "AllowedPattern": "^/travelobligator/backup/[a-z0-9-]+$",
+      "Description": "SecureString parameter holding the backup role's DIRECT Neon URL. Created by the owner, never by this template."
+    },
+    "PassphraseParameter": {
+      "Type": "String",
+      "Default": "/travelobligator/backup/encryption-passphrase",
+      "AllowedPattern": "^/travelobligator/backup/[a-z0-9-]+$",
+      "Description": "SecureString parameter holding the encryption passphrase. Created by the owner, never by this template."
+    },
+    "FrontendUrl": {
+      "Type": "String",
+      "Default": "https://travelobligator.vercel.app",
+      "AllowedPattern": "^https://[^\\s]+$",
+      "Description": "The public frontend page. The backend is never checked (no keepalive)."
+    }
+  },
+  "Conditions": {
+    "IsActive": {"Fn::Equals": [{"Ref": "Activate"}, "true"]}
+  },
+  "Resources": {
+    "AlertTopic": {
+      "Type": "AWS::SNS::Topic",
+      "Properties": {"TopicName": "travelobligator-backup-alerts"}
+    },
+    "AlertSubscription": {
+      "Type": "AWS::SNS::Subscription",
+      "Properties": {"TopicArn": {"Ref": "AlertTopic"}, "Protocol": "email", "Endpoint": {"Ref": "AlertEmail"}}
+    },
+
+    "BackupLogGroup": {
+      "Type": "AWS::Logs::LogGroup",
+      "Properties": {"LogGroupName": "/aws/lambda/travelobligator-neon-backup", "RetentionInDays": 30}
+    },
+    "VerifyLogGroup": {
+      "Type": "AWS::Logs::LogGroup",
+      "Properties": {"LogGroupName": "/aws/lambda/travelobligator-backup-verify", "RetentionInDays": 30}
+    },
+    "MonitorLogGroup": {
+      "Type": "AWS::Logs::LogGroup",
+      "Properties": {"LogGroupName": "/aws/lambda/travelobligator-backup-monitor", "RetentionInDays": 30}
+    },
+
+    "BackupRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [{
+            "Effect": "Allow",
+            "Principal": {"Service": "lambda.amazonaws.com"},
+            "Action": "sts:AssumeRole",
+            "Condition": {"StringEquals": {"aws:SourceAccount": {"Ref": "AWS::AccountId"}}}
+          }]
+        },
+        "Policies": [{
+          "PolicyName": "neon-backup",
+          "PolicyDocument": {
+            "Version": "2012-10-17",
+            "Statement": [
+              {"Effect": "Allow", "Action": ["logs:CreateLogStream", "logs:PutLogEvents"],
+               "Resource": {"Fn::Sub": "${BackupLogGroup.Arn}"}},
+              {"Effect": "Allow", "Action": "ssm:GetParameter",
+               "Resource": [
+                 {"Fn::Sub": "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${DatabaseUrlParameter}"},
+                 {"Fn::Sub": "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${PassphraseParameter}"}
+               ]},
+              {"Effect": "Allow", "Action": ["s3:PutObject", "s3:GetObject"],
+               "Resource": {"Fn::Sub": "arn:${AWS::Partition}:s3:::${BackupBucket}/neon/*"}}
+            ]
+          }
+        }]
+      }
+    },
+    "VerifyRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [{
+            "Effect": "Allow",
+            "Principal": {"Service": "lambda.amazonaws.com"},
+            "Action": "sts:AssumeRole",
+            "Condition": {"StringEquals": {"aws:SourceAccount": {"Ref": "AWS::AccountId"}}}
+          }]
+        },
+        "Policies": [{
+          "PolicyName": "backup-verify",
+          "PolicyDocument": {
+            "Version": "2012-10-17",
+            "Statement": [
+              {"Effect": "Allow", "Action": ["logs:CreateLogStream", "logs:PutLogEvents"],
+               "Resource": {"Fn::Sub": "${VerifyLogGroup.Arn}"}},
+              {"Effect": "Allow", "Action": "ssm:GetParameter",
+               "Resource": {"Fn::Sub": "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${PassphraseParameter}"}},
+              {"Effect": "Allow", "Action": "s3:ListBucket",
+               "Resource": {"Fn::Sub": "arn:${AWS::Partition}:s3:::${BackupBucket}"},
+               "Condition": {"StringEquals": {"s3:prefix": "neon/"}}},
+              {"Effect": "Allow", "Action": "s3:GetObject",
+               "Resource": {"Fn::Sub": "arn:${AWS::Partition}:s3:::${BackupBucket}/neon/*"}}
+            ]
+          }
+        }]
+      }
+    },
+    "MonitorRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [{
+            "Effect": "Allow",
+            "Principal": {"Service": "lambda.amazonaws.com"},
+            "Action": "sts:AssumeRole",
+            "Condition": {"StringEquals": {"aws:SourceAccount": {"Ref": "AWS::AccountId"}}}
+          }]
+        },
+        "Policies": [{
+          "PolicyName": "backup-monitor",
+          "PolicyDocument": {
+            "Version": "2012-10-17",
+            "Statement": [
+              {"Effect": "Allow", "Action": ["logs:CreateLogStream", "logs:PutLogEvents"],
+               "Resource": {"Fn::Sub": "${MonitorLogGroup.Arn}"}},
+              {"Effect": "Allow", "Action": "s3:ListBucket",
+               "Resource": {"Fn::Sub": "arn:${AWS::Partition}:s3:::${BackupBucket}"},
+               "Condition": {"StringEquals": {"s3:prefix": "neon/"}}}
+            ]
+          }
+        }]
+      }
+    },
+
+    "BackupFunction": {
+      "Type": "AWS::Lambda::Function",
+      "DependsOn": "BackupLogGroup",
+      "Properties": {
+        "FunctionName": "travelobligator-neon-backup",
+        "PackageType": "Image",
+        "Code": {"ImageUri": {"Ref": "ImageUri"}},
+        "Architectures": ["arm64"],
+        "Role": {"Fn::GetAtt": ["BackupRole", "Arn"]},
+        "Timeout": 900,
+        "MemorySize": 1024,
+        "Environment": {"Variables": {
+          "BACKUP_FUNCTION_MODE": "backup",
+          "BACKUP_S3_BUCKET": {"Ref": "BackupBucket"},
+          "BACKUP_S3_PREFIX": "neon/",
+          "BACKUP_EXPECTED_DB_USER": {"Ref": "BackupExpectedDbUser"},
+          "DATABASE_URL_PARAMETER": {"Ref": "DatabaseUrlParameter"},
+          "PASSPHRASE_PARAMETER": {"Ref": "PassphraseParameter"}
+        }}
+      }
+    },
+    "VerifyFunction": {
+      "Type": "AWS::Lambda::Function",
+      "DependsOn": "VerifyLogGroup",
+      "Properties": {
+        "FunctionName": "travelobligator-backup-verify",
+        "PackageType": "Image",
+        "Code": {"ImageUri": {"Ref": "ImageUri"}},
+        "Architectures": ["arm64"],
+        "Role": {"Fn::GetAtt": ["VerifyRole", "Arn"]},
+        "Timeout": 600,
+        "MemorySize": 1024,
+        "Environment": {"Variables": {
+          "BACKUP_FUNCTION_MODE": "verify",
+          "BACKUP_S3_BUCKET": {"Ref": "BackupBucket"},
+          "PASSPHRASE_PARAMETER": {"Ref": "PassphraseParameter"}
+        }}
+      }
+    },
+    "MonitorFunction": {
+      "Type": "AWS::Lambda::Function",
+      "DependsOn": "MonitorLogGroup",
+      "Properties": {
+        "FunctionName": "travelobligator-backup-monitor",
+        "PackageType": "Image",
+        "Code": {"ImageUri": {"Ref": "ImageUri"}},
+        "Architectures": ["arm64"],
+        "Role": {"Fn::GetAtt": ["MonitorRole", "Arn"]},
+        "Timeout": 120,
+        "MemorySize": 256,
+        "Environment": {"Variables": {
+          "BACKUP_FUNCTION_MODE": "monitor",
+          "BACKUP_S3_BUCKET": {"Ref": "BackupBucket"},
+          "FRONTEND_URL": {"Ref": "FrontendUrl"}
+        }}
+      }
+    },
+    "BackupInvokeConfig": {
+      "Type": "AWS::Lambda::EventInvokeConfig",
+      "Properties": {"FunctionName": {"Ref": "BackupFunction"}, "Qualifier": "$LATEST", "MaximumRetryAttempts": 1}
+    },
+    "VerifyInvokeConfig": {
+      "Type": "AWS::Lambda::EventInvokeConfig",
+      "Properties": {"FunctionName": {"Ref": "VerifyFunction"}, "Qualifier": "$LATEST", "MaximumRetryAttempts": 0}
+    },
+    "MonitorInvokeConfig": {
+      "Type": "AWS::Lambda::EventInvokeConfig",
+      "Properties": {"FunctionName": {"Ref": "MonitorFunction"}, "Qualifier": "$LATEST", "MaximumRetryAttempts": 0}
+    },
+
+    "SchedulerRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [{
+            "Effect": "Allow",
+            "Principal": {"Service": "scheduler.amazonaws.com"},
+            "Action": "sts:AssumeRole",
+            "Condition": {"StringEquals": {"aws:SourceAccount": {"Ref": "AWS::AccountId"}}}
+          }]
+        },
+        "Policies": [{
+          "PolicyName": "invoke-backup-functions",
+          "PolicyDocument": {
+            "Version": "2012-10-17",
+            "Statement": [{
+              "Effect": "Allow", "Action": "lambda:InvokeFunction",
+              "Resource": [
+                {"Fn::GetAtt": ["BackupFunction", "Arn"]},
+                {"Fn::GetAtt": ["VerifyFunction", "Arn"]},
+                {"Fn::GetAtt": ["MonitorFunction", "Arn"]}
+              ]
+            }]
+          }
+        }]
+      }
+    },
+    "BackupSchedule": {
+      "Type": "AWS::Scheduler::Schedule",
+      "Properties": {
+        "Name": "travelobligator-neon-backup-daily",
+        "Description": "Daily at 03:37 UTC, as the GitHub workflow was.",
+        "ScheduleExpression": "cron(37 3 * * ? *)",
+        "ScheduleExpressionTimezone": "UTC",
+        "FlexibleTimeWindow": {"Mode": "OFF"},
+        "State": {"Fn::If": ["IsActive", "ENABLED", "DISABLED"]},
+        "Target": {"Arn": {"Fn::GetAtt": ["BackupFunction", "Arn"]}, "RoleArn": {"Fn::GetAtt": ["SchedulerRole", "Arn"]},
+                   "RetryPolicy": {"MaximumRetryAttempts": 0}}
+      }
+    },
+    "VerifySchedule": {
+      "Type": "AWS::Scheduler::Schedule",
+      "Properties": {
+        "Name": "travelobligator-backup-verify-weekly",
+        "Description": "Sundays at 05:07 UTC: decrypt and read the newest backup.",
+        "ScheduleExpression": "cron(7 5 ? * SUN *)",
+        "ScheduleExpressionTimezone": "UTC",
+        "FlexibleTimeWindow": {"Mode": "OFF"},
+        "State": {"Fn::If": ["IsActive", "ENABLED", "DISABLED"]},
+        "Target": {"Arn": {"Fn::GetAtt": ["VerifyFunction", "Arn"]}, "RoleArn": {"Fn::GetAtt": ["SchedulerRole", "Arn"]},
+                   "RetryPolicy": {"MaximumRetryAttempts": 0}}
+      }
+    },
+    "MonitorSchedule": {
+      "Type": "AWS::Scheduler::Schedule",
+      "Properties": {
+        "Name": "travelobligator-backup-monitor-hourly",
+        "Description": "Hourly at :17: backup freshness and the public frontend page (never the backend).",
+        "ScheduleExpression": "cron(17 * * * ? *)",
+        "ScheduleExpressionTimezone": "UTC",
+        "FlexibleTimeWindow": {"Mode": "OFF"},
+        "State": {"Fn::If": ["IsActive", "ENABLED", "DISABLED"]},
+        "Target": {"Arn": {"Fn::GetAtt": ["MonitorFunction", "Arn"]}, "RoleArn": {"Fn::GetAtt": ["SchedulerRole", "Arn"]},
+                   "RetryPolicy": {"MaximumRetryAttempts": 0}}
+      }
+    },
+
+    "BackupErrorsAlarm": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmName": "travelobligator-neon-backup-failed",
+        "AlarmDescription": "The daily backup failed. Read the function's log, then docs/30.",
+        "ActionsEnabled": {"Fn::If": ["IsActive", true, false]},
+        "AlarmActions": [{"Ref": "AlertTopic"}],
+        "Namespace": "AWS/Lambda", "MetricName": "Errors",
+        "Dimensions": [{"Name": "FunctionName", "Value": {"Ref": "BackupFunction"}}],
+        "Statistic": "Sum", "Period": 3600, "EvaluationPeriods": 1, "Threshold": 1,
+        "ComparisonOperator": "GreaterThanOrEqualToThreshold", "TreatMissingData": "notBreaching"
+      }
+    },
+    "BackupMissingAlarm": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmName": "travelobligator-neon-backup-did-not-run",
+        "AlarmDescription": "The daily backup was not invoked in the last day. An absent run is an alert.",
+        "ActionsEnabled": {"Fn::If": ["IsActive", true, false]},
+        "AlarmActions": [{"Ref": "AlertTopic"}],
+        "Namespace": "AWS/Lambda", "MetricName": "Invocations",
+        "Dimensions": [{"Name": "FunctionName", "Value": {"Ref": "BackupFunction"}}],
+        "Statistic": "Sum", "Period": 86400, "EvaluationPeriods": 1, "Threshold": 1,
+        "ComparisonOperator": "LessThanThreshold", "TreatMissingData": "breaching"
+      }
+    },
+    "VerifyErrorsAlarm": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmName": "travelobligator-backup-verify-failed",
+        "AlarmDescription": "The newest backup did not decrypt or read. Run the restore drill (docs/30).",
+        "ActionsEnabled": {"Fn::If": ["IsActive", true, false]},
+        "AlarmActions": [{"Ref": "AlertTopic"}],
+        "Namespace": "AWS/Lambda", "MetricName": "Errors",
+        "Dimensions": [{"Name": "FunctionName", "Value": {"Ref": "VerifyFunction"}}],
+        "Statistic": "Sum", "Period": 3600, "EvaluationPeriods": 1, "Threshold": 1,
+        "ComparisonOperator": "GreaterThanOrEqualToThreshold", "TreatMissingData": "notBreaching"
+      }
+    },
+    "MonitorErrorsAlarm": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmName": "travelobligator-backup-monitor-problem",
+        "AlarmDescription": "A backup is older than 36 hours, or the public frontend page did not answer 200.",
+        "ActionsEnabled": {"Fn::If": ["IsActive", true, false]},
+        "AlarmActions": [{"Ref": "AlertTopic"}],
+        "OKActions": [{"Ref": "AlertTopic"}],
+        "Namespace": "AWS/Lambda", "MetricName": "Errors",
+        "Dimensions": [{"Name": "FunctionName", "Value": {"Ref": "MonitorFunction"}}],
+        "Statistic": "Sum", "Period": 3600, "EvaluationPeriods": 1, "Threshold": 1,
+        "ComparisonOperator": "GreaterThanOrEqualToThreshold", "TreatMissingData": "notBreaching"
+      }
+    },
+    "MonitorMissingAlarm": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmName": "travelobligator-backup-monitor-did-not-run",
+        "AlarmDescription": "The hourly monitor was not invoked for three hours: nothing is watching.",
+        "ActionsEnabled": {"Fn::If": ["IsActive", true, false]},
+        "AlarmActions": [{"Ref": "AlertTopic"}],
+        "Namespace": "AWS/Lambda", "MetricName": "Invocations",
+        "Dimensions": [{"Name": "FunctionName", "Value": {"Ref": "MonitorFunction"}}],
+        "Statistic": "Sum", "Period": 3600, "EvaluationPeriods": 3, "Threshold": 1,
+        "ComparisonOperator": "LessThanThreshold", "TreatMissingData": "breaching"
+      }
+    }
+  },
+  "Outputs": {
+    "AlertTopicArn": {"Value": {"Ref": "AlertTopic"}},
+    "BackupFunctionName": {"Value": {"Ref": "BackupFunction"}},
+    "VerifyFunctionName": {"Value": {"Ref": "VerifyFunction"}},
+    "MonitorFunctionName": {"Value": {"Ref": "MonitorFunction"}}
+  }
+}

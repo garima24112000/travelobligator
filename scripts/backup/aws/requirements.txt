@@ -1,0 +1,22 @@
+# The Lambda image's Python packages (Linux arm64, CPython 3.11), every one pinned by version and SHA-256.
+# Installed with --require-hashes. Regenerate together, never one package alone.
+awslambdaric==4.2.3 \
+    --hash=sha256:3018a6f480db820fd2c38030b18576e54bb02f773398bfdec0f179b88e04ab95
+boto3==1.44.0 \
+    --hash=sha256:ae3009db1294fd4ca2e30d9592ead8ab56f0e270bcad0b95e555f03f7875716d
+botocore==1.44.0 \
+    --hash=sha256:9055745fc16400377ac7e825ac63b8f77af17305e1c77c9a5519a648d7b2e87c
+jmespath==1.1.0 \
+    --hash=sha256:a5663118de4908c91729bea0acadca56526eb2698e83de10cd116ae0f4e97c64
+python-dateutil==2.9.0.post0 \
+    --hash=sha256:a8b2bc7bffae282281c8140a97d3aa9c14da0b136dfe83f850eea9a5f7470427
+s3transfer==0.19.3 \
+    --hash=sha256:24eb7535804306355e31c952a90022bf5b2f9d760f9a11062c7493a217c08553
+simplejson==4.3.0 \
+    --hash=sha256:82a24d31f06deea3ba1814c4c79f54b1573a3574b8a7c598b6a7f41ac488e047
+six==1.17.0 \
+    --hash=sha256:4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274
+snapshot-restore-py==1.0.0 \
+    --hash=sha256:38f99e696793790f54658e71c68c7a8a40cea877c81232b5052383b1301aceba
+urllib3==2.8.0 \
+    --hash=sha256:0cf3cae568d36aa9576b28dfb35f11328f1cb974ca7647d9475ebb86c75ac6e3
